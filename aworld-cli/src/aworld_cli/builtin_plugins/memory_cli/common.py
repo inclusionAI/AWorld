@@ -81,6 +81,54 @@ def append_remembered_guidance(
     return target, True
 
 
+def remove_remembered_guidance(
+    workspace_path: str | os.PathLike[str],
+    text: str,
+) -> tuple[Path, bool]:
+    layers = discover_workspace_instruction_layers(workspace_path)
+    target = layers.workspace_file or layers.canonical_write_file
+    if not target.exists():
+        return target, False
+
+    lines = target.read_text(encoding="utf-8").splitlines()
+    try:
+        header_index = lines.index(REMEMBERED_GUIDANCE_HEADER)
+    except ValueError:
+        return target, False
+
+    section_end = len(lines)
+    for index in range(header_index + 1, len(lines)):
+        if lines[index].startswith("## ") and lines[index] != REMEMBERED_GUIDANCE_HEADER:
+            section_end = index
+            break
+
+    bullet = f"- {text}"
+    section_lines = lines[header_index + 1 : section_end]
+    filtered_section_lines = [line for line in section_lines if line != bullet]
+    if filtered_section_lines == section_lines:
+        return target, False
+
+    has_remaining_bullets = any(
+        line.startswith("- ") for line in filtered_section_lines
+    )
+    if has_remaining_bullets:
+        updated_lines = (
+            lines[: header_index + 1]
+            + filtered_section_lines
+            + lines[section_end:]
+        )
+    else:
+        start = header_index
+        while start > 0 and not lines[start - 1].strip():
+            start -= 1
+        updated_lines = lines[:start] + lines[section_end:]
+
+    normalized_lines = _collapse_blank_lines(updated_lines)
+    content = "\n".join(normalized_lines).rstrip()
+    target.write_text(f"{content}\n" if content else "", encoding="utf-8")
+    return target, True
+
+
 def append_workspace_session_log(
     workspace_path: str | os.PathLike[str],
     session_id: str,
@@ -103,3 +151,15 @@ def append_workspace_session_log(
         handle.write(json.dumps(entry, ensure_ascii=False))
         handle.write("\n")
     return log_path
+
+
+def _collapse_blank_lines(lines: list[str]) -> list[str]:
+    normalized: list[str] = []
+    previous_blank = False
+    for line in lines:
+        is_blank = not line.strip()
+        if is_blank and previous_blank:
+            continue
+        normalized.append(line)
+        previous_blank = is_blank
+    return normalized
