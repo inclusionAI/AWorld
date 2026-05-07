@@ -12,6 +12,17 @@ from aworld_cli.memory.promotion import TEMPORARY_HINTS
 
 GOVERNANCE_POLICY_VERSION = "2026-05-07"
 VALID_GOVERNANCE_MODES = frozenset({"off", "shadow", "governed"})
+REQUIRED_SOURCE_REF_KEYS = ("session_id", "task_id", "candidate_id")
+REQUIRED_DECISION_FIELDS = (
+    "decision_id",
+    "policy_mode",
+    "policy_version",
+    "decision",
+    "reason",
+    "confidence",
+    "source_ref",
+    "blockers",
+)
 
 
 @dataclass(frozen=True)
@@ -58,12 +69,20 @@ def evaluate_governed_candidate(
     resolved_mode = _normalize_governance_mode(mode)
     content = str(candidate.get("content") or "").strip()
     memory_type = str(candidate.get("memory_type") or "workspace").strip().lower()
+    confidence = str(candidate.get("confidence") or "").strip()
+    source_ref = _normalize_source_ref(candidate.get("source_ref"))
     blockers: list[str] = []
 
+    if not content:
+        blockers.append("missing_content")
     if _looks_temporary(content):
         blockers.append("temporary_candidate")
     if memory_type not in INSTRUCTION_MEMORY_TYPES:
         blockers.append("ineligible_memory_type")
+    if not confidence:
+        blockers.append("missing_confidence")
+    if not _has_stable_source_ref(source_ref):
+        blockers.append("missing_source_ref")
     if (
         content
         and memory_type in INSTRUCTION_MEMORY_TYPES
@@ -98,10 +117,10 @@ def evaluate_governed_candidate(
         policy_version=GOVERNANCE_POLICY_VERSION,
         reason=reason,
         blockers=tuple(blockers),
-        confidence=str(candidate.get("confidence") or ""),
+        confidence=confidence,
         memory_type=memory_type,
         content=content,
-        source_ref=_normalize_source_ref(candidate.get("source_ref")),
+        source_ref=source_ref,
         evaluated_at=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -110,7 +129,10 @@ def append_governed_decision(
     workspace_path: str | os.PathLike[str],
     payload: dict,
 ) -> Path:
-    return _append_jsonl(decisions_file(workspace_path), payload)
+    return _append_jsonl(
+        decisions_file(workspace_path),
+        _normalize_decision_payload(payload),
+    )
 
 
 def append_governed_review(
@@ -121,7 +143,11 @@ def append_governed_review(
 
 
 def list_governed_decisions(workspace_path: str | os.PathLike[str]) -> list[dict]:
-    decisions = _read_jsonl(decisions_file(workspace_path))
+    decisions = [
+        payload
+        for payload in _read_jsonl(decisions_file(workspace_path))
+        if _is_valid_decision_payload(payload)
+    ]
     reviews_by_decision: dict[str, list[dict]] = {}
     for review in _read_jsonl(reviews_file(workspace_path)):
         decision_id = review.get("decision_id")
@@ -194,3 +220,56 @@ def _normalize_source_ref(source_ref: object) -> dict[str, str]:
             continue
         normalized[key] = str(value)
     return normalized
+
+
+def _has_stable_source_ref(source_ref: dict[str, str]) -> bool:
+    return all(source_ref.get(key, "").strip() for key in REQUIRED_SOURCE_REF_KEYS)
+
+
+def _normalize_decision_payload(payload: object) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("Governed decision payload must be a dictionary")
+
+    normalized = dict(payload)
+    normalized["decision_id"] = str(normalized.get("decision_id") or "").strip()
+    normalized["policy_mode"] = _normalize_governance_mode(normalized.get("policy_mode"))
+    normalized["policy_version"] = str(normalized.get("policy_version") or "").strip()
+    normalized["decision"] = str(normalized.get("decision") or "").strip()
+    normalized["reason"] = str(normalized.get("reason") or "").strip()
+    normalized["confidence"] = str(normalized.get("confidence") or "").strip()
+    normalized["source_ref"] = _normalize_source_ref(normalized.get("source_ref"))
+    blockers = normalized.get("blockers")
+    if blockers is None:
+        normalized["blockers"] = []
+    elif isinstance(blockers, (list, tuple)):
+        normalized["blockers"] = [str(blocker) for blocker in blockers]
+    else:
+        normalized["blockers"] = [str(blockers)]
+
+    missing_fields = [
+        field_name
+        for field_name in REQUIRED_DECISION_FIELDS
+        if not _has_required_decision_field(field_name, normalized.get(field_name))
+    ]
+    if missing_fields:
+        raise ValueError(
+            "Missing required decision fields: " + ", ".join(missing_fields)
+        )
+
+    return normalized
+
+
+def _is_valid_decision_payload(payload: object) -> bool:
+    try:
+        _normalize_decision_payload(payload)
+    except ValueError:
+        return False
+    return True
+
+
+def _has_required_decision_field(field_name: str, value: object) -> bool:
+    if field_name == "source_ref":
+        return isinstance(value, dict) and _has_stable_source_ref(value)
+    if field_name == "blockers":
+        return isinstance(value, list)
+    return isinstance(value, str) and bool(value.strip())
