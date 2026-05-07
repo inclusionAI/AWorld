@@ -236,6 +236,74 @@ Minimum surface:
 Explicit `/remember` writes remain immediate and are not blocked by governance
 mode.
 
+## Implementation Guardrails
+
+This change should be implemented as a CLI durable-memory governance layer, not
+as a runtime-memory rewrite.
+
+### Allowed changes
+
+The preferred implementation surface is:
+
+- `aworld-cli/src/aworld_cli/memory/`
+- `aworld-cli/src/aworld_cli/memory/provider.py`
+- `aworld-cli/src/aworld_cli/memory/hybrid.py`
+- `aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py`
+- `aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/commands/memory.py`
+
+Why:
+
+- the current branch already established a CLI durable-memory provider seam
+- governed promotion is a policy layer over session logs and active durable
+  recall
+- the memory plugin already owns operator-facing commands and turn-end hooks
+
+### Discouraged changes
+
+The following should stay thin and should only be touched for narrow adapter
+work:
+
+- `aworld-cli/src/aworld_cli/runtime_bootstrap.py`
+- `aworld-cli/src/aworld_cli/memory/bootstrap.py`
+- `aworld/core/context/amni/prompt/neurons/aworld_file_neuron.py`
+- any relevant-memory prompt neuron that only needs to consume provider output
+
+Why:
+
+- these files are integration seams, not the right home for governance policy
+- pushing policy into prompt neurons or bootstrap paths would couple product
+  logic to runtime wiring
+
+### Forbidden changes
+
+This change must not:
+
+- rewrite `AworldMemory` runtime message-memory behavior
+- change `aworld/core/memory.py` contracts
+- change runtime message history, summary generation, or long-term extraction
+  semantics
+- move promotion policy into amni prompt-assembly internals
+- change trajectory semantics, `llm_calls` truth-source behavior, or cache
+  observability contracts
+
+Why:
+
+- governed session-log promotion is meant to compose with the current
+  architecture, not replace it
+- runtime stability depends on keeping durable-memory governance separate from
+  message-memory execution semantics
+
+### Preferred shape
+
+The preferred implementation path is:
+
+1. turn-end hook writes session-log candidate plus governed decision record
+2. durable-memory provider exposes active governed records and review actions
+3. hybrid provider forwards governed durable-memory APIs without changing
+   runtime-memory behavior
+4. prompt neurons consume only effective instruction / relevant-memory output
+   from the provider
+
 ## Validation
 
 Validation should prove:
@@ -246,3 +314,4 @@ Validation should prove:
 - reverted promotions stop participating in active durable recall
 - status/reporting surfaces expose explanation and rollout-threshold state
 - legacy explicit durable writes keep working
+- runtime message-memory behavior remains unchanged for existing consumers
