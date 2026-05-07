@@ -105,6 +105,7 @@ class TaskResponse:
     answer: Any | None = field(default=None)
     raw_llm_resp: Optional[Any] = field(default=None)
     context: Context | None = field(default_factory=Context)
+    llm_calls: List[Dict[str, Any]] = field(default_factory=list)
     usage: Dict[str, Any] | None = field(default_factory=dict)
     time_cost: float | None = field(default=0.0)
     success: bool = field(default=False)
@@ -120,6 +121,7 @@ class TaskResponse:
             "trace_id": self.trace_id,
             "answer": self.answer,
             "usage": self.usage,
+            "llm_calls": self.llm_calls,
             "time_cost": self.time_cost,
             "success": self.success,
             "msg": self.msg,
