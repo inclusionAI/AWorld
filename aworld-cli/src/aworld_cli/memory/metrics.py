@@ -57,15 +57,33 @@ def append_promotion_metric(
     return target
 
 
-def _latest_review_action(decision: dict) -> str:
+def _review_actions(decision: dict) -> set[str]:
     reviews = decision.get("reviews")
-    if not isinstance(reviews, list) or not reviews:
-        return ""
-    latest = reviews[-1]
-    if not isinstance(latest, dict):
-        return ""
-    action = latest.get("review_action")
-    return action.strip().lower() if isinstance(action, str) else ""
+    if not isinstance(reviews, list):
+        return set()
+    actions: set[str] = set()
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        action = review.get("review_action")
+        if isinstance(action, str) and action.strip():
+            actions.add(action.strip().lower())
+    return actions
+
+
+def _promoted_decision_has_complete_explainability(decision: dict) -> bool:
+    if str(decision.get("decision") or "").strip().lower() != "durable_memory":
+        return True
+    if decision.get("legacy_incomplete") is True:
+        return False
+    reason = decision.get("reason")
+    source_ref = decision.get("source_ref")
+    if not isinstance(reason, str) or not reason.strip():
+        return False
+    if not isinstance(source_ref, dict):
+        return False
+    required_keys = ("session_id", "task_id", "candidate_id")
+    return all(isinstance(source_ref.get(key), str) and source_ref[key].strip() for key in required_keys)
 
 
 def summarize_promotion_metrics(
@@ -74,22 +92,25 @@ def summarize_promotion_metrics(
     max_records: int = 500,
 ) -> PromotionMetricsSummary:
     target = promotion_metrics_file(workspace_path)
-    decisions = list_governed_decisions(workspace_path)
+    decisions = list_governed_decisions(workspace_path)[-max_records:]
 
     reviewed_promotions = 0
     confirmed_promotions = 0
     reverted_promotions = 0
     pending_review = 0
-    for decision in decisions[-max_records:]:
-        latest_review_action = _latest_review_action(decision)
-        if not latest_review_action:
+    promoted_records_have_complete_explainability = True
+    for decision in decisions:
+        review_actions = _review_actions(decision)
+        if not review_actions:
             pending_review += 1
-            continue
-        reviewed_promotions += 1
-        if latest_review_action == "confirmed":
+        else:
+            reviewed_promotions += 1
+        if "confirmed" in review_actions:
             confirmed_promotions += 1
-        elif latest_review_action == "reverted":
+        if "reverted" in review_actions:
             reverted_promotions += 1
+        if not _promoted_decision_has_complete_explainability(decision):
+            promoted_records_have_complete_explainability = False
 
     precision_proxy = (
         confirmed_promotions / reviewed_promotions if reviewed_promotions else 0.0
@@ -101,6 +122,7 @@ def summarize_promotion_metrics(
         reviewed_promotions >= 100
         and precision_proxy >= 0.90
         and pollution_proxy <= 0.05
+        and promoted_records_have_complete_explainability
     )
 
     if not target.exists():
