@@ -127,6 +127,7 @@ class CliDurableMemoryProvider:
         text: str,
         memory_type: str,
         source: str,
+        memory_kind: str | None = None,
         decision_id: str | None = None,
         source_ref: dict[str, str] | None = None,
     ) -> ExplicitDurableWriteResult:
@@ -135,6 +136,7 @@ class CliDurableMemoryProvider:
             text=text,
             memory_type=memory_type,
             source=source,
+            memory_kind=memory_kind,
             decision_id=decision_id,
             source_ref=source_ref,
         )

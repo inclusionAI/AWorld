@@ -9,6 +9,7 @@ from pathlib import Path
 DURABLE_MEMORY_TYPES = ("user", "feedback", "workspace", "reference")
 INSTRUCTION_MEMORY_TYPES = frozenset({"user", "feedback", "workspace"})
 DEFAULT_DURABLE_MEMORY_TYPE = "workspace"
+DURABLE_MEMORY_KINDS = ("preference", "constraint", "workflow", "fact", "reference")
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class DurableMemoryRecord:
     source_file: Path
     decision_id: str = ""
     source_ref: dict[str, str] | None = None
+    memory_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,20 @@ def normalize_durable_memory_type(memory_type: str | None) -> str:
 
     valid = ", ".join(DURABLE_MEMORY_TYPES)
     raise ValueError(f"Invalid durable memory type: {memory_type}. Valid types: {valid}")
+
+
+def normalize_memory_kind(memory_kind: str | None) -> str | None:
+    if memory_kind is None:
+        return None
+
+    normalized = memory_kind.strip().lower()
+    if not normalized:
+        return None
+    if normalized in DURABLE_MEMORY_KINDS:
+        return normalized
+
+    valid = ", ".join(DURABLE_MEMORY_KINDS)
+    raise ValueError(f"Invalid durable memory kind: {memory_kind}. Valid kinds: {valid}")
 
 
 def durable_memory_file(workspace_path: str | os.PathLike[str]) -> Path:
@@ -101,6 +117,10 @@ def read_all_durable_memory_records(
         recorded_at = payload.get("recorded_at")
         decision_id = payload.get("decision_id")
         source_ref = payload.get("source_ref")
+        try:
+            record_kind = normalize_memory_kind(payload.get("memory_kind")) if "memory_kind" in payload else None
+        except ValueError:
+            continue
         if not isinstance(content, str) or not content.strip():
             continue
         if not isinstance(record_type, str):
@@ -120,6 +140,7 @@ def read_all_durable_memory_records(
                 source_file=target,
                 decision_id=decision_id.strip() if isinstance(decision_id, str) else "",
                 source_ref=_normalize_source_ref(source_ref),
+                memory_kind=record_kind,
             )
         )
 
@@ -132,10 +153,12 @@ def append_durable_memory_record(
     memory_type: str,
     text: str,
     source: str,
+    memory_kind: str | None = None,
     decision_id: str | None = None,
     source_ref: dict[str, str] | None = None,
 ) -> DurableMemoryWriteResult:
     normalized_type = normalize_durable_memory_type(memory_type)
+    normalized_kind = normalize_memory_kind(memory_kind)
     normalized_text = (text or "").strip()
     if not normalized_text:
         raise ValueError("Durable memory content must not be empty")
@@ -157,6 +180,8 @@ def append_durable_memory_record(
         "content": normalized_text,
         "source": source,
     }
+    if normalized_kind is not None:
+        payload["memory_kind"] = normalized_kind
     if isinstance(decision_id, str) and decision_id.strip():
         payload["decision_id"] = decision_id.strip()
     normalized_source_ref = _normalize_source_ref(source_ref)
