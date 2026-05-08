@@ -9,6 +9,7 @@ from aworld_cli.memory.durable import (
     DurableMemoryRecord,
     DurableMemoryWriteResult,
     append_durable_memory_record,
+    normalize_memory_kind,
     read_all_durable_memory_records,
     read_durable_memory_records,
 )
@@ -146,12 +147,13 @@ class CliDurableMemoryProvider:
         decision_id: str | None = None,
         source_ref: dict[str, str] | None = None,
     ) -> ExplicitDurableWriteResult:
+        normalized_memory_kind = normalize_memory_kind(memory_kind)
         write_result: DurableMemoryWriteResult = append_durable_memory_record(
             workspace_path=workspace_path,
             text=text,
             memory_type=memory_type,
             source=source,
-            memory_kind=memory_kind,
+            memory_kind=normalized_memory_kind,
             decision_id=decision_id,
             source_ref=source_ref,
         )
@@ -160,7 +162,7 @@ class CliDurableMemoryProvider:
         instruction_updated = False
         if _is_instruction_eligible_memory(
             memory_type=write_result.memory_type,
-            memory_kind=memory_kind,
+            memory_kind=normalized_memory_kind,
         ):
             instruction_target, instruction_updated = append_remembered_guidance(
                 workspace_path=workspace_path,

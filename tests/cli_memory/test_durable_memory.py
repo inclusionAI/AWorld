@@ -161,6 +161,30 @@ def test_typed_fact_durable_write_does_not_mirror_into_workspace_instructions(tm
     assert not (workspace / ".aworld" / "AWORLD.md").exists()
 
 
+def test_typed_instructional_write_mirrors_using_normalized_memory_kind(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    provider = CliDurableMemoryProvider()
+
+    result = provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="Use pnpm for workspace package management.",
+        memory_type="workspace",
+        memory_kind=" Workflow ",
+        source="remember_command",
+    )
+
+    records = provider.get_durable_memory_records(workspace)
+
+    assert result.record_created is True
+    assert result.instruction_target == workspace / ".aworld" / "AWORLD.md"
+    assert result.instruction_updated is True
+    assert records[0].memory_kind == "workflow"
+    assert "Use pnpm for workspace package management." in result.instruction_target.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_append_durable_memory_record_allows_typed_write_after_legacy_untyped_duplicate(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
