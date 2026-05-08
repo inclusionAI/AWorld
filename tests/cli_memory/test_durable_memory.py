@@ -96,6 +96,23 @@ def test_read_all_durable_memory_records_degrades_invalid_memory_kind_to_none(tm
     assert records[0].memory_kind is None
 
 
+def test_read_all_durable_memory_records_degrades_non_string_memory_kind_to_none(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+    durable_file.parent.mkdir(parents=True, exist_ok=True)
+    durable_file.write_text(
+        '{"recorded_at":"2026-05-08T00:00:00+00:00","memory_type":"workspace","memory_kind":123,"content":"Use pnpm","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+
+    records = read_all_durable_memory_records(workspace)
+
+    assert len(records) == 1
+    assert records[0].content == "Use pnpm"
+    assert records[0].memory_kind is None
+
+
 def test_normalize_memory_kind_rejects_unknown_values() -> None:
     with pytest.raises(ValueError, match="Invalid durable memory kind"):
         normalize_memory_kind("opinionated")
