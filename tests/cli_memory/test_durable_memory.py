@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from aworld_cli.memory import provider as provider_module
 from aworld_cli.memory.durable import (
     append_durable_memory_record,
     normalize_memory_kind,
@@ -183,6 +184,40 @@ def test_typed_instructional_write_mirrors_using_normalized_memory_kind(tmp_path
     assert "Use pnpm for workspace package management." in result.instruction_target.read_text(
         encoding="utf-8"
     )
+
+
+def test_provider_delegates_instruction_eligibility_to_durable_helper(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    provider = CliDurableMemoryProvider()
+    captured: list[tuple[str, str | None]] = []
+
+    def _fake_instruction_eligibility(*, memory_type: str, memory_kind: str | None) -> bool:
+        captured.append((memory_type, memory_kind))
+        return False
+
+    monkeypatch.setattr(
+        provider_module,
+        "is_instruction_eligible_memory",
+        _fake_instruction_eligibility,
+        raising=False,
+    )
+
+    result = provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="Use pnpm for workspace package management.",
+        memory_type="workspace",
+        memory_kind="workflow",
+        source="remember_command",
+    )
+
+    assert captured == [("workspace", "workflow")]
+    assert result.instruction_target is None
+    assert result.instruction_updated is False
+    assert not (workspace / ".aworld" / "AWORLD.md").exists()
 
 
 def test_append_durable_memory_record_allows_typed_write_after_legacy_untyped_duplicate(tmp_path) -> None:

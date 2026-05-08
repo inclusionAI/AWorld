@@ -5,10 +5,10 @@ from pathlib import Path
 
 from aworld_cli.builtin_plugins.memory_cli.common import append_remembered_guidance
 from aworld_cli.memory.durable import (
-    INSTRUCTION_MEMORY_TYPES,
     DurableMemoryRecord,
     DurableMemoryWriteResult,
     append_durable_memory_record,
+    is_instruction_eligible_memory,
     normalize_memory_kind,
     read_all_durable_memory_records,
     read_durable_memory_records,
@@ -22,10 +22,7 @@ from aworld_cli.memory.governance import (
     append_governed_review,
     list_governed_decisions as load_governed_decisions,
 )
-from aworld_cli.memory.relevance import (
-    recall_relevant_durable_memory_texts,
-    recall_relevant_session_log_texts,
-)
+from aworld_cli.memory.relevance import recall_relevant_memory_texts
 
 
 @dataclass(frozen=True)
@@ -76,24 +73,12 @@ class CliDurableMemoryProvider:
         query: str = "",
         limit: int = 3,
     ) -> RelevantMemoryContext:
-        durable_texts, durable_files = recall_relevant_durable_memory_texts(
+        texts, source_files = recall_relevant_memory_texts(
             workspace_path=workspace_path,
             query=query,
             limit=limit,
         )
-        session_texts, session_files = recall_relevant_session_log_texts(
-            workspace_path=workspace_path,
-            query=query,
-            limit=limit,
-        )
-        merged = _merge_relevant_memory_entries(
-            limit=limit,
-            durable_texts=durable_texts,
-            durable_files=durable_files,
-            session_texts=session_texts,
-            session_files=session_files,
-        )
-        return RelevantMemoryContext(texts=merged[0], source_files=merged[1])
+        return RelevantMemoryContext(texts=texts, source_files=source_files)
 
     def get_durable_memory_records(
         self,
@@ -160,7 +145,7 @@ class CliDurableMemoryProvider:
 
         instruction_target: Path | None = None
         instruction_updated = False
-        if _is_instruction_eligible_memory(
+        if is_instruction_eligible_memory(
             memory_type=write_result.memory_type,
             memory_kind=normalized_memory_kind,
         ):
@@ -176,39 +161,3 @@ class CliDurableMemoryProvider:
             instruction_target=instruction_target,
             instruction_updated=instruction_updated,
         )
-
-
-def _is_instruction_eligible_memory(*, memory_type: str, memory_kind: str | None) -> bool:
-    if memory_type not in INSTRUCTION_MEMORY_TYPES:
-        return False
-    if memory_kind is None:
-        return True
-    return memory_kind in {"preference", "constraint", "workflow"}
-
-
-def _merge_relevant_memory_entries(
-    *,
-    limit: int,
-    durable_texts: tuple[str, ...],
-    durable_files: tuple[Path, ...],
-    session_texts: tuple[str, ...],
-    session_files: tuple[Path, ...],
-) -> tuple[tuple[str, ...], tuple[Path, ...]]:
-    selected_texts: list[str] = []
-    selected_files: list[Path] = []
-
-    for text, source_files in (
-        (durable_texts, durable_files),
-        (session_texts, session_files),
-    ):
-        for item in text:
-            if item in selected_texts:
-                continue
-            if len(selected_texts) >= max(limit, 0):
-                return tuple(selected_texts), tuple(selected_files)
-            selected_texts.append(item)
-            for source_file in source_files:
-                if source_file not in selected_files:
-                    selected_files.append(source_file)
-
-    return tuple(selected_texts), tuple(selected_files)
