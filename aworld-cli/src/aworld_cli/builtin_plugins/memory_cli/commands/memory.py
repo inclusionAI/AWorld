@@ -7,7 +7,11 @@ from pathlib import Path
 
 from aworld_cli.core.command_system import CommandContext
 from aworld_cli.plugin_capabilities.commands import PluginBoundCommand
-from aworld_cli.memory.durable import durable_memory_file, normalize_durable_memory_type
+from aworld_cli.memory.durable import (
+    durable_memory_file,
+    normalize_durable_memory_type,
+    normalize_memory_kind,
+)
 from aworld_cli.memory.cache_observability import (
     format_cache_observability_summary,
     summarize_cache_observability,
@@ -140,6 +144,10 @@ class MemoryCommand(PluginBoundCommand):
             counts = Counter(record.memory_type for record in durable_records)
             for memory_type in sorted(counts):
                 lines.append(f"- {memory_type}: {counts[memory_type]}")
+            lines.append("Durable record kinds:")
+            kind_counts = Counter(_memory_kind_label(record.memory_kind) for record in durable_records)
+            for memory_kind in sorted(kind_counts):
+                lines.append(f"- {memory_kind}: {kind_counts[memory_kind]}")
         lines.append(f"Promotion metrics file: {metrics.metrics_path}")
         lines.append(f"Promotion evaluations: {metrics.total_evaluations}")
         lines.append(f"Eligible for auto-promotion: {metrics.eligible_for_auto_promotion}")
@@ -222,7 +230,10 @@ class MemoryCommand(PluginBoundCommand):
             label = f"Explicit durable memory ({memory_type})" if memory_type else "Explicit durable memory"
             lines.append(label)
             for record in durable_records:
-                lines.append(f"- [{record.memory_type}] {record.content}")
+                lines.append(
+                    f"- [{record.memory_type}] {record.content} "
+                    f"(kind={_memory_kind_label(record.memory_kind)})"
+                )
         return "\n".join(lines)
 
     def _cache_workspace_memory(self, context: CommandContext) -> str:
@@ -319,6 +330,7 @@ class MemoryCommand(PluginBoundCommand):
                         f"decision={item.get('decision', 'unknown')}",
                         f"reason={item.get('reason', 'unknown')}",
                         f"confidence={item.get('confidence', 'unknown')}",
+                        f"memory_kind={_memory_kind_label(item.get('memory_kind'))}",
                     )
                 )
             )
@@ -432,6 +444,14 @@ def _blockers_summary(value) -> str | None:
         return text or None
     blockers = [str(item).strip() for item in value if str(item).strip()]
     return ",".join(blockers) if blockers else None
+
+
+def _memory_kind_label(value: object) -> str:
+    try:
+        normalized_kind = normalize_memory_kind(value)
+    except ValueError:
+        normalized_kind = None
+    return normalized_kind or "legacy_untyped"
 
 
 def _find_governed_decision(decisions: tuple[dict, ...], decision_id: str) -> dict | None:
