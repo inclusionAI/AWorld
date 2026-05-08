@@ -43,6 +43,8 @@ def normalize_durable_memory_type(memory_type: str | None) -> str:
 def normalize_memory_kind(memory_kind: str | None) -> str | None:
     if memory_kind is None:
         return None
+    if not isinstance(memory_kind, str):
+        raise ValueError(f"Invalid durable memory kind: {memory_kind}. Expected string value.")
 
     normalized = memory_kind.strip().lower()
     if not normalized:
