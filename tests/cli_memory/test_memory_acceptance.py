@@ -220,6 +220,36 @@ async def test_relevant_recall_injects_only_matching_session_log_memories(
 
 
 @pytest.mark.asyncio
+async def test_relevant_recall_includes_matching_typed_durable_fact(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    memory = _build_hybrid_memory(tmp_path)
+    memory.durable_provider.append_durable_memory_record(
+        workspace,
+        text="The release branch is cut from main every Thursday.",
+        memory_type="workspace",
+        memory_kind="fact",
+        source="remember_command",
+    )
+    _patch_memory_factory(monkeypatch, relevant_memory_neuron_module, memory)
+
+    neuron = RelevantMemoryNeuron()
+    formatted = await neuron.format(
+        _create_test_context(
+            working_dir=str(workspace),
+            task_content="What branch do releases cut from on Thursday?",
+        )
+    )
+
+    assert "Relevant Memory Recall" in formatted
+    assert "The release branch is cut from main every Thursday." in formatted
+
+
+@pytest.mark.asyncio
 async def test_governed_mode_promotions_become_active_durable_memory(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
