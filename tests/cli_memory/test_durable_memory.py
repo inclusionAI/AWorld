@@ -79,9 +79,73 @@ def test_read_all_durable_memory_records_preserves_legacy_untyped_entries(tmp_pa
     assert records[0].memory_kind is None
 
 
+def test_read_all_durable_memory_records_degrades_invalid_memory_kind_to_none(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+    durable_file.parent.mkdir(parents=True, exist_ok=True)
+    durable_file.write_text(
+        '{"recorded_at":"2026-05-08T00:00:00+00:00","memory_type":"workspace","memory_kind":"opinionated","content":"Use pnpm","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+
+    records = read_all_durable_memory_records(workspace)
+
+    assert len(records) == 1
+    assert records[0].content == "Use pnpm"
+    assert records[0].memory_kind is None
+
+
 def test_normalize_memory_kind_rejects_unknown_values() -> None:
     with pytest.raises(ValueError, match="Invalid durable memory kind"):
         normalize_memory_kind("opinionated")
+
+
+def test_provider_append_durable_memory_record_threads_memory_kind(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    provider = CliDurableMemoryProvider()
+
+    result = provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="Use pnpm for workspace package management",
+        memory_type="workspace",
+        memory_kind="workflow",
+        source="remember_command",
+    )
+
+    records = provider.get_durable_memory_records(workspace)
+
+    assert result.record_created is True
+    assert len(records) == 1
+    assert records[0].memory_kind == "workflow"
+    assert records[0].memory_type == "workspace"
+
+
+def test_append_durable_memory_record_allows_typed_write_after_legacy_untyped_duplicate(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    first_result = append_durable_memory_record(
+        workspace,
+        memory_type="workspace",
+        text="Use pnpm for workspace package management",
+        source="remember_command",
+    )
+    second_result = append_durable_memory_record(
+        workspace,
+        memory_type="workspace",
+        memory_kind="workflow",
+        text="Use pnpm for workspace package management",
+        source="remember_command",
+    )
+
+    records = read_all_durable_memory_records(workspace)
+
+    assert first_result.record_created is True
+    assert second_result.record_created is True
+    assert len(records) == 2
+    assert [record.memory_kind for record in records] == [None, "workflow"]
 
 
 def test_provider_lists_governed_decisions_and_records_reviews(tmp_path) -> None:
