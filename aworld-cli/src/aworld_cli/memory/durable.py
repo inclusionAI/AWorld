@@ -8,6 +8,7 @@ from pathlib import Path
 
 DURABLE_MEMORY_TYPES = ("user", "feedback", "workspace", "reference")
 INSTRUCTION_MEMORY_TYPES = frozenset({"user", "feedback", "workspace"})
+INSTRUCTION_ELIGIBLE_MEMORY_KINDS = frozenset({"preference", "constraint", "workflow"})
 DEFAULT_DURABLE_MEMORY_TYPE = "workspace"
 DURABLE_MEMORY_KINDS = ("preference", "constraint", "workflow", "fact", "reference")
 
@@ -54,6 +55,16 @@ def normalize_memory_kind(memory_kind: str | None) -> str | None:
 
     valid = ", ".join(DURABLE_MEMORY_KINDS)
     raise ValueError(f"Invalid durable memory kind: {memory_kind}. Valid kinds: {valid}")
+
+
+def is_instruction_eligible_memory(*, memory_type: str, memory_kind: str | None) -> bool:
+    normalized_type = normalize_durable_memory_type(memory_type)
+    normalized_kind = normalize_memory_kind(memory_kind)
+    if normalized_type not in INSTRUCTION_MEMORY_TYPES:
+        return False
+    if normalized_kind is None:
+        return True
+    return normalized_kind in INSTRUCTION_ELIGIBLE_MEMORY_KINDS
 
 
 def durable_memory_file(workspace_path: str | os.PathLike[str]) -> Path:
