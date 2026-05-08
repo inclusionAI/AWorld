@@ -120,7 +120,7 @@ def read_all_durable_memory_records(
         try:
             record_kind = normalize_memory_kind(payload.get("memory_kind")) if "memory_kind" in payload else None
         except ValueError:
-            continue
+            record_kind = None
         if not isinstance(content, str) or not content.strip():
             continue
         if not isinstance(record_type, str):
@@ -167,7 +167,7 @@ def append_durable_memory_record(
     target.parent.mkdir(parents=True, exist_ok=True)
 
     existing = read_durable_memory_records(workspace_path, memory_type=normalized_type)
-    if any(record.content == normalized_text for record in existing):
+    if any(_is_duplicate_record(record, normalized_text=normalized_text, normalized_kind=normalized_kind) for record in existing):
         return DurableMemoryWriteResult(
             record_path=target,
             memory_type=normalized_type,
@@ -209,6 +209,21 @@ def _normalize_source_ref(source_ref: object) -> dict[str, str] | None:
             continue
         normalized[key] = str(value)
     return normalized or None
+
+
+def _is_duplicate_record(
+    record: DurableMemoryRecord,
+    *,
+    normalized_text: str,
+    normalized_kind: str | None,
+) -> bool:
+    if record.content != normalized_text:
+        return False
+    if normalized_kind is None:
+        return True
+    if record.memory_kind is None:
+        return False
+    return record.memory_kind == normalized_kind
 
 
 def _inactive_governed_decision_ids(
