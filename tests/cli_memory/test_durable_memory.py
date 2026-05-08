@@ -1,5 +1,12 @@
 from pathlib import Path
 
+import pytest
+
+from aworld_cli.memory.durable import (
+    append_durable_memory_record,
+    normalize_memory_kind,
+    read_all_durable_memory_records,
+)
 from aworld_cli.memory.governance import append_governed_decision, evaluate_governed_candidate
 from aworld_cli.memory.provider import CliDurableMemoryProvider
 
@@ -34,6 +41,47 @@ def test_provider_lists_explicit_durable_records_by_type(tmp_path) -> None:
     assert workspace_records == records
 
     assert provider.get_durable_memory_records(workspace, memory_type="reference") == ()
+
+
+def test_append_durable_memory_record_persists_memory_kind(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    result = append_durable_memory_record(
+        workspace,
+        memory_type="workspace",
+        memory_kind="workflow",
+        text="Use pnpm for workspace package management",
+        source="remember_command",
+    )
+
+    records = read_all_durable_memory_records(workspace)
+
+    assert result.record_created is True
+    assert records[0].memory_type == "workspace"
+    assert records[0].memory_kind == "workflow"
+
+
+def test_read_all_durable_memory_records_preserves_legacy_untyped_entries(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+    durable_file.parent.mkdir(parents=True, exist_ok=True)
+    durable_file.write_text(
+        '{"recorded_at":"2026-05-08T00:00:00+00:00","memory_type":"workspace","content":"Use pnpm","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+
+    records = read_all_durable_memory_records(workspace)
+
+    assert len(records) == 1
+    assert records[0].memory_type == "workspace"
+    assert records[0].memory_kind is None
+
+
+def test_normalize_memory_kind_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError, match="Invalid durable memory kind"):
+        normalize_memory_kind("opinionated")
 
 
 def test_provider_lists_governed_decisions_and_records_reviews(tmp_path) -> None:
