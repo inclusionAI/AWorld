@@ -139,6 +139,28 @@ def test_provider_append_durable_memory_record_threads_memory_kind(tmp_path) -> 
     assert records[0].memory_type == "workspace"
 
 
+def test_typed_fact_durable_write_does_not_mirror_into_workspace_instructions(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    provider = CliDurableMemoryProvider()
+
+    result = provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="The release branch is cut from main every Thursday.",
+        memory_type="workspace",
+        memory_kind="fact",
+        source="remember_command",
+    )
+
+    records = provider.get_durable_memory_records(workspace)
+
+    assert result.record_created is True
+    assert result.instruction_target is None
+    assert result.instruction_updated is False
+    assert records[0].memory_kind == "fact"
+    assert not (workspace / ".aworld" / "AWORLD.md").exists()
+
+
 def test_append_durable_memory_record_allows_typed_write_after_legacy_untyped_duplicate(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)

@@ -5,6 +5,8 @@ import os
 import re
 from pathlib import Path
 
+from aworld_cli.memory.durable import read_durable_memory_records
+
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{3,}")
 CONFIDENCE_BONUS = {
     "high": 200,
@@ -16,6 +18,40 @@ PROMOTION_BONUS = {
     "session_log_only": 0,
     "rejected": -200,
 }
+
+
+def recall_relevant_durable_memory_texts(
+    workspace_path: str | os.PathLike[str] | None,
+    query: str,
+    *,
+    limit: int = 3,
+) -> tuple[tuple[str, ...], tuple[Path, ...]]:
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return (), ()
+
+    ranked: list[tuple[int, str, str, Path]] = []
+    seen_texts: set[str] = set()
+
+    for record in read_durable_memory_records(workspace_path or os.getcwd()):
+        normalized = record.content.strip()
+        if not normalized or normalized in seen_texts:
+            continue
+        score = _score_text(normalized, query_tokens)
+        if score <= 0:
+            continue
+        ranked.append((score, record.recorded_at, normalized, record.source_file))
+        seen_texts.add(normalized)
+
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    selected = ranked[: max(limit, 0)]
+
+    texts = tuple(item[2] for item in selected)
+    source_files: list[Path] = []
+    for _, _, _, source_file in selected:
+        if source_file not in source_files:
+            source_files.append(source_file)
+    return texts, tuple(source_files)
 
 
 def recall_relevant_session_log_texts(
