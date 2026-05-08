@@ -256,6 +256,36 @@ async def test_memory_plugin_status_reports_workspace_layers(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_status_reports_durable_record_kind_counts(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "durable.jsonl").write_text(
+        '{"recorded_at":"2026-05-08T00:00:00+00:00","memory_type":"workspace","memory_kind":"workflow","content":"Use pnpm","source":"remember_command"}\n'
+        '{"recorded_at":"2026-05-08T00:01:00+00:00","memory_type":"reference","memory_kind":"fact","content":"Document release steps","source":"remember_command"}\n'
+        '{"recorded_at":"2026-05-08T00:02:00+00:00","memory_type":"workspace","content":"Keep release notes current","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(CommandContext(cwd=str(workspace), user_args="status"))
+
+        assert "Durable record kinds:" in result
+        assert "- fact: 1" in result
+        assert "- legacy_untyped: 1" in result
+        assert "- workflow: 1" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_memory_plugin_cache_reports_request_linked_cache_observability(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
@@ -501,6 +531,35 @@ async def test_memory_plugin_promotions_lists_governed_decisions(tmp_path):
         assert "confidence=medium" in result
         assert "reviews=declined" in result
         assert "content=Keep release notes current" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_promotions_show_memory_kind_with_legacy_fallback(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
+        '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"session_log_only","policy_mode":"shadow","policy_version":"2026-05-07","reason":"shadow_mode_no_auto_promotion","confidence":"high","blockers":["review_required"],"memory_type":"workspace","memory_kind":"workflow","content":"Use pnpm for workspace package management","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n'
+        '{"decision_id":"gdec_2","candidate_id":"cand_2","decision":"durable_memory","policy_mode":"governed","policy_version":"2026-05-07","reason":"governed_policy_pass","confidence":"medium","blockers":[],"memory_type":"workspace","content":"Keep release notes current","source_ref":{"session_id":"s2","task_id":"t2","candidate_id":"cand_2"},"evaluated_at":"2026-05-07T00:01:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="promotions")
+        )
+
+        assert "memory_kind=workflow" in result
+        assert "memory_kind=legacy_untyped" in result
     finally:
         CommandRegistry.restore(snapshot)
 
@@ -1038,6 +1097,39 @@ async def test_memory_plugin_view_includes_explicit_durable_records(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_view_shows_type_and_kind_labels_for_durable_records(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    (workspace / ".aworld").mkdir(parents=True)
+    (workspace / ".aworld" / "AWORLD.md").write_text(
+        "# Workspace Instructions\n\n## Remembered Guidance\n- Use pnpm",
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "durable.jsonl").write_text(
+        '{"recorded_at":"2026-05-08T00:00:00+00:00","memory_type":"workspace","memory_kind":"workflow","content":"Use pnpm","source":"remember_command"}\n'
+        '{"recorded_at":"2026-05-08T00:01:00+00:00","memory_type":"reference","content":"Document release steps","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(CommandContext(cwd=str(workspace), user_args="view"))
+
+        assert "- [workspace] Use pnpm (kind=workflow)" in result
+        assert "- [reference] Document release steps (kind=legacy_untyped)" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_memory_plugin_view_filters_explicit_durable_records_by_type(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
@@ -1178,6 +1270,39 @@ async def test_remember_plugin_appends_workspace_memory_entry(tmp_path):
         assert "## Remembered Guidance" in content
         assert '"memory_type": "workspace"' in durable_content
         assert '"content": "Use pnpm for workspace package management"' in durable_content
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_remember_plugin_accepts_kind(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("remember")
+        result = await command.execute(
+            CommandContext(
+                cwd=str(workspace),
+                user_args="--kind workflow Use pnpm for workspace package management",
+            )
+        )
+
+        canonical_file = workspace / ".aworld" / "AWORLD.md"
+        durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+        content = canonical_file.read_text(encoding="utf-8")
+        durable_content = durable_file.read_text(encoding="utf-8")
+
+        assert "Saved durable memory" in result
+        assert "Use pnpm for workspace package management" in content
+        assert '"memory_type": "workspace"' in durable_content
+        assert '"memory_kind": "workflow"' in durable_content
     finally:
         CommandRegistry.restore(snapshot)
 
