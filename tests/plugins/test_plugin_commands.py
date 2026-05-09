@@ -631,6 +631,56 @@ async def test_memory_plugin_promotions_accept_confirms_and_promotes_shadow_cand
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_promotions_accept_preserves_memory_kind_without_instruction_mirroring(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
+        '{"decision_id":"gdec_fact","candidate_id":"cand_fact","decision":"session_log_only","policy_mode":"shadow","policy_version":"2026-05-07","reason":"shadow_mode_no_auto_promotion","confidence":"high","blockers":[],"memory_type":"workspace","memory_kind":"fact","content":"The release checklist lives in docs/release.md","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_fact"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="promotions accept gdec_fact")
+        )
+
+        review_file = workspace / ".aworld" / "memory" / "metrics" / "promotion_reviews.jsonl"
+        durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+        assert "Recorded review action: confirmed for gdec_fact" in result
+        assert review_file.exists()
+        assert durable_file.exists()
+        durable_records = [json.loads(line) for line in durable_file.read_text(encoding="utf-8").splitlines()]
+        assert durable_records == [
+            {
+                "recorded_at": durable_records[0]["recorded_at"],
+                "memory_type": "workspace",
+                "memory_kind": "fact",
+                "content": "The release checklist lives in docs/release.md",
+                "source": "governed_auto_promotion",
+                "decision_id": "gdec_fact",
+                "source_ref": {
+                    "session_id": "s1",
+                    "task_id": "t1",
+                    "candidate_id": "cand_fact",
+                },
+            }
+        ]
+        assert not (workspace / ".aworld" / "AWORLD.md").exists()
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_memory_plugin_promotions_invalid_accept_does_not_write_review(
     tmp_path,
 ):
