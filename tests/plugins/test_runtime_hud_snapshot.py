@@ -405,6 +405,65 @@ def test_build_llm_usage_observability_ignores_other_task_calls():
     assert usage["model"] == "gpt-4.1"
 
 
+def test_build_llm_usage_observability_does_not_collapse_mixed_models_into_one_label():
+    usage = build_llm_usage_observability(
+        [
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_parent",
+                "provider_request_id": "req_parent",
+                "provider_name": "openai",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {"cache_hit_tokens": 80},
+            },
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_child",
+                "provider_request_id": "req_child",
+                "provider_name": "anthropic",
+                "model": "claude-3-5-sonnet",
+                "usage_normalized": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
+                "usage_raw": {"cache_write_tokens": 20},
+            },
+        ],
+        task_id="task_001",
+    )
+
+    assert usage["input_tokens"] == 140
+    assert usage["output_tokens"] == 35
+    assert usage["total_tokens"] == 175
+    assert "model" not in usage
+    assert "request_id" not in usage
+    assert "provider_request_id" not in usage
+    assert usage["model_breakdown"] == {
+        "anthropic:claude-3-5-sonnet": {
+            "calls": 1,
+            "input_tokens": 40,
+            "output_tokens": 10,
+            "total_tokens": 50,
+            "cache_hit_tokens": 0,
+            "cache_write_tokens": 20,
+        },
+        "openai:gpt-4.1": {
+            "calls": 1,
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "total_tokens": 125,
+            "cache_hit_tokens": 80,
+            "cache_write_tokens": 0,
+        },
+    }
+
+
 def test_local_executor_final_usage_ignores_merged_child_task_calls():
     runtime = DummyRuntime()
     executor = object.__new__(LocalAgentExecutor)
@@ -451,6 +510,62 @@ def test_local_executor_final_usage_ignores_merged_child_task_calls():
     assert context["usage"]["request_id"] == "llm_req_parent"
     assert context["usage"]["provider_request_id"] == "req_parent"
     assert context["session"]["model"] == "gpt-4.1"
+
+
+def test_local_executor_does_not_publish_single_model_for_mixed_model_usage():
+    runtime = DummyRuntime()
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = runtime
+    executor.session_id = "session-1"
+
+    executor._publish_hud_llm_observability(
+        task_id="task_001",
+        llm_calls=[
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_parent",
+                "provider_request_id": "req_parent",
+                "provider_name": "openai",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {"cache_hit_tokens": 80},
+            },
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_child",
+                "provider_request_id": "req_child",
+                "provider_name": "anthropic",
+                "model": "claude-3-5-sonnet",
+                "usage_normalized": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
+                "usage_raw": {"cache_write_tokens": 20},
+            },
+        ],
+    )
+
+    context = runtime.build_hud_context(
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="main",
+    )
+
+    assert context["usage"]["input_tokens"] == 140
+    assert context["usage"]["output_tokens"] == 35
+    assert context["usage"]["total_tokens"] == 175
+    assert "model" not in context["usage"]
+    assert "request_id" not in context["usage"]
+    assert "provider_request_id" not in context["usage"]
+    assert context["usage"]["model_breakdown"]["openai:gpt-4.1"]["cache_hit_tokens"] == 80
+    assert context["usage"]["model_breakdown"]["anthropic:claude-3-5-sonnet"]["cache_write_tokens"] == 20
+    assert "model" not in context["session"]
 
 
 class BrokenRuntime(BaseCliRuntime):

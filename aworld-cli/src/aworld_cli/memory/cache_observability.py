@@ -21,7 +21,9 @@ class CacheRequestObservation:
     recorded_at: str
     request_id: str | None
     provider_request_id: str | None
+    session_id: str | None
     task_id: str | None
+    provider_name: str | None
     model: str | None
     cache_hit_tokens: int
     cache_write_tokens: int
@@ -32,6 +34,7 @@ class CacheRequestObservation:
 class CachePrefixCandidate:
     occurrences: int
     request_ids: tuple[str, ...]
+    providers: tuple[str, ...]
     models: tuple[str, ...]
     avg_cache_hit_tokens: int
     avg_cache_write_tokens: int
@@ -42,6 +45,8 @@ class CachePrefixCandidate:
 class CacheObservabilitySummary:
     sessions_dir: Path
     session_files: tuple[Path, ...]
+    session_id: str | None
+    task_id: str | None
     total_llm_calls: int
     calls_with_cache_usage: int
     total_cache_hit_tokens: int
@@ -59,6 +64,8 @@ def session_logs_dir(workspace_path: str | os.PathLike[str]) -> Path:
 def summarize_cache_observability(
     workspace_path: str | os.PathLike[str],
     *,
+    session_id: str | None = None,
+    task_id: str | None = None,
     max_records: int = 500,
     recent_limit: int = 5,
     prefix_message_limit: int = 3,
@@ -69,6 +76,8 @@ def summarize_cache_observability(
         return CacheObservabilitySummary(
             sessions_dir=sessions_dir,
             session_files=(),
+            session_id=_coerce_text(session_id),
+            task_id=_coerce_text(task_id),
             total_llm_calls=0,
             calls_with_cache_usage=0,
             total_cache_hit_tokens=0,
@@ -94,6 +103,8 @@ def summarize_cache_observability(
     recent_requests: list[CacheRequestObservation] = []
     prefix_buckets: dict[str, dict[str, Any]] = {}
     scanned = 0
+    normalized_session_id = _coerce_text(session_id)
+    normalized_task_id = _coerce_text(task_id)
 
     for session_file in session_files:
         try:
@@ -115,11 +126,22 @@ def summarize_cache_observability(
             if not isinstance(llm_calls, list):
                 continue
 
+            payload_session_id = _coerce_text(payload.get("session_id"))
+            payload_task_id = _coerce_text(payload.get("task_id"))
+
             for llm_call in reversed(llm_calls):
                 if not isinstance(llm_call, dict):
                     continue
+
+                llm_call_session_id = _coerce_text(llm_call.get("session_id")) or payload_session_id
+                llm_call_task_id = _coerce_text(llm_call.get("task_id")) or payload_task_id
+                if normalized_session_id is not None and llm_call_session_id != normalized_session_id:
+                    continue
+                if normalized_task_id is not None and llm_call_task_id != normalized_task_id:
+                    continue
                 total_llm_calls += 1
 
+                provider_name = _coerce_text(llm_call.get("provider_name"))
                 model = _coerce_text(llm_call.get("model"))
                 if model:
                     by_model[model] += 1
@@ -150,7 +172,9 @@ def summarize_cache_observability(
                         recorded_at=recorded_at,
                         request_id=_coerce_text(llm_call.get("request_id")),
                         provider_request_id=_coerce_text(llm_call.get("provider_request_id")),
-                        task_id=_coerce_text(llm_call.get("task_id")),
+                        session_id=llm_call_session_id,
+                        task_id=llm_call_task_id,
+                        provider_name=provider_name,
                         model=model,
                         cache_hit_tokens=cache_hit_tokens,
                         cache_write_tokens=cache_write_tokens,
@@ -163,12 +187,21 @@ def summarize_cache_observability(
                     continue
                 for prefix_size in range(1, min(len(messages), prefix_message_limit) + 1):
                     prefix = messages[:prefix_size]
-                    key = json.dumps(prefix, ensure_ascii=False, sort_keys=True)
+                    key = json.dumps(
+                        {
+                            "provider_name": provider_name,
+                            "model": model,
+                            "messages": prefix,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
                     bucket = prefix_buckets.setdefault(
                         key,
                         {
                             "messages": prefix,
                             "request_ids": set(),
+                            "providers": set(),
                             "models": set(),
                             "cache_hit_tokens": 0,
                             "cache_write_tokens": 0,
@@ -177,6 +210,8 @@ def summarize_cache_observability(
                     request_id = _coerce_text(llm_call.get("request_id"))
                     if request_id:
                         bucket["request_ids"].add(request_id)
+                    if provider_name:
+                        bucket["providers"].add(provider_name)
                     if model:
                         bucket["models"].add(model)
                     bucket["cache_hit_tokens"] += cache_hit_tokens
@@ -199,6 +234,7 @@ def summarize_cache_observability(
             CachePrefixCandidate(
                 occurrences=occurrences,
                 request_ids=request_ids,
+                providers=tuple(sorted(bucket["providers"])),
                 models=tuple(sorted(bucket["models"])),
                 avg_cache_hit_tokens=int(bucket["cache_hit_tokens"] / occurrences),
                 avg_cache_write_tokens=int(bucket["cache_write_tokens"] / occurrences),
@@ -226,6 +262,8 @@ def summarize_cache_observability(
     return CacheObservabilitySummary(
         sessions_dir=sessions_dir,
         session_files=session_files,
+        session_id=normalized_session_id,
+        task_id=normalized_task_id,
         total_llm_calls=total_llm_calls,
         calls_with_cache_usage=calls_with_cache_usage,
         total_cache_hit_tokens=total_cache_hit_tokens,
@@ -253,6 +291,10 @@ def format_cache_observability_summary(summary: CacheObservabilitySummary) -> st
         f"Total cache hit tokens: {summary.total_cache_hit_tokens}",
         f"Total cache write tokens: {summary.total_cache_write_tokens}",
     ]
+    if summary.session_id is not None:
+        lines.append(f"Scoped session_id: {summary.session_id}")
+    if summary.task_id is not None:
+        lines.append(f"Scoped task_id: {summary.task_id}")
 
     if summary.by_model:
         lines.append("Models:")
@@ -266,7 +308,9 @@ def format_cache_observability_summary(summary: CacheObservabilitySummary) -> st
                 "- "
                 f"{item.request_id or 'unknown-request'}"
                 f" provider={item.provider_request_id or 'n/a'}"
+                f" provider_name={item.provider_name or 'unknown'}"
                 f" model={item.model or 'unknown'}"
+                f" session={item.session_id or 'unknown'}"
                 f" task={item.task_id or 'unknown'}"
                 f" cache_hit={item.cache_hit_tokens}"
                 f" cache_write={item.cache_write_tokens}"
@@ -280,6 +324,7 @@ def format_cache_observability_summary(summary: CacheObservabilitySummary) -> st
                 f"{index}. occurrences={item.occurrences} "
                 f"avg_cache_hit={item.avg_cache_hit_tokens} "
                 f"avg_cache_write={item.avg_cache_write_tokens} "
+                f"providers={', '.join(item.providers) or 'unknown'} "
                 f"models={', '.join(item.models) or 'unknown'}"
             )
             lines.append(f"   request_ids={', '.join(item.request_ids)}")

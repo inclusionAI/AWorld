@@ -51,7 +51,7 @@ class MemoryCommand(PluginBoundCommand):
         if isinstance(parsed, str):
             return parsed
 
-        subcommand, memory_type, positional_args = parsed
+        subcommand, memory_type, positional_args, options = parsed
         if not subcommand or subcommand == "edit":
             if positional_args:
                 return self._usage()
@@ -67,7 +67,11 @@ class MemoryCommand(PluginBoundCommand):
         if subcommand == "cache":
             if positional_args:
                 return self._usage()
-            return self._cache_workspace_memory(context)
+            return self._cache_workspace_memory(
+                context,
+                session_id=options.get("session_id"),
+                task_id=options.get("task_id"),
+            )
         if subcommand == "reload":
             if positional_args:
                 return self._usage()
@@ -236,8 +240,18 @@ class MemoryCommand(PluginBoundCommand):
                 )
         return "\n".join(lines)
 
-    def _cache_workspace_memory(self, context: CommandContext) -> str:
-        summary = summarize_cache_observability(context.cwd)
+    def _cache_workspace_memory(
+        self,
+        context: CommandContext,
+        *,
+        session_id: str | None = None,
+        task_id: str | None = None,
+    ) -> str:
+        summary = summarize_cache_observability(
+            context.cwd,
+            session_id=session_id,
+            task_id=task_id,
+        )
         return format_cache_observability_summary(summary)
 
     def _promotions_workspace_memory(
@@ -350,17 +364,18 @@ class MemoryCommand(PluginBoundCommand):
     def _parse_args(
         self,
         user_args: str,
-    ) -> tuple[str, str | None, tuple[str, ...]] | str:
+    ) -> tuple[str, str | None, tuple[str, ...], dict[str, str | None]] | str:
         try:
             tokens = shlex.split(user_args)
         except ValueError as exc:
             return f"Unable to parse /memory arguments: {exc}"
 
         if not tokens:
-            return "", None, ()
+            return "", None, (), {"session_id": None, "task_id": None}
 
         subcommand = tokens[0]
         memory_type: str | None = None
+        options: dict[str, str | None] = {"session_id": None, "task_id": None}
         positional_args: list[str] = []
         index = 1
         while index < len(tokens):
@@ -381,10 +396,25 @@ class MemoryCommand(PluginBoundCommand):
                     return str(exc)
                 index += 1
                 continue
+            if token in ("--session-id", "--task-id"):
+                if index + 1 >= len(tokens):
+                    return self._usage()
+                key = "session_id" if token == "--session-id" else "task_id"
+                options[key] = tokens[index + 1]
+                index += 2
+                continue
+            if token.startswith("--session-id="):
+                options["session_id"] = token.split("=", 1)[1]
+                index += 1
+                continue
+            if token.startswith("--task-id="):
+                options["task_id"] = token.split("=", 1)[1]
+                index += 1
+                continue
             positional_args.append(token)
             index += 1
 
-        return subcommand, memory_type, tuple(positional_args)
+        return subcommand, memory_type, tuple(positional_args), options
 
     def _reload_workspace_memory(self) -> str:
         return (
@@ -395,6 +425,7 @@ class MemoryCommand(PluginBoundCommand):
     def _usage(self) -> str:
         return (
             "Usage: /memory [view|status|cache|reload|promotions] [--type <memory-type>]\n"
+            "       /memory cache [--session-id <session-id>] [--task-id <task-id>]\n"
             "       /memory promotions [accept|reject|revert] <decision-id>\n"
             "Default action opens the workspace AWORLD.md file in your editor."
         )
