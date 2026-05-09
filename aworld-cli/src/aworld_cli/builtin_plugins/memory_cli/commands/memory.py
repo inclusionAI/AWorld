@@ -274,12 +274,14 @@ class MemoryCommand(PluginBoundCommand):
                         f"Governed decision {normalized_decision_id} has no content to promote"
                     )
                 memory_type = str(decision.get("memory_type") or "").strip()
+                memory_kind = decision.get("memory_kind")
                 source_ref = decision.get("source_ref")
                 promoted = provider.append_durable_memory_record(
                     context.cwd,
                     text=content,
                     memory_type=memory_type,
                     source="governed_auto_promotion",
+                    memory_kind=memory_kind if isinstance(memory_kind, str) else None,
                     decision_id=normalized_decision_id,
                     source_ref=source_ref if isinstance(source_ref, dict) else None,
                 )
