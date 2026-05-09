@@ -287,6 +287,9 @@ class OpenAIProvider(LLMProviderBase):
                         "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
                         "model": chunk.model if hasattr(chunk, 'model') else chunk.get("model"),
                         "object": chunk.object if hasattr(chunk, 'object') else chunk.get("object"),
+                        "usage": chunk.usage if hasattr(chunk, 'usage') else chunk.get("usage"),
+                        "request_id": getattr(chunk, "request_id", None) if not isinstance(chunk, dict) else chunk.get("request_id"),
+                        "_request_id": getattr(chunk, "_request_id", None) if not isinstance(chunk, dict) else chunk.get("_request_id"),
                         "choices": [
                             {
                                 "delta": {
@@ -417,7 +420,9 @@ class OpenAIProvider(LLMProviderBase):
                             id = resp.id,
                             model = resp.model,
                             finish_reason=finish_reason,
-                            usage=usage)
+                            usage=usage,
+                            raw_usage=resp.raw_usage,
+                            provider_request_id=resp.provider_request_id)
 
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -476,7 +481,9 @@ class OpenAIProvider(LLMProviderBase):
                                 id=resp.id,
                                 model=resp.model,
                                 finish_reason=finish_reason,
-                                usage=usage)
+                                usage=usage,
+                                raw_usage=resp.raw_usage,
+                                provider_request_id=resp.provider_request_id)
             else:
                 response_stream = await self.async_provider.chat.completions.create(**openai_params)
                 async for chunk in response_stream:
@@ -493,7 +500,9 @@ class OpenAIProvider(LLMProviderBase):
                                 model=resp.model,
                                 content="",
                                 finish_reason=finish_reason,
-                                usage=usage)
+                                usage=usage,
+                                raw_usage=resp.raw_usage,
+                                provider_request_id=resp.provider_request_id)
 
         except Exception as e:
             if isinstance(e, LLMResponseError):

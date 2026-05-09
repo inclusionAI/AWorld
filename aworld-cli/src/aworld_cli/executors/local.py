@@ -2,6 +2,7 @@
 Local agent executor.
 """
 import asyncio
+import copy
 import os
 import time
 import re
@@ -35,7 +36,7 @@ from aworld_cli.core.skill_activation_resolver import (
 )
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
-from .stats import StreamTokenStats, format_elapsed
+from .stats import StreamTokenStats, build_llm_usage_observability, format_elapsed
 from .stream import StreamDisplayConfig, StreamDisplayController, _print_tool_result_lines
 
 # Try to import WorkSpace for local workspace creation
@@ -252,6 +253,30 @@ class LocalAgentExecutor(BaseAgentExecutor):
             runtime.settle_hud_snapshot(task_status=task_status)
         except Exception as exc:
             logger.warning(f"HUD settle task finish failed: {exc}")
+
+    def _publish_hud_llm_observability(
+        self,
+        task_id: str,
+        llm_calls: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        usage = build_llm_usage_observability(llm_calls, task_id=task_id)
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or not usage:
+            return usage
+
+        session_payload = {}
+        if usage.get("model"):
+            session_payload["model"] = usage["model"]
+
+        try:
+            runtime.update_hud_snapshot(
+                session=session_payload,
+                task={"current_task_id": task_id},
+                usage=usage,
+            )
+        except Exception as exc:
+            logger.warning(f"HUD publish llm observability failed: {exc}")
+        return usage
 
     def _hud_is_active(self) -> bool:
         runtime = getattr(self, "_base_runtime", None)
@@ -1383,8 +1408,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         #     self.console.print(f"[dim]ℹ️ Task still running, using streamed answer[/dim]")
                     except Exception as e:
                         logger.error(f"console|Exception: Error waiting for final result: {e}")
-                        # if self.console:
-                        #     self.console.print(f"[yellow]⚠️ Error waiting for final result: {e}[/yellow]")
+
+                final_llm_calls = []
+                if isinstance(final_task_response, TaskResponse) and isinstance(final_task_response.llm_calls, list):
+                    final_llm_calls = copy.deepcopy(final_task_response.llm_calls)
+                elif getattr(task, "context", None) is not None and hasattr(task.context, "get_llm_calls"):
+                    final_llm_calls = copy.deepcopy(task.context.get_llm_calls())
+                elif getattr(task, "context", None) is not None:
+                    final_llm_calls = copy.deepcopy(task.context.context_info.get("llm_calls", []))
+
+                final_usage = self._publish_hud_llm_observability(task.id, final_llm_calls)
                 
                 # Return answer without printing (already displayed in stream)
                 # 💾 Save query to history (only if not already saved per round)
@@ -1476,6 +1509,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         "session_id": self.session_id,
                         "task_status": "idle",
                         "final_answer": answer,
+                        "usage": final_usage,
+                        "llm_calls": final_llm_calls,
                     },
                 )
                 self._publish_hud_task_finished(task.id, task_status="idle")

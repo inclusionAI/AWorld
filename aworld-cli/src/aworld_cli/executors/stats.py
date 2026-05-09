@@ -12,6 +12,107 @@ except ImportError:
     ModelUtils = None
 
 
+def _merge_usage_dicts(accumulator: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any]:
+    for key, value in usage.items():
+        if isinstance(value, dict):
+            existing = accumulator.get(key)
+            if not isinstance(existing, dict):
+                existing = {}
+            accumulator[key] = _merge_usage_dicts(dict(existing), value)
+            continue
+        if isinstance(value, bool):
+            accumulator[key] = accumulator.get(key) or value
+            continue
+        if isinstance(value, (int, float)):
+            existing = accumulator.get(key, 0)
+            if not isinstance(existing, (int, float)) or isinstance(existing, bool):
+                existing = 0
+            accumulator[key] = existing + value
+            continue
+        if value is not None:
+            accumulator[key] = value
+    return accumulator
+
+
+def build_llm_usage_observability(
+    llm_calls: Optional[List[Dict[str, Any]]],
+    *,
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a HUD/plugin-friendly usage snapshot from captured llm_calls."""
+    if not llm_calls:
+        return {}
+
+    candidate_calls = []
+    for llm_call in reversed(llm_calls):
+        if not isinstance(llm_call, dict):
+            continue
+        if task_id is not None:
+            llm_call_task_id = llm_call.get("task_id")
+            if llm_call_task_id == task_id:
+                candidate_calls.append(llm_call)
+                continue
+            if llm_call_task_id is not None:
+                continue
+        candidate_calls.append(llm_call)
+
+    if task_id is not None:
+        exact_task_calls = [call for call in candidate_calls if call.get("task_id") == task_id]
+        if exact_task_calls:
+            candidate_calls = exact_task_calls
+        elif any(isinstance(call, dict) and call.get("task_id") is not None for call in llm_calls):
+            return {}
+
+    if not candidate_calls:
+        return {}
+
+    latest_call = candidate_calls[0]
+    aggregated_usage_normalized: Dict[str, Any] = {}
+    aggregated_usage_raw: Dict[str, Any] = {}
+
+    for llm_call in candidate_calls:
+        usage_normalized = llm_call.get("usage_normalized")
+        if isinstance(usage_normalized, dict):
+            aggregated_usage_normalized = _merge_usage_dicts(aggregated_usage_normalized, usage_normalized)
+
+        usage_raw = llm_call.get("usage_raw")
+        if isinstance(usage_raw, dict):
+            aggregated_usage_raw = _merge_usage_dicts(aggregated_usage_raw, usage_raw)
+        elif isinstance(usage_normalized, dict):
+            aggregated_usage_raw = _merge_usage_dicts(aggregated_usage_raw, usage_normalized)
+
+    input_tokens = aggregated_usage_normalized.get("prompt_tokens") or 0
+    output_tokens = aggregated_usage_normalized.get("completion_tokens") or 0
+    total_tokens = aggregated_usage_normalized.get("total_tokens") or (input_tokens + output_tokens)
+
+    cache_usage = {
+        key: value
+        for key, value in aggregated_usage_raw.items()
+        if key in {
+            "cache_hit_tokens",
+            "cache_write_tokens",
+            "prompt_tokens_details",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "input_tokens_details",
+        }
+    }
+
+    snapshot = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "context_used": total_tokens,
+        "request_id": latest_call.get("request_id"),
+        "provider_request_id": latest_call.get("provider_request_id"),
+        "model": latest_call.get("model"),
+        "raw_usage": aggregated_usage_raw,
+    }
+    if cache_usage:
+        snapshot["cache_usage"] = cache_usage
+    return snapshot
+
+
 def format_tokens(n: int) -> str:
     """Format token count: 2900 -> 2.9k, 1000 -> 1k, 100 -> 100."""
     if n >= 1000:

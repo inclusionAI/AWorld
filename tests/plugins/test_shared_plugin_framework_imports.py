@@ -68,7 +68,7 @@ def test_hook_payload_typed_dicts_expose_expected_fields():
     assert {"transcript_path", "workspace_path", "session_id", "task_id"} <= StopHookEvent.__optional_keys__
     assert {"task_id", "session_id", "message"} <= TaskStartedHookEvent.__optional_keys__
     assert {"task_id", "session_id", "current_tool", "elapsed_seconds", "usage"} <= TaskProgressHookEvent.__optional_keys__
-    assert {"task_id", "session_id", "task_status", "final_answer"} <= TaskCompletedHookEvent.__optional_keys__
+    assert {"task_id", "session_id", "task_status", "final_answer", "usage", "llm_calls"} <= TaskCompletedHookEvent.__optional_keys__
     assert {"task_id", "session_id", "task_status", "error", "error_type"} <= TaskErrorHookEvent.__optional_keys__
     assert {"task_id", "session_id", "task_status", "partial_answer"} <= TaskInterruptedHookEvent.__optional_keys__
     assert HookEventPayload.__args__ == (
