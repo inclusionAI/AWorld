@@ -34,6 +34,29 @@ def _merge_usage_dicts(accumulator: Dict[str, Any], usage: Dict[str, Any]) -> Di
     return accumulator
 
 
+def _cache_usage_subset(usage_raw: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in usage_raw.items()
+        if key in {
+            "cache_hit_tokens",
+            "cache_write_tokens",
+            "prompt_tokens_details",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "input_tokens_details",
+        }
+    }
+
+
+def _llm_call_model_key(llm_call: Dict[str, Any]) -> str:
+    provider_name = llm_call.get("provider_name")
+    model = llm_call.get("model")
+    provider_label = str(provider_name).strip() if provider_name is not None and str(provider_name).strip() else "unknown"
+    model_label = str(model).strip() if model is not None and str(model).strip() else "unknown"
+    return f"{provider_label}:{model_label}"
+
+
 def build_llm_usage_observability(
     llm_calls: Optional[List[Dict[str, Any]]],
     *,
@@ -69,6 +92,7 @@ def build_llm_usage_observability(
     latest_call = candidate_calls[0]
     aggregated_usage_normalized: Dict[str, Any] = {}
     aggregated_usage_raw: Dict[str, Any] = {}
+    model_breakdown: Dict[str, Dict[str, Any]] = {}
 
     for llm_call in candidate_calls:
         usage_normalized = llm_call.get("usage_normalized")
@@ -81,33 +105,52 @@ def build_llm_usage_observability(
         elif isinstance(usage_normalized, dict):
             aggregated_usage_raw = _merge_usage_dicts(aggregated_usage_raw, usage_normalized)
 
+        model_key = _llm_call_model_key(llm_call)
+        entry = model_breakdown.setdefault(
+            model_key,
+            {
+                "calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cache_hit_tokens": 0,
+                "cache_write_tokens": 0,
+            },
+        )
+        input_tokens = usage_normalized.get("prompt_tokens") if isinstance(usage_normalized, dict) else 0
+        output_tokens = usage_normalized.get("completion_tokens") if isinstance(usage_normalized, dict) else 0
+        total_tokens = usage_normalized.get("total_tokens") if isinstance(usage_normalized, dict) else 0
+        if not total_tokens:
+            total_tokens = (input_tokens or 0) + (output_tokens or 0)
+        entry["calls"] += 1
+        entry["input_tokens"] += input_tokens or 0
+        entry["output_tokens"] += output_tokens or 0
+        entry["total_tokens"] += total_tokens or 0
+        if isinstance(usage_raw, dict):
+            entry["cache_hit_tokens"] += usage_raw.get("cache_hit_tokens") or 0
+            entry["cache_write_tokens"] += usage_raw.get("cache_write_tokens") or 0
+
     input_tokens = aggregated_usage_normalized.get("prompt_tokens") or 0
     output_tokens = aggregated_usage_normalized.get("completion_tokens") or 0
     total_tokens = aggregated_usage_normalized.get("total_tokens") or (input_tokens + output_tokens)
 
-    cache_usage = {
-        key: value
-        for key, value in aggregated_usage_raw.items()
-        if key in {
-            "cache_hit_tokens",
-            "cache_write_tokens",
-            "prompt_tokens_details",
-            "cache_creation_input_tokens",
-            "cache_read_input_tokens",
-            "input_tokens_details",
-        }
-    }
+    cache_usage = _cache_usage_subset(aggregated_usage_raw)
 
     snapshot = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "context_used": total_tokens,
-        "request_id": latest_call.get("request_id"),
-        "provider_request_id": latest_call.get("provider_request_id"),
-        "model": latest_call.get("model"),
         "raw_usage": aggregated_usage_raw,
     }
+    if len(model_breakdown) == 1:
+        snapshot["request_id"] = latest_call.get("request_id")
+        snapshot["provider_request_id"] = latest_call.get("provider_request_id")
+        snapshot["model"] = latest_call.get("model")
+        if latest_call.get("provider_name") is not None:
+            snapshot["provider_name"] = latest_call.get("provider_name")
+    else:
+        snapshot["model_breakdown"] = dict(sorted(model_breakdown.items()))
     if cache_usage:
         snapshot["cache_usage"] = cache_usage
     return snapshot

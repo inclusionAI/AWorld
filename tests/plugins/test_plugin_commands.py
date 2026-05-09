@@ -366,6 +366,90 @@ async def test_memory_plugin_cache_reports_request_linked_cache_observability(tm
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_cache_scopes_to_requested_task(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl").write_text(
+        '\n'.join(
+            [
+                json.dumps(
+                    {
+                        "recorded_at": "2026-05-07T00:00:00+00:00",
+                        "event": "task_completed",
+                        "session_id": "session-1",
+                        "task_id": "task-1",
+                        "llm_calls": [
+                            {
+                                "session_id": "session-1",
+                                "task_id": "task-1",
+                                "request_id": "llm_req_1",
+                                "provider_request_id": "req_provider_1",
+                                "provider_name": "openai",
+                                "model": "gpt-4.1",
+                                "request": {
+                                    "messages": [
+                                        {"role": "system", "content": "You are Aworld. Follow workspace guidance carefully."},
+                                        {"role": "user", "content": "Inspect the repo and explain the failing tests."},
+                                    ]
+                                },
+                                "usage_raw": {"cache_hit_tokens": 80},
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "recorded_at": "2026-05-07T00:01:00+00:00",
+                        "event": "task_completed",
+                        "session_id": "session-1",
+                        "task_id": "task-2",
+                        "llm_calls": [
+                            {
+                                "session_id": "session-1",
+                                "task_id": "task-2",
+                                "request_id": "llm_req_2",
+                                "provider_request_id": "req_provider_2",
+                                "provider_name": "openai",
+                                "model": "gpt-4.1",
+                                "request": {
+                                    "messages": [
+                                        {"role": "system", "content": "You are Aworld. Follow workspace guidance carefully."},
+                                        {"role": "user", "content": "Inspect the repo and explain the failing tests."},
+                                    ]
+                                },
+                                "usage_raw": {"cache_hit_tokens": 40},
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+        + '\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(CommandContext(cwd=str(workspace), user_args="cache --task-id task-1"))
+
+        assert "LLM calls analyzed: 1" in result
+        assert "Total cache hit tokens: 80" in result
+        assert "llm_req_1" in result
+        assert "llm_req_2" not in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_memory_plugin_status_reports_recent_promotion_explanations(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
