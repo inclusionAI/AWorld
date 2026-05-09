@@ -114,6 +114,65 @@ class RecordingLLMProvider(LLMProviderBase):
         )
 
 
+class TerminalMarkerStreamProvider(RecordingLLMProvider):
+    def stream_completion(self, messages, **kwargs):
+        self.seen_requests.append(messages)
+        yield ModelResponse(
+            id="stream-resp-marker",
+            model=self.model_name,
+            content="final",
+            message={"role": "assistant", "content": "final"},
+            usage={
+                "prompt_tokens": 13,
+                "completion_tokens": 8,
+                "total_tokens": 21,
+            },
+            raw_usage={
+                "prompt_tokens": 13,
+                "completion_tokens": 8,
+                "total_tokens": 21,
+                "cache_hit_tokens": 3,
+            },
+            provider_request_id="provider-stream-sync",
+        )
+        yield ModelResponse(
+            id="stream-resp-marker",
+            model=self.model_name,
+            content=None,
+            message={"role": "assistant", "content": ""},
+            finish_reason="stop",
+        )
+
+    async def astream_completion(self, messages, **kwargs):
+        self.seen_requests.append(messages)
+        yield ModelResponse(
+            id="astream-resp-marker",
+            model=self.model_name,
+            content="final",
+            message={"role": "assistant", "content": "final"},
+            usage={
+                "prompt_tokens": 17,
+                "completion_tokens": 9,
+                "total_tokens": 26,
+            },
+            raw_usage={
+                "prompt_tokens": 17,
+                "completion_tokens": 9,
+                "total_tokens": 26,
+                "cache_hit_tokens": 4,
+            },
+            provider_request_id="provider-stream-async",
+        )
+        await asyncio.sleep(0)
+        yield ModelResponse(
+            id="astream-resp-marker",
+            model=self.model_name,
+            content=None,
+            message={"role": "assistant", "content": ""},
+            finish_reason="stop",
+        )
+
+
 @pytest.mark.asyncio
 async def test_acompletion_appends_llm_call_with_final_messages_and_usage(monkeypatch):
     provider = RecordingLLMProvider()
@@ -215,6 +274,21 @@ def test_completion_appends_llm_calls_without_overwriting_prior_records():
     assert llm_calls[0]["request_id"] != llm_calls[1]["request_id"]
 
 
+def test_completion_records_effective_request_model_when_overridden():
+    provider = RecordingLLMProvider(model_name="provider-default")
+    llm_model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-sync-override")
+
+    llm_model.completion(
+        [{"role": "user", "content": "first"}],
+        context=context,
+        model_name="request-override",
+    )
+
+    llm_call = context.context_info.get("llm_calls")[0]
+    assert llm_call["model"] == "request-override"
+
+
 @pytest.mark.asyncio
 async def test_merge_context_appends_only_child_local_llm_calls():
     parent = Context(task_id="parent-task")
@@ -268,6 +342,27 @@ def test_stream_completion_appends_one_final_llm_call_record():
     assert llm_calls[0]["response"]["finish_reason"] == "stop"
 
 
+def test_stream_completion_uses_last_meaningful_chunk_for_llm_call_record():
+    provider = TerminalMarkerStreamProvider()
+    llm_model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-stream-marker-sync")
+    messages = [{"role": "user", "content": "sync stream"}]
+
+    chunks = list(llm_model.stream_completion(messages, context=context))
+
+    assert [chunk.content for chunk in chunks] == ["final", None]
+    llm_call = context.context_info.get("llm_calls")[0]
+    assert llm_call["provider_request_id"] == "provider-stream-sync"
+    assert llm_call["usage_normalized"] == {
+        "prompt_tokens": 13,
+        "completion_tokens": 8,
+        "total_tokens": 21,
+    }
+    assert llm_call["usage_raw"]["cache_hit_tokens"] == 3
+    assert llm_call["response"]["message"] == {"role": "assistant", "content": "final"}
+    assert llm_call["response"]["finish_reason"] == "stop"
+
+
 @pytest.mark.asyncio
 async def test_astream_completion_appends_one_final_llm_call_record():
     provider = RecordingLLMProvider()
@@ -290,6 +385,28 @@ async def test_astream_completion_appends_one_final_llm_call_record():
         "cache_hit_tokens": 4,
     }
     assert llm_calls[0]["response"]["finish_reason"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_astream_completion_uses_last_meaningful_chunk_for_llm_call_record():
+    provider = TerminalMarkerStreamProvider()
+    llm_model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-stream-marker-async")
+    messages = [{"role": "user", "content": "async stream"}]
+
+    chunks = [chunk async for chunk in llm_model.astream_completion(messages, context=context)]
+
+    assert [chunk.content for chunk in chunks] == ["final", None]
+    llm_call = context.context_info.get("llm_calls")[0]
+    assert llm_call["provider_request_id"] == "provider-stream-async"
+    assert llm_call["usage_normalized"] == {
+        "prompt_tokens": 17,
+        "completion_tokens": 9,
+        "total_tokens": 26,
+    }
+    assert llm_call["usage_raw"]["cache_hit_tokens"] == 4
+    assert llm_call["response"]["message"] == {"role": "assistant", "content": "final"}
+    assert llm_call["response"]["finish_reason"] == "stop"
 
 
 @pytest.mark.asyncio
