@@ -179,6 +179,78 @@ def test_build_llm_usage_observability_preserves_request_linked_cache_usage():
     }
 
 
+def test_build_llm_usage_observability_aggregates_matching_task_calls():
+    usage = build_llm_usage_observability(
+        [
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_older",
+                "provider_request_id": "req_provider_older",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                    "cache_hit_tokens": 80,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                },
+            },
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_latest",
+                "provider_request_id": "req_provider_latest",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                    "cache_write_tokens": 20,
+                    "input_tokens_details": {"cache_read_input_tokens": 5},
+                },
+            },
+            {
+                "task_id": "child-task",
+                "request_id": "llm_req_child",
+                "provider_request_id": "req_provider_child",
+                "model": "gpt-4.1-mini",
+                "usage_normalized": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+                "usage_raw": {"cache_hit_tokens": 1},
+            },
+        ],
+        task_id="task_001",
+    )
+
+    assert usage["input_tokens"] == 140
+    assert usage["output_tokens"] == 35
+    assert usage["total_tokens"] == 175
+    assert usage["request_id"] == "llm_req_latest"
+    assert usage["provider_request_id"] == "req_provider_latest"
+    assert usage["raw_usage"]["cache_hit_tokens"] == 80
+    assert usage["raw_usage"]["cache_write_tokens"] == 20
+    assert usage["raw_usage"]["prompt_tokens"] == 140
+    assert usage["raw_usage"]["completion_tokens"] == 35
+    assert usage["cache_usage"] == {
+        "cache_hit_tokens": 80,
+        "cache_write_tokens": 20,
+        "prompt_tokens_details": {"cached_tokens": 80},
+        "input_tokens_details": {"cache_read_input_tokens": 5},
+    }
+
+
 def test_local_executor_publishes_final_llm_usage_snapshot_to_runtime():
     runtime = DummyRuntime()
     executor = object.__new__(LocalAgentExecutor)
@@ -219,6 +291,81 @@ def test_local_executor_publishes_final_llm_usage_snapshot_to_runtime():
     assert context["usage"]["request_id"] == "llm_req_123"
     assert context["usage"]["provider_request_id"] == "req_provider_123"
     assert context["usage"]["cache_usage"]["cache_hit_tokens"] == 80
+    assert context["session"]["model"] == "gpt-4.1"
+
+
+def test_local_executor_publishes_aggregated_final_llm_usage_to_runtime():
+    runtime = DummyRuntime()
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = runtime
+    executor.session_id = "session-1"
+
+    executor._publish_hud_llm_observability(
+        task_id="task_001",
+        llm_calls=[
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_older",
+                "provider_request_id": "req_provider_older",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                    "cache_hit_tokens": 80,
+                },
+            },
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_latest",
+                "provider_request_id": "req_provider_latest",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                    "cache_write_tokens": 20,
+                },
+            },
+            {
+                "task_id": "child-task",
+                "request_id": "llm_req_child",
+                "provider_request_id": "req_provider_child",
+                "model": "gpt-4.1-mini",
+                "usage_normalized": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+                "usage_raw": {"cache_hit_tokens": 1},
+            },
+        ],
+    )
+
+    context = runtime.build_hud_context(
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="main",
+    )
+
+    assert context["usage"]["request_id"] == "llm_req_latest"
+    assert context["usage"]["provider_request_id"] == "req_provider_latest"
+    assert context["usage"]["input_tokens"] == 140
+    assert context["usage"]["output_tokens"] == 35
+    assert context["usage"]["total_tokens"] == 175
+    assert context["usage"]["cache_usage"]["cache_hit_tokens"] == 80
+    assert context["usage"]["cache_usage"]["cache_write_tokens"] == 20
     assert context["session"]["model"] == "gpt-4.1"
 
 
