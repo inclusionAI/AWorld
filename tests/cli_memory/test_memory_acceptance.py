@@ -322,6 +322,7 @@ async def test_hybrid_runtime_message_memory_contract_is_unchanged(
     active_records = memory.get_active_durable_memory_records(workspace)
 
     assert len(active_records) == 1
+    assert active_records[0].memory_kind == "workflow"
     assert active_records[0].content == (
         "Always use pnpm for workspace package management and never run npm install here."
     )

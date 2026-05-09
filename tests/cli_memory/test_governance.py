@@ -174,6 +174,32 @@ def test_evaluate_governed_candidate_rejects_ineligible_extraction_candidates(tm
     assert "ineligible_extraction_candidate" in decision.blockers
 
 
+def test_evaluate_governed_candidate_rejects_recall_only_memory_kind(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    decision = evaluate_governed_candidate(
+        workspace_path=workspace,
+        candidate={
+            "candidate_id": "cand-1",
+            "content": "See docs/standards/release-process.md for the canonical release checklist.",
+            "memory_type": "workspace",
+            "memory_kind": "reference",
+            "confidence": "high",
+            "eligible_for_auto_promotion": True,
+            "source_ref": {
+                "session_id": "s1",
+                "task_id": "t1",
+                "candidate_id": "cand-1",
+            },
+        },
+        mode="governed",
+    )
+
+    assert decision.decision == "rejected"
+    assert "ineligible_memory_kind" in decision.blockers
+
+
 def test_governed_decision_payload_exposes_inspectable_contract():
     decision = GovernedDecision(
         decision_id="dec-1",
@@ -185,6 +211,7 @@ def test_governed_decision_payload_exposes_inspectable_contract():
         blockers=("temporary_candidate",),
         confidence="low",
         memory_type="workspace",
+        memory_kind="workflow",
         content="Temporary debug note for the current task only.",
         source_ref={
             "session_id": "s1",
@@ -204,6 +231,7 @@ def test_governed_decision_payload_exposes_inspectable_contract():
         "blockers": ("temporary_candidate",),
         "confidence": "low",
         "memory_type": "workspace",
+        "memory_kind": "workflow",
         "content": "Temporary debug note for the current task only.",
         "source_ref": {
             "session_id": "s1",
@@ -276,6 +304,7 @@ def test_append_governed_decision_and_review_are_append_only(tmp_path):
             "blockers": ["temporary_candidate"],
             "confidence": "low",
             "memory_type": "workspace",
+            "memory_kind": "workflow",
             "content": "Temporary debug note for the current task only.",
             "source_ref": {
                 "session_id": "s1",
@@ -305,6 +334,7 @@ def test_append_governed_decision_and_review_are_append_only(tmp_path):
             "blockers": ["temporary_candidate"],
             "confidence": "low",
             "memory_type": "workspace",
+            "memory_kind": "workflow",
             "content": "Temporary debug note for the current task only.",
             "source_ref": {
                 "session_id": "s1",
