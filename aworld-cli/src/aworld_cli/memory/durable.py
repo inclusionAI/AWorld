@@ -8,7 +8,9 @@ from pathlib import Path
 
 DURABLE_MEMORY_TYPES = ("user", "feedback", "workspace", "reference")
 INSTRUCTION_MEMORY_TYPES = frozenset({"user", "feedback", "workspace"})
+INSTRUCTION_ELIGIBLE_MEMORY_KINDS = frozenset({"preference", "constraint", "workflow"})
 DEFAULT_DURABLE_MEMORY_TYPE = "workspace"
+DURABLE_MEMORY_KINDS = ("preference", "constraint", "workflow", "fact", "reference")
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,9 @@ class DurableMemoryRecord:
     source: str
     recorded_at: str
     source_file: Path
+    decision_id: str = ""
+    source_ref: dict[str, str] | None = None
+    memory_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,12 +41,68 @@ def normalize_durable_memory_type(memory_type: str | None) -> str:
     raise ValueError(f"Invalid durable memory type: {memory_type}. Valid types: {valid}")
 
 
+def normalize_memory_kind(memory_kind: str | None) -> str | None:
+    if memory_kind is None:
+        return None
+    if not isinstance(memory_kind, str):
+        raise ValueError(f"Invalid durable memory kind: {memory_kind}. Expected string value.")
+
+    normalized = memory_kind.strip().lower()
+    if not normalized:
+        return None
+    if normalized in DURABLE_MEMORY_KINDS:
+        return normalized
+
+    valid = ", ".join(DURABLE_MEMORY_KINDS)
+    raise ValueError(f"Invalid durable memory kind: {memory_kind}. Valid kinds: {valid}")
+
+
+def is_instruction_eligible_memory(*, memory_type: str, memory_kind: str | None) -> bool:
+    normalized_type = normalize_durable_memory_type(memory_type)
+    normalized_kind = normalize_memory_kind(memory_kind)
+    if normalized_type not in INSTRUCTION_MEMORY_TYPES:
+        return False
+    if normalized_kind is None:
+        return True
+    return normalized_kind in INSTRUCTION_ELIGIBLE_MEMORY_KINDS
+
+
 def durable_memory_file(workspace_path: str | os.PathLike[str]) -> Path:
     workspace = Path(workspace_path).expanduser().resolve()
     return workspace / ".aworld" / "memory" / "durable.jsonl"
 
 
+def promotion_reviews_file(workspace_path: str | os.PathLike[str]) -> Path:
+    workspace = Path(workspace_path).expanduser().resolve()
+    return workspace / ".aworld" / "memory" / "metrics" / "promotion_reviews.jsonl"
+
+
 def read_durable_memory_records(
+    workspace_path: str | os.PathLike[str],
+    *,
+    memory_type: str | None = None,
+) -> tuple[DurableMemoryRecord, ...]:
+    records = read_all_durable_memory_records(
+        workspace_path,
+        memory_type=memory_type,
+    )
+    inactive_governed_decision_ids = _inactive_governed_decision_ids(workspace_path)
+    if not inactive_governed_decision_ids:
+        return records
+
+    active_records: list[DurableMemoryRecord] = []
+    for record in records:
+        if (
+            record.source == "governed_auto_promotion"
+            and record.decision_id
+            and record.decision_id in inactive_governed_decision_ids
+        ):
+            continue
+        active_records.append(record)
+    return tuple(active_records)
+
+
+def read_all_durable_memory_records(
     workspace_path: str | os.PathLike[str],
     *,
     memory_type: str | None = None,
@@ -67,6 +128,12 @@ def read_durable_memory_records(
         record_type = payload.get("memory_type")
         source = payload.get("source")
         recorded_at = payload.get("recorded_at")
+        decision_id = payload.get("decision_id")
+        source_ref = payload.get("source_ref")
+        try:
+            record_kind = normalize_memory_kind(payload.get("memory_kind")) if "memory_kind" in payload else None
+        except ValueError:
+            record_kind = None
         if not isinstance(content, str) or not content.strip():
             continue
         if not isinstance(record_type, str):
@@ -84,6 +151,9 @@ def read_durable_memory_records(
                 source=source if isinstance(source, str) and source.strip() else "unknown",
                 recorded_at=recorded_at if isinstance(recorded_at, str) else "",
                 source_file=target,
+                decision_id=decision_id.strip() if isinstance(decision_id, str) else "",
+                source_ref=_normalize_source_ref(source_ref),
+                memory_kind=record_kind,
             )
         )
 
@@ -96,8 +166,12 @@ def append_durable_memory_record(
     memory_type: str,
     text: str,
     source: str,
+    memory_kind: str | None = None,
+    decision_id: str | None = None,
+    source_ref: dict[str, str] | None = None,
 ) -> DurableMemoryWriteResult:
     normalized_type = normalize_durable_memory_type(memory_type)
+    normalized_kind = normalize_memory_kind(memory_kind)
     normalized_text = (text or "").strip()
     if not normalized_text:
         raise ValueError("Durable memory content must not be empty")
@@ -106,7 +180,7 @@ def append_durable_memory_record(
     target.parent.mkdir(parents=True, exist_ok=True)
 
     existing = read_durable_memory_records(workspace_path, memory_type=normalized_type)
-    if any(record.content == normalized_text for record in existing):
+    if any(_is_duplicate_record(record, normalized_text=normalized_text, normalized_kind=normalized_kind) for record in existing):
         return DurableMemoryWriteResult(
             record_path=target,
             memory_type=normalized_type,
@@ -119,6 +193,13 @@ def append_durable_memory_record(
         "content": normalized_text,
         "source": source,
     }
+    if normalized_kind is not None:
+        payload["memory_kind"] = normalized_kind
+    if isinstance(decision_id, str) and decision_id.strip():
+        payload["decision_id"] = decision_id.strip()
+    normalized_source_ref = _normalize_source_ref(source_ref)
+    if normalized_source_ref:
+        payload["source_ref"] = normalized_source_ref
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False))
         handle.write("\n")
@@ -128,3 +209,66 @@ def append_durable_memory_record(
         memory_type=normalized_type,
         record_created=True,
     )
+
+
+def _normalize_source_ref(source_ref: object) -> dict[str, str] | None:
+    if not isinstance(source_ref, dict):
+        return None
+    normalized: dict[str, str] = {}
+    for key, value in source_ref.items():
+        if not isinstance(key, str):
+            continue
+        if value is None:
+            continue
+        normalized[key] = str(value)
+    return normalized or None
+
+
+def _is_duplicate_record(
+    record: DurableMemoryRecord,
+    *,
+    normalized_text: str,
+    normalized_kind: str | None,
+) -> bool:
+    if record.content != normalized_text:
+        return False
+    if normalized_kind is None:
+        return True
+    if record.memory_kind is None:
+        return False
+    return record.memory_kind == normalized_kind
+
+
+def _inactive_governed_decision_ids(
+    workspace_path: str | os.PathLike[str],
+) -> set[str]:
+    target = promotion_reviews_file(workspace_path)
+    if not target.exists():
+        return set()
+
+    latest_review_actions: dict[str, str] = {}
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        decision_id = payload.get("decision_id")
+        review_action = payload.get("review_action")
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            continue
+        if not isinstance(review_action, str) or not review_action.strip():
+            continue
+        latest_review_actions[decision_id.strip()] = review_action.strip().lower()
+
+    return {
+        decision_id
+        for decision_id, review_action in latest_review_actions.items()
+        if review_action == "reverted"
+    }

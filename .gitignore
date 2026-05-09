@@ -66,6 +66,9 @@ Thumbs.db
 # Documentation
 docs/_build/
 docs/api/
+mkdocs.yml
+/index.md
+/docs/index.md
 
 # Data files (customize as needed)
 *.csv
