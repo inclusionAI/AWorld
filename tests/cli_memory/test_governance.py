@@ -9,6 +9,7 @@ from aworld_cli.memory.governance import (
     governance_mode,
     list_governed_decisions,
 )
+from aworld_cli.memory.promotion import evaluate_turn_end_candidate
 
 
 def test_governance_mode_defaults_to_shadow(monkeypatch):
@@ -125,6 +126,39 @@ def test_evaluate_governed_candidate_blocks_duplicate_active_durable_memory(tmp_
     assert "duplicate_active_durable_memory" in decision.blockers
 
 
+def test_evaluate_governed_candidate_allows_typed_candidate_when_only_duplicate_is_legacy_untyped(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    append_durable_memory_record(
+        workspace,
+        memory_type="workspace",
+        text="Use pnpm for workspace package management.",
+        source="remember_command",
+    )
+
+    decision = evaluate_governed_candidate(
+        workspace_path=workspace,
+        candidate={
+            "candidate_id": "cand-typed-1",
+            "content": "Use pnpm for workspace package management.",
+            "memory_type": "workspace",
+            "memory_kind": "workflow",
+            "confidence": "high",
+            "source_ref": {
+                "session_id": "s1",
+                "task_id": "t1",
+                "candidate_id": "cand-typed-1",
+            },
+        },
+        mode="governed",
+    )
+
+    assert decision.decision == "durable_memory"
+    assert "duplicate_active_durable_memory" not in decision.blockers
+
+
 def test_evaluate_governed_candidate_blocks_temporary_content(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -198,6 +232,16 @@ def test_evaluate_governed_candidate_rejects_recall_only_memory_kind(tmp_path):
 
     assert decision.decision == "rejected"
     assert "ineligible_memory_kind" in decision.blockers
+
+
+def test_evaluate_turn_end_candidate_treats_path_instruction_as_constraint_not_reference():
+    decision = evaluate_turn_end_candidate(
+        "Never edit docs/release.md directly in this workspace."
+    )
+
+    assert decision.confidence == "high"
+    assert decision.eligible_for_auto_promotion is True
+    assert decision.memory_kind == "constraint"
 
 
 def test_governed_decision_payload_exposes_inspectable_contract():

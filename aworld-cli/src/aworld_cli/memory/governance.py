@@ -121,7 +121,12 @@ def evaluate_governed_candidate(
         content
         and memory_type in INSTRUCTION_MEMORY_TYPES
         and any(
-            record.content == content
+            _is_duplicate_governed_candidate(
+                record_content=record.content,
+                record_memory_kind=record.memory_kind,
+                candidate_content=content,
+                candidate_memory_kind=memory_kind,
+            )
             for record in read_durable_memory_records(
                 workspace_path,
                 memory_type=memory_type,
@@ -362,3 +367,19 @@ def _normalize_candidate_memory_kind(memory_kind: object) -> str | None:
         return normalize_memory_kind(memory_kind)
     except ValueError:
         return None
+
+
+def _is_duplicate_governed_candidate(
+    *,
+    record_content: str,
+    record_memory_kind: str | None,
+    candidate_content: str,
+    candidate_memory_kind: str | None,
+) -> bool:
+    if record_content != candidate_content:
+        return False
+    if candidate_memory_kind is None:
+        return True
+    if record_memory_kind is None:
+        return False
+    return record_memory_kind == candidate_memory_kind
