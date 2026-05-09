@@ -390,12 +390,14 @@ async def test_memory_plugin_task_completed_hook_governed_mode_writes_durable_me
         (workspace / ".aworld" / "memory" / "durable.jsonl").read_text(encoding="utf-8").strip()
     )
     assert durable_payload["source"] == "governed_auto_promotion"
+    assert durable_payload["memory_kind"] == "workflow"
 
     session_log = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
     session_payload = json.loads(session_log.read_text(encoding="utf-8").strip())
     candidate = session_payload["candidates"][0]
     assert "governed_decision" not in candidate
     assert candidate["auto_promoted"] is False
+    assert candidate["memory_kind"] == "workflow"
 
     decision_payload = json.loads(
         (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").read_text(
@@ -403,6 +405,7 @@ async def test_memory_plugin_task_completed_hook_governed_mode_writes_durable_me
         ).strip()
     )
     assert decision_payload["reason"] == "governed_policy_pass"
+    assert decision_payload["memory_kind"] == "workflow"
     assert decision_payload["source_ref"]["candidate_id"] == candidate["candidate_id"]
     assert decision_payload["source_ref"]["session_log_recorded_at"] == session_payload["recorded_at"]
     assert durable_payload["decision_id"] == decision_payload["decision_id"]
