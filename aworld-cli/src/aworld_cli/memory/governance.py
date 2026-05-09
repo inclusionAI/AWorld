@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from aworld_cli.memory.durable import INSTRUCTION_MEMORY_TYPES, read_durable_memory_records
+from aworld_cli.memory.durable import (
+    INSTRUCTION_MEMORY_TYPES,
+    is_instruction_eligible_memory,
+    normalize_memory_kind,
+    read_durable_memory_records,
+)
 from aworld_cli.memory.promotion import TEMPORARY_HINTS
 
 GOVERNANCE_POLICY_VERSION = "2026-05-07"
@@ -36,12 +41,29 @@ class GovernedDecision:
     blockers: tuple[str, ...] = ()
     confidence: str = ""
     memory_type: str = "workspace"
+    memory_kind: str | None = None
     content: str = ""
     source_ref: dict[str, str] = field(default_factory=dict)
     evaluated_at: str = ""
 
     def to_payload(self) -> dict:
-        return asdict(self)
+        payload = {
+            "decision_id": self.decision_id,
+            "candidate_id": self.candidate_id,
+            "decision": self.decision,
+            "policy_mode": self.policy_mode,
+            "policy_version": self.policy_version,
+            "reason": self.reason,
+            "blockers": self.blockers,
+            "confidence": self.confidence,
+            "memory_type": self.memory_type,
+            "content": self.content,
+            "source_ref": self.source_ref,
+            "evaluated_at": self.evaluated_at,
+        }
+        if self.memory_kind is not None:
+            payload["memory_kind"] = self.memory_kind
+        return payload
 
 
 def governance_mode() -> str:
@@ -69,6 +91,7 @@ def evaluate_governed_candidate(
     resolved_mode = _normalize_governance_mode(mode)
     content = str(candidate.get("content") or "").strip()
     memory_type = str(candidate.get("memory_type") or "workspace").strip().lower()
+    memory_kind = _normalize_candidate_memory_kind(candidate.get("memory_kind"))
     confidence = str(candidate.get("confidence") or "").strip()
     normalized_confidence = confidence.lower()
     eligible_for_auto_promotion = candidate.get("eligible_for_auto_promotion")
@@ -81,6 +104,11 @@ def evaluate_governed_candidate(
         blockers.append("temporary_candidate")
     if memory_type not in INSTRUCTION_MEMORY_TYPES:
         blockers.append("ineligible_memory_type")
+    elif memory_kind is not None and not is_instruction_eligible_memory(
+        memory_type=memory_type,
+        memory_kind=memory_kind,
+    ):
+        blockers.append("ineligible_memory_kind")
     if not confidence:
         blockers.append("missing_confidence")
     if eligible_for_auto_promotion is False:
@@ -125,6 +153,7 @@ def evaluate_governed_candidate(
         blockers=tuple(blockers),
         confidence=confidence,
         memory_type=memory_type,
+        memory_kind=memory_kind,
         content=content,
         source_ref=source_ref,
         evaluated_at=datetime.now(timezone.utc).isoformat(),
@@ -244,6 +273,11 @@ def _normalize_decision_payload(payload: object) -> dict:
     normalized["decision"] = str(normalized.get("decision") or "").strip()
     normalized["reason"] = str(normalized.get("reason") or "").strip()
     normalized["confidence"] = str(normalized.get("confidence") or "").strip()
+    normalized_memory_kind = _normalize_candidate_memory_kind(normalized.get("memory_kind"))
+    if normalized_memory_kind is None:
+        normalized.pop("memory_kind", None)
+    else:
+        normalized["memory_kind"] = normalized_memory_kind
     normalized["source_ref"] = _normalize_source_ref(normalized.get("source_ref"))
     blockers = normalized.get("blockers")
     if blockers is None:
@@ -282,6 +316,11 @@ def _normalize_listed_decision_payload(payload: object) -> dict:
     )
     normalized["policy_version"] = str(normalized.get("policy_version") or "").strip()
     normalized["confidence"] = str(normalized.get("confidence") or "").strip()
+    normalized_memory_kind = _normalize_candidate_memory_kind(normalized.get("memory_kind"))
+    if normalized_memory_kind is None:
+        normalized.pop("memory_kind", None)
+    else:
+        normalized["memory_kind"] = normalized_memory_kind
     normalized["source_ref"] = _normalize_source_ref(normalized.get("source_ref"))
     blockers = normalized.get("blockers")
     if isinstance(blockers, (list, tuple)):
@@ -316,3 +355,10 @@ def _has_complete_decision_contract(payload: dict) -> bool:
         _has_required_decision_field(field_name, payload.get(field_name))
         for field_name in REQUIRED_DECISION_FIELDS
     )
+
+
+def _normalize_candidate_memory_kind(memory_kind: object) -> str | None:
+    try:
+        return normalize_memory_kind(memory_kind)
+    except ValueError:
+        return None

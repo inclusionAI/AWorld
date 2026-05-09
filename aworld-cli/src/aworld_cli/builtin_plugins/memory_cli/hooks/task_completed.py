@@ -65,6 +65,7 @@ def handle_event(event, state):
                 "candidate_id": candidate_id,
                 "content": str(persisted_candidate.get("content") or ""),
                 "memory_type": str(persisted_candidate.get("memory_type") or decision.memory_type),
+                "memory_kind": persisted_candidate.get("memory_kind") or decision.memory_kind,
                 "confidence": str(persisted_candidate.get("confidence") or ""),
                 "eligible_for_auto_promotion": persisted_candidate.get(
                     "eligible_for_auto_promotion"
@@ -84,6 +85,7 @@ def handle_event(event, state):
                 workspace_path=workspace_path,
                 text=governed.content,
                 memory_type=governed.memory_type,
+                memory_kind=governed.memory_kind,
                 source="governed_auto_promotion",
                 decision_id=governed.decision_id,
                 source_ref=governed.source_ref,
