@@ -28,12 +28,21 @@ TEMPORARY_HINTS = (
 WORD_PATTERN = re.compile(r"\b[a-zA-Z][a-zA-Z0-9_-]{2,}\b")
 STRONG_INSTRUCTIONAL_HINTS = (
     "always use ",
+    "always update ",
+    "always edit ",
+    "never edit ",
+    "never modify ",
     "never run ",
     "never use ",
+    "do not edit ",
+    "do not modify ",
     "must use ",
     "must never ",
+    "must edit ",
     "do not use ",
     "don't use ",
+    "don't edit ",
+    "don't modify ",
 )
 WORKSPACE_ANCHOR_HINTS = (
     "workspace",
@@ -180,8 +189,6 @@ def infer_turn_end_candidate_memory_kind(content: str) -> str | None:
         return None
 
     lowered = normalized.lower()
-    if _looks_reference_content(lowered):
-        return "reference"
     if _looks_preference_content(lowered):
         return "preference"
     if _looks_workflow_content(lowered):
@@ -190,6 +197,8 @@ def infer_turn_end_candidate_memory_kind(content: str) -> str | None:
         return "constraint"
     if _looks_instructional(normalized):
         return "workflow"
+    if _looks_reference_content(lowered):
+        return "reference"
     if _looks_fact_content(lowered):
         return "fact"
     return None
@@ -207,6 +216,8 @@ def _looks_instructional(content: str) -> bool:
     if any(hint in lowered for hint in TEMPORARY_HINTS):
         return False
     if _looks_high_confidence_instructional(content):
+        return True
+    if _looks_constraint_content(lowered):
         return True
     if any(hint in lowered for hint in INSTRUCTIONAL_HINTS):
         return True
@@ -271,6 +282,7 @@ def _looks_workflow_content(lowered: str) -> bool:
         hint in lowered
         for hint in (
             "always use ",
+            "always update ",
             "use ",
             "run ",
             "keep ",
@@ -297,6 +309,7 @@ def _looks_constraint_content(lowered: str) -> bool:
             "don't ",
             "avoid ",
             "only ",
+            "directly",
         )
     )
 
