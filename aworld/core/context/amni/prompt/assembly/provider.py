@@ -84,14 +84,8 @@ class DefaultPromptAssemblyProvider(PromptAssemblyProvider):
             "assembly_provider": self.__class__.__name__,
             "stable_prefix_hash": stable_hash,
         }
-        if "provider_name" in plan_metadata:
-            observability["provider_name"] = plan_metadata["provider_name"]
-        if "context_cache_enabled" in plan_metadata:
-            observability["context_cache_enabled"] = plan_metadata["context_cache_enabled"]
         if "cache_aware_assembly" in plan_metadata:
             observability["cache_aware_assembly"] = plan_metadata["cache_aware_assembly"]
-        if "provider_native_cache" in plan_metadata:
-            observability["provider_native_cache"] = plan_metadata["provider_native_cache"]
 
         return PromptAssemblyPlan(
             messages=serializable_messages,
@@ -195,12 +189,6 @@ class CacheAwarePromptAssemblyProvider(PromptAssemblyProvider):
             "stable_prefix_reused": stable_prefix_reused,
             "cache_aware_assembly": True,
         }
-        if "provider_name" in plan_metadata:
-            observability["provider_name"] = plan_metadata["provider_name"]
-        if "context_cache_enabled" in plan_metadata:
-            observability["context_cache_enabled"] = plan_metadata["context_cache_enabled"]
-        if "provider_native_cache" in plan_metadata:
-            observability["provider_native_cache"] = plan_metadata["provider_native_cache"]
 
         return PromptAssemblyPlan(
             messages=serializable_messages,

@@ -99,6 +99,29 @@ def test_cache_aware_prompt_assembly_provider_marks_runtime_stable_prefix_reuse(
     assert second_plan.metadata["stable_prefix_reused"] is True
 
 
+def test_prompt_assembly_provider_observability_stays_provider_neutral():
+    default_provider = DefaultPromptAssemblyProvider()
+    cache_aware_provider = CacheAwarePromptAssemblyProvider()
+    metadata = {
+        "provider_name": "anthropic",
+        "context_cache_enabled": True,
+        "provider_native_cache": True,
+        "system_section_hints": [{"name": "system_prompt", "stability": "stable"}],
+    }
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "hello"},
+    ]
+
+    default_plan = default_provider.build_plan(messages=messages, tools=[], metadata=metadata)
+    cache_aware_plan = cache_aware_provider.build_plan(messages=messages, tools=[], metadata=metadata)
+
+    for plan in (default_plan, cache_aware_plan):
+        assert "provider_name" not in plan.observability
+        assert "provider_native_cache" not in plan.observability
+        assert "context_cache_enabled" not in plan.observability
+
+
 def test_application_context_uses_cache_aware_provider_when_context_cache_enabled():
     context = ApplicationContext.create(
         session_id="session-1",
