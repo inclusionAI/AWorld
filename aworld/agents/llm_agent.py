@@ -1090,10 +1090,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             kwargs["llm_call_id"] = llm_call_id
             kwargs["prepared_tools"] = tools
             kwargs["prompt_assembly_observability"] = prompt_assembly_observability
-            kwargs["prompt_assembly_plan"] = prompt_assembly_plan
-            kwargs["provider_native_prompt_cache"] = bool(
-                prompt_assembly_observability.get("provider_native_cache")
-            )
+            provider_name = prompt_assembly_observability.get("provider_name") or self._current_provider_name()
+            if supports_provider_native_prompt_cache(provider_name):
+                kwargs["prompt_assembly_plan"] = prompt_assembly_plan
+                kwargs["provider_native_prompt_cache"] = bool(
+                    prompt_assembly_observability.get("provider_native_cache")
+                )
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(f"{self.id()} result error: {e}")

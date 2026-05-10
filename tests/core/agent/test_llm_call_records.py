@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from aworld.agents.llm_agent import Agent
@@ -189,6 +191,59 @@ def test_prompt_assembly_observability_uses_injected_prompt_assembly_provider():
     assert observability["assembly_provider"] == "CustomPromptAssemblyProvider"
     assert observability["stable_prefix_hash"] == "custom-stable-hash"
     assert observability["provider_native_cache"] is True
+
+
+@pytest.mark.asyncio
+async def test_async_policy_does_not_forward_prompt_cache_kwargs_to_unknown_provider():
+    captured = {}
+
+    class CapturingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content": "hello"},
+            ]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            captured["messages"] = messages
+            captured["kwargs"] = dict(kwargs)
+            return ModelResponse(
+                id="resp-1",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            )
+
+    agent = CapturingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    context = _build_context()
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    assert captured["messages"] == [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "hello"},
+    ]
+    assert "prompt_assembly_plan" not in captured["kwargs"]
+    assert "provider_native_prompt_cache" not in captured["kwargs"]
 
 
 def test_context_cache_effective_enablement_defaults_to_true_without_amni_context():
