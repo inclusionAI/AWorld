@@ -1087,9 +1087,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "agent_id": self.id()
             }
             kwargs["response_parse_args"] = response_parse_args
-            kwargs["llm_call_id"] = llm_call_id
             kwargs["prepared_tools"] = tools
-            kwargs["prompt_assembly_observability"] = prompt_assembly_observability
             provider_name = prompt_assembly_observability.get("provider_name") or self._current_provider_name()
             if supports_provider_native_prompt_cache(provider_name):
                 kwargs["prompt_assembly_plan"] = prompt_assembly_plan
@@ -1317,31 +1315,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         # Prepare parameters once before retry loop
         try:
-            llm_call_id = kwargs.pop("llm_call_id", None)
             tools = kwargs.pop("prepared_tools", None)
-            prompt_assembly_observability = kwargs.pop("prompt_assembly_observability", None)
             if tools is None:
                 tools = await self._filter_tools(message.context)
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
-            if llm_call_id and prompt_assembly_observability:
-                self._update_llm_call_observability(
-                    message,
-                    llm_call_id,
-                    prompt_assembly_observability,
-                )
-            elif llm_call_id:
-                self._update_llm_call_observability(
-                    message,
-                    llm_call_id,
-                    self._build_prompt_assembly_observability(
-                        context=message.context,
-                        messages=messages,
-                        tools=tools,
-                        request_kwargs=kwargs,
-                    ),
-                )
             self._log_messages(messages, tools=tools, context=message.context)
 
             stream_mode = kwargs.get("stream",
