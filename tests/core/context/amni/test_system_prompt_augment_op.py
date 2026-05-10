@@ -78,6 +78,24 @@ def test_application_context_resolves_default_and_agent_prompt_assembly_provider
     assert isinstance(cache_aware_provider, CacheAwarePromptAssemblyProvider)
 
 
+def test_application_context_deep_copy_preserves_prompt_assembly_provider_runtime_slots() -> None:
+    context = ApplicationContext.create(
+        session_id="session-1",
+        task_id="task-1",
+        task_content="hello",
+    )
+    copied = context.deep_copy()
+
+    provider = copied.get_prompt_assembly_provider(
+        agent=SimpleNamespace(prompt_assembly_provider=None, _is_context_cache_enabled=lambda _context: True)
+    )
+
+    assert isinstance(provider, CacheAwarePromptAssemblyProvider)
+    assert copied.get_prompt_assembly_provider(
+        agent=SimpleNamespace(prompt_assembly_provider=None, _is_context_cache_enabled=lambda _context: True)
+    ) is provider
+
+
 @pytest.mark.asyncio
 async def test_system_prompt_augment_op_uses_injected_prompt_assembly_provider() -> None:
     captured = {}
