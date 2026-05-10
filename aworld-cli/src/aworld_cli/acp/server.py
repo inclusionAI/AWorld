@@ -689,13 +689,98 @@ class AcpStdioServer:
         )
 
     async def _write_session_update(self, params: dict[str, Any]) -> None:
-        if self._session_update_method == "session/update":
+        method = self._session_update_method
+        if method == "session/update":
             params = self._to_current_session_update(params)
-        await self._write_message(self._notification(self._session_update_method, params))
+        self._log_session_update_summary(method, params)
+        await self._write_message(self._notification(method, params))
 
     @staticmethod
     def _should_emit_current_session_update(params: dict[str, Any]) -> bool:
         return True
+
+    @staticmethod
+    def _log_session_update_summary(method: str, params: dict[str, Any]) -> None:
+        update = params.get("update")
+        if not isinstance(update, dict):
+            return
+
+        summary = [f"ACP session update method={method}"]
+
+        session_id = params.get("sessionId")
+        if isinstance(session_id, str) and session_id.strip():
+            summary.append(f"session_id={session_id.strip()}")
+
+        update_type = update.get("sessionUpdate")
+        if isinstance(update_type, str) and update_type.strip():
+            summary.append(f"type={update_type.strip()}")
+
+        tool_call_id = update.get("toolCallId")
+        if isinstance(tool_call_id, str) and tool_call_id.strip():
+            summary.append(f"tool_call_id={tool_call_id.strip()}")
+
+        kind = update.get("kind")
+        if isinstance(kind, str) and kind.strip():
+            summary.append(f"kind={kind.strip()}")
+
+        title = AcpStdioServer._session_update_summary_title(update)
+        if title:
+            summary.append(f"title={title}")
+
+        status = update.get("status")
+        if isinstance(status, str) and status.strip():
+            summary.append(f"status={status.strip()}")
+
+        preview = AcpStdioServer._session_update_preview(update)
+        if preview:
+            summary.append(f"preview={preview}")
+
+        logger.info(" ".join(summary))
+
+    @staticmethod
+    def _session_update_summary_title(update: dict[str, Any]) -> str | None:
+        content = update.get("content")
+        if isinstance(content, dict):
+            tool_call = content.get("toolCall")
+            if isinstance(tool_call, dict):
+                nested_title = tool_call.get("title")
+                if isinstance(nested_title, str) and nested_title.strip():
+                    return nested_title.strip()
+
+            command_title = AcpStdioServer._command_title(content.get("command"))
+            if command_title:
+                return command_title
+
+        title = update.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+        return None
+
+    @staticmethod
+    def _session_update_preview(update: dict[str, Any]) -> str | None:
+        content = update.get("content")
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return AcpStdioServer._preview_text(text)
+            stdout = content.get("stdout")
+            if isinstance(stdout, str):
+                return AcpStdioServer._preview_text(stdout)
+            stderr = content.get("stderr")
+            if isinstance(stderr, str):
+                return AcpStdioServer._preview_text(stderr)
+        if isinstance(content, str):
+            return AcpStdioServer._preview_text(content)
+        return None
+
+    @staticmethod
+    def _preview_text(value: str, *, limit: int = 80) -> str | None:
+        normalized = " ".join(value.split())
+        if not normalized:
+            return None
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[: limit - 3]}..."
 
     @staticmethod
     def _to_current_session_update(params: dict[str, Any]) -> dict[str, Any]:

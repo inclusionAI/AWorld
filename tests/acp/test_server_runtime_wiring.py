@@ -14,6 +14,7 @@ from aworld.output.base import ChunkOutput, MessageOutput, StepOutput, ToolResul
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from aworld_cli.acp import server as acp_server_module
 from aworld_cli.acp.server import AcpExecutorOutputBridge, AcpStdioServer
 from aworld_cli.acp.human_intercept import AcpRequiresHumanError
 from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED
@@ -1069,6 +1070,67 @@ async def test_current_acp_protocol_emits_execute_tool_notifications() -> None:
     assert notifications[3]["params"]["update"]["status"] == "completed"
     assert notifications[3]["params"]["update"]["kind"] == "execute"
     assert notifications[3]["params"]["update"]["content"] == {"stdout": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_current_acp_protocol_logs_session_update_summary(monkeypatch) -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-1",
+                function=Function(name="shell", arguments='{"command":"pwd"}'),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-2",
+                    model="demo",
+                    content="final",
+                    reasoning_content="searching sources",
+                    tool_calls=[tool_call],
+                ),
+                metadata={"sender": "Aworld", "is_finished": True},
+            )
+            yield ToolResultOutput(
+                tool_name="shell",
+                data={"cwd": "/tmp"},
+                origin_tool_call=tool_call,
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    server._session_update_method = "session/update"
+    writes: list[dict] = []
+    logged_messages: list[str] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    monkeypatch.setattr(
+        acp_server_module.logger,
+        "info",
+        lambda message, color=None, highlight_key=None: logged_messages.append(str(message)),
+    )
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        6,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "hello"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "session/update"]
+
+    assert response["result"]["status"] == "completed"
+    assert notifications
+    assert any(
+        "ACP session update method=session/update" in message
+        and "type=tool_call" in message
+        and "kind=execute" in message
+        and "title=pwd" in message
+        for message in logged_messages
+    )
 
 
 def test_current_acp_protocol_maps_internal_and_unknown_tools_to_happy_friendly_kinds() -> None:
