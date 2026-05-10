@@ -21,9 +21,9 @@
 - [x] 3.3 Add regression tests proving AWORLD.md, relevant memory, and system prompt augmentation semantics remain intact.
 - [x] 3.4 Ensure the implementation does not introduce a parallel `AmniContext` or replacement context backend path.
 
-## 4. Provider Capability and Lowering
+## 4. Provider Support and Lowering
 
-- [x] 4.1 Add a minimal provider prompt-cache capability lookup under `aworld/models/`.
+- [x] 4.1 Add minimal provider-native prompt-cache support helpers under `aworld/models/`.
 - [x] 4.2 Add a default lowerer that converts `PromptAssemblyPlan` into ordinary provider request payloads.
 - [x] 4.3 Add an Anthropic lowerer that emits native prompt-cache-aware request structure when enabled.
 - [x] 4.4 Ensure provider-native lowering is skipped whenever agent/model config disables the feature.
