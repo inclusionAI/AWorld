@@ -382,11 +382,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     updated_record["response"] = serialized_response
                 if serialized_usage is not None:
                     updated_record["usage"] = serialized_usage
-                metadata = updated_record.get("cache_observability")
+                metadata = updated_record.get("assembly_observability")
                 if isinstance(metadata, dict) and self._usage_has_cache_tokens(serialized_usage):
                     metadata = dict(metadata)
                     metadata["provider_native_cache"] = True
-                    updated_record["cache_observability"] = metadata
+                    updated_record["assembly_observability"] = metadata
                 llm_calls[index] = updated_record
                 context_info["llm_calls"] = llm_calls
                 break
@@ -399,7 +399,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         call_id: str,
         metadata: Dict[str, Any],
     ) -> None:
-        """Attach prompt-cache observability metadata to the matching call record."""
+        """Attach prompt-assembly metadata to the matching call record."""
         if not isinstance(metadata, dict):
             return
         context_info = message.context.context_info
@@ -408,7 +408,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             record = llm_calls[index]
             if isinstance(record, dict) and record.get("call_id") == call_id:
                 updated_record = dict(record)
-                updated_record["cache_observability"] = dict(metadata)
+                updated_record["assembly_observability"] = dict(metadata)
                 llm_calls[index] = updated_record
                 context_info["llm_calls"] = llm_calls
                 break
@@ -566,7 +566,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         return assembled_messages, observability
 
-    def _build_prompt_cache_observability(
+    def _build_prompt_assembly_observability(
         self,
         *,
         context: Any = None,
@@ -574,7 +574,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tools: List[Dict[str, Any]] | None = None,
         request_kwargs: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        """Build request-side prompt cache metadata from the active prompt assembly provider."""
+        """Build request-side prompt assembly metadata from the active prompt assembly provider."""
         _, observability = self._build_prompt_assembly(
             context=context,
             messages=messages,
@@ -1061,7 +1061,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tools = await self._filter_tools(message.context)
         if not tools:
             tools = None
-        prompt_assembly_plan, messages, prompt_cache_observability = self._build_prompt_assembly_state(
+        prompt_assembly_plan, messages, prompt_assembly_observability = self._build_prompt_assembly_state(
             context=message.context,
             messages=raw_messages,
             tools=tools,
@@ -1080,7 +1080,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             serializable_messages,
             started_at=llm_call_start_time,
         )
-        self._update_llm_call_observability(message, llm_call_id, prompt_cache_observability)
+        self._update_llm_call_observability(message, llm_call_id, prompt_assembly_observability)
 
         try:
             events = []
@@ -1098,10 +1098,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             kwargs["response_parse_args"] = response_parse_args
             kwargs["llm_call_id"] = llm_call_id
             kwargs["prepared_tools"] = tools
-            kwargs["prompt_cache_observability"] = prompt_cache_observability
+            kwargs["prompt_assembly_observability"] = prompt_assembly_observability
             kwargs["prompt_assembly_plan"] = prompt_assembly_plan
             kwargs["provider_native_prompt_cache"] = bool(
-                prompt_cache_observability.get("provider_native_cache")
+                prompt_assembly_observability.get("provider_native_cache")
             )
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
@@ -1326,23 +1326,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         try:
             llm_call_id = kwargs.pop("llm_call_id", None)
             tools = kwargs.pop("prepared_tools", None)
-            prompt_cache_observability = kwargs.pop("prompt_cache_observability", None)
+            prompt_assembly_observability = kwargs.pop("prompt_assembly_observability", None)
             if tools is None:
                 tools = await self._filter_tools(message.context)
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
-            if llm_call_id and prompt_cache_observability:
+            if llm_call_id and prompt_assembly_observability:
                 self._update_llm_call_observability(
                     message,
                     llm_call_id,
-                    prompt_cache_observability,
+                    prompt_assembly_observability,
                 )
             elif llm_call_id:
                 self._update_llm_call_observability(
                     message,
                     llm_call_id,
-                    self._build_prompt_cache_observability(
+                    self._build_prompt_assembly_observability(
                         context=message.context,
                         messages=messages,
                         tools=tools,
