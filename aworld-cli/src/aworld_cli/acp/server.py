@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -797,14 +798,15 @@ class AcpStdioServer:
 
         if update_type == "tool_call":
             raw_input = update.get("content")
-            title = str(update.get("title") or update.get("kind") or "tool")
-            update["title"] = title
             update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
+            command_title = (
+                AcpStdioServer._command_title(raw_input.get("command"))
+                if update["kind"] == "execute" and isinstance(raw_input, dict)
+                else None
+            )
+            update["title"] = command_title or str(update.get("title") or update.get("kind") or "tool")
             update["rawInput"] = raw_input
-            if update["kind"] == "step" and isinstance(raw_input, dict):
-                update["content"] = raw_input
-            else:
-                update["content"] = AcpStdioServer._current_tool_input_content(update["kind"], raw_input)
+            update["content"] = AcpStdioServer._current_tool_input_content(update["kind"], raw_input)
             return converted
 
         if update_type == "tool_call_update":
@@ -812,11 +814,9 @@ class AcpStdioServer:
             title = str(update.get("title") or update.get("kind") or "tool")
             update["title"] = title
             update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
+            update["status"] = AcpStdioServer._current_tool_status(update.get("status"))
             update["rawOutput"] = raw_output
-            if update["kind"] == "step" and isinstance(raw_output, dict):
-                update["content"] = raw_output
-            else:
-                update["content"] = AcpStdioServer._current_tool_output_content(raw_output)
+            update["content"] = AcpStdioServer._current_tool_output_content(raw_output)
             return converted
 
         return converted
@@ -842,26 +842,56 @@ class AcpStdioServer:
         return "other"
 
     @staticmethod
-    def _current_tool_input_content(kind: str, value: Any) -> Any:
+    def _current_tool_status(status: Any) -> str | None:
+        if status is None:
+            return None
+        normalized = str(status).strip().lower()
+        if normalized in {"pending", "in_progress", "completed", "failed"}:
+            return normalized
+        if normalized == "running":
+            return "in_progress"
+        if normalized in {"cancelled", "canceled", "error"}:
+            return "failed"
+        return "completed"
+
+    @staticmethod
+    def _current_tool_input_content(kind: str, value: Any) -> list[dict[str, Any]]:
         if kind == "execute" and isinstance(value, dict):
             command_title = AcpStdioServer._command_title(value.get("command"))
             if command_title:
-                content = dict(value)
-                tool_call = content.get("toolCall")
-                if not isinstance(tool_call, dict):
-                    tool_call = {}
-                else:
-                    tool_call = dict(tool_call)
-                tool_call.setdefault("title", command_title)
-                content["toolCall"] = tool_call
-                return content
-        if isinstance(value, str):
-            return {"text": value}
-        return value
+                return AcpStdioServer._current_tool_text_content(command_title)
+        return AcpStdioServer._current_tool_content(value)
 
     @staticmethod
-    def _current_tool_output_content(value: Any) -> Any:
-        return value
+    def _current_tool_output_content(value: Any) -> list[dict[str, Any]]:
+        return AcpStdioServer._current_tool_content(value)
+
+    @staticmethod
+    def _current_tool_content(value: Any) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                text = str(value)
+        if not text:
+            return []
+        return AcpStdioServer._current_tool_text_content(text)
+
+    @staticmethod
+    def _current_tool_text_content(text: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "content",
+                "content": {
+                    "type": "text",
+                    "text": text,
+                },
+            }
+        ]
 
     @staticmethod
     def _command_title(command: Any) -> str | None:
