@@ -694,54 +694,10 @@ class AcpStdioServer:
             params = self._to_current_session_update(params)
         self._log_session_update_summary(method, params)
         await self._write_message(self._notification(method, params))
-        fallback_params = self._current_tool_text_fallback(params) if method == "session/update" else None
-        if fallback_params is not None:
-            self._log_session_update_summary(method, fallback_params)
-            await self._write_message(self._notification(method, fallback_params))
 
     @staticmethod
     def _should_emit_current_session_update(params: dict[str, Any]) -> bool:
         return True
-
-    @staticmethod
-    def _current_tool_text_fallback(params: dict[str, Any]) -> dict[str, Any] | None:
-        update = params.get("update")
-        if not isinstance(update, dict):
-            return None
-
-        update_type = update.get("sessionUpdate")
-        if update_type not in {"tool_call", "tool_call_update"}:
-            return None
-        if update.get("kind") == "step":
-            return None
-
-        title = AcpStdioServer._session_update_summary_title(update)
-        if not title:
-            title = update.get("title")
-        if not isinstance(title, str) or not title.strip():
-            title = None
-        if not title:
-            kind = update.get("kind")
-            title = str(kind).strip() if isinstance(kind, str) and kind.strip() else "tool"
-
-        if update_type == "tool_call":
-            text = f"\n\nTool call: {title.strip()}\n"
-        else:
-            status = update.get("status")
-            status_text = str(status).strip() if isinstance(status, str) and status.strip() else "completed"
-            preview = AcpStdioServer._session_update_preview(update)
-            if preview:
-                text = f"\n\nTool result ({status_text}): {title.strip()} -> {preview}\n"
-            else:
-                text = f"\n\nTool result ({status_text}): {title.strip()}\n"
-
-        return {
-            "sessionId": params.get("sessionId"),
-            "update": {
-                "sessionUpdate": "agent_message_chunk",
-                "content": {"type": "text", "text": text},
-            },
-        }
 
     @staticmethod
     def _log_session_update_summary(method: str, params: dict[str, Any]) -> None:
