@@ -163,25 +163,6 @@ Why:
 - prompt cache 的收益如果只存在 provider 原始响应里，运维和调试价值有限。
 - 输出到任务完成日志可以最低成本地验证 cache 命中效果。
 
-### Decision: `prompt_logger.log` should surface prompt-cache path and normalized cache usage
-
-`prompt_logger.log` 应输出本次 prompt 的 cache 相关观测信息，便于从 prompt 维度判断当前请求是否真正进入了 cache-aware 路径。
-
-首期建议输出：
-
-- assembly provider 名称
-- 是否启用 cache-aware assembly
-- 是否启用 provider-native cache lowering
-- 可用时的 `cache_hit_tokens`
-- 可用时的 `cache_write_tokens`
-
-首期不要求在 `prompt_logger.log` 中做复杂命中率分析或完整前缀 fingerprint 对比，但允许记录稳定前缀 hash 或等价摘要作为调试信息。
-
-Why:
-
-- 任务完成日志适合看累计结果，但不适合判断“单次 prompt 到底走了哪条 cache 路径”。
-- `prompt_logger.log` 本身就是 prompt 级观测面，适合承载 cache-aware 装配与 lowering 的调试信息。
-
 ### Decision: Real request snapshots MUST be captured per LLM call in append-only runtime records
 
 每次 LLM call 的真实请求快照必须以 append-only 记录写入 runtime context，而不是继续使用单值 `llm_input` / `llm_output` / `llm_call_start_time` 作为唯一真相源。
@@ -298,8 +279,6 @@ Anthropic 首期实现 native lowering；默认 lowerer 必须始终可用。
 
 - `enabled: bool = True`
 - `allow_provider_native_cache: bool = True`
-- `stable_prefix_strategy: Literal["hash"] = "hash"`
-- `provider_overrides: dict[str, Any] = {}`
 
 ### `PromptAssemblyProvider`
 
@@ -443,7 +422,6 @@ provider 能力声明。
 - AWORLD.md、relevant memory、system prompt augment 语义不回归
 - 普通 provider 请求仍然可用
 - `event_runner` 任务完成日志继续可用，并在有 cache usage 时带上统一 cache token 字段
-- `prompt_logger.log` 继续可用，并在 cache-aware 请求下带上 prompt 级 cache 路径与 usage 信息
 - 同一条 message 内多次 LLM call 时，`llm_calls` 记录不会覆盖前一次请求快照
 - `trajectory.log` 在有调用快照时优先输出真实 request messages，而不是 memory reconstruction
 

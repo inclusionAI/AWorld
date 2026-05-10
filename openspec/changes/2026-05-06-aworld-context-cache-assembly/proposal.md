@@ -37,7 +37,6 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
   - `cache_hit_tokens`
   - `cache_write_tokens`
 - 要求任务完成日志和相关 hook payload 能输出 cache hit / write token 统计，便于观察 prompt cache 收益。
-- 要求 `prompt_logger.log` 能输出本次 prompt 的 cache 相关观测信息，至少包括是否启用 cache-aware assembly、是否走 provider-native cache lowering，以及可用时的 cache token 统计。
 - 要求 `trajectory.log` 优先记录每次 LLM call 的真实 request messages 快照，而不是仅依赖 memory 事后重建；`trajectory.log` 不承载 cache token usage。
 
 ## Capabilities
