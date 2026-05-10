@@ -166,6 +166,7 @@ def adapt_output_to_runtime_events(
     events: list[dict[str, Any]] = []
 
     if output_type == "chunk":
+        _append_tool_start_events(state, events, _extract_tool_calls(output))
         reasoning = _extract_reasoning(output)
         if reasoning:
             events.append(normalize_thought_delta(state, reasoning))
@@ -176,15 +177,7 @@ def adapt_output_to_runtime_events(
         return events
 
     if output_type == "message":
-        for tool_call in _extract_tool_calls(output):
-            events.append(
-                normalize_tool_start(
-                    state,
-                    native_id=getattr(tool_call, "id", None),
-                    tool_name=_tool_name(tool_call),
-                    payload=_tool_arguments(tool_call),
-                )
-            )
+        _append_tool_start_events(state, events, _extract_tool_calls(output))
 
         reasoning = _extract_reasoning(output)
         if reasoning:
@@ -195,12 +188,17 @@ def adapt_output_to_runtime_events(
             events.append(normalize_final_text(state, text))
         return events
 
+    if output_type == "tool_call":
+        tool_call = _extract_tool_call_from_output(output)
+        _append_tool_start_events(state, events, [tool_call] if tool_call is not None else [])
+        return events
+
     if output_type == "tool_call_result":
         origin_tool_call = getattr(output, "origin_tool_call", None)
         events.append(
             normalize_tool_end(
                 state,
-                native_id=getattr(origin_tool_call, "id", None),
+                native_id=_tool_result_native_id(output, origin_tool_call),
                 tool_name=getattr(output, "tool_name", None)
                 or _tool_name(origin_tool_call)
                 or "unknown",
@@ -248,6 +246,37 @@ def adapt_output_to_runtime_events(
         return events
 
     return events
+
+
+def _append_tool_start_events(
+    state: dict[str, Any],
+    events: list[dict[str, Any]],
+    tool_calls: list[Any],
+) -> None:
+    for tool_call in tool_calls:
+        native_id = _tool_call_id(tool_call)
+        if native_id and _has_started_tool_call(state, native_id):
+            continue
+        event = normalize_tool_start(
+            state,
+            native_id=native_id,
+            tool_name=_tool_name(tool_call),
+            payload=_tool_arguments(tool_call),
+        )
+        if native_id:
+            _mark_tool_call_started(state, native_id)
+        events.append(event)
+
+
+def _has_started_tool_call(state: dict[str, Any], tool_call_id: str) -> bool:
+    started = state.setdefault("started_tool_call_ids", set())
+    return isinstance(started, set) and tool_call_id in started
+
+
+def _mark_tool_call_started(state: dict[str, Any], tool_call_id: str) -> None:
+    started = state.setdefault("started_tool_call_ids", set())
+    if isinstance(started, set):
+        started.add(tool_call_id)
 
 
 def _output_type(output: Any) -> str:
@@ -389,13 +418,43 @@ def _extract_tool_calls(output: Any) -> list[Any]:
     if raw_tool_calls:
         return [_unwrap_tool_call(tool_call) for tool_call in raw_tool_calls]
 
+    data = getattr(output, "data", None)
+    data_tool_calls = getattr(data, "tool_calls", None) or []
+    if data_tool_calls:
+        return [_unwrap_tool_call(tool_call) for tool_call in data_tool_calls]
+
     source = getattr(output, "source", None)
     source_tool_calls = getattr(source, "tool_calls", None) or []
     return [_unwrap_tool_call(tool_call) for tool_call in source_tool_calls]
 
 
+def _extract_tool_call_from_output(output: Any) -> Any | None:
+    data = getattr(output, "data", None)
+    if data is not None:
+        return _unwrap_tool_call(data)
+    return _unwrap_tool_call(output)
+
+
 def _unwrap_tool_call(tool_call: Any) -> Any:
     return getattr(tool_call, "data", tool_call)
+
+
+def _tool_call_id(tool_call: Any) -> str | None:
+    tool_call_id = getattr(tool_call, "id", None)
+    return tool_call_id if isinstance(tool_call_id, str) and tool_call_id else None
+
+
+def _tool_result_native_id(output: Any, origin_tool_call: Any) -> str | None:
+    origin_id = _tool_call_id(origin_tool_call)
+    if origin_id:
+        return origin_id
+
+    metadata = getattr(output, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata_id = metadata.get("tool_call_id")
+        if isinstance(metadata_id, str) and metadata_id:
+            return metadata_id
+    return None
 
 
 def _tool_name(tool_call: Any) -> str:
