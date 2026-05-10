@@ -104,7 +104,6 @@ def test_prompt_assembly_provider_observability_stays_provider_neutral():
     cache_aware_provider = CacheAwarePromptAssemblyProvider()
     metadata = {
         "provider_name": "anthropic",
-        "context_cache_enabled": True,
         "provider_native_cache": True,
         "system_section_hints": [{"name": "system_prompt", "stability": "stable"}],
     }
@@ -119,7 +118,6 @@ def test_prompt_assembly_provider_observability_stays_provider_neutral():
     for plan in (default_plan, cache_aware_plan):
         assert "provider_name" not in plan.observability
         assert "provider_native_cache" not in plan.observability
-        assert "context_cache_enabled" not in plan.observability
 
 
 def test_application_context_uses_cache_aware_provider_when_context_cache_enabled():

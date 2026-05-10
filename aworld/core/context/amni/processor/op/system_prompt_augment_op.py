@@ -295,7 +295,7 @@ class SystemPromptAugmentOp(BaseOp):
 
         provider = self._get_prompt_assembly_provider(context, agent_id)
         prompt_messages = self._build_system_prompt_messages(event.system_prompt, augment_prompts)
-        appended_prompt, assembly_observability = self._assemble_system_prompt(
+        appended_prompt = self._assemble_system_prompt(
             provider=provider,
             messages=prompt_messages,
             metadata={
@@ -312,9 +312,6 @@ class SystemPromptAugmentOp(BaseOp):
             content=formatted_system_prompt,
             agent_id=agent_id,
             agent_name=agent_name,
-            ext_info={
-                "prompt_assembly_observability": assembly_observability,
-            } if assembly_observability else None,
         )
 
         return MemoryCommand(
@@ -364,8 +361,7 @@ class SystemPromptAugmentOp(BaseOp):
                                     context: ApplicationContext,
                                     content: str,
                                     agent_id: str,
-                                    agent_name: str = None,
-                                    ext_info: Optional[Dict[str, Any]] = None) -> MemorySystemMessage:
+                                    agent_name: str = None) -> MemorySystemMessage:
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
@@ -378,7 +374,6 @@ class SystemPromptAugmentOp(BaseOp):
                 task_id=task_id,
                 agent_id=agent_id,
                 agent_name=agent_name or 'unknown',
-                ext_info=ext_info or {},
             )
         )
 
@@ -443,21 +438,11 @@ class SystemPromptAugmentOp(BaseOp):
         provider: Any,
         messages: List[Dict[str, Any]],
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> str:
         if not messages:
-            return "", {}
+            return ""
 
         plan = provider.build_plan(messages=messages, tools=None, metadata=metadata or {})
-        observability = {}
-        plan_observability = getattr(plan, "observability", None)
-        if isinstance(plan_observability, dict):
-            observability.update(plan_observability)
-        observability.setdefault("assembly_provider", provider.__class__.__name__)
-
-        stable_hash = getattr(plan, "stable_hash", None)
-        if stable_hash:
-            observability.setdefault("stable_prefix_hash", stable_hash)
-
         assembled_messages = (
             plan.to_model_messages()
             if hasattr(plan, "to_model_messages")
@@ -475,7 +460,7 @@ class SystemPromptAugmentOp(BaseOp):
             for message in messages:
                 if isinstance(message, dict) and message.get("role") == "system":
                     content = self._stringify_system_content(message.get("content"))
-                    if content:
-                        system_parts.append(content)
+                if content:
+                    system_parts.append(content)
 
-        return "\n\n".join(system_parts), observability
+        return "\n\n".join(system_parts)
