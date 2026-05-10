@@ -457,7 +457,10 @@ class WechatConnector:
                     agent = LocalAgentRegistry.get_agent(agent_name)
                     if agent is None:
                         return None
-                    return await self._get_swarm_with_context_fallback(agent)
+                    return await self._get_swarm_with_context_fallback(
+                        agent,
+                        refresh=agent_name == "Aworld",
+                    )
 
                 executor.set_swarm_resolver(resolve_swarm)
 
@@ -488,9 +491,15 @@ class WechatConnector:
         raise ValueError("No agent id configured for WeChat channel.")
 
     @staticmethod
-    async def _get_swarm_with_context_fallback(agent: Any) -> Any:
+    async def _get_swarm_with_context_fallback(agent: Any, refresh: bool = False) -> Any:
         context_config = getattr(agent, "context_config", None)
         try:
+            if refresh:
+                try:
+                    return await agent.get_swarm(None, refresh=True)
+                except TypeError as exc:
+                    if "unexpected keyword argument 'refresh'" not in str(exc):
+                        raise
             return await agent.get_swarm(None)
         except (TypeError, AttributeError):
             if TaskInput is None or ApplicationContext is None:
@@ -506,6 +515,12 @@ class WechatConnector:
                 temp_task_input,
                 context_config=context_config,
             )
+            if refresh:
+                try:
+                    return await agent.get_swarm(temp_context, refresh=True)
+                except TypeError as exc:
+                    if "unexpected keyword argument 'refresh'" not in str(exc):
+                        raise
             return await agent.get_swarm(temp_context)
 
     async def send_text(

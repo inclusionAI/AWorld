@@ -127,9 +127,15 @@ class AworldDingdingBridge:
         return output_type_getter() if callable(output_type_getter) else ""
 
     @staticmethod
-    async def _get_swarm_with_context_fallback(agent: Any) -> Any:
+    async def _get_swarm_with_context_fallback(agent: Any, refresh: bool = False) -> Any:
         context_config = getattr(agent, "context_config", None)
         try:
+            if refresh:
+                try:
+                    return await agent.get_swarm(None, refresh=True)
+                except TypeError as exc:
+                    if "unexpected keyword argument 'refresh'" not in str(exc):
+                        raise
             return await agent.get_swarm(None)
         except (TypeError, AttributeError):
             if TaskInput is None or ApplicationContext is None:
@@ -145,6 +151,12 @@ class AworldDingdingBridge:
                 temp_task_input,
                 context_config=context_config,
             )
+            if refresh:
+                try:
+                    return await agent.get_swarm(temp_context, refresh=True)
+                except TypeError as exc:
+                    if "unexpected keyword argument 'refresh'" not in str(exc):
+                        raise
             return await agent.get_swarm(temp_context)
 
     @staticmethod
