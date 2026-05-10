@@ -3,7 +3,8 @@ from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.prompt_cache import (
     AnthropicPromptAssemblyLowerer,
     DefaultPromptAssemblyLowerer,
-    get_prompt_cache_capabilities,
+    should_request_provider_native_cache,
+    supports_provider_native_prompt_cache,
 )
 
 
@@ -23,12 +24,20 @@ def _build_plan():
     )
 
 
-def test_prompt_cache_capabilities_declare_provider_support():
-    anthropic = get_prompt_cache_capabilities("anthropic")
-    openai = get_prompt_cache_capabilities("openai")
+def test_provider_native_cache_support_is_declared_by_helper():
+    assert supports_provider_native_prompt_cache("anthropic") is True
+    assert supports_provider_native_prompt_cache("openai") is True
+    assert supports_provider_native_prompt_cache("unknown-provider") is False
 
-    assert anthropic.supports_native_prompt_cache is True
-    assert openai.supports_native_prompt_cache is True
+
+def test_provider_native_cache_request_rules_are_provider_specific():
+    assert should_request_provider_native_cache("anthropic", {}) is True
+    assert should_request_provider_native_cache("openai", {}) is False
+    assert should_request_provider_native_cache("openai", {"prompt_cache_key": "cache-key-1"}) is True
+    assert should_request_provider_native_cache(
+        "openai",
+        {"extra_body": {"prompt_cache_key": "cache-key-2"}},
+    ) is True
 
 
 def test_default_prompt_assembly_lowerer_preserves_plain_messages():
