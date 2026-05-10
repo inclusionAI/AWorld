@@ -119,8 +119,6 @@ class BaseConfig(BaseModel):
 class ContextCacheConfig(BaseConfig):
     enabled: bool = True
     allow_provider_native_cache: bool = True
-    stable_prefix_strategy: str = "hash"
-    provider_overrides: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelConfig(BaseConfig):

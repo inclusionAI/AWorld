@@ -387,7 +387,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     metadata = dict(metadata)
                     metadata["provider_native_cache"] = True
                     updated_record["cache_observability"] = metadata
-                    context_info["prompt_cache_observability"] = metadata
                 llm_calls[index] = updated_record
                 context_info["llm_calls"] = llm_calls
                 break
@@ -412,7 +411,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 updated_record["cache_observability"] = dict(metadata)
                 llm_calls[index] = updated_record
                 context_info["llm_calls"] = llm_calls
-                context_info["prompt_cache_observability"] = dict(metadata)
                 break
 
     def _current_provider_name(self) -> str:
@@ -1111,8 +1109,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             raise AWorldRuntimeException(str(e))
         finally:
             self._record_llm_call_response(message, llm_call_id, llm_response)
-            if llm_response is not None:
-                PromptLogger.log_prompt_cache_observability(self, message.context, llm_response.usage)
             if llm_response:
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")

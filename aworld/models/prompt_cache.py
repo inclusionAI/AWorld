@@ -11,8 +11,6 @@ from aworld.utils.serialized_util import to_serializable
 class PromptCacheCapabilities:
     provider_name: str
     supports_native_prompt_cache: bool = False
-    supports_automatic_caching: bool = False
-    supports_explicit_breakpoints: bool = False
 
 
 PROMPT_CACHE_CAPABILITIES: Dict[str, PromptCacheCapabilities] = {
@@ -23,7 +21,6 @@ PROMPT_CACHE_CAPABILITIES: Dict[str, PromptCacheCapabilities] = {
     "anthropic": PromptCacheCapabilities(
         provider_name="anthropic",
         supports_native_prompt_cache=True,
-        supports_automatic_caching=True,
     ),
 }
 

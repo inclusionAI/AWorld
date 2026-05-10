@@ -23,7 +23,7 @@
 
 ## 4. Provider Capability and Lowering
 
-- [x] 4.1 Add provider-native prompt cache capability declarations under `aworld/models/`.
+- [x] 4.1 Add a minimal provider prompt-cache capability lookup under `aworld/models/`.
 - [x] 4.2 Add a default lowerer that converts `PromptAssemblyPlan` into ordinary provider request payloads.
 - [x] 4.3 Add an Anthropic lowerer that emits native prompt-cache-aware request structure when enabled.
 - [x] 4.4 Ensure provider-native lowering is skipped whenever agent/model config disables the feature.
@@ -34,11 +34,9 @@
 
 - [x] 5.1 Update task-finished logging and related payload assembly to include normalized cache token usage when present.
 - [x] 5.2 Add regression coverage for task-finished usage output with cache hit/write token fields.
-- [x] 5.3 Extend `prompt_logger.log` output with prompt-level cache observability, including assembly/lowering path and normalized cache token usage when available.
-- [x] 5.4 Add regression coverage for prompt logger cache observability output.
-- [x] 5.5 Replace single-value `context_info["llm_input"]` / `llm_output` / `llm_call_start_time` as the primary truth source with append-only `llm_calls` records, while preserving latest-call aliases for backward compatibility.
-- [x] 5.6 Update trajectory generation to prefer `llm_calls[*].request.messages` as the real prompt snapshot for each LLM call and keep cache token usage out of trajectory output.
-- [x] 5.7 Add regression coverage for multi-call same-message snapshot preservation and trajectory prompt-snapshot fidelity.
+- [x] 5.3 Replace single-value `context_info["llm_input"]` / `llm_output` / `llm_call_start_time` as the primary truth source with append-only `llm_calls` records, while preserving latest-call aliases for backward compatibility.
+- [x] 5.4 Update trajectory generation to prefer `llm_calls[*].request.messages` as the real prompt snapshot for each LLM call and keep cache token usage out of trajectory output.
+- [x] 5.5 Add regression coverage for multi-call same-message snapshot preservation and trajectory prompt-snapshot fidelity.
 
 ## 6. Validation
 

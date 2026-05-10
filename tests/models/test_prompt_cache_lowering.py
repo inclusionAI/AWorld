@@ -28,9 +28,7 @@ def test_prompt_cache_capabilities_declare_provider_support():
     openai = get_prompt_cache_capabilities("openai")
 
     assert anthropic.supports_native_prompt_cache is True
-    assert anthropic.supports_automatic_caching is True
     assert openai.supports_native_prompt_cache is True
-    assert openai.supports_automatic_caching is False
 
 
 def test_default_prompt_assembly_lowerer_preserves_plain_messages():
