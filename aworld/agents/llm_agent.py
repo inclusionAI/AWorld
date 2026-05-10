@@ -34,7 +34,10 @@ from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, Mem
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template, \
     ModelResponseParser
 from aworld.models.model_response import ModelResponse
-from aworld.models.prompt_cache import get_prompt_cache_capabilities
+from aworld.models.prompt_cache import (
+    supports_provider_native_prompt_cache,
+    should_request_provider_native_cache,
+)
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process, ModelUtils
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
@@ -476,20 +479,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> bool:
         if not self._allow_provider_native_cache(context):
             return False
-        capabilities = get_prompt_cache_capabilities(provider_name)
-        if not capabilities.supports_native_prompt_cache:
+        if not supports_provider_native_prompt_cache(provider_name):
             return False
-        request_kwargs = request_kwargs or {}
-        if provider_name == "openai":
-            if request_kwargs.get("prompt_cache_key"):
-                return True
-            extra_body = request_kwargs.get("extra_body")
-            if isinstance(extra_body, dict) and extra_body.get("prompt_cache_key"):
-                return True
-            return False
-        if provider_name == "anthropic":
-            return True
-        return False
+        return should_request_provider_native_cache(provider_name, request_kwargs)
 
     def _build_prompt_assembly_state(
         self,

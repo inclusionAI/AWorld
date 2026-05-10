@@ -350,16 +350,14 @@ runtime context 中逐次记录一次 LLM call 的最小快照对象。
 - `response: dict[str, Any] | None`
 - `usage: dict[str, Any] | None`
 
-### `ProviderPromptCacheCapability`
+### Provider native-cache support helpers
 
-provider 能力声明。
+provider-native cache 能力在当前实现中只保留最小判定面：
 
-建议字段：
+- provider 是否支持 native prompt cache
+- provider 是否应为当前请求启用 native prompt cache
 
-- `supports_native_prompt_cache: bool`
-- `supports_system_block_cache: bool`
-- `supports_message_cache: bool`
-- `supports_tool_cache_hint: bool`
+这些判定保留在 model/provider 适配层，不向 `amni` context 层暴露 capability object。
 
 ### `NormalizedTokenUsage`
 

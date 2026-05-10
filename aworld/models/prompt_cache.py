@@ -6,30 +6,28 @@ from typing import Any, Dict
 from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan
 from aworld.utils.serialized_util import to_serializable
 
-
-@dataclass(frozen=True)
-class PromptCacheCapabilities:
-    provider_name: str
-    supports_native_prompt_cache: bool = False
+PROMPT_CACHE_CAPABLE_PROVIDERS = {"openai", "anthropic"}
 
 
-PROMPT_CACHE_CAPABILITIES: Dict[str, PromptCacheCapabilities] = {
-    "openai": PromptCacheCapabilities(
-        provider_name="openai",
-        supports_native_prompt_cache=True,
-    ),
-    "anthropic": PromptCacheCapabilities(
-        provider_name="anthropic",
-        supports_native_prompt_cache=True,
-    ),
-}
+def supports_provider_native_prompt_cache(provider_name: str) -> bool:
+    return provider_name in PROMPT_CACHE_CAPABLE_PROVIDERS
 
 
-def get_prompt_cache_capabilities(provider_name: str) -> PromptCacheCapabilities:
-    return PROMPT_CACHE_CAPABILITIES.get(
-        provider_name,
-        PromptCacheCapabilities(provider_name=provider_name or "unknown"),
-    )
+def should_request_provider_native_cache(
+    provider_name: str,
+    request_kwargs: Dict[str, Any] | None = None,
+) -> bool:
+    request_kwargs = request_kwargs or {}
+    if provider_name == "openai":
+        if request_kwargs.get("prompt_cache_key"):
+            return True
+        extra_body = request_kwargs.get("extra_body")
+        if isinstance(extra_body, dict) and extra_body.get("prompt_cache_key"):
+            return True
+        return False
+    if provider_name == "anthropic":
+        return True
+    return False
 
 
 @dataclass
