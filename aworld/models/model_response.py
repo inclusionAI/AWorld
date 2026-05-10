@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 from aworld.logs.util import logger
-from aworld.models.utils import normalize_usage
+from aworld.models.usage import normalize_usage
 
 
 class LLMResponseError(Exception):
