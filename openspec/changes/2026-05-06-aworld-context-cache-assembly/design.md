@@ -261,7 +261,7 @@ Why:
 
 ### Layer 3: Provider lowering
 
-provider capability / lowerer 负责：
+provider-native support helper / lowerer 负责：
 
 - 声明当前 provider 是否支持 native prompt cache
 - 将 `PromptAssemblyPlan` 翻译为 provider 请求
@@ -357,7 +357,7 @@ provider-native cache 能力在当前实现中只保留最小判定面：
 - provider 是否支持 native prompt cache
 - provider 是否应为当前请求启用 native prompt cache
 
-这些判定保留在 model/provider 适配层，不向 `amni` context 层暴露 capability object。
+这些判定保留在 model/provider 适配层，不向 `amni` context 层暴露更重的 capability 对象。
 
 ### `NormalizedTokenUsage`
 
@@ -389,8 +389,7 @@ provider-native cache 能力在当前实现中只保留最小判定面：
 - `aworld/core/context/amni/processor/op/system_prompt_augment_op.py`
   - 做薄接线改造，调用注入的 `PromptAssemblyProvider`
 - `aworld/models/`
-  - `prompt_cache_capability.py`
-  - `prompt_plan_lowerer.py`
+  - `prompt_cache.py`
   - `anthropic_provider.py`
 
 ## Testing Strategy

@@ -28,7 +28,7 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
   - provider 路径未显式禁用
 - 明确 stable prefix 不进入普通 history / memory，不再作为持久化的 system message 保存。
 - 明确每次 LLM call 的真实 request snapshot 必须以 append-only 的调用记录保存在 runtime context 中，而不是覆写到单个 `context_info["llm_input"]` 字段。
-- 新增 provider capability / lowerer 抽象：
+- 新增 provider-native support helper / lowerer 接缝：
   - 默认 provider 路径可消费 assembly provider 产物并降级为普通请求
   - Anthropic 首期实现 provider-native cache lowering
 - 将 tools 视为 stable section 的语义成员，但 tools 的 wire-format 序列化仍由具体 provider 负责。
