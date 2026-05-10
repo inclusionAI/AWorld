@@ -25,7 +25,7 @@ from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
 from aworld.trace.instrumentation import semconv
-from aworld.models.utils import normalize_usage
+from aworld.models.usage import normalize_usage
 from aworld.utils.common import override_in_subclass, new_instance
 from aworld.utils.serialized_util import to_serializable
 
