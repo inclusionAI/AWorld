@@ -537,7 +537,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         provider_name = self._current_provider_name()
         return {
             "provider_name": provider_name,
-            "context_cache_enabled": self._is_context_cache_enabled(context),
             "cache_aware_assembly": False,
             "provider_native_cache": self._provider_native_cache_requested(context, provider_name, request_kwargs),
         }
