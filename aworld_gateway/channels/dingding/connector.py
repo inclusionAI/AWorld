@@ -688,7 +688,10 @@ class DingTalkConnector:
                     agent = LocalAgentRegistry.get_agent(agent_name)
                     if agent is None:
                         return None
-                    return await AworldDingdingBridge._get_swarm_with_context_fallback(agent)
+                    return await AworldDingdingBridge._get_swarm_with_context_fallback(
+                        agent,
+                        refresh=agent_name == "Aworld",
+                    )
 
                 executor.set_swarm_resolver(resolve_swarm)
 
