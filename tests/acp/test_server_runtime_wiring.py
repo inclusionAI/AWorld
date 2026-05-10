@@ -921,11 +921,9 @@ async def test_current_acp_protocol_emits_shell_tool_notifications() -> None:
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
-        "agent_message_chunk",
         "agent_thought_chunk",
         "agent_message_chunk",
         "tool_call_update",
-        "agent_message_chunk",
     ]
     assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
     assert notifications[0]["params"]["update"]["kind"] == "execute"
@@ -933,14 +931,10 @@ async def test_current_acp_protocol_emits_shell_tool_notifications() -> None:
         "command": "pwd",
         "toolCall": {"title": "pwd"},
     }
-    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "\n\nTool call: pwd\n"}
-    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "searching sources"}
-    assert notifications[3]["params"]["update"]["content"] == {"type": "text", "text": "final"}
-    assert notifications[4]["params"]["update"]["status"] == "completed"
-    assert notifications[5]["params"]["update"]["content"] == {
-        "type": "text",
-        "text": "\n\nTool result (completed): shell\n",
-    }
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "searching sources"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["content"] == {"cwd": "/tmp"}
 
 
 @pytest.mark.asyncio
@@ -993,11 +987,9 @@ async def test_current_acp_protocol_emits_other_tool_notifications() -> None:
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
-        "agent_message_chunk",
         "agent_thought_chunk",
         "agent_message_chunk",
         "tool_call_update",
-        "agent_message_chunk",
     ]
     assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
     assert notifications[0]["params"]["update"]["kind"] == "Agent"
@@ -1010,19 +1002,11 @@ async def test_current_acp_protocol_emits_other_tool_notifications() -> None:
             {"type": "text", "text": "web_searcher"},
         ]
     }
-    assert notifications[1]["params"]["update"]["content"] == {
-        "type": "text",
-        "text": "\n\nTool call: async_spawn_subagent__spawn\n",
-    }
-    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "我先尝试搜索一下最新信息"}
-    assert notifications[3]["params"]["update"]["content"] == {"type": "text", "text": "final"}
-    assert notifications[4]["params"]["update"]["status"] == "completed"
-    assert notifications[4]["params"]["update"]["kind"] == "Agent"
-    assert notifications[4]["params"]["update"]["content"] == {"error": "subagent unavailable"}
-    assert notifications[5]["params"]["update"]["content"] == {
-        "type": "text",
-        "text": "\n\nTool result (completed): async_spawn_subagent__spawn\n",
-    }
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "我先尝试搜索一下最新信息"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["kind"] == "Agent"
+    assert notifications[3]["params"]["update"]["content"] == {"error": "subagent unavailable"}
 
 
 @pytest.mark.asyncio
@@ -1072,11 +1056,9 @@ async def test_current_acp_protocol_emits_execute_tool_notifications() -> None:
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
-        "agent_message_chunk",
         "agent_thought_chunk",
         "agent_message_chunk",
         "tool_call_update",
-        "agent_message_chunk",
     ]
     assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
     assert notifications[0]["params"]["update"]["kind"] == "execute"
@@ -1084,19 +1066,11 @@ async def test_current_acp_protocol_emits_execute_tool_notifications() -> None:
         "command": "curl https://x.com",
         "toolCall": {"title": "curl https://x.com"},
     }
-    assert notifications[1]["params"]["update"]["content"] == {
-        "type": "text",
-        "text": "\n\nTool call: curl https://x.com\n",
-    }
-    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "我先检查一下页面"}
-    assert notifications[3]["params"]["update"]["content"] == {"type": "text", "text": "final"}
-    assert notifications[4]["params"]["update"]["status"] == "completed"
-    assert notifications[5]["params"]["update"]["content"] == {
-        "type": "text",
-        "text": "\n\nTool result (completed): execute -> ok\n",
-    }
-    assert notifications[4]["params"]["update"]["kind"] == "execute"
-    assert notifications[4]["params"]["update"]["content"] == {"stdout": "ok"}
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "我先检查一下页面"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["kind"] == "execute"
+    assert notifications[3]["params"]["update"]["content"] == {"stdout": "ok"}
 
 
 @pytest.mark.asyncio
