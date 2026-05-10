@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from aworld.models.model_response import Function, ModelResponse, ToolCall
-from aworld.output.base import ChunkOutput, MessageOutput, StepOutput, ToolResultOutput
+from aworld.output.base import ChunkOutput, MessageOutput, StepOutput, ToolCallOutput, ToolResultOutput
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -74,6 +74,36 @@ def test_chunk_output_reasoning_maps_to_thought_delta_before_text() -> None:
     ]
 
 
+def test_chunk_output_tool_calls_become_tool_start_events() -> None:
+    state: dict[str, object] = {}
+    output = ChunkOutput(
+        data=ModelResponse(
+            id="resp-1",
+            model="demo",
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    function=Function(name="shell", arguments='{"command":"pwd"}'),
+                )
+            ],
+        ),
+        metadata={},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {
+            "event_type": "tool_start",
+            "seq": 1,
+            "tool_call_id": "call-1",
+            "tool_name": "shell",
+            "raw_input": {"command": "pwd"},
+        }
+    ]
+
+
 def test_message_output_tool_calls_become_tool_start_events() -> None:
     state: dict[str, object] = {}
     output = MessageOutput(
@@ -97,6 +127,57 @@ def test_message_output_tool_calls_become_tool_start_events() -> None:
     assert events[0]["tool_call_id"] == "call-1"
     assert events[0]["tool_name"] == "shell"
     assert events[0]["raw_input"] == {"command": "pwd"}
+
+
+def test_standalone_tool_call_output_maps_to_tool_start_event() -> None:
+    state: dict[str, object] = {}
+    output = ToolCallOutput.from_tool_call(
+        ToolCall(
+            id="call-1",
+            function=Function(name="shell", arguments='{"command":"pwd"}'),
+        ),
+        task_id="task-1",
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {
+            "event_type": "tool_start",
+            "seq": 1,
+            "tool_call_id": "call-1",
+            "tool_name": "shell",
+            "raw_input": {"command": "pwd"},
+        }
+    ]
+
+
+def test_duplicate_native_tool_start_is_suppressed_across_chunk_and_message() -> None:
+    state: dict[str, object] = {}
+    model_response = ModelResponse(
+        id="resp-1",
+        model="demo",
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                function=Function(name="shell", arguments='{"command":"pwd"}'),
+            )
+        ],
+    )
+
+    chunk_events = adapt_output_to_runtime_events(
+        state,
+        ChunkOutput(data=model_response, metadata={}),
+    )
+    message_events = adapt_output_to_runtime_events(
+        state,
+        MessageOutput(source=model_response),
+    )
+
+    assert len(chunk_events) == 1
+    assert chunk_events[0]["event_type"] == "tool_start"
+    assert message_events == []
 
 
 def test_tool_result_output_maps_to_tool_end_event() -> None:
