@@ -1689,6 +1689,8 @@ class ApplicationContext(AmniContext):
         new_context._prompt_service = None
         new_context._freedom_space_service = None
         new_context._traj_service = None
+        new_context._default_prompt_assembly_provider = None
+        new_context._cache_aware_prompt_assembly_provider = None
 
         return new_context
 
