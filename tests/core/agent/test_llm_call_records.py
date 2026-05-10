@@ -77,7 +77,7 @@ async def test_llm_call_records_append_without_mutating_parent_state():
     ]
 
 
-def test_prompt_cache_observability_metadata_is_attached_to_call_record():
+def test_prompt_assembly_observability_metadata_is_attached_to_call_record():
     agent = _build_agent()
     context = _build_context()
     message = Message(
@@ -99,7 +99,7 @@ def test_prompt_cache_observability_metadata_is_attached_to_call_record():
     agent._update_llm_call_observability(
         message,
         call_id,
-        metadata=agent._build_prompt_cache_observability(
+        metadata=agent._build_prompt_assembly_observability(
             messages=[
                 {"role": "system", "content": "rules"},
                 {"role": "user", "content": "hello"},
@@ -110,7 +110,7 @@ def test_prompt_cache_observability_metadata_is_attached_to_call_record():
     )
 
     record = message.context.context_info["llm_calls"][-1]
-    observability = record["cache_observability"]
+    observability = record["assembly_observability"]
     assert observability["assembly_provider"] == "DefaultPromptAssemblyProvider"
     assert observability["provider_name"] == "openai"
     assert observability["cache_aware_assembly"] is False
@@ -158,10 +158,10 @@ def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():
     agent._record_llm_call_response(message, call_id, response)
 
     record = message.context.context_info["llm_calls"][-1]
-    assert record["cache_observability"]["provider_native_cache"] is True
+    assert record["assembly_observability"]["provider_native_cache"] is True
 
 
-def test_prompt_cache_observability_uses_injected_prompt_assembly_provider():
+def test_prompt_assembly_observability_uses_injected_prompt_assembly_provider():
     class CustomPromptAssemblyProvider:
         def build_plan(self, *, messages, tools=None, metadata=None):
             observability = dict(metadata or {})
@@ -177,7 +177,7 @@ def test_prompt_cache_observability_uses_injected_prompt_assembly_provider():
     agent = _build_agent()
     agent.prompt_assembly_provider = CustomPromptAssemblyProvider()
 
-    observability = agent._build_prompt_cache_observability(
+    observability = agent._build_prompt_assembly_observability(
         messages=[
             {"role": "system", "content": "rules"},
             {"role": "user", "content": "hello"},
