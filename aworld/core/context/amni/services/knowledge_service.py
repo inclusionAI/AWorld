@@ -12,7 +12,15 @@ from typing import Optional, List, Dict, Any
 from aworld.core.context.amni.retrieval.embeddings import SearchResults
 from aworld.core.context.amni.state.common import WorkingState
 from aworld.logs.util import logger
+from aworld.memory.tool_result_compaction import (
+    compact_tool_result_for_memory,
+    serialize_tool_result_content,
+)
 from aworld.output import Artifact, ArtifactType
+from aworld.core.context.amni.tool.knowledge_tool_guidance import (
+    OFFLOAD_READBACK_NOTICE,
+    build_knowledge_tool_tips,
+)
 
 
 class IKnowledgeService(abc.ABC):
@@ -290,6 +298,29 @@ class KnowledgeService(IKnowledgeService):
     def _get_working_state(self, namespace: str = "default") -> Optional[WorkingState]:
         """Get working state for the given namespace."""
         return self._context._get_working_state(namespace)
+
+    def _build_offload_artifact_summary(self, artifact: Artifact) -> str:
+        summary = artifact.summary
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+
+        metadata = artifact.metadata if isinstance(artifact.metadata, dict) else {}
+        compaction = compact_tool_result_for_memory(
+            artifact.content,
+            tool_name=metadata.get("origin_tool_name"),
+            action_name=metadata.get("origin_action_name"),
+            enabled=True,
+            force=True,
+            preview_chars=1200,
+        )
+        compacted_content = compaction.content
+        if isinstance(compacted_content, str) and compacted_content.strip():
+            return compacted_content
+
+        content_str = serialize_tool_result_content(artifact.content)
+        if len(content_str) > 500:
+            return content_str[:500]
+        return content_str
     
     async def add_knowledge(self, knowledge: Artifact, namespace: str = "default", index: bool = True) -> None:
         """Add a single knowledge artifact."""
@@ -616,31 +647,14 @@ class KnowledgeService(IKnowledgeService):
                 "biz_id": biz_id
             })
         await self.add_knowledge_list(artifacts, namespace=namespace, build_index=False)
-        
-        # Add a strategy: single page should not exceed 40K
-        first_content = artifacts[0].content
-        if len(artifacts) == 1 and isinstance(first_content, str) and len(first_content) < 40_000:
-            logger.info(f"directly return artifacts content: {len(first_content)}")
-            return f"{first_content}"
-        
+
         # 2. build lightweight knowledge index without chunk details
         logger.info(f"add artifacts to context: {[artifact.artifact_id for artifact in artifacts]}")
-        artifact_context = "This is current tool result, a list of knowledge artifacts:"
+        artifact_context = OFFLOAD_READBACK_NOTICE
         artifact_context += "\n<knowledge_list description='This is a list of knowledge artifacts'>\n"
         
         for artifact in artifacts:
-            summary = artifact.summary
-            if not summary:
-                # fallback: truncate content as summary if it's a string
-                if isinstance(artifact.content, str):
-                    content_str = artifact.content
-                else:
-                    content_str = str(artifact.content)
-
-                if len(content_str) > 500:
-                    summary = f"{content_str[:500]}... you can use get_knowledge_by_lines(artifact_id, start_line, end_line) or grep_knowledge(artifact_id, pattern, ...) to get more content"
-                else:
-                    summary = content_str
+            summary = self._build_offload_artifact_summary(artifact)
             
             artifact_context += (
                 f"<knowledge id='{artifact.artifact_id}' type='{artifact.artifact_type.name}' desc>\n"
@@ -788,10 +802,8 @@ class KnowledgeService(IKnowledgeService):
             "<knowledge_list>"
         )
         for artifact in artifacts:
-            actions_info += f"  <knowledge id='{artifact.artifact_id}' summary='{artifact.summary}<'>: </knowledge>\n"
-        actions_info += f"\n</knowledge_list>\n\n<tips>\n"
-        actions_info += f"you can use get_knowledge(knowledge_id_xxx) to got detail content\n"
-        actions_info += f"</tips>\n"
+            actions_info += f"  <knowledge id='{artifact.artifact_id}' summary='{artifact.summary}'></knowledge>\n"
+        actions_info += f"\n</knowledge_list>\n\n{build_knowledge_tool_tips()}"
         return actions_info
     
     async def add_task_output(self, output_artifact: Artifact, namespace: str = "default", index: bool = True) -> None:
@@ -802,4 +814,3 @@ class KnowledgeService(IKnowledgeService):
         # Add to workspace if initialized
         if self._context._workspace:
             await self._context._workspace.add_artifact(output_artifact, index=index)
-

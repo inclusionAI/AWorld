@@ -12,6 +12,7 @@ from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
 from aworld.tools.utils import build_observation
 from aworld.output import Artifact, ArtifactType
+from .knowledge_tool_guidance import KNOWLEDGE_TOOL_USAGE_LINES
 
 CONTEXT_KNOWLEDGE = "KNOWLEDGE"
 
@@ -238,7 +239,6 @@ class ContextKnowledgeTool(AsyncTool):
         - add_knowledge: Add new knowledge artifact
         - update_knowledge: Update existing knowledge artifact
         - search_knowledge: Semantic search knowledge
-        - get_knowledge_chunk: Get specific chunk from knowledge
         """
         self.step_finished = False
         reward = 0.
@@ -270,7 +270,11 @@ class ContextKnowledgeTool(AsyncTool):
                         content = artifact.content if isinstance(artifact.content, str) else str(artifact.content)
                         # Truncate if too long
                         if len(content) > 15000:
-                            content = content[:15000] + "\n\n⚠️ Content is too long, only showing first 15000 characters. Use get_knowledge_by_lines or get_knowledge_chunk for more."
+                            content = (
+                                content[:15000]
+                                + "\n\n⚠️ Content is too long, only showing the first 15000 characters. "
+                                + " ".join(KNOWLEDGE_TOOL_USAGE_LINES[2:])
+                            )
                         result = f"📚 Knowledge #{knowledge_id}:\n\n{content}"
                     
                 elif action_name == ContextKnowledgeAction.GET_KNOWLEDGE_BY_LINES.value.name:
@@ -433,4 +437,3 @@ class ContextKnowledgeTool(AsyncTool):
         info.update(kwargs)
         return (observation, reward, kwargs.get("terminated", False),
                 kwargs.get("truncated", False), info)
-

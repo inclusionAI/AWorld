@@ -2,6 +2,7 @@ import time
 from typing import List
 
 from ... import ApplicationContext, logger
+from ...tool.knowledge_tool_guidance import build_knowledge_tool_tips
 from . import Neuron
 from .neuron_factory import neuron_factory
 
@@ -45,9 +46,7 @@ class ActionInfoNeuron(Neuron):
             items = await self.format_items(context, namespace, **kwargs)
         actions_info += "\n".join(items)
         actions_info += f"\n</knowledge_list>\n"
-        actions_info += f"<tips>\n"
-        actions_info += f"you can use get_knowledge(knowledge_id_xxx) to got detail content\n"
-        actions_info += f"</tips>\n"
+        actions_info += build_knowledge_tool_tips()
         
         result = actions_info
         
