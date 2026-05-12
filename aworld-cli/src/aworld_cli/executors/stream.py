@@ -20,6 +20,9 @@ from aworld.logs.util import logger
 
 from .stats import StreamTokenStats, format_elapsed
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
+_ANSI_REMAINDER_RE = re.compile(r"\??\[(?:[0-9;?]*\d[0-9;?]*)[A-Za-z]")
+
 
 def get_terminal_size() -> tuple[int, int]:
     """Get (cols, rows). Fallback to 80x24 on error."""
@@ -157,15 +160,15 @@ class ActiveSteeringCommitBuffer:
         if text:
             combined += text
         self.message_chunks.clear()
-        content = self._sanitize(combined)
-        if not content:
+        sanitized = self._sanitize(combined)
+        if not sanitized:
             return None
         committed: dict[str, Any] = {
-            "role": "assistant",
-            "content": content,
+            "kind": "message_committed",
+            "text": sanitized,
         }
         if agent_name:
-            committed["name"] = agent_name
+            committed["agent_name"] = agent_name
         return committed
 
     def commit_tool_result(
@@ -178,7 +181,7 @@ class ActiveSteeringCommitBuffer:
         if not cleaned_lines:
             return None
         if len(cleaned_lines) <= self.max_full_result_lines:
-            content = "\n".join(cleaned_lines)
+            text = "\n".join(cleaned_lines)
         else:
             content_lines = []
             if exit_code:
@@ -186,18 +189,18 @@ class ActiveSteeringCommitBuffer:
             content_lines.extend(cleaned_lines[:self.max_summary_lines])
             remaining = len(cleaned_lines) - self.max_summary_lines
             content_lines.append(f"... ({remaining} more lines)")
-            content = "\n".join(content_lines)
+            text = "\n".join(content_lines)
         return {
-            "role": "assistant",
-            "content": content,
+            "kind": "tool_result_committed",
+            "text": text,
         }
 
     def _sanitize(self, text: str) -> str:
         if not text:
             return ""
         text = text.replace("\t", "    ")
-        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
-        text = re.sub(r"\??\[[0-?]*[ -/]*[@-~]", "", text)
+        text = _ANSI_ESCAPE_RE.sub("", text)
+        text = _ANSI_REMAINDER_RE.sub("", text)
         text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
         lines = text.splitlines()
         while lines and not lines[0].strip():
