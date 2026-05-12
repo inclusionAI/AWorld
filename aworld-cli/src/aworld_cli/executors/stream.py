@@ -137,6 +137,76 @@ class StreamDisplayBuffer:
         return bool(self.accumulated_tool_result_lines and self.displayed_tool_result_lines < len(self.accumulated_tool_result_lines))
 
 
+@dataclass
+class ActiveSteeringCommitBuffer:
+    max_full_result_lines: int = 8
+    max_summary_lines: int = 4
+    message_chunks: list[str] = field(default_factory=list)
+
+    def append_message_delta(self, text: str) -> None:
+        if text:
+            self.message_chunks.append(text)
+
+    def commit_message(
+        self,
+        text: str | None = None,
+        *,
+        agent_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        combined = "".join(self.message_chunks)
+        if text:
+            combined += text
+        self.message_chunks.clear()
+        content = self._sanitize(combined)
+        if not content:
+            return None
+        committed: dict[str, Any] = {
+            "role": "assistant",
+            "content": content,
+        }
+        if agent_name:
+            committed["name"] = agent_name
+        return committed
+
+    def commit_tool_result(
+        self,
+        lines: list[str],
+        *,
+        exit_code: int | None = None,
+    ) -> dict[str, Any] | None:
+        cleaned_lines = self._sanitize("\n".join(lines)).splitlines()
+        if not cleaned_lines:
+            return None
+        if len(cleaned_lines) <= self.max_full_result_lines:
+            content = "\n".join(cleaned_lines)
+        else:
+            content_lines = []
+            if exit_code:
+                content_lines.append(f"Exit code: {exit_code}")
+            content_lines.extend(cleaned_lines[:self.max_summary_lines])
+            remaining = len(cleaned_lines) - self.max_summary_lines
+            content_lines.append(f"... ({remaining} more lines)")
+            content = "\n".join(content_lines)
+        return {
+            "role": "assistant",
+            "content": content,
+        }
+
+    def _sanitize(self, text: str) -> str:
+        if not text:
+            return ""
+        text = text.replace("\t", "    ")
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"\??\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+        lines = text.splitlines()
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines)
+
+
 def _compute_chars_per_render(buffer: StreamDisplayBuffer, config: StreamDisplayConfig) -> int:
     """Dynamically increase chars per render when content backlog is large."""
     if not buffer.accumulated_content:
