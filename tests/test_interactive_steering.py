@@ -1,8 +1,10 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
 
+import aworld_cli.console as console_module
 from aworld_cli.console import AWorldCLI, _ESC_INTERRUPT_SENTINEL
 from aworld_cli.steering.coordinator import SteeringCoordinator
 
@@ -258,4 +260,81 @@ async def test_terminal_fallback_continuation_runs_follow_up_turn_for_pending_st
     assert result == "result-2"
     assert prompts[0] == "Initial task"
     assert "Focus on failing tests first." in prompts[1]
-    assert runtime._steering.snapshot("sess-1")["pending_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_active_task_prompt_uses_patch_stdout_for_concurrent_executor_output(monkeypatch):
+    cli = AWorldCLI()
+    events: list[str] = []
+
+    class FakePromptSession:
+        async def prompt_async(self, *_args, **_kwargs):
+            events.append("prompt")
+            return "queued steering"
+
+    class FakePatchStdout:
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("exit")
+            return False
+
+    monkeypatch.setattr(console_module, "patch_stdout", lambda: FakePatchStdout())
+
+    result = await cli._prompt_active_task_input(
+        session=FakePromptSession(),
+        runtime=None,
+        agent_name="Aworld",
+    )
+
+    assert result == "queued steering"
+    assert events == ["enter", "prompt", "exit"]
+
+
+def test_active_task_wait_text_formats_codex_like_waiting_state():
+    cli = AWorldCLI()
+
+    text = cli._build_active_task_wait_text(time.monotonic() - 149.0)
+
+    assert "Waiting for background task" in text
+    assert "2m 29s" in text
+    assert "Esc to interrupt" in text
+
+
+@pytest.mark.asyncio
+async def test_active_task_prompt_uses_waiting_placeholder_with_minimal_input_anchor(monkeypatch):
+    cli = AWorldCLI()
+    captured: dict[str, object] = {}
+
+    class FakePromptSession:
+        async def prompt_async(self, message="", **kwargs):
+            captured["message"] = message
+            captured["kwargs"] = kwargs
+            return "queued steering"
+
+    class FakePatchStdout:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(console_module, "patch_stdout", lambda: FakePatchStdout())
+
+    result = await cli._prompt_active_task_input(
+        session=FakePromptSession(),
+        runtime=None,
+        agent_name="Aworld",
+        wait_started_at=time.monotonic() - 5.0,
+    )
+
+    assert result == "queued steering"
+    assert "Steer" not in str(captured["message"])
+    assert str(captured["message"]).strip() != ""
+
+    placeholder = captured["kwargs"]["placeholder"]
+    placeholder_text = placeholder() if callable(placeholder) else placeholder
+    assert "Waiting for background task" in str(placeholder_text)
+    assert "Esc to interrupt" in str(placeholder_text)

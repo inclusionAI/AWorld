@@ -349,6 +349,7 @@ class StreamDisplayController:
         format_elapsed_fn: Callable[[float], str] = format_elapsed,
         config: Optional[StreamDisplayConfig] = None,
         show_stats_line: bool = True,
+        loading_enabled: bool = True,
     ):
         self.console = console
         self.stream_token_stats = stream_token_stats
@@ -356,6 +357,7 @@ class StreamDisplayController:
         self.format_elapsed_fn = format_elapsed_fn
         self.config = config or StreamDisplayConfig()
         self.show_stats_line = show_stats_line
+        self.loading_enabled = loading_enabled
 
         self.buffer = StreamDisplayBuffer()
         self.loading_status: Optional[Status] = None
@@ -375,7 +377,13 @@ class StreamDisplayController:
         if not self.console:
             return
         self.base_message = message
-        self.status_start_time = datetime.now()
+        if self.loading_enabled:
+            self.status_start_time = datetime.now()
+        elif self.status_start_time is None:
+            self.status_start_time = datetime.now()
+            return
+        else:
+            return
         msg = f"{message} [0.0s]" if ("Thinking" in message or "Calling tool" in message) else message
         if self.loading_status:
             self.loading_status.update(f"[dim]{msg}[/dim]")

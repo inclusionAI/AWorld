@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
@@ -13,6 +14,7 @@ from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style as PromptToolkitStyle
 from rich import box
 from rich.color import Color
@@ -2274,13 +2276,34 @@ class AWorldCLI:
         session: PromptSession,
         runtime: Any,
         agent_name: str,
+        wait_started_at: float | None = None,
     ) -> str:
         prompt_kwargs = self._build_prompt_kwargs(
             runtime,
             agent_name=agent_name,
             mode="Steering",
         )
-        return await session.prompt_async(HTML("<b><yellow>Steer</yellow></b>: "), **prompt_kwargs)
+        prompt_kwargs["placeholder"] = lambda: self._build_active_task_wait_text(wait_started_at)
+        prompt_kwargs["reserve_space_for_menu"] = 0
+        with patch_stdout():
+            return await session.prompt_async(HTML("<b><yellow>›</yellow></b> "), **prompt_kwargs)
+
+    def _build_active_task_wait_text(self, wait_started_at: float | None = None) -> str:
+        elapsed = max(0.0, time.monotonic() - wait_started_at) if wait_started_at is not None else 0.0
+        return (
+            f"Waiting for background task ({self._format_active_task_wait_elapsed(elapsed)} "
+            "• type to steer • Esc to interrupt)"
+        )
+
+    def _format_active_task_wait_elapsed(self, elapsed_seconds: float) -> str:
+        total_seconds = max(0, int(elapsed_seconds))
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        if minutes > 0:
+            return f"{minutes}m {seconds}s"
+        return f"{seconds}s"
 
     async def _await_active_executor_result(self, executor_task: asyncio.Task) -> Any:
         try:
@@ -2348,6 +2371,15 @@ class AWorldCLI:
         is_terminal: bool = False,
     ) -> Any:
         session_id = getattr(executor_instance, "session_id", None)
+        wait_started_at = time.monotonic()
+        previous_loading_suppressed = None
+        if executor_instance is not None and is_terminal:
+            previous_loading_suppressed = getattr(
+                executor_instance,
+                "_suppress_interactive_loading_status",
+                False,
+            )
+            executor_instance._suppress_interactive_loading_status = True
         executor_task = asyncio.create_task(
             self._run_executor_prompt(
                 prompt,
@@ -2394,6 +2426,7 @@ class AWorldCLI:
                         session=steering_session,
                         runtime=runtime,
                         agent_name=agent_name,
+                        wait_started_at=wait_started_at,
                     )
                 )
 
@@ -2451,6 +2484,8 @@ class AWorldCLI:
                     steering.end_task(session_id, clear_pending=True)
                 except Exception:
                     pass
+            if executor_instance is not None and previous_loading_suppressed is not None:
+                executor_instance._suppress_interactive_loading_status = previous_loading_suppressed
             self._current_executor_task = None
 
     async def _render_skills_table(
