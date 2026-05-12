@@ -30,11 +30,13 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color, digest_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools, filter_mcp_tools_by_servers
 from aworld.memory.main import MemoryFactory
+from aworld.memory.tool_call_compaction import collect_replay_message_metrics
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template, \
     ModelResponseParser
 from aworld.models.model_response import ModelResponse
 from aworld.models.prompt_cache import (
+    resolve_provider_prompt_cache_key,
     supports_provider_native_prompt_cache,
     should_request_provider_native_cache,
 )
@@ -43,6 +45,7 @@ from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
+from aworld.runners.post_tool_progress import mark_post_tool_progress_llm_started
 from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
@@ -350,6 +353,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "request": {
                     "messages": serializable_messages,
                 },
+                "request_metrics": collect_replay_message_metrics(serializable_messages),
             }
         )
         context_info["llm_calls"] = llm_calls
@@ -476,12 +480,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context: Any,
         provider_name: str,
         request_kwargs: Dict[str, Any] | None,
+        *,
+        stable_prefix_hash: str | None = None,
     ) -> bool:
         if not self._allow_provider_native_cache(context):
             return False
         if not supports_provider_native_prompt_cache(provider_name):
             return False
-        return should_request_provider_native_cache(provider_name, request_kwargs)
+        return should_request_provider_native_cache(
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_prefix_hash,
+        )
 
     def _build_prompt_assembly_state(
         self,
@@ -494,6 +504,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         metadata = self._build_prompt_assembly_metadata(context=context, request_kwargs=request_kwargs)
         provider = self._get_prompt_assembly_provider(context)
         plan = provider.build_plan(messages=messages, tools=tools, metadata=metadata)
+        provider_name = metadata.get("provider_name") or self._current_provider_name()
+        stable_hash = getattr(plan, "stable_hash", None)
+        provider_native_cache = self._provider_native_cache_requested(
+            context,
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_hash,
+        )
+        metadata["provider_native_cache"] = provider_native_cache
+        prompt_cache_key = resolve_provider_prompt_cache_key(
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_hash,
+        )
+        if prompt_cache_key:
+            metadata["prompt_cache_key"] = prompt_cache_key
 
         assembled_messages = (
             plan.to_model_messages()
@@ -504,8 +530,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         plan_observability = getattr(plan, "observability", None)
         if isinstance(plan_observability, dict):
             observability.update(plan_observability)
+        observability["provider_native_cache"] = provider_native_cache
+        if prompt_cache_key:
+            observability["prompt_cache_key"] = prompt_cache_key
         observability.setdefault("assembly_provider", provider.__class__.__name__)
-        stable_hash = getattr(plan, "stable_hash", None)
         if stable_hash:
             observability.setdefault("stable_prefix_hash", stable_hash)
         return plan, to_serializable(assembled_messages), observability
@@ -1064,6 +1092,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         agent_result = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+        mark_post_tool_progress_llm_started(message.context, agent_id=self.id())
         # Record LLM call start time (used to set MemoryMessage's start_time)
         llm_call_start_time = datetime.now().isoformat()
         llm_call_id = self._record_llm_call_request(

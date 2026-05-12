@@ -6,6 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Dict, List, Optional, Literal
 
+from aworld.memory.tool_call_compaction import normalize_tool_calls_for_replay
 from aworld.models.model_response import ToolCall
 
 class MemoryItem(BaseModel):
@@ -450,8 +451,9 @@ class MemoryAIMessage(MemoryMessage):
         meta = metadata.to_dict
         if tool_calls:
             meta['tool_calls'] = [tool_call.to_dict() for tool_call in tool_calls]
-        if reasoning_details:
-            meta['reasoning_details'] = reasoning_details
+        normalized_reasoning_details = self._normalize_reasoning_details(reasoning_details)
+        if normalized_reasoning_details is not None:
+            meta['reasoning_details'] = normalized_reasoning_details
         super().__init__(role="assistant", metadata=MessageMetadata(**meta), content=content, **kwargs)
 
     @property
@@ -465,17 +467,70 @@ class MemoryAIMessage(MemoryMessage):
     def reasoning_details(self) -> Dict[str, Any]:
         if "reasoning_details" not in self.metadata or not self.metadata['reasoning_details']:
             return None
-        return self.metadata['reasoning_details']
+        return self._normalize_reasoning_details(self.metadata['reasoning_details'])
 
     @property
     def embedding_text(self) -> Optional[str]:
         return None
 
+    @staticmethod
+    def _to_openai_assistant_content(content: Any) -> Any:
+        def to_text_part(text: str) -> dict:
+            return {"type": "text", "text": text}
+
+        if content is None:
+            return []
+        if isinstance(content, str):
+            return [to_text_part(content)]
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                    parts.append(item)
+                else:
+                    parts.append(to_text_part(str(item)))
+            return parts
+        if isinstance(content, dict):
+            if content.get("type") == "text" and isinstance(content.get("text"), str):
+                return [content]
+            return [to_text_part(str(content))]
+        return [to_text_part(str(content))]
+
+    @staticmethod
+    def _normalize_reasoning_details(reasoning_details: Any) -> Optional[list[dict]]:
+        if reasoning_details is None:
+            return None
+
+        if isinstance(reasoning_details, str):
+            stripped = reasoning_details.strip()
+            if not stripped or stripped.lower() in {"none", "null"}:
+                return None
+            try:
+                reasoning_details = json.loads(stripped)
+            except (TypeError, json.JSONDecodeError):
+                return None
+
+        if isinstance(reasoning_details, dict):
+            return [reasoning_details]
+
+        if isinstance(reasoning_details, tuple):
+            reasoning_details = list(reasoning_details)
+
+        if not isinstance(reasoning_details, list):
+            return None
+
+        return [item for item in reasoning_details if isinstance(item, dict)] or None
+
     def to_openai_message(self) -> dict:
+        content = self.content
+        tool_calls = [tool_call.to_dict() for tool_call in self.tool_calls or []] or None
+        if tool_calls:
+            content = self._to_openai_assistant_content(content)
+            tool_calls = normalize_tool_calls_for_replay(tool_calls)
         return {
             "role": self.role,
-            "content": self.content,
-            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None,
+            "content": content,
+            "tool_calls": tool_calls,
             "reasoning_details": self.reasoning_details
         }
 
@@ -516,18 +571,72 @@ class MemoryToolMessage(MemoryMessage):
     def embedding_text(self) -> Optional[str]:
         return None
 
+    @staticmethod
+    def _to_openai_tool_content_parts(content: Any) -> list[dict]:
+        def to_text_part(text: str) -> dict:
+            return {"type": "text", "text": text}
+
+        if content is None:
+            return [to_text_part("")]
+
+        if isinstance(content, str):
+            try:
+                decoded = json.loads(content)
+            except (TypeError, json.JSONDecodeError):
+                decoded = content
+
+            if isinstance(decoded, list):
+                parts = []
+                for item in decoded:
+                    if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                        parts.append(item)
+                    elif isinstance(item, str):
+                        parts.append(to_text_part(item))
+                    else:
+                        parts.append(
+                            to_text_part(
+                                json.dumps(item, ensure_ascii=False)
+                                if isinstance(item, (dict, list))
+                                else str(item)
+                            )
+                        )
+                if parts:
+                    return parts
+            elif isinstance(decoded, dict):
+                if decoded.get("type") == "text" and isinstance(decoded.get("text"), str):
+                    return [decoded]
+                return [to_text_part(json.dumps(decoded, ensure_ascii=False))]
+
+            return [to_text_part(content)]
+
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                    parts.append(item)
+                elif isinstance(item, str):
+                    parts.append(to_text_part(item))
+                else:
+                    parts.append(
+                        to_text_part(
+                            json.dumps(item, ensure_ascii=False)
+                            if isinstance(item, (dict, list))
+                            else str(item)
+                        )
+                    )
+            return parts or [to_text_part("")]
+
+        if isinstance(content, dict):
+            if content.get("type") == "text" and isinstance(content.get("text"), str):
+                return [content]
+            return [to_text_part(json.dumps(content, ensure_ascii=False))]
+
+        return [to_text_part(str(content))]
+
     def to_openai_message(self) -> dict:
-        if isinstance(self.content, str):
-            content = self.content
-        elif self.content is None:
-            content = ""
-        elif isinstance(self.content, (dict, list)):
-            content = json.dumps(self.content, ensure_ascii=False)
-        else:
-            content = str(self.content)
         return {
             "role": self.role,
-            "content": content,
+            "content": self._to_openai_tool_content_parts(self.content),
             "tool_call_id": self.tool_call_id,
         }
 

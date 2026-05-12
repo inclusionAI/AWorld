@@ -3,6 +3,7 @@ from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.prompt_cache import (
     AnthropicPromptAssemblyLowerer,
     DefaultPromptAssemblyLowerer,
+    OpenAIPromptAssemblyLowerer,
     should_request_provider_native_cache,
     supports_provider_native_prompt_cache,
 )
@@ -33,6 +34,11 @@ def test_provider_native_cache_support_is_declared_by_helper():
 def test_provider_native_cache_request_rules_are_provider_specific():
     assert should_request_provider_native_cache("anthropic", {}) is True
     assert should_request_provider_native_cache("openai", {}) is False
+    assert should_request_provider_native_cache(
+        "openai",
+        {},
+        stable_prefix_hash="stable-hash-1",
+    ) is True
     assert should_request_provider_native_cache("openai", {"prompt_cache_key": "cache-key-1"}) is True
     assert should_request_provider_native_cache(
         "openai",
@@ -48,6 +54,33 @@ def test_default_prompt_assembly_lowerer_preserves_plain_messages():
     assert result.messages == plan.messages
     assert result.request_kwargs == {}
     assert result.metadata["provider_native_cache"] is False
+
+
+def test_openai_prompt_assembly_lowerer_adds_prompt_cache_key_from_stable_hash():
+    plan = _build_plan()
+
+    result = OpenAIPromptAssemblyLowerer().lower(
+        plan=plan,
+        request_kwargs={"metadata": {"request_id": "req-1"}},
+        enable_native_cache=True,
+    )
+
+    assert result.messages == plan.messages
+    assert result.request_kwargs["metadata"] == {"request_id": "req-1"}
+    assert result.request_kwargs["prompt_cache_key"] == "stable-hash-1"
+    assert result.metadata["provider_native_cache"] is True
+
+
+def test_openai_prompt_assembly_lowerer_preserves_explicit_prompt_cache_key():
+    plan = _build_plan()
+
+    result = OpenAIPromptAssemblyLowerer().lower(
+        plan=plan,
+        request_kwargs={"prompt_cache_key": "explicit-cache-key"},
+        enable_native_cache=True,
+    )
+
+    assert result.request_kwargs["prompt_cache_key"] == "explicit-cache-key"
 
 
 def test_anthropic_prompt_assembly_lowerer_adds_top_level_cache_control():

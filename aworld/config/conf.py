@@ -143,6 +143,8 @@ class ModelConfig(BaseConfig):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         for key, value in kwargs.items():
+            if key in self.model_fields:
+                continue
             if hasattr(self, key):
                 setattr(self, key, value)
 
@@ -227,6 +229,22 @@ class AgentMemoryConfig(BaseConfig):
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
     summary_summaried: Optional[bool] = Field(default=True, description="whether to summarize historical summary messages when summary is triggered")
     summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
+    tool_result_offload: bool = Field(
+        default=True,
+        description="compact oversized tool results before storing them in prompt-facing short-term memory",
+    )
+    tool_action_white_list: Optional[list[str]] = Field(
+        default_factory=list,
+        description="tool actions that should always use tool result compaction, formatted as tool:action",
+    )
+    tool_result_length_threshold: Optional[int] = Field(
+        default=30000,
+        description="compact tool results whose serialized size exceeds this token threshold",
+    )
+    tool_result_preview_chars: Optional[int] = Field(
+        default=2000,
+        description="maximum preview characters to keep in prompt-facing compacted tool results",
+    )
 
     # Long-term memory config
     enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")

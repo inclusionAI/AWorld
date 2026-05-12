@@ -13,18 +13,44 @@ def supports_provider_native_prompt_cache(provider_name: str) -> bool:
     return provider_name in PROMPT_CACHE_CAPABLE_PROVIDERS
 
 
+def resolve_provider_prompt_cache_key(
+    provider_name: str,
+    request_kwargs: Dict[str, Any] | None = None,
+    *,
+    stable_prefix_hash: str | None = None,
+) -> str | None:
+    request_kwargs = request_kwargs or {}
+    if provider_name != "openai":
+        return None
+
+    prompt_cache_key = request_kwargs.get("prompt_cache_key")
+    if prompt_cache_key:
+        return str(prompt_cache_key)
+
+    extra_body = request_kwargs.get("extra_body")
+    if isinstance(extra_body, dict) and extra_body.get("prompt_cache_key"):
+        return str(extra_body["prompt_cache_key"])
+
+    if stable_prefix_hash:
+        return str(stable_prefix_hash)
+    return None
+
+
 def should_request_provider_native_cache(
     provider_name: str,
     request_kwargs: Dict[str, Any] | None = None,
+    *,
+    stable_prefix_hash: str | None = None,
 ) -> bool:
     request_kwargs = request_kwargs or {}
     if provider_name == "openai":
-        if request_kwargs.get("prompt_cache_key"):
-            return True
-        extra_body = request_kwargs.get("extra_body")
-        if isinstance(extra_body, dict) and extra_body.get("prompt_cache_key"):
-            return True
-        return False
+        return bool(
+            resolve_provider_prompt_cache_key(
+                provider_name,
+                request_kwargs,
+                stable_prefix_hash=stable_prefix_hash,
+            )
+        )
     if provider_name == "anthropic":
         return True
     return False
@@ -54,6 +80,25 @@ class DefaultPromptAssemblyLowerer:
                 "stable_prefix_hash": getattr(plan, "stable_hash", ""),
             },
         )
+
+
+class OpenAIPromptAssemblyLowerer(DefaultPromptAssemblyLowerer):
+    def lower(
+        self,
+        *,
+        plan: PromptAssemblyPlan,
+        request_kwargs: Dict[str, Any] | None = None,
+        enable_native_cache: bool = False,
+    ) -> PromptAssemblyLoweringResult:
+        result = super().lower(
+            plan=plan,
+            request_kwargs=request_kwargs,
+            enable_native_cache=enable_native_cache,
+        )
+        if enable_native_cache and getattr(plan, "stable_hash", ""):
+            result.request_kwargs.setdefault("prompt_cache_key", plan.stable_hash)
+            result.metadata["provider_native_cache"] = True
+        return result
 
 
 class AnthropicPromptAssemblyLowerer(DefaultPromptAssemblyLowerer):
