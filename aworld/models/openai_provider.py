@@ -395,7 +395,9 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, stream=True, **kwargs)
+            stream_kwargs = dict(kwargs)
+            stream_kwargs["stream"] = True
+            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **stream_kwargs)
             openai_params["stream"] = True
             if self.is_http_provider:
                 response_stream = self.http_provider.sync_stream_call(openai_params)
@@ -456,7 +458,9 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, stream=True, **kwargs)
+            stream_kwargs = dict(kwargs)
+            stream_kwargs["stream"] = True
+            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **stream_kwargs)
             openai_params["stream"] = True
             logger.debug(f"openai_params: {openai_params}")
 
