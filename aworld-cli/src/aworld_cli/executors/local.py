@@ -646,6 +646,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
         # Set workspace_path for hook system (CLI working directory)
         context.workspace_path = os.getcwd()
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is not None and getattr(runtime, "_steering", None) is not None:
+            context._aworld_cli_steering = runtime._steering
 
         # 🔥 Hook: POST_BUILD_CONTEXT
         hook_kwargs = {
@@ -655,6 +658,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         hook_result = await self._execute_hooks(ExecutorHookPoint.POST_BUILD_CONTEXT, **hook_kwargs)
         # Get updated context from kwargs
         context = hook_kwargs.get('context', context)
+        context.workspace_path = os.getcwd()
+        if runtime is not None and getattr(runtime, "_steering", None) is not None:
+            context._aworld_cli_steering = runtime._steering
 
         # 🔥 Hook: POST_INPUT_PARSE (after context is ready)
         # FileParseHook processes @filename references here
