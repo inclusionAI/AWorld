@@ -19,6 +19,10 @@ class EventManager:
         Constants.CHUNK,
         Constants.OUTPUT,
         Constants.MEMORY,
+        Constants.CONTEXT,
+        Constants.CONTEXT_RESPONSE,
+        Constants.TASK,
+        Constants.TOOL_CALLBACK,
     }
 
     def __init__(self, context: Context, streaming_mode: StreamingMode = None, **kwargs):
