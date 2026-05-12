@@ -219,6 +219,11 @@ class OpenAIProvider(LLMProviderBase):
         elif isinstance(chunk, dict) and chunk.get("choices") and chunk["choices"]:
             chunk_choice = chunk["choices"][0]
         if not chunk_choice:
+            resp = ModelResponse.from_openai_stream_chunk(chunk)
+            has_usage = bool(resp and any(int(resp.usage.get(key, 0) or 0) > 0 for key in ("prompt_tokens", "completion_tokens", "total_tokens")))
+            if has_usage or (resp and resp.raw_usage) or (resp and resp.provider_request_id):
+                logger.debug("[stream] usage-only or metadata-only chunk received")
+                return resp, None
             logger.debug("[stream] skip chunk: choices is empty")
             return None, None
 
@@ -265,6 +270,9 @@ class OpenAIProvider(LLMProviderBase):
                     return None, None
             if finish_reason:
                 if self.stream_tool_buffer:
+                    raw_usage = ModelResponse._extract_usage_payload(
+                        chunk.usage if hasattr(chunk, "usage") else chunk.get("usage") if isinstance(chunk, dict) else None
+                    )
                     # Extract content based on chunk type (dict vs object)
                     if isinstance(chunk, dict):
                         content = chunk['choices'][0].get('delta', {}).get('content')
@@ -284,7 +292,8 @@ class OpenAIProvider(LLMProviderBase):
                                     "tool_calls": self.stream_tool_buffer
                                 }
                             }
-                        ]
+                        ],
+                        "usage": raw_usage,
                     }
                     self.stream_tool_buffer = []
                     chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
@@ -386,7 +395,7 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, stream=True, **kwargs)
             openai_params["stream"] = True
             if self.is_http_provider:
                 response_stream = self.http_provider.sync_stream_call(openai_params)
@@ -447,7 +456,7 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, stream=True, **kwargs)
             openai_params["stream"] = True
             logger.debug(f"openai_params: {openai_params}")
 
@@ -460,7 +469,7 @@ class OpenAIProvider(LLMProviderBase):
                     if resp:
                         self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
-                        if finish_reason and resp.tool_calls:
+                        if finish_reason:
                             yield ModelResponse(
                                 id=resp.id,
                                 model=resp.model,
@@ -476,7 +485,7 @@ class OpenAIProvider(LLMProviderBase):
                     if resp:
                         self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
-                        if finish_reason and resp.tool_calls:
+                        if finish_reason:
                             yield ModelResponse(
                                 id=resp.id,
                                 model=resp.model,
@@ -586,6 +595,14 @@ class OpenAIProvider(LLMProviderBase):
             "max_tokens": max_tokens,
             "stop": stop
         })
+        if llm_params.get("stream"):
+            stream_options = llm_params.get("stream_options")
+            if stream_options is None:
+                llm_params["stream_options"] = {"include_usage": True}
+            elif isinstance(stream_options, dict):
+                merged_stream_options = dict(stream_options)
+                merged_stream_options.setdefault("include_usage", True)
+                llm_params["stream_options"] = merged_stream_options
         log_llm_record("OPENAI_PARAMS", model_name, llm_params, {"request_id": llm_params.pop("llm_request_id", None)})
 
         for param in llm_params:
