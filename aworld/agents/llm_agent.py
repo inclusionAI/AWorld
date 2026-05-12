@@ -40,6 +40,7 @@ from aworld.models.prompt_cache import (
     supports_provider_native_prompt_cache,
     should_request_provider_native_cache,
 )
+from aworld.models.usage import normalize_usage
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process, ModelUtils
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
@@ -473,7 +474,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _usage_has_cache_tokens(self, usage: Dict[str, Any] | None) -> bool:
         if not isinstance(usage, dict):
             return False
-        return (usage.get("cache_hit_tokens", 0) or 0) > 0 or (usage.get("cache_write_tokens", 0) or 0) > 0
+        normalized_usage = normalize_usage(usage)
+        return (
+            (normalized_usage.get("cache_hit_tokens", 0) or 0) > 0
+            or (normalized_usage.get("cache_write_tokens", 0) or 0) > 0
+        )
 
     def _provider_native_cache_requested(
         self,

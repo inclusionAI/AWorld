@@ -163,6 +163,13 @@ def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():
     assert record["assembly_observability"]["provider_native_cache"] is True
 
 
+def test_usage_has_cache_tokens_coerces_string_values():
+    agent = _build_agent()
+
+    assert agent._usage_has_cache_tokens({"cache_hit_tokens": "0", "cache_write_tokens": "1"}) is True
+    assert agent._usage_has_cache_tokens({"cache_hit_tokens": "0", "cache_write_tokens": "0"}) is False
+
+
 def test_prompt_assembly_observability_uses_injected_prompt_assembly_provider():
     class CustomPromptAssemblyProvider:
         def build_plan(self, *, messages, tools=None, metadata=None):
