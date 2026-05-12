@@ -2633,6 +2633,17 @@ class AWorldCLI:
             self._set_active_steering_status(text)
             return
 
+        if kind == "tool_call_started":
+            self._set_active_steering_status(text or "Calling tool")
+            return
+
+        if kind == "task_finished":
+            self._set_active_steering_status("")
+            return
+
+        if kind in {"message_delta", "tool_result_delta"}:
+            return
+
         mapping = {
             "message_committed": "assistant_message",
             "tool_calls_committed": "tool_calls",
