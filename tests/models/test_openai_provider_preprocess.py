@@ -100,3 +100,10 @@ def test_openai_provider_stream_completion_avoids_duplicate_stream_kwarg_pattern
 
     assert "stream=True, **kwargs" not in source
     assert 'stream_kwargs["stream"] = True' in source
+
+
+def test_openai_provider_get_openai_params_avoids_stream_option_leakage():
+    source = Path("aworld/models/openai_provider.py").read_text(encoding="utf-8")
+
+    assert 'llm_params = dict(self.kwargs.get("params", {}))' in source
+    assert 'llm_params.pop("stream_options", None)' in source

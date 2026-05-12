@@ -1463,8 +1463,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 await task.outputs.add_output(ChunkOutput(data=chunk, metadata=meta))
 
                     else:
-                        # Remove 'stream' from kwargs to avoid conflict
-                        non_stream_kwargs = {k: v for k, v in kwargs.items() if k != 'stream'}
+                        # Remove stream-only kwargs to avoid leaking stale stream options into fallback calls.
+                        non_stream_kwargs = {
+                            k: v for k, v in kwargs.items() if k not in {"stream", "stream_options"}
+                        }
                         logger.info(f"🔀 Using non-stream mode (no timeout limit, relies on httpx client timeout)")
 
                         llm_response = await acall_llm_model(
