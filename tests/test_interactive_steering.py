@@ -417,6 +417,37 @@ def test_active_steering_event_commits_message_and_tool_blocks():
     ]
 
 
+def test_active_steering_status_without_appending_history():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+
+    cli._handle_active_steering_event({"kind": "status_changed", "text": "Inspecting repository"})
+
+    assert cli._active_steering_view.status_text == "Inspecting repository"
+    assert cli._active_steering_view.history == []
+
+
+def test_active_steering_task_finished_clears_active_steering_status_line():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+    cli._active_steering_view.status_text = "Calling tool"
+
+    cli._handle_active_steering_event({"kind": "task_finished", "text": "done"})
+
+    assert cli._active_steering_view.status_text == ""
+    assert cli._active_steering_view.history == []
+
+
+def test_active_steering_deltas_do_not_append_history_directly():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+
+    cli._handle_active_steering_event({"kind": "message_delta", "text": "Partial assistant text"})
+    cli._handle_active_steering_event({"kind": "tool_result_delta", "text": "Partial tool output"})
+
+    assert cli._active_steering_view.history == []
+
+
 def test_active_steering_history_strips_ansi_sequences_from_committed_blocks():
     cli = AWorldCLI()
     cli._active_steering_view = cli._create_active_steering_view()
