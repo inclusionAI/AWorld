@@ -26,7 +26,7 @@ from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
 from aworld.trace.instrumentation import semconv
-from aworld.models.usage import normalize_usage
+from aworld.models.usage import normalize_usage, summarize_prompt_cache_usage
 from aworld.utils.common import override_in_subclass, new_instance
 from aworld.utils.serialized_util import to_serializable
 
@@ -58,10 +58,14 @@ class TaskEventRunner(TaskRunner):
     ) -> str:
         task_scope = "sub" if is_sub_task else "main"
         normalized_usage = TaskEventRunner._normalize_token_usage(token_usage)
-        return (
+        message = (
             f"{task_scope} task {task_id} finished, time cost: {time_cost}s, "
             f"token cost: {normalized_usage}."
         )
+        cache_summary = summarize_prompt_cache_usage(token_usage)
+        if cache_summary:
+            message += f" prompt cache: {cache_summary}."
+        return message
 
     def _current_token_usage(self) -> dict:
         return self._normalize_token_usage(self.context.token_usage if self.context else {})

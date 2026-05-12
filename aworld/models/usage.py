@@ -17,6 +17,52 @@ def _coerce_int(value: Any) -> int:
         return 0
 
 
+def _lookup_usage_int(usage: Dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        if key in usage:
+            return _coerce_int(usage.get(key))
+
+    for detail_key in ("prompt_tokens_details", "input_tokens_details"):
+        details = usage.get(detail_key)
+        if not isinstance(details, dict):
+            continue
+        for key in keys:
+            if key in details:
+                return _coerce_int(details.get(key))
+    return None
+
+
+def summarize_prompt_cache_usage(usage: Dict[str, Union[int, Dict[str, int]]] | None = None) -> Dict[str, Any]:
+    """Build a concise prompt-cache summary for task-level logging."""
+    if not isinstance(usage, dict):
+        return {}
+
+    normalized = normalize_usage(usage)
+    prompt_tokens = _coerce_int(normalized.get("prompt_tokens"))
+    cache_read_tokens = _lookup_usage_int(usage, "cache_read_input_tokens") or 0
+    cache_write_tokens = _lookup_usage_int(usage, "cache_write_tokens", "cache_creation_input_tokens") or 0
+    cache_related_tokens = _lookup_usage_int(usage, "cache_related_tokens", "cache_hit_tokens", "cached_tokens")
+    if cache_related_tokens is None:
+        cache_related_tokens = cache_read_tokens + cache_write_tokens
+
+    if cache_read_tokens <= 0 and cache_write_tokens <= 0 and cache_related_tokens <= 0:
+        return {}
+
+    def _ratio(value: int) -> float:
+        if prompt_tokens <= 0:
+            return 0.0
+        return round(value / prompt_tokens, 4)
+
+    return {
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "cache_related_tokens": cache_related_tokens,
+        "cache_read_ratio": _ratio(cache_read_tokens),
+        "cache_write_ratio": _ratio(cache_write_tokens),
+        "cache_related_ratio": _ratio(cache_related_tokens),
+    }
+
+
 def normalize_usage(usage: Dict[str, Union[int, Dict[str, int]]] | None = None) -> Dict[str, Any]:
     """Normalize provider-specific token usage into the common AWorld schema."""
     if not isinstance(usage, dict):
