@@ -192,6 +192,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
         except Exception as exc:
             logger.warning(f"HUD publish task started failed: {exc}")
 
+    def _streaming_output_enabled(self) -> bool:
+        stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+        if not stream_on:
+            return False
+        return not bool(getattr(self, "_suppress_interactive_stream_output", False))
+
     def _publish_hud_stream_update(
         self,
         task_id: str,
@@ -888,7 +894,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             logger.info(f"💾 Saved round to history - model: {model_name}")
                                         except Exception as save_err:
                                             logger.warning(f"💾 Failed to save round to history: {save_err}")
-                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    stream_on = self._streaming_output_enabled()
                                     tool_result_pending = ctrl.buffer.has_tool_result_pending()
                                     has_pending_display = ctrl.has_pending_display(stream_on, received_chunk_output, tool_result_pending)
                                     if has_pending_display:
@@ -1138,7 +1144,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     tr_lines = self._format_tool_result_display_lines(output)
                                     if tr_lines:
                                         ctrl.buffer.accumulated_tool_result_lines.extend(tr_lines)
-                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    stream_on = self._streaming_output_enabled()
                                     has_pending_display = ctrl.has_any_pending(stream_on)
                                     if has_pending_display:
                                         ctrl.set_pending_clear()
@@ -1164,7 +1170,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 elif isinstance(output, ChunkOutput):
                                     received_chunk_output = True
                                     ctrl.streaming_mode = True
-                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    stream_on = self._streaming_output_enabled()
                                     chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                     if stream_on and chunk:

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -43,6 +44,38 @@ async def test_plain_text_is_queued_while_task_is_active():
     snapshot = runtime._steering.snapshot("sess-1")
     assert snapshot["pending_count"] == 1
     assert snapshot["last_steer_excerpt"] == "Focus on the failing test first."
+
+
+@pytest.mark.asyncio
+async def test_plain_text_steering_queue_is_logged_to_workspace_session_log(tmp_path):
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    runtime._steering.begin_task("sess-1", "task-1")
+    task = asyncio.create_task(asyncio.sleep(60))
+
+    handled = await cli._handle_active_task_input(
+        "Focus on the failing test first.",
+        runtime=runtime,
+        session_id="sess-1",
+        executor_task=task,
+        workspace_path=str(tmp_path),
+        task_id="task-1",
+    )
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert handled is True
+
+    log_path = tmp_path / ".aworld" / "memory" / "sessions" / "sess-1.jsonl"
+    payload = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["event"] == "steering_queued"
+    assert payload["session_id"] == "sess-1"
+    assert payload["task_id"] == "task-1"
+    assert payload["pending_count"] == 1
+    assert payload["steering"]["text"] == "Focus on the failing test first."
+    assert payload["steering"]["sequence"] == 1
 
 
 @pytest.mark.asyncio
@@ -260,6 +293,36 @@ async def test_terminal_fallback_continuation_runs_follow_up_turn_for_pending_st
     assert result == "result-2"
     assert prompts[0] == "Initial task"
     assert "Focus on failing tests first." in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_active_steering_temporarily_suppresses_executor_stream_rendering():
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    executor_instance = SimpleNamespace(
+        session_id="sess-1",
+        context=None,
+        _suppress_interactive_stream_output=False,
+    )
+    observed_flags: list[bool] = []
+
+    async def fake_executor(_prompt: str):
+        observed_flags.append(executor_instance._suppress_interactive_stream_output)
+        return "done"
+
+    result = await cli._run_executor_with_active_steering(
+        prompt="continue",
+        executor=fake_executor,
+        completer=None,
+        runtime=runtime,
+        agent_name="Aworld",
+        executor_instance=executor_instance,
+        is_terminal=True,
+    )
+
+    assert result == "done"
+    assert observed_flags == [True]
+    assert executor_instance._suppress_interactive_stream_output is False
 
 
 @pytest.mark.asyncio
