@@ -252,6 +252,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if event is not None:
             self._emit_active_steering_event(**event)
 
+    def _reset_active_steering_buffer(self) -> None:
+        buffer = getattr(self, "_active_steering_commit_buffer", None)
+        if buffer is not None:
+            buffer.reset()
+
     def _publish_hud_stream_update(
         self,
         task_id: str,
@@ -1136,9 +1141,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     
                                     if active_event_mode:
                                         response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
-                                        had_buffered_message_chunks = bool(
-                                            self._active_steering_buffer().message_chunks
-                                        )
+                                        had_buffered_message_chunks = self._active_steering_buffer().has_pending_message()
                                         self._flush_active_steering_message_buffer(
                                             agent_name=current_agent_name or "Assistant",
                                         )
@@ -1432,6 +1435,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 try:
                     await consume_stream()
                 except (asyncio.CancelledError, KeyboardInterrupt):
+                    self._reset_active_steering_buffer()
                     if self._active_steering_event_mode_enabled():
                         self._emit_active_steering_event("system_notice", text="Interrupted.")
                     elif self.console:
@@ -1643,6 +1647,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     },
                 )
                 self._publish_hud_task_finished(task.id, task_status="idle")
+                self._reset_active_steering_buffer()
                 return answer
                 
             except Exception as err:
@@ -1670,6 +1675,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 )
 
                 error_msg = f"Error: {err}, traceback: {traceback.format_exc()}"
+                self._reset_active_steering_buffer()
                 if self._active_steering_event_mode_enabled():
                     self._emit_active_steering_event("error", text=error_msg)
                 elif self.console:

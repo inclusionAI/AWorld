@@ -130,3 +130,16 @@ def test_commit_buffer_preserves_ordinary_bracketed_content():
         "agent_name": "Aworld",
         "text": "array[0] [1] text [A] tail",
     }
+
+
+def test_commit_buffer_reset_clears_pending_message_chunks():
+    buffer = ActiveSteeringCommitBuffer()
+
+    buffer.append_message_delta("stale ")
+
+    assert buffer.has_pending_message() is True
+
+    buffer.reset()
+
+    assert buffer.has_pending_message() is False
+    assert buffer.commit_message(agent_name="Aworld") is None

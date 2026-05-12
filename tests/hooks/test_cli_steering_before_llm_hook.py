@@ -197,6 +197,26 @@ def test_local_executor_flushes_buffered_message_chunks_to_commit_event():
     ]
 
 
+def test_local_executor_reset_drops_stale_buffered_message_chunks_between_turns():
+    agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
+    executor = LocalAgentExecutor(Swarm(agent))
+    events: list[dict[str, str]] = []
+    executor._active_steering_event_sink = events.append
+
+    executor._buffer_active_steering_message_chunk("stale ")
+    executor._reset_active_steering_buffer()
+    executor._buffer_active_steering_message_chunk("fresh ")
+    executor._flush_active_steering_message_buffer(agent_name="Aworld")
+
+    assert events == [
+        {
+            "kind": "message_committed",
+            "text": "fresh ",
+            "agent_name": "Aworld",
+        }
+    ]
+
+
 def test_local_executor_b_granularity_tool_result_summary():
     agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
     executor = LocalAgentExecutor(Swarm(agent))
