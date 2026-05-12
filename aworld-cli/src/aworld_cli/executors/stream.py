@@ -146,6 +146,12 @@ class ActiveSteeringCommitBuffer:
     max_summary_lines: int = 4
     message_chunks: list[str] = field(default_factory=list)
 
+    def has_pending_message(self) -> bool:
+        return bool(self.message_chunks)
+
+    def reset(self) -> None:
+        self.message_chunks.clear()
+
     def append_message_delta(self, text: str) -> None:
         if text:
             self.message_chunks.append(text)
