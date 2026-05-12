@@ -193,6 +193,35 @@ def test_prompt_assembly_observability_uses_injected_prompt_assembly_provider():
     assert observability["provider_native_cache"] is True
 
 
+def test_openai_prompt_assembly_observability_enables_native_cache_from_stable_prefix():
+    class CustomPromptAssemblyProvider:
+        def build_plan(self, *, messages, tools=None, metadata=None):
+            observability = dict(metadata or {})
+            observability["assembly_provider"] = "CustomPromptAssemblyProvider"
+            return PromptAssemblyPlan(
+                messages=messages,
+                stable_hash="stable-hash-from-plan",
+                observability=observability,
+                metadata=dict(metadata or {}),
+            )
+
+    agent = _build_agent()
+    agent.prompt_assembly_provider = CustomPromptAssemblyProvider()
+
+    observability = agent._build_prompt_assembly_observability(
+        messages=[
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "hello"},
+        ],
+        tools=[{"function": {"name": "search"}}],
+        request_kwargs={},
+    )
+
+    assert observability["provider_native_cache"] is True
+    assert observability["stable_prefix_hash"] == "stable-hash-from-plan"
+    assert observability["prompt_cache_key"] == "stable-hash-from-plan"
+
+
 @pytest.mark.asyncio
 async def test_async_policy_does_not_forward_prompt_cache_kwargs_to_unknown_provider():
     captured = {}

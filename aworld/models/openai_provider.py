@@ -26,8 +26,9 @@ from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.logs.util import logger, log_llm_record
 from aworld.models.llm_http_handler import LLMHTTPHandler
+from aworld.models.openai_message_sanitizer import sanitize_openai_messages
 from aworld.models.model_response import ModelResponse, LLMResponseError
-from aworld.models.prompt_cache import DefaultPromptAssemblyLowerer
+from aworld.models.prompt_cache import OpenAIPromptAssemblyLowerer
 
 
 class OpenAIProvider(LLMProviderBase):
@@ -153,19 +154,7 @@ class OpenAIProvider(LLMProviderBase):
         Returns:
             Processed message list.
         """
-        prompt_assembly_plan = kwargs.get("prompt_assembly_plan")
-        if prompt_assembly_plan is not None:
-            lowered = DefaultPromptAssemblyLowerer().lower(plan=prompt_assembly_plan)
-            messages = lowered.messages
-
-        for message in messages:
-            if message["role"] == "assistant" and "tool_calls" in message and message["tool_calls"]:
-                if message["content"] is None: message["content"] = ""
-                for tool_call in message["tool_calls"]:
-                    if "function" not in tool_call and "name" in tool_call and "arguments" in tool_call:
-                        tool_call["function"] = {"name": tool_call["name"], "arguments": tool_call["arguments"]}
-
-        return messages
+        return sanitize_openai_messages(messages)
 
     def postprocess_response(self, response: Any) -> ModelResponse:
         """Process OpenAI response.
@@ -559,6 +548,18 @@ class OpenAIProvider(LLMProviderBase):
                           max_tokens: int = None,
                           stop: List[str] = None,
                           **kwargs) -> Dict[str, Any]:
+        prompt_assembly_plan = kwargs.pop("prompt_assembly_plan", None)
+        provider_native_prompt_cache = bool(kwargs.pop("provider_native_prompt_cache", False))
+        lowered_request_kwargs = {}
+        if prompt_assembly_plan is not None:
+            lowered = OpenAIPromptAssemblyLowerer().lower(
+                plan=prompt_assembly_plan,
+                request_kwargs={},
+                enable_native_cache=provider_native_prompt_cache,
+            )
+            messages = sanitize_openai_messages(lowered.messages)
+            lowered_request_kwargs = lowered.request_kwargs
+
         model_name = kwargs.get("model_name", self.model_name or "")
         openai_params = {
             "model": model_name,
@@ -577,10 +578,9 @@ class OpenAIProvider(LLMProviderBase):
 
         llm_params = self.kwargs.get("params", {})
         llm_params.update(kwargs)
+        llm_params.update(lowered_request_kwargs)
         llm_params.pop("response_parse_args", None)
         llm_params.pop("context", None)
-        llm_params.pop("prompt_assembly_plan", None)
-        llm_params.pop("provider_native_prompt_cache", None)
         llm_params.update({
             "temperature": temperature,
             "max_tokens": max_tokens,
