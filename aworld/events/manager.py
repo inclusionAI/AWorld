@@ -15,6 +15,12 @@ from aworld.logs.util import logger
 class EventManager:
     """The event manager is now used to build an event bus instance and store the messages recently."""
 
+    _QUIET_MISSING_HANDLER_EVENT_TYPES = {
+        Constants.CHUNK,
+        Constants.OUTPUT,
+        Constants.MEMORY,
+    }
+
     def __init__(self, context: Context, streaming_mode: StreamingMode = None, **kwargs):
         # use conf to build event bus instance
         self.event_bus = eventbus
@@ -92,7 +98,8 @@ class EventManager:
     def get_handlers(self, event_type: str) -> Dict[str, List[Callable[..., Any]]]:
         handlers = self.event_bus.get_handlers(self.context._task_id, event_type)
         if not handlers:
-            logger.info(f"Task {self.context._task_id} has no registered handlers with {event_type} event_type.")
+            if event_type not in self._QUIET_MISSING_HANDLER_EVENT_TYPES:
+                logger.info(f"Task {self.context._task_id} has no registered handlers with {event_type} event_type.")
         return handlers
 
     def get_transform_handler(self, key: str) -> Callable[..., Any]:
