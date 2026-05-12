@@ -17,6 +17,10 @@ def test_get_handlers_suppresses_expected_passthrough_event_noise(monkeypatch):
     assert not event_manager.get_handlers(Constants.CHUNK)
     assert not event_manager.get_handlers(Constants.OUTPUT)
     assert not event_manager.get_handlers(Constants.MEMORY)
+    assert not event_manager.get_handlers(Constants.CONTEXT)
+    assert not event_manager.get_handlers(Constants.CONTEXT_RESPONSE)
+    assert not event_manager.get_handlers(Constants.TASK)
+    assert not event_manager.get_handlers(Constants.TOOL_CALLBACK)
 
     assert entries == []
 
