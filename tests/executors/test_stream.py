@@ -78,8 +78,8 @@ def test_commit_buffer_keeps_short_tool_results_full():
     )
 
     assert committed == {
-        "role": "assistant",
-        "content": "first line\nsecond line\nthird line",
+        "kind": "tool_result_committed",
+        "text": "first line\nsecond line\nthird line",
     }
 
 
@@ -99,8 +99,8 @@ def test_commit_buffer_summarizes_long_tool_results():
     )
 
     assert committed == {
-        "role": "assistant",
-        "content": "Exit code: 7\nline 1\nline 2\nline 3\n... (3 more lines)",
+        "kind": "tool_result_committed",
+        "text": "Exit code: 7\nline 1\nline 2\nline 3\n... (3 more lines)",
     }
 
 
@@ -111,7 +111,22 @@ def test_commit_buffer_sanitizes_message_text():
     committed = buffer.commit_message("\n?[1;36m\x1b[0m\tbeta\x07\n", agent_name="Aworld")
 
     assert committed == {
-        "role": "assistant",
-        "name": "Aworld",
-        "content": "    alpha\n    beta",
+        "kind": "message_committed",
+        "agent_name": "Aworld",
+        "text": "    alpha\n    beta",
+    }
+
+
+def test_commit_buffer_preserves_ordinary_bracketed_content():
+    buffer = ActiveSteeringCommitBuffer()
+
+    committed = buffer.commit_message(
+        "array[0] [1] text [A] tail\n",
+        agent_name="Aworld",
+    )
+
+    assert committed == {
+        "kind": "message_committed",
+        "agent_name": "Aworld",
+        "text": "array[0] [1] text [A] tail",
     }
