@@ -2,15 +2,32 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rework local `aworld-cli` active steering so a running task uses a stable transcript area, a single runtime status line, and a bottom prompt that stays clearly interactive.
+**Goal:** Rework local `aworld-cli` active steering so a running task uses a stable transcript area, a single runtime status line, and a fixed bottom prompt while executor output is committed in readable blocks instead of streamed directly into the shared terminal surface.
 
-**Architecture:** Add an active-steering presentation mode at the CLI layer and route executor output through committed display events instead of live terminal streaming while the active steering loop is running. Keep ordinary chat mode and ACP behavior unchanged by gating the new path behind local active steering only.
+**Architecture:** `AWorldCLI` owns the active steering terminal surface and renders only transcript history, one status line, and the bottom input prompt. `LocalAgentExecutor` emits structured active-steering events and uses a small commit buffer in `executors/stream.py` to sanitize, summarize, and commit assistant/tool output at natural boundaries. Ordinary non-active-steering chat keeps the current streaming path.
 
 **Tech Stack:** Python, `prompt_toolkit`, Rich, pytest
 
 ---
 
-### Task 1: Add Active Steering Presentation State And Tests
+## File Structure
+
+- `aworld-cli/src/aworld_cli/console.py`
+  Active steering view state, fixed bottom prompt, status line rendering, structured event consumption, and executor event-sink lifecycle.
+- `aworld-cli/src/aworld_cli/executors/local.py`
+  Active steering event emission, chunk/message/tool-result buffering, commit-boundary orchestration, and status updates.
+- `aworld-cli/src/aworld_cli/executors/stream.py`
+  New active steering commit buffer with ANSI sanitization and B-granularity tool-result summarization.
+- `aworld-cli/src/aworld_cli/executors/file_parse_hook.py`
+  Route file-parse progress into the active steering status sink instead of directly writing to the console.
+- `tests/test_interactive_steering.py`
+  Console ownership, event handling, active steering prompt behavior, hook routing, and end-to-end steering-loop regressions.
+- `tests/executors/test_stream.py`
+  Active steering commit-buffer sanitization and summarization behavior.
+- `tests/hooks/test_cli_steering_before_llm_hook.py`
+  Executor event-mode regressions that should stay stable while active steering suppresses direct streaming.
+
+### Task 1: Cut `patch_stdout` From The Active Steering Prompt Path
 
 **Files:**
 - Modify: `aworld-cli/src/aworld_cli/console.py`
@@ -20,72 +37,99 @@
 
 ```python
 @pytest.mark.asyncio
-async def test_active_steering_feedback_is_recorded_as_committed_history():
+async def test_active_task_prompt_does_not_use_patch_stdout(monkeypatch):
     cli = AWorldCLI()
+    patch_calls: list[str] = []
 
-    cli._active_steering_view = cli._create_active_steering_view()
-    cli._append_active_steering_history("system_notice", "Steering queued for the next checkpoint.")
+    class FakePromptSession:
+        async def prompt_async(self, *_args, **_kwargs):
+            return "queued steering"
 
-    assert cli._active_steering_view.history == [
-        {"kind": "system_notice", "text": "Steering queued for the next checkpoint."}
-    ]
+    def fail_patch_stdout():
+        patch_calls.append("called")
+        raise AssertionError("patch_stdout should not be used in active steering mode")
+
+    monkeypatch.setattr(console_module, "patch_stdout", fail_patch_stdout)
+
+    result = await cli._prompt_active_task_input(
+        session=FakePromptSession(),
+        runtime=None,
+        agent_name="Aworld",
+    )
+
+    assert result == "queued steering"
+    assert patch_calls == []
 
 
-def test_active_steering_status_line_tracks_runtime_summary():
+@pytest.mark.asyncio
+async def test_active_task_prompt_keeps_status_line_and_input_anchor(monkeypatch):
     cli = AWorldCLI()
+    captured: dict[str, object] = {}
 
-    cli._active_steering_view = cli._create_active_steering_view()
-    cli._set_active_steering_status("Calling bash")
+    class FakePromptSession:
+        async def prompt_async(self, message="", **kwargs):
+            captured["message"] = message
+            captured["kwargs"] = kwargs
+            return "queued steering"
 
-    assert cli._active_steering_view.status_text == "Calling bash"
+    monkeypatch.setattr(
+        console_module,
+        "patch_stdout",
+        lambda: (_ for _ in ()).throw(AssertionError("patch_stdout should not be used")),
+    )
+
+    result = await cli._prompt_active_task_input(
+        session=FakePromptSession(),
+        runtime=None,
+        agent_name="Aworld",
+        wait_started_at=time.monotonic() - 5.0,
+    )
+
+    assert result == "queued steering"
+    assert "Working (" in str(captured["message"])
+    assert "Esc to interrupt" in str(captured["message"])
+    assert "›" in str(captured["message"])
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_interactive_steering.py -q -k "committed_history or status_line_tracks_runtime_summary"`
-Expected: FAIL because `_create_active_steering_view`, `_append_active_steering_history`, or `_set_active_steering_status` do not exist yet.
+Run: `pytest tests/test_interactive_steering.py -q -k "does_not_use_patch_stdout or keeps_status_line_and_input_anchor"`
+Expected: FAIL because `_prompt_active_task_input()` still wraps `session.prompt_async(...)` in `patch_stdout()`.
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-from dataclasses import dataclass, field
-
-
-@dataclass
-class ActiveSteeringView:
-    history: list[dict[str, str]] = field(default_factory=list)
-    status_text: str = ""
-
-
-def _create_active_steering_view(self) -> ActiveSteeringView:
-    return ActiveSteeringView()
-
-
-def _append_active_steering_history(self, kind: str, text: str) -> None:
-    if self._active_steering_view is None or not str(text).strip():
-        return
-    self._active_steering_view.history.append({"kind": kind, "text": str(text).strip()})
-
-
-def _set_active_steering_status(self, text: str) -> None:
-    if self._active_steering_view is None:
-        return
-    self._active_steering_view.status_text = str(text).strip()
+async def _prompt_active_task_input(
+    self,
+    *,
+    session: PromptSession,
+    runtime: Any,
+    agent_name: str,
+    wait_started_at: float | None = None,
+) -> str:
+    prompt_kwargs = self._build_prompt_kwargs(
+        runtime,
+        agent_name=agent_name,
+        mode="Steering",
+    )
+    prompt_message = self._build_active_task_prompt_message(wait_started_at)
+    prompt_kwargs["reserve_space_for_menu"] = 0
+    return await session.prompt_async(prompt_message, **prompt_kwargs)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/test_interactive_steering.py -q -k "committed_history or status_line_tracks_runtime_summary"`
+Run: `pytest tests/test_interactive_steering.py -q -k "does_not_use_patch_stdout or keeps_status_line_and_input_anchor"`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add aworld-cli/src/aworld_cli/console.py tests/test_interactive_steering.py
-git commit -m "feat: add active steering presentation state"
+git commit -m "fix: stop using patch_stdout in active steering prompts"
 ```
 
-### Task 2: Move Steering Acknowledgements Into Committed Transcript Blocks
+### Task 2: Expand The Console-Side Active Steering Event Protocol
 
 **Files:**
 - Modify: `aworld-cli/src/aworld_cli/console.py`
@@ -94,61 +138,219 @@ git commit -m "feat: add active steering presentation state"
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-@pytest.mark.asyncio
-async def test_plain_text_steering_ack_appends_committed_history():
+def test_status_changed_updates_status_without_appending_history():
     cli = AWorldCLI()
-    runtime = FakeRuntime()
-    runtime._steering.begin_task("sess-1", "task-1")
     cli._active_steering_view = cli._create_active_steering_view()
-    task = asyncio.create_task(asyncio.sleep(60))
 
-    await cli._handle_active_task_input(
-        "Focus on failing tests first.",
-        runtime=runtime,
-        session_id="sess-1",
-        executor_task=task,
+    cli._handle_active_steering_event({"kind": "status_changed", "text": "Calling bash"})
+
+    assert cli._active_steering_view.status_text == "Calling bash"
+    assert cli._active_steering_view.history == []
+
+
+def test_task_finished_clears_active_steering_status_line():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+    cli._set_active_steering_status("Calling bash")
+
+    cli._handle_active_steering_event({"kind": "task_finished"})
+
+    assert cli._active_steering_view.status_text == ""
+
+
+def test_message_and_tool_deltas_do_not_append_history_directly():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+
+    cli._handle_active_steering_event({"kind": "message_delta", "text": "Repo "})
+    cli._handle_active_steering_event({"kind": "tool_result_delta", "text": "line 1"})
+
+    assert cli._active_steering_view.history == []
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pytest tests/test_interactive_steering.py -q -k "status_without_appending_history or clears_active_steering_status_line or deltas_do_not_append_history_directly"`
+Expected: FAIL because `_handle_active_steering_event()` does not yet handle `task_finished`, and delta events are not explicitly ignored/documented.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+def _handle_active_steering_event(self, event: dict[str, Any]) -> None:
+    if not isinstance(event, dict):
+        return
+
+    kind = str(event.get("kind") or "").strip()
+    text = str(event.get("text") or "").strip()
+    if not kind:
+        return
+
+    if kind == "status_changed":
+        self._set_active_steering_status(text)
+        return
+
+    if kind == "tool_call_started":
+        self._set_active_steering_status(text or "Calling tool")
+        return
+
+    if kind == "task_finished":
+        self._set_active_steering_status("")
+        return
+
+    if kind in {"message_delta", "tool_result_delta"}:
+        return
+
+    mapping = {
+        "message_committed": "assistant_message",
+        "tool_calls_committed": "tool_calls",
+        "tool_result_committed": "tool_result",
+        "system_notice": "system_notice",
+        "error": "error",
+    }
+    history_kind = mapping.get(kind)
+    if history_kind is None:
+        return
+
+    self._append_active_steering_history(
+        history_kind,
+        text,
+        agent_name=str(event.get("agent_name") or "").strip() or None,
+    )
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pytest tests/test_interactive_steering.py -q -k "status_without_appending_history or clears_active_steering_status_line or deltas_do_not_append_history_directly"`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add aworld-cli/src/aworld_cli/console.py tests/test_interactive_steering.py
+git commit -m "feat: expand active steering console event handling"
+```
+
+### Task 3: Add An Active Steering Commit Buffer With Sanitization And B-Granularity Summaries
+
+**Files:**
+- Modify: `aworld-cli/src/aworld_cli/executors/stream.py`
+- Test: `tests/executors/test_stream.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+from aworld_cli.executors.stream import ActiveSteeringCommitBuffer
+
+
+def test_active_steering_commit_buffer_keeps_short_tool_results_full():
+    buffer = ActiveSteeringCommitBuffer(max_full_result_lines=4, max_summary_lines=2)
+
+    event = buffer.commit_tool_result(["line 1", "line 2"], exit_code=0)
+
+    assert event == {
+        "kind": "tool_result_committed",
+        "text": "line 1\nline 2",
+    }
+
+
+def test_active_steering_commit_buffer_summarizes_long_tool_results():
+    buffer = ActiveSteeringCommitBuffer(max_full_result_lines=3, max_summary_lines=2)
+
+    event = buffer.commit_tool_result(
+        [f"line {index}" for index in range(1, 7)],
+        exit_code=1,
     )
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    assert event["kind"] == "tool_result_committed"
+    assert "Exit code: 1" in event["text"]
+    assert "line 1" in event["text"]
+    assert "line 2" in event["text"]
+    assert "... (4 more lines)" in event["text"]
 
-    assert cli._active_steering_view.history[-1] == {
-        "kind": "system_notice",
-        "text": "Steering queued for the next checkpoint.",
+
+def test_active_steering_commit_buffer_sanitizes_message_text():
+    buffer = ActiveSteeringCommitBuffer()
+
+    event = buffer.commit_message("?[1;36mAworld?[0m\nRepository scan complete.", agent_name="Aworld")
+
+    assert event == {
+        "kind": "message_committed",
+        "text": "Aworld\nRepository scan complete.",
+        "agent_name": "Aworld",
     }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_interactive_steering.py -q -k steering_ack_appends_committed_history`
-Expected: FAIL because the steering acknowledgement is still printed directly rather than appended into presentation history.
+Run: `pytest tests/executors/test_stream.py -q -k "commit_buffer_keeps_short_tool_results_full or commit_buffer_summarizes_long_tool_results or commit_buffer_sanitizes_message_text"`
+Expected: FAIL because `ActiveSteeringCommitBuffer` does not exist yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-if self._active_steering_view is not None:
-    self._append_active_steering_history(
-        "system_notice",
-        "Steering queued for the next checkpoint.",
-    )
-else:
-    self.console.print("[dim]Steering queued for the next checkpoint.[/dim]")
+@dataclass
+class ActiveSteeringCommitBuffer:
+    max_full_result_lines: int = 8
+    max_summary_lines: int = 4
+    message_chunks: list[str] = field(default_factory=list)
+
+    def append_message_delta(self, text: str) -> None:
+        normalized = self._sanitize(text)
+        if normalized:
+            self.message_chunks.append(normalized)
+
+    def commit_message(self, text: str | None = None, *, agent_name: str | None = None) -> dict[str, Any] | None:
+        source = text if text is not None else "".join(self.message_chunks)
+        normalized = self._sanitize(source)
+        self.message_chunks.clear()
+        if not normalized:
+            return None
+        event = {"kind": "message_committed", "text": normalized}
+        if agent_name:
+            event["agent_name"] = agent_name
+        return event
+
+    def commit_tool_result(self, lines: list[str], *, exit_code: int | None = None) -> dict[str, Any] | None:
+        cleaned = [self._sanitize(line) for line in lines if self._sanitize(line)]
+        if not cleaned:
+            return None
+        if len(cleaned) <= self.max_full_result_lines:
+            return {"kind": "tool_result_committed", "text": "\n".join(cleaned)}
+
+        summary_lines: list[str] = []
+        if exit_code not in (None, 0):
+            summary_lines.append(f"Exit code: {exit_code}")
+        summary_lines.extend(cleaned[: self.max_summary_lines])
+        remaining = len(cleaned) - self.max_summary_lines
+        summary_lines.append(f"... ({remaining} more lines)")
+        return {"kind": "tool_result_committed", "text": "\n".join(summary_lines)}
+
+    def _sanitize(self, text: str) -> str:
+        normalized = str(text or "")
+        normalized = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", normalized)
+        normalized = re.sub(r"\?\[[0-9;?]*[A-Za-z]", "", normalized)
+        normalized = normalized.replace("\t", "    ")
+        lines = [line.rstrip() for line in normalized.splitlines()]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines).strip()
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/test_interactive_steering.py -q -k steering_ack_appends_committed_history`
+Run: `pytest tests/executors/test_stream.py -q -k "commit_buffer_keeps_short_tool_results_full or commit_buffer_summarizes_long_tool_results or commit_buffer_sanitizes_message_text"`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add aworld-cli/src/aworld_cli/console.py tests/test_interactive_steering.py
-git commit -m "feat: commit steering acknowledgements into active history"
+git add aworld-cli/src/aworld_cli/executors/stream.py tests/executors/test_stream.py
+git commit -m "feat: add active steering commit buffer"
 ```
 
-### Task 3: Add Executor Event Sink For Active Steering Mode
+### Task 4: Route Local Executor Streaming Through The Commit Buffer And Structured Events
 
 **Files:**
 - Modify: `aworld-cli/src/aworld_cli/executors/local.py`
@@ -158,15 +360,44 @@ git commit -m "feat: commit steering acknowledgements into active history"
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_local_executor_reports_status_updates_to_active_steering_sink():
+def test_local_executor_flushes_buffered_message_chunks_to_commit_event():
     agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
     executor = LocalAgentExecutor(Swarm(agent))
-    events = []
-
+    executor._active_steering_commit_buffer = ActiveSteeringCommitBuffer()
+    events: list[dict[str, str]] = []
     executor._active_steering_event_sink = events.append
-    executor._emit_active_steering_event("status_changed", text="Calling bash")
 
-    assert events == [{"kind": "status_changed", "text": "Calling bash"}]
+    executor._buffer_active_steering_message_chunk("Repo ")
+    executor._buffer_active_steering_message_chunk("scan complete.")
+    executor._flush_active_steering_message_buffer(agent_name="Aworld")
+
+    assert events == [
+        {
+            "kind": "message_committed",
+            "text": "Repo scan complete.",
+            "agent_name": "Aworld",
+        }
+    ]
+
+
+def test_local_executor_emits_b_granularity_tool_result_summary():
+    agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
+    executor = LocalAgentExecutor(Swarm(agent))
+    executor._active_steering_commit_buffer = ActiveSteeringCommitBuffer(
+        max_full_result_lines=3,
+        max_summary_lines=2,
+    )
+    events: list[dict[str, str]] = []
+    executor._active_steering_event_sink = events.append
+
+    executor._emit_active_steering_tool_result_lines(
+        [f"line {index}" for index in range(1, 7)],
+        exit_code=1,
+    )
+
+    assert events[-1]["kind"] == "tool_result_committed"
+    assert "Exit code: 1" in events[-1]["text"]
+    assert "... (4 more lines)" in events[-1]["text"]
 
 
 def test_local_executor_streaming_output_is_disabled_when_event_sink_is_active(monkeypatch):
@@ -181,165 +412,159 @@ def test_local_executor_streaming_output_is_disabled_when_event_sink_is_active(m
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/hooks/test_cli_steering_before_llm_hook.py tests/test_interactive_steering.py -q -k "event_sink or disabled_when_event_sink_is_active"`
-Expected: FAIL because `_emit_active_steering_event` does not exist and `_streaming_output_enabled` does not yet honor event-sink mode.
+Run: `pytest tests/hooks/test_cli_steering_before_llm_hook.py tests/test_interactive_steering.py -q -k "flushes_buffered_message_chunks_to_commit_event or b_granularity_tool_result_summary or disabled_when_event_sink_is_active"`
+Expected: FAIL because `_buffer_active_steering_message_chunk`, `_flush_active_steering_message_buffer`, and `_emit_active_steering_tool_result_lines` do not exist yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-def _emit_active_steering_event(self, kind: str, **payload) -> None:
-    sink = getattr(self, "_active_steering_event_sink", None)
-    if sink is None:
-        return
-    sink({"kind": kind, **payload})
+from .stream import ActiveSteeringCommitBuffer, StreamDisplayConfig, StreamDisplayController, _print_tool_result_lines
 
 
-def _streaming_output_enabled(self) -> bool:
-    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
-    if not stream_on:
-        return False
-    if getattr(self, "_active_steering_event_sink", None) is not None:
-        return False
-    return not bool(getattr(self, "_suppress_interactive_stream_output", False))
+def _active_steering_buffer(self) -> ActiveSteeringCommitBuffer:
+    buffer = getattr(self, "_active_steering_commit_buffer", None)
+    if buffer is None:
+        buffer = ActiveSteeringCommitBuffer()
+        self._active_steering_commit_buffer = buffer
+    return buffer
+
+
+def _buffer_active_steering_message_chunk(self, text: str) -> None:
+    self._active_steering_buffer().append_message_delta(text)
+
+
+def _flush_active_steering_message_buffer(self, *, agent_name: str | None = None) -> None:
+    event = self._active_steering_buffer().commit_message(agent_name=agent_name)
+    if event is not None:
+        self._emit_active_steering_event(**event)
+
+
+def _emit_active_steering_tool_result_lines(self, lines: list[str], *, exit_code: int | None = None) -> None:
+    event = self._active_steering_buffer().commit_tool_result(lines, exit_code=exit_code)
+    if event is not None:
+        self._emit_active_steering_event(**event)
+```
+
+Then thread these helpers into the stream loop:
+
+```python
+if active_event_mode and isinstance(output, ChunkOutput):
+    chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
+    if chunk and getattr(chunk, "content", None):
+        self._buffer_active_steering_message_chunk(chunk.content)
+    continue
+
+if active_event_mode and isinstance(output, MessageOutput):
+    self._flush_active_steering_message_buffer(agent_name=current_agent_name or "Assistant")
+    response_text = str(output.response) if hasattr(output, "response") and output.response else ""
+    committed = self._active_steering_buffer().commit_message(response_text, agent_name=current_agent_name or "Assistant")
+    if committed is not None:
+        self._emit_active_steering_event(**committed)
+    if tool_calls:
+        self._emit_active_steering_event("tool_calls_committed", text="\n".join(self._format_tool_calls_display_lines(tool_calls)))
+        self._emit_active_steering_event("tool_call_started", text=f"Calling {current_tool_name}")
+    else:
+        self._emit_active_steering_status("Working")
+    continue
+
+if active_event_mode and isinstance(output, ToolResultOutput):
+    tr_lines = self._format_tool_result_display_lines(output)
+    self._emit_active_steering_tool_result_lines(tr_lines, exit_code=getattr(output, "code", None))
+    self._emit_active_steering_status("Working")
+    continue
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/hooks/test_cli_steering_before_llm_hook.py tests/test_interactive_steering.py -q -k "event_sink or disabled_when_event_sink_is_active"`
+Run: `pytest tests/hooks/test_cli_steering_before_llm_hook.py tests/test_interactive_steering.py -q -k "flushes_buffered_message_chunks_to_commit_event or b_granularity_tool_result_summary or disabled_when_event_sink_is_active"`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add aworld-cli/src/aworld_cli/executors/local.py tests/hooks/test_cli_steering_before_llm_hook.py tests/test_interactive_steering.py
-git commit -m "feat: add active steering executor event sink"
+git commit -m "feat: route active steering executor output through commit buffer"
 ```
 
-### Task 4: Convert Active Steering Executor Output Into Committed Blocks
+### Task 5: Route File Parse Progress To The Status Sink Instead Of The Transcript
 
 **Files:**
-- Modify: `aworld-cli/src/aworld_cli/executors/local.py`
-- Modify: `aworld-cli/src/aworld_cli/console.py`
+- Modify: `aworld-cli/src/aworld_cli/executors/file_parse_hook.py`
 - Test: `tests/test_interactive_steering.py`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
 @pytest.mark.asyncio
-async def test_active_steering_events_commit_message_and_tool_blocks():
-    cli = AWorldCLI()
-    cli._active_steering_view = cli._create_active_steering_view()
+async def test_file_parse_hook_prefers_status_sink_over_console(monkeypatch):
+    status_events: list[str] = []
+    console_events: list[str] = []
 
-    cli._handle_active_steering_event({"kind": "message_committed", "text": "Repository scan complete."})
-    cli._handle_active_steering_event({"kind": "tool_calls_committed", "text": "bash: find . -type f | head -20"})
-    cli._handle_active_steering_event({"kind": "tool_result_committed", "text": "./tests/test_interactive_steering.py"})
+    class DummyApplicationContext:
+        workspace_path = "/tmp"
 
-    assert cli._active_steering_view.history == [
-        {"kind": "assistant_message", "text": "Repository scan complete."},
-        {"kind": "tool_calls", "text": "bash: find . -type f | head -20"},
-        {"kind": "tool_result", "text": "./tests/test_interactive_steering.py"},
-    ]
-```
+    class FakeConsole:
+        def print(self, text):
+            console_events.append(str(text))
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_interactive_steering.py -q -k commit_message_and_tool_blocks`
-Expected: FAIL because the CLI does not yet know how to consume executor events into committed history.
-
-- [ ] **Step 3: Write minimal implementation**
-
-```python
-def _handle_active_steering_event(self, event: dict[str, Any]) -> None:
-    kind = str(event.get("kind") or "").strip()
-    text = str(event.get("text") or "").strip()
-    if kind == "status_changed":
-        self._set_active_steering_status(text)
-        return
-    mapping = {
-        "message_committed": "assistant_message",
-        "tool_calls_committed": "tool_calls",
-        "tool_result_committed": "tool_result",
-        "system_notice": "system_notice",
-        "error": "error",
-    }
-    history_kind = mapping.get(kind)
-    if history_kind and text:
-        self._append_active_steering_history(history_kind, text)
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_interactive_steering.py -q -k commit_message_and_tool_blocks`
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add aworld-cli/src/aworld_cli/console.py aworld-cli/src/aworld_cli/executors/local.py tests/test_interactive_steering.py
-git commit -m "feat: commit active steering executor blocks through console"
-```
-
-### Task 5: Suppress Noisy Hook Console Output During Active Steering
-
-**Files:**
-- Modify: `aworld-cli/src/aworld_cli/executors/file_parse_hook.py`
-- Test: `tests/test_interactive_steering.py`
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-@pytest.mark.asyncio
-async def test_file_parse_hook_uses_status_sink_in_active_steering_mode():
-    hook = FileParseHook()
-    events = []
-    context = ApplicationContext()
-    context.workspace_path = "/tmp"
-    context._aworld_cli_status_sink = lambda text: events.append(text)
+    monkeypatch.setattr(file_parse_hook_module, "ApplicationContext", DummyApplicationContext)
+    hook = file_parse_hook_module.FileParseHook()
+    context = DummyApplicationContext()
+    context._aworld_cli_status_sink = status_events.append
     message = Message(
         category="agent_hook",
         payload={},
         sender="user",
-        headers={"user_message": "@missing.txt", "console": None},
+        headers={"user_message": "@missing.txt", "console": FakeConsole()},
     )
 
     await hook.exec(message, context=context)
 
-    assert any("FileParseHook" in text for text in events)
+    assert status_events
+    assert console_events == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_interactive_steering.py -q -k file_parse_hook_uses_status_sink`
-Expected: FAIL because `FileParseHook` still writes directly to console and does not use a context-level status sink.
+Run: `pytest tests/test_interactive_steering.py -q -k file_parse_hook_prefers_status_sink_over_console`
+Expected: FAIL if `FileParseHook` still falls back to `console.print(...)` even when `_aworld_cli_status_sink` is available.
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-status_sink = getattr(context, "_aworld_cli_status_sink", None)
+status_sink = getattr(context, "_aworld_cli_status_sink", None) if context is not None else None
 
 
 def emit_status(text: str) -> None:
+    normalized = _strip_rich_markup(text)
     if callable(status_sink):
-        status_sink(text)
-    elif console:
+        status_sink(normalized)
+        return
+    if console:
         console.print(text)
 ```
 
-Replace direct `console.print(...)` calls in active-status-worthy branches with `emit_status(...)`.
+Then keep using `emit_status(...)` for progress branches such as:
+
+```python
+emit_status(f"[dim]📁 [FileParseHook] Processing {len(valid_matches)} file reference(s)[/dim]")
+emit_status(f"[yellow]⚠️ [FileParseHook] Failed to download remote file {file_ref}: {e}[/yellow]")
+emit_status(f"[red]❌ [FileParseHook] File not found: {file_ref}[/red]")
+```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/test_interactive_steering.py -q -k file_parse_hook_uses_status_sink`
+Run: `pytest tests/test_interactive_steering.py -q -k file_parse_hook_prefers_status_sink_over_console`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add aworld-cli/src/aworld_cli/executors/file_parse_hook.py tests/test_interactive_steering.py
-git commit -m "feat: route file parse progress into active steering status sink"
+git commit -m "fix: send file parse progress to active steering status sink"
 ```
 
-### Task 6: Wire Active Steering Mode End-To-End
+### Task 6: Close The Lifecycle Loop And Run Focused Regression Coverage
 
 **Files:**
 - Modify: `aworld-cli/src/aworld_cli/console.py`
@@ -350,18 +575,22 @@ git commit -m "feat: route file parse progress into active steering status sink"
 
 ```python
 @pytest.mark.asyncio
-async def test_active_steering_run_installs_and_removes_executor_event_sink():
+async def test_active_steering_run_clears_status_and_restores_executor_sinks():
     cli = AWorldCLI()
     runtime = FakeRuntime()
+    context = SimpleNamespace(task_id="task-1", workspace_path="/tmp")
     executor_instance = SimpleNamespace(
         session_id="sess-1",
-        context=SimpleNamespace(task_id="task-1", workspace_path="/tmp"),
+        context=context,
         _active_steering_event_sink=None,
+        _suppress_interactive_loading_status=False,
+        _suppress_interactive_stream_output=False,
     )
 
     async def fake_executor(_prompt: str):
-        assert callable(executor_instance._active_steering_event_sink)
-        executor_instance._active_steering_event_sink({"kind": "message_committed", "text": "done"})
+        sink = executor_instance._active_steering_event_sink
+        sink({"kind": "status_changed", "text": "Calling bash"})
+        sink({"kind": "message_committed", "text": "Repository scan complete.", "agent_name": "Aworld"})
         return "done"
 
     result = await cli._run_executor_with_active_steering(
@@ -376,51 +605,40 @@ async def test_active_steering_run_installs_and_removes_executor_event_sink():
 
     assert result == "done"
     assert executor_instance._active_steering_event_sink is None
+    assert getattr(context, "_aworld_cli_status_sink", None) is None
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_interactive_steering.py -q -k installs_and_removes_executor_event_sink`
-Expected: FAIL because the active steering loop does not yet install an event sink onto the executor instance.
+Run: `pytest tests/test_interactive_steering.py -q -k clears_status_and_restores_executor_sinks`
+Expected: FAIL if the active steering loop does not emit a `task_finished`-style cleanup path before unbinding the sinks.
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-self._active_steering_view = self._create_active_steering_view()
-
-if executor_instance is not None:
-    executor_instance._active_steering_event_sink = self._handle_active_steering_event
-    if getattr(executor_instance, "context", None) is not None:
-        executor_instance.context._aworld_cli_status_sink = self._set_active_steering_status
-
-try:
-    ...
 finally:
-    if executor_instance is not None:
-        executor_instance._active_steering_event_sink = None
-        if getattr(executor_instance, "context", None) is not None:
-            executor_instance.context._aworld_cli_status_sink = None
+    if self._active_steering_view is not None:
+        self._handle_active_steering_event({"kind": "task_finished"})
+    steering = getattr(runtime, "_steering", None) if runtime is not None else None
+    if steering is not None and session_id:
+        try:
+            steering.end_task(session_id, clear_pending=True)
+        except Exception:
+            pass
+    if executor_instance is not None and previous_loading_suppressed is not None:
+        executor_instance._suppress_interactive_loading_status = previous_loading_suppressed
+    if executor_instance is not None and previous_stream_suppressed is not None:
+        executor_instance._suppress_interactive_stream_output = previous_stream_suppressed
+    if executor_instance is not None and is_terminal:
+        executor_instance._active_steering_event_sink = previous_event_sink
+        context = getattr(executor_instance, "context", None)
+        if context is not None:
+            context._aworld_cli_status_sink = previous_status_sink
     self._active_steering_view = None
+    self._current_executor_task = None
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_interactive_steering.py -q -k installs_and_removes_executor_event_sink`
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add aworld-cli/src/aworld_cli/console.py aworld-cli/src/aworld_cli/executors/local.py tests/test_interactive_steering.py
-git commit -m "feat: wire active steering event mode end to end"
-```
-
-### Task 7: Regression Verification And Manual Validation Notes
-
-**Files:**
-- Modify: `docs/superpowers/specs/2026-05-12-active-steering-terminal-redesign.md`
-
-- [ ] **Step 1: Run focused regression tests**
+- [ ] **Step 4: Run focused regression commands**
 
 Run:
 
@@ -430,23 +648,21 @@ pytest tests/executors/test_stream.py tests/core/test_cli_steering_coordinator.p
 
 Expected: PASS
 
-- [ ] **Step 2: Add manual validation notes to the spec**
-
-Append a short section summarizing:
-
-```markdown
-## Manual Validation
-
-- run a local interactive task
-- verify bottom prompt remains obviously interactive
-- verify steering acknowledgement appears as a committed block
-- verify tool output appends as readable blocks
-- verify `Esc` still interrupts
-```
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-05-12-active-steering-terminal-redesign.md
-git commit -m "docs: add validation notes for active steering redesign"
+git add aworld-cli/src/aworld_cli/console.py aworld-cli/src/aworld_cli/executors/local.py tests/test_interactive_steering.py
+git commit -m "fix: finalize active steering lifecycle cleanup"
 ```
+
+## Manual Validation
+
+- Run a real local interactive task in a terminal with active steering enabled.
+- Verify the terminal always shows:
+  - transcript history above
+  - one runtime status line
+  - one fixed bottom prompt
+- Verify natural steering text queues cleanly without corrupting the prompt.
+- Verify `Esc` or `/interrupt` still interrupts the running task.
+- Verify long tool results commit as a short readable summary with key lines instead of flooding the transcript.
+- Verify ANSI/control-sequence remnants like `?[1;36m` do not appear in committed history.
