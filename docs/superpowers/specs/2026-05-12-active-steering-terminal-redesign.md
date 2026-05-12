@@ -41,16 +41,32 @@ This is not a request to clone the screenshot exactly. It is a request to adopt 
 
 ## Chosen Direction
 
-Use a dedicated active-steering interaction mode with a single prompt owner.
+Use a dedicated active-steering interaction mode with a single terminal rendering owner.
 
 During active steering:
-- `prompt_toolkit` remains the only input owner
-- executor runtime no longer writes token-streaming output directly into the terminal transcript
-- executor output is converted into committed display events
+- `prompt_toolkit` remains the input primitive, but active steering stops relying on `patch_stdout` to let unrelated writers coexist on the same terminal surface
+- `AWorldCLI` becomes the only visible rendering owner for active steering
+- `LocalAgentExecutor` stops writing token-streaming output directly into the terminal transcript
+- executor output is converted into structured display events
 - the CLI appends only committed blocks into transcript history
 - transient progress information is compressed into a single status line
 
 This is effectively a bounded redesign of the active steering surface, not a global terminal architecture rewrite.
+
+## Recommended Architecture
+
+The chosen implementation model is:
+- executor produces structured runtime events and commit-ready blocks
+- console renders history, status line, and bottom input prompt only
+
+This is the recommended middle path between two rejected extremes:
+- not merely patching the current mixed `Live + patch_stdout + prompt_async` stack
+- not rewriting all aworld-cli terminal rendering into a new full-screen TUI
+
+The key contract is separation of ownership:
+- executor owns runtime observation and commit timing
+- console owns terminal rendering
+- no other layer writes directly to the active steering terminal surface
 
 ## Rejected Alternatives
 
@@ -128,7 +144,31 @@ These should be appended as durable blocks:
 - steering checkpoint application notices
 - interrupt accepted / interrupted / completed / failed
 
-## Streaming Policy
+## Event Protocol
+
+For active steering mode only, the runtime should emit a small event vocabulary instead of directly rendering to the terminal.
+
+Expected event categories:
+- `status_changed`
+- `message_delta`
+- `message_committed`
+- `tool_call_started`
+- `tool_calls_committed`
+- `tool_result_delta`
+- `tool_result_committed`
+- `system_notice`
+- `error`
+- `task_finished`
+
+Rules:
+- `status_changed` updates only the single runtime status line
+- `message_delta` and `tool_result_delta` are buffering-only events and are never rendered directly into transcript history
+- `message_committed`, `tool_calls_committed`, `tool_result_committed`, `system_notice`, and `error` append durable blocks into transcript history
+- `task_finished` clears the active running state and any remaining ephemeral status
+
+This event vocabulary is intentionally local-first but should stay generic enough to support ACP or other channel consumers later.
+
+## Commit Policy
 
 For active steering mode only:
 - disable token-by-token terminal streaming
@@ -137,12 +177,33 @@ For active steering mode only:
 - append a block only when it reaches a natural boundary
 
 Natural boundaries:
-- a `MessageOutput`
+- a complete `MessageOutput`
+- a paragraph or assistant block that is stable enough to read
 - a tool-call emission that can be summarized coherently
-- a `ToolResultOutput`
-- a task completion or failure
+- a complete `ToolResultOutput`
+- a task completion, interruption, or failure boundary
 
 This means the executor still consumes streamed events for logic, stats, and HUD updates, but the terminal transcript receives block-level output instead of raw stream rendering.
+
+### Tool Result Granularity
+
+The user-selected policy is "B: summary by default, expand short important results directly."
+
+Required behavior:
+- short tool results may be committed in full
+- medium or long tool results should prefer a readable summary block plus a few key lines
+- error details, exit status, key file paths, and first important output lines must not be lost during summarization
+- the transcript should never receive raw, unbounded command output dumps during active steering unless the output is already short
+
+### ANSI And Control-Sequence Handling
+
+ANSI cleanup must happen before committed blocks enter transcript history.
+
+Required behavior:
+- sanitize buffered text before commit
+- keep a render-layer fallback sanitizer as defense in depth
+- do not rely on render-time cleanup as the primary correctness mechanism
+- normalize pathological tab/control rendering that would otherwise corrupt transcript readability
 
 ## Minimal Architecture Change
 
@@ -155,20 +216,21 @@ Keep the implementation bounded to `aworld-cli` local interactive steering.
 - active steering status line text
 - committed block append operations
 - the prompt session loop
+- the only visible terminal rendering path for active steering
 
 The console should stop trying to coexist with executor-owned live terminal streaming during active steering.
+It should consume already-structured events and commit-ready blocks rather than deciding commit timing itself.
 
 ### Executor Responsibilities
 
 `LocalAgentExecutor` should produce active-steering-safe display events instead of directly rendering streaming content when the active steering mode is enabled.
 
-Expected event categories:
-- `status_changed`
-- `message_committed`
-- `tool_calls_committed`
-- `tool_result_committed`
-- `system_notice`
-- `error`
+The executor should own:
+- lifecycle observation
+- message/tool buffering
+- natural-boundary detection
+- block commit timing
+- conversion of noisy runtime progress into concise `status_changed` events
 
 The executor should still:
 - collect token stats
@@ -183,6 +245,7 @@ That means:
 - no `Live` ownership in active steering mode
 - no token-level console writes in active steering mode
 - no reliance on `patch_stdout` as the primary correctness mechanism
+- active steering should use a smaller aggregation path that produces commit-ready blocks rather than render instructions
 
 ## File-Level Impact
 
@@ -195,25 +258,29 @@ Needed changes:
 - render only prompt + status line during active steering input
 - append committed blocks into history in display order
 - route user steering acknowledgements into transcript blocks
+- stop using `patch_stdout()` as the way to permit concurrent executor writes during active steering
 
 ### `aworld-cli/src/aworld_cli/executors/local.py`
 
 Needed changes:
 - branch active steering mode away from direct stream rendering
-- emit committed display events instead of printing/interleaving stream output
+- emit structured events instead of printing/interleaving stream output
 - compress internal progress messages into status updates
+- own commit timing for assistant/tool output during active steering
 
 ### `aworld-cli/src/aworld_cli/executors/stream.py`
 
 Likely changes:
 - preserve the current streaming helpers for non-active-steering mode
-- optionally extract a smaller block-aggregation helper reusable by active steering mode
+- extract a smaller block-aggregation helper reusable by active steering mode
+- support buffering of assistant output and tool result output until a natural commit boundary
 
 ### `aworld-cli/src/aworld_cli/executors/file_parse_hook.py`
 
 Needed change:
 - during active steering mode, avoid direct console progress output
 - expose brief status text instead
+- keep debug/detail logs in logger output instead of transcript history
 
 ### Tests
 
@@ -251,6 +318,18 @@ The redesign is successful when all of the following are true in a real terminal
 - dropping tool result visibility entirely
 - buffering so aggressively that long-running work appears frozen
 - introducing a second terminal rendering owner through another helper
+- committing blocks out of order relative to tool-call / tool-result sequence
+- losing critical error lines while summarizing long tool results
+
+## Migration Order
+
+Implement in this order:
+
+1. cut terminal ownership to a single active-steering rendering path
+2. route active-steering runtime output through the structured event sink
+3. add buffering and commit-boundary logic for assistant and tool-result output
+4. move hook/loading/noise output into status updates or committed notices
+5. lock the behavior with focused tests before considering broader renderer changes
 
 ## Delivery Strategy
 
@@ -258,18 +337,21 @@ Implement in two bounded phases inside the current branch:
 
 ### Phase 1
 
-Introduce the active steering presentation model:
+Introduce the active steering ownership model:
+- single rendering owner
 - single status line
 - bottom prompt
 - committed transcript blocks
+- no concurrent direct executor terminal writes
 
 Keep formatting simple; correctness and readability matter more than polish.
 
 ### Phase 2
 
-Refine block formatting:
+Introduce the commit policy refinement:
 - clearer tool call blocks
-- clearer tool result blocks
+- B-granularity tool result summarization
+- assistant block buffering and boundary commits
 - better status wording
 - suppression of noisy internal logs
 
@@ -282,6 +364,9 @@ Only do Phase 2 after Phase 1 is stable in a real terminal run.
 - add tests for active steering transcript commit behavior
 - add tests ensuring active steering does not invoke live stream rendering
 - add tests that status-only messages do not enter committed transcript history
+- add tests for assistant/tool output commit ordering
+- add tests for short-vs-long tool result commit policy
+- add tests for ANSI/control-sequence sanitization before commit
 - preserve current steering queue/application observability tests
 
 ### Manual
@@ -293,6 +378,16 @@ Run a real local interactive session and verify:
 - no repeated ANSI fragments appear
 - `Esc` interrupt still works
 
+## Manual Validation Checklist
+
+- run a local interactive task in a real terminal
+- verify the bottom prompt remains visually stable while the task is running
+- verify steering acknowledgement is appended as a committed history block
+- verify assistant output is appended in readable blocks rather than token-level redraws
+- verify tool calls and tool results append as readable blocks
+- verify `FileParseHook` progress no longer floods transcript history
+- verify `Esc` still interrupts the active task
+
 ## Open Questions Resolved In-Session
 
 - natural input during task execution should default to queued steering
@@ -301,3 +396,5 @@ Run a real local interactive session and verify:
 - scope is limited to `aworld-cli` local interaction for now
 - active steering should use block-level transcript commits instead of live token streaming
 - low-level runtime logs should be folded into a compact status line rather than printed verbatim
+- the preferred architecture is executor-produced structured events with console-only rendering
+- tool result display should use medium granularity: summary by default, full block when already short or clearly important
