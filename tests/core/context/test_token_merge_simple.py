@@ -131,6 +131,44 @@ class TestTokenMergeFixSimple:
 
         print("✅ Test passed: Nested merges correctly add net increments only")
 
+    def test_nested_token_usage_details_merge_uses_recursive_net_increment(self):
+        """Nested token usage dicts should merge by net increment, not full child totals."""
+        parent = Context()
+        parent.add_token(
+            {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "prompt_tokens_details": {
+                    "cached_tokens": 40,
+                    "cache_creation_input_tokens": 10,
+                    "cache_read_input_tokens": 30,
+                },
+            }
+        )
+
+        child = parent.deep_copy()
+        child.add_token(
+            {
+                "prompt_tokens": 30,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {
+                    "cached_tokens": 12,
+                    "cache_creation_input_tokens": 5,
+                    "cache_read_input_tokens": 7,
+                },
+            }
+        )
+
+        parent.merge_context(child)
+
+        assert parent.token_usage["prompt_tokens"] == 130
+        assert parent.token_usage["completion_tokens"] == 25
+        assert parent.token_usage["prompt_tokens_details"] == {
+            "cached_tokens": 52,
+            "cache_creation_input_tokens": 15,
+            "cache_read_input_tokens": 37,
+        }
+
     def test_multiple_sequential_merges_no_double_counting(self, parent_context):
         """
         Test Case 3: Multiple sequential subtasks merge correctly
@@ -169,6 +207,25 @@ class TestTokenMergeFixSimple:
         assert parent_context.token_usage.get('output_tokens', 0) == 87
 
         print("✅ Test passed: Multiple sequential merges correctly add net increments only")
+
+    def test_preserved_merge_baseline_survives_transport_copy(self, parent_context):
+        """
+        Transport copies of an already-executed child context must preserve the
+        original merge baseline so the parent can still recover the pending net increment.
+        """
+        child_context = parent_context.deep_copy()
+        child_context.add_token(
+            {
+                "input_tokens": 30,
+                "output_tokens": 20,
+            }
+        )
+
+        transported_context = child_context.deep_copy(preserve_merge_baseline=True)
+        parent_context.merge_context(transported_context)
+
+        assert parent_context.token_usage.get("input_tokens", 0) == 130
+        assert parent_context.token_usage.get("output_tokens", 0) == 70
 
     def test_zero_token_subtask_merge(self, parent_context):
         """

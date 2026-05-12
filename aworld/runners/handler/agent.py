@@ -584,7 +584,7 @@ class DefaultAgentHandler(AgentHandler):
         return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
 
     async def post_handle(self, input: Message, output: Message) -> Message:
-        new_context = output.context.deep_copy()
+        new_context = output.context.deep_copy(preserve_merge_baseline=True)
         new_context._task = output.context.get_task()
         output.context = new_context
         if self.is_group_finish(input, output):

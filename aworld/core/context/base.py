@@ -13,7 +13,7 @@ from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
-from aworld.utils.common import nest_dict_counter
+from aworld.utils.common import nest_dict_counter, nest_dict_diff
 
 if TYPE_CHECKING:
     from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
@@ -326,12 +326,15 @@ class Context:
     def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
         self.merge_context(sub_task_context)
 
-    def deep_copy(self) -> 'Context':
+    def deep_copy(self, preserve_merge_baseline: bool = False) -> 'Context':
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
-        return self._deep_copy(new_context)
+        return self._deep_copy(
+            new_context,
+            preserve_merge_baseline=preserve_merge_baseline,
+        )
 
-    def _deep_copy(self, new_context) -> 'Context':
+    def _deep_copy(self, new_context, preserve_merge_baseline: bool = False) -> 'Context':
         """Create a deep copy of this Context instance with all attributes copied.
 
         Returns:
@@ -390,9 +393,19 @@ class Context:
         except Exception:
             new_context._token_usage = copy.copy(self._token_usage)
         try:
-            new_context._merge_token_baseline = copy.deepcopy(new_context._token_usage)
+            baseline_source = (
+                getattr(self, '_merge_token_baseline', new_context._token_usage)
+                if preserve_merge_baseline
+                else new_context._token_usage
+            )
+            new_context._merge_token_baseline = copy.deepcopy(baseline_source)
         except Exception:
-            new_context._merge_token_baseline = copy.copy(new_context._token_usage)
+            baseline_source = (
+                getattr(self, '_merge_token_baseline', new_context._token_usage)
+                if preserve_merge_baseline
+                else new_context._token_usage
+            )
+            new_context._merge_token_baseline = copy.copy(baseline_source)
 
         # Copy other attributes if they exist
         if hasattr(self, '_event_manager'):
@@ -449,13 +462,7 @@ class Context:
                 # This supports both:
                 # 1. deep-copied child contexts that inherit parent token totals
                 # 2. freshly created child contexts that start from zero
-                net_tokens = {}
-                for key in child_tokens:
-                    child_value = child_tokens.get(key, 0)
-                    baseline_value = baseline_tokens.get(key, 0)
-                    net_value = child_value - baseline_value
-                    if net_value > 0:  # Only merge net increment
-                        net_tokens[key] = net_value
+                net_tokens = nest_dict_diff(child_tokens, baseline_tokens)
 
                 # Add net increment to parent context
                 if net_tokens:
