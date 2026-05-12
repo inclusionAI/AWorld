@@ -427,6 +427,16 @@ def test_active_steering_status_without_appending_history():
     assert cli._active_steering_view.history == []
 
 
+def test_active_steering_tool_call_started_updates_status_line():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+
+    cli._handle_active_steering_event({"kind": "tool_call_started", "text": "Calling bash"})
+
+    assert cli._active_steering_view.status_text == "Calling bash"
+    assert cli._active_steering_view.history == []
+
+
 def test_active_steering_task_finished_clears_active_steering_status_line():
     cli = AWorldCLI()
     cli._active_steering_view = cli._create_active_steering_view()
