@@ -2,10 +2,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from rich.console import Console
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli.executors.stats import StreamTokenStats
 from aworld_cli.executors.stream import (
+    StreamDisplayController,
     StreamDisplayBuffer,
     StreamDisplayConfig,
     build_stream_renderable,
@@ -50,3 +53,16 @@ def test_build_stream_renderable_hides_stats_line_when_requested():
     assert "🤖 Aworld" in text
     assert "已成功设置提醒。" in text
 
+
+def test_stream_display_controller_can_disable_loading_status():
+    controller = StreamDisplayController(
+        console=Console(),
+        stream_token_stats=StreamTokenStats(),
+        format_tool_calls_fn=lambda _tool_calls: [],
+        loading_enabled=False,
+    )
+
+    controller.start_loading("💭 Thinking...")
+
+    assert controller.loading_status is None
+    assert controller.status_start_time is not None

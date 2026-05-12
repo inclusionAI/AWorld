@@ -825,6 +825,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         format_elapsed_fn=format_elapsed,
                         config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
                         show_stats_line=show_stream_stats,
+                        loading_enabled=not bool(
+                            getattr(self, "_suppress_interactive_loading_status", False)
+                        ),
                     )
 
                     try:
