@@ -1,6 +1,8 @@
 import asyncio
+from dataclasses import dataclass, field
 import inspect
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,7 +16,6 @@ from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style as PromptToolkitStyle
 from rich import box
 from rich.color import Color
@@ -37,6 +38,13 @@ from .user_input import UserInputHandler
 # Notification polling configuration
 NOTIFICATION_POLL_INTERVAL = 2.0  # Seconds (1-3s latency target)
 _ESC_INTERRUPT_SENTINEL = "__aworld_cli_interrupt__"
+
+
+@dataclass
+class ActiveSteeringView:
+    history: list[dict[str, str]] = field(default_factory=list)
+    status_text: str = ""
+    last_rendered_kind: str | None = None
 
 
 class CronAwareCompleter(Completer):
@@ -183,6 +191,7 @@ class AWorldCLI:
         self._toolbar_workspace_name = self._detect_workspace_name()
         self._toolbar_git_branch = self._detect_git_branch()
         self._pending_skill_overrides: list[str] = []
+        self._active_steering_view: ActiveSteeringView | None = None
 
     def _detect_workspace_name(self) -> str:
         """Detect the current workspace name for status-bar display."""
@@ -2256,13 +2265,19 @@ class AWorldCLI:
             if not executor_task.done():
                 executor_task.cancel()
             if interrupt_requested:
-                self.console.print("[dim]Interrupt requested.[/dim]")
+                self._append_active_steering_history("system_notice", "Interrupt requested.")
             else:
-                self.console.print("[yellow]No active steerable task to interrupt.[/yellow]")
+                self._append_active_steering_history(
+                    "system_notice",
+                    "No active steerable task to interrupt.",
+                )
             return True
 
         if normalized.startswith("/"):
-            self.console.print("[yellow]Only /interrupt is available while a task is active.[/yellow]")
+            self._append_active_steering_history(
+                "system_notice",
+                "Only /interrupt is available while a task is active.",
+            )
             return True
 
         steering = getattr(runtime, "_steering", None) if runtime is not None else None
@@ -2278,7 +2293,10 @@ class AWorldCLI:
             steering_item=item,
             pending_count=int(snapshot.get("pending_count", 0) or 0),
         )
-        self.console.print("[dim]Steering queued for the next checkpoint.[/dim]")
+        self._append_active_steering_history(
+            "system_notice",
+            "Steering queued for the next checkpoint.",
+        )
         return True
 
     async def _prompt_active_task_input(
@@ -2294,17 +2312,23 @@ class AWorldCLI:
             agent_name=agent_name,
             mode="Steering",
         )
-        prompt_kwargs["placeholder"] = lambda: self._build_active_task_wait_text(wait_started_at)
+        prompt_message = self._build_active_task_prompt_message(wait_started_at)
         prompt_kwargs["reserve_space_for_menu"] = 0
-        with patch_stdout():
-            return await session.prompt_async(HTML("<b><yellow>›</yellow></b> "), **prompt_kwargs)
+        return await session.prompt_async(prompt_message, **prompt_kwargs)
 
     def _build_active_task_wait_text(self, wait_started_at: float | None = None) -> str:
         elapsed = max(0.0, time.monotonic() - wait_started_at) if wait_started_at is not None else 0.0
+        action = "Working"
+        if self._active_steering_view is not None and self._active_steering_view.status_text:
+            action = self._active_steering_view.status_text
         return (
-            f"Waiting for background task ({self._format_active_task_wait_elapsed(elapsed)} "
+            f"{action} ({self._format_active_task_wait_elapsed(elapsed)} "
             "• type to steer • Esc to interrupt)"
         )
+
+    def _build_active_task_prompt_message(self, wait_started_at: float | None = None) -> str:
+        status_text = self._build_active_task_wait_text(wait_started_at)
+        return f"{status_text}\n› "
 
     def _format_active_task_wait_elapsed(self, elapsed_seconds: float) -> str:
         total_seconds = max(0, int(elapsed_seconds))
@@ -2385,6 +2409,8 @@ class AWorldCLI:
         wait_started_at = time.monotonic()
         previous_loading_suppressed = None
         previous_stream_suppressed = None
+        previous_event_sink = None
+        previous_status_sink = None
         if executor_instance is not None and is_terminal:
             previous_loading_suppressed = getattr(
                 executor_instance,
@@ -2396,8 +2422,20 @@ class AWorldCLI:
                 "_suppress_interactive_stream_output",
                 False,
             )
+            previous_event_sink = getattr(
+                executor_instance,
+                "_active_steering_event_sink",
+                None,
+            )
+            context = getattr(executor_instance, "context", None)
+            if context is not None:
+                previous_status_sink = getattr(context, "_aworld_cli_status_sink", None)
             executor_instance._suppress_interactive_loading_status = True
             executor_instance._suppress_interactive_stream_output = True
+            executor_instance._active_steering_event_sink = self._handle_active_steering_event
+            if context is not None:
+                context._aworld_cli_status_sink = self._set_active_steering_status
+            self._active_steering_view = self._create_active_steering_view()
         executor_task = asyncio.create_task(
             self._run_executor_prompt(
                 prompt,
@@ -2508,7 +2546,109 @@ class AWorldCLI:
                 executor_instance._suppress_interactive_loading_status = previous_loading_suppressed
             if executor_instance is not None and previous_stream_suppressed is not None:
                 executor_instance._suppress_interactive_stream_output = previous_stream_suppressed
+            if executor_instance is not None and is_terminal:
+                executor_instance._active_steering_event_sink = previous_event_sink
+                context = getattr(executor_instance, "context", None)
+                if context is not None:
+                    context._aworld_cli_status_sink = previous_status_sink
+            self._active_steering_view = None
             self._current_executor_task = None
+
+    def _create_active_steering_view(self) -> ActiveSteeringView:
+        return ActiveSteeringView()
+
+    def _append_active_steering_history(
+        self,
+        kind: str,
+        text: str,
+        *,
+        agent_name: str | None = None,
+    ) -> None:
+        normalized = self._sanitize_active_steering_text(text)
+        if not normalized:
+            return
+
+        if self._active_steering_view is not None:
+            self._active_steering_view.history.append({"kind": kind, "text": normalized})
+            previous_kind = self._active_steering_view.last_rendered_kind
+            self._active_steering_view.last_rendered_kind = kind
+        else:
+            previous_kind = None
+
+        if previous_kind is not None and kind != "system_notice":
+            self.console.print()
+
+        if kind == "assistant_message":
+            self.console.print(f"🤖 [bold cyan]{agent_name or 'Aworld'}[/bold cyan]")
+            for line in normalized.splitlines():
+                self.console.print(f"   {line}")
+            self.console.print()
+            return
+        if kind == "tool_calls":
+            self.console.print("🔧 [bold]Tool calls[/bold]")
+            for line in normalized.splitlines():
+                self.console.print(f"   {line}")
+            self.console.print()
+            return
+        if kind == "tool_result":
+            self.console.print("[dim]Tool result[/dim]")
+            for line in normalized.splitlines():
+                self.console.print(f"   {line}")
+            self.console.print()
+            return
+        if kind == "error":
+            self.console.print(f"[bold red]Error[/bold red]")
+            for line in normalized.splitlines():
+                self.console.print(f"[red]   {line}[/red]")
+            self.console.print()
+            return
+        self.console.print(f"[dim]• {normalized}[/dim]")
+
+    def _sanitize_active_steering_text(self, text: str) -> str:
+        normalized = str(text or "")
+        normalized = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", normalized)
+        normalized = re.sub(r"\?\[[0-9;?]*[A-Za-z]", "", normalized)
+        lines = [line.rstrip() for line in normalized.splitlines()]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines).strip()
+
+    def _set_active_steering_status(self, text: str) -> None:
+        if self._active_steering_view is None:
+            return
+        self._active_steering_view.status_text = str(text or "").strip()
+
+    def _handle_active_steering_event(self, event: dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+
+        kind = str(event.get("kind") or "").strip()
+        text = str(event.get("text") or "").strip()
+        if not kind:
+            return
+
+        if kind == "status_changed":
+            self._set_active_steering_status(text)
+            return
+
+        mapping = {
+            "message_committed": "assistant_message",
+            "tool_calls_committed": "tool_calls",
+            "tool_result_committed": "tool_result",
+            "system_notice": "system_notice",
+            "error": "error",
+        }
+        history_kind = mapping.get(kind)
+        if history_kind is None:
+            return
+
+        self._append_active_steering_history(
+            history_kind,
+            text,
+            agent_name=str(event.get("agent_name") or "").strip() or None,
+        )
 
     async def _render_skills_table(
         self,

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 import aworld_cli.console as console_module
+import aworld_cli.executors.file_parse_hook as file_parse_hook_module
+from aworld.core.event.base import Message
 from aworld_cli.console import AWorldCLI, _ESC_INTERRUPT_SENTINEL
 from aworld_cli.steering.coordinator import SteeringCoordinator
 
@@ -20,6 +22,17 @@ class FakeRuntime:
             return False
         self.interrupt_requests.append(session_id)
         return self._steering.request_interrupt(session_id)
+
+
+def test_active_steering_status_line_uses_runtime_override_when_present():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+    cli._set_active_steering_status("Calling bash")
+
+    text = cli._build_active_task_wait_text(time.monotonic() - 8.0)
+
+    assert "Calling bash" in text
+    assert "type to steer" in text
 
 
 @pytest.mark.asyncio
@@ -76,6 +89,32 @@ async def test_plain_text_steering_queue_is_logged_to_workspace_session_log(tmp_
     assert payload["pending_count"] == 1
     assert payload["steering"]["text"] == "Focus on the failing test first."
     assert payload["steering"]["sequence"] == 1
+
+
+@pytest.mark.asyncio
+async def test_plain_text_steering_ack_is_committed_into_active_history():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+    runtime = FakeRuntime()
+    runtime._steering.begin_task("sess-1", "task-1")
+    task = asyncio.create_task(asyncio.sleep(60))
+
+    handled = await cli._handle_active_task_input(
+        "Focus on the failing test first.",
+        runtime=runtime,
+        session_id="sess-1",
+        executor_task=task,
+    )
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert handled is True
+    assert cli._active_steering_view.history[-1] == {
+        "kind": "system_notice",
+        "text": "Steering queued for the next checkpoint.",
+    }
 
 
 @pytest.mark.asyncio
@@ -326,7 +365,99 @@ async def test_active_steering_temporarily_suppresses_executor_stream_rendering(
 
 
 @pytest.mark.asyncio
-async def test_active_task_prompt_uses_patch_stdout_for_concurrent_executor_output(monkeypatch):
+async def test_active_steering_run_installs_and_removes_executor_event_sink():
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    executor_instance = SimpleNamespace(
+        session_id="sess-1",
+        context=SimpleNamespace(task_id="task-1", workspace_path="/tmp"),
+        _active_steering_event_sink=None,
+    )
+
+    async def fake_executor(_prompt: str):
+        assert callable(executor_instance._active_steering_event_sink)
+        executor_instance._active_steering_event_sink(
+            {"kind": "message_committed", "text": "Repository scan complete.", "agent_name": "Aworld"}
+        )
+        return "done"
+
+    result = await cli._run_executor_with_active_steering(
+        prompt="continue",
+        executor=fake_executor,
+        completer=None,
+        runtime=runtime,
+        agent_name="Aworld",
+        executor_instance=executor_instance,
+        is_terminal=True,
+    )
+
+    assert result == "done"
+    assert executor_instance._active_steering_event_sink is None
+    assert getattr(executor_instance.context, "_aworld_cli_status_sink", None) is None
+
+
+def test_active_steering_event_commits_message_and_tool_blocks():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+
+    cli._handle_active_steering_event(
+        {"kind": "message_committed", "text": "Repository scan complete.", "agent_name": "Aworld"}
+    )
+    cli._handle_active_steering_event(
+        {"kind": "tool_calls_committed", "text": "▶ [cyan]bash[/cyan]\n   command: find . -type f | head -20"}
+    )
+    cli._handle_active_steering_event(
+        {"kind": "tool_result_committed", "text": "⚡ [bold]terminal → bash[/bold]\n  ⎿  ./tests/test_interactive_steering.py"}
+    )
+
+    assert cli._active_steering_view.history == [
+        {"kind": "assistant_message", "text": "Repository scan complete."},
+        {"kind": "tool_calls", "text": "▶ [cyan]bash[/cyan]\n   command: find . -type f | head -20"},
+        {"kind": "tool_result", "text": "⚡ [bold]terminal → bash[/bold]\n  ⎿  ./tests/test_interactive_steering.py"},
+    ]
+
+
+def test_active_steering_history_strips_ansi_sequences_from_committed_blocks():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+
+    cli._append_active_steering_history(
+        "assistant_message",
+        "?[1;36mAworld?[0m\nRepository scan complete.",
+        agent_name="Aworld",
+    )
+
+    assert cli._active_steering_view.history[-1] == {
+        "kind": "assistant_message",
+        "text": "Aworld\nRepository scan complete.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_file_parse_hook_uses_status_sink_in_active_steering_mode(monkeypatch):
+    events: list[str] = []
+
+    class DummyApplicationContext:
+        workspace_path = "/tmp"
+
+    monkeypatch.setattr(file_parse_hook_module, "ApplicationContext", DummyApplicationContext)
+    hook = file_parse_hook_module.FileParseHook()
+    context = DummyApplicationContext()
+    context._aworld_cli_status_sink = events.append
+    message = Message(
+        category="agent_hook",
+        payload={},
+        sender="user",
+        headers={"user_message": "@missing.txt", "console": None},
+    )
+
+    await hook.exec(message, context=context)
+
+    assert any("File not found" in text or "Processing" in text for text in events)
+
+
+@pytest.mark.asyncio
+async def test_active_task_prompt_does_not_use_patch_stdout(monkeypatch):
     cli = AWorldCLI()
     events: list[str] = []
 
@@ -335,16 +466,10 @@ async def test_active_task_prompt_uses_patch_stdout_for_concurrent_executor_outp
             events.append("prompt")
             return "queued steering"
 
-    class FakePatchStdout:
-        def __enter__(self):
-            events.append("enter")
-            return self
+    def fail_patch_stdout():
+        raise AssertionError("patch_stdout should not be used for active steering prompts")
 
-        def __exit__(self, exc_type, exc, tb):
-            events.append("exit")
-            return False
-
-    monkeypatch.setattr(console_module, "patch_stdout", lambda: FakePatchStdout())
+    monkeypatch.setattr(console_module, "patch_stdout", fail_patch_stdout, raising=False)
 
     result = await cli._prompt_active_task_input(
         session=FakePromptSession(),
@@ -353,7 +478,7 @@ async def test_active_task_prompt_uses_patch_stdout_for_concurrent_executor_outp
     )
 
     assert result == "queued steering"
-    assert events == ["enter", "prompt", "exit"]
+    assert events == ["prompt"]
 
 
 def test_active_task_wait_text_formats_codex_like_waiting_state():
@@ -361,13 +486,13 @@ def test_active_task_wait_text_formats_codex_like_waiting_state():
 
     text = cli._build_active_task_wait_text(time.monotonic() - 149.0)
 
-    assert "Waiting for background task" in text
+    assert "Working (" in text
     assert "2m 29s" in text
     assert "Esc to interrupt" in text
 
 
 @pytest.mark.asyncio
-async def test_active_task_prompt_uses_waiting_placeholder_with_minimal_input_anchor(monkeypatch):
+async def test_active_task_prompt_keeps_status_line_and_input_anchor():
     cli = AWorldCLI()
     captured: dict[str, object] = {}
 
@@ -377,15 +502,6 @@ async def test_active_task_prompt_uses_waiting_placeholder_with_minimal_input_an
             captured["kwargs"] = kwargs
             return "queued steering"
 
-    class FakePatchStdout:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(console_module, "patch_stdout", lambda: FakePatchStdout())
-
     result = await cli._prompt_active_task_input(
         session=FakePromptSession(),
         runtime=None,
@@ -394,10 +510,6 @@ async def test_active_task_prompt_uses_waiting_placeholder_with_minimal_input_an
     )
 
     assert result == "queued steering"
-    assert "Steer" not in str(captured["message"])
-    assert str(captured["message"]).strip() != ""
-
-    placeholder = captured["kwargs"]["placeholder"]
-    placeholder_text = placeholder() if callable(placeholder) else placeholder
-    assert "Waiting for background task" in str(placeholder_text)
-    assert "Esc to interrupt" in str(placeholder_text)
+    assert "Working (" in str(captured["message"])
+    assert "Esc to interrupt" in str(captured["message"])
+    assert "›" in str(captured["message"])
