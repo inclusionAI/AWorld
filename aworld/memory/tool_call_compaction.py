@@ -215,6 +215,36 @@ def _is_compacted_replay_arguments(arguments: Any) -> bool:
     return isinstance(payload, dict) and payload.get("_aworld_replay") == "compacted_tool_call_arguments"
 
 
+def parse_compacted_replay_arguments(arguments: Any) -> dict[str, Any] | None:
+    payload = arguments
+    if isinstance(arguments, str):
+        try:
+            payload = json.loads(arguments)
+        except (TypeError, json.JSONDecodeError):
+            return None
+    if isinstance(payload, dict) and payload.get("_aworld_replay") == "compacted_tool_call_arguments":
+        return payload
+    return None
+
+
+def compacted_replay_execution_error(
+    arguments: Any,
+    *,
+    tool_name: str | None = None,
+) -> str | None:
+    payload = parse_compacted_replay_arguments(arguments)
+    if not payload:
+        return None
+
+    target_tool = tool_name or payload.get("tool_name") or "unknown"
+    schema = payload.get("argument_schema") or "unknown"
+    reason = payload.get("sanitized_reason") or "unknown"
+    return (
+        f"Tool call arguments for {target_tool} were compacted for replay and cannot be executed directly "
+        f"(reason={reason}, schema={schema}). Please regenerate the full tool call arguments."
+    )
+
+
 def collect_replay_message_metrics(messages: list[dict[str, Any]]) -> dict[str, int]:
     metrics = {
         "assistant_tool_call_argument_bytes": 0,
