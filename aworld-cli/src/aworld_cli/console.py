@@ -2536,6 +2536,8 @@ class AWorldCLI:
                     )
                     return follow_up_result if continued else result
         finally:
+            if self._active_steering_view is not None:
+                self._handle_active_steering_event({"kind": "task_finished"})
             steering = getattr(runtime, "_steering", None) if runtime is not None else None
             if steering is not None and session_id:
                 try:

@@ -401,6 +401,46 @@ async def test_active_steering_run_installs_and_removes_executor_event_sink():
 
 
 @pytest.mark.asyncio
+async def test_active_steering_run_emits_task_finished_on_teardown():
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    executor_instance = SimpleNamespace(
+        session_id="sess-1",
+        context=SimpleNamespace(task_id="task-1", workspace_path="/tmp"),
+        _active_steering_event_sink=None,
+    )
+    seen_kinds: list[str] = []
+    original_handler = cli._handle_active_steering_event
+
+    def tracking_handler(event: dict[str, object]) -> None:
+        seen_kinds.append(str(event.get("kind")))
+        original_handler(event)
+
+    cli._handle_active_steering_event = tracking_handler
+
+    async def fake_executor(_prompt: str):
+        assert callable(executor_instance._active_steering_event_sink)
+        executor_instance._active_steering_event_sink(
+            {"kind": "status_changed", "text": "Calling bash"}
+        )
+        return "done"
+
+    result = await cli._run_executor_with_active_steering(
+        prompt="continue",
+        executor=fake_executor,
+        completer=None,
+        runtime=runtime,
+        agent_name="Aworld",
+        executor_instance=executor_instance,
+        is_terminal=True,
+    )
+
+    assert result == "done"
+    assert "status_changed" in seen_kinds
+    assert seen_kinds[-1] == "task_finished"
+
+
+@pytest.mark.asyncio
 async def test_active_steering_streaming_output_stays_disabled_when_event_sink_is_active(
     monkeypatch: pytest.MonkeyPatch,
 ):
