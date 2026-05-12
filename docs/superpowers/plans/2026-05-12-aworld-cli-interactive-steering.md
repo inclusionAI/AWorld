@@ -37,7 +37,7 @@
 - Modify: `aworld-cli/src/aworld_cli/runtime/base.py`
 - Test: `tests/core/test_cli_steering_coordinator.py`
 
-- [ ] **Step 1: Write the failing coordinator tests**
+- [x] **Step 1: Write the failing coordinator tests**
 
 Create `tests/core/test_cli_steering_coordinator.py` with focused behavior tests like:
 
@@ -74,7 +74,7 @@ def test_interrupt_flag_and_terminal_fallback_prompt_reset():
     assert coordinator.snapshot("sess-1")["pending_count"] == 0
 ```
 
-- [ ] **Step 2: Run the focused coordinator tests and verify they fail**
+- [x] **Step 2: Run the focused coordinator tests and verify they fail**
 
 Run:
 
@@ -88,7 +88,7 @@ Expected:
 FAIL because aworld_cli.steering.coordinator does not exist yet.
 ```
 
-- [ ] **Step 3: Implement the coordinator and runtime accessors**
+- [x] **Step 3: Implement the coordinator and runtime accessors**
 
 Create `aworld-cli/src/aworld_cli/steering/coordinator.py` and wire it into `BaseCliRuntime` with code shaped like:
 
@@ -205,7 +205,7 @@ def request_session_interrupt(self, session_id: str | None) -> bool:
     return bool(session_id) and self._steering.request_interrupt(session_id)
 ```
 
-- [ ] **Step 4: Run the coordinator tests and verify they pass**
+- [x] **Step 4: Run the coordinator tests and verify they pass**
 
 Run:
 
@@ -219,7 +219,7 @@ Expected:
 2 passed
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add \
@@ -237,7 +237,7 @@ git commit -m "feat: add cli steering coordinator"
 - Modify: `aworld-cli/src/aworld_cli/runtime/base.py`
 - Test: `tests/test_interactive_steering.py`
 
-- [ ] **Step 1: Write the failing console-routing tests**
+- [x] **Step 1: Write the failing console-routing tests**
 
 Create `tests/test_interactive_steering.py` with helper-oriented tests like:
 
@@ -302,7 +302,7 @@ async def test_fallback_interrupt_command_cancels_active_task():
     assert task.cancelled() or task.cancelling()
 ```
 
-- [ ] **Step 2: Run the focused console tests and verify they fail**
+- [x] **Step 2: Run the focused console tests and verify they fail**
 
 Run:
 
@@ -316,7 +316,7 @@ Expected:
 FAIL because AWorldCLI does not yet expose active steering helpers.
 ```
 
-- [ ] **Step 3: Implement the active-task input helpers and `Esc`-aware prompt session**
+- [x] **Step 3: Implement the active-task input helpers and `Esc`-aware prompt session**
 
 Update `aworld-cli/src/aworld_cli/console.py` along these lines:
 
@@ -362,7 +362,7 @@ async def _handle_active_task_input(self, user_input, *, runtime, session_id, ex
     return True
 ```
 
-- [ ] **Step 4: Replace the blocking executor call in `run_chat_session` with an active steering loop**
+- [x] **Step 4: Replace the blocking executor call in `run_chat_session` with an active steering loop**
 
 Refactor the executor path in `run_chat_session` to use a helper like:
 
@@ -401,7 +401,7 @@ async def _run_steerable_prompt_session(self, *, completer, prompt_text, executo
 
 Keep the old idle input path for the normal top-level prompt. Do not let `Esc` on the idle prompt become an interrupt request.
 
-- [ ] **Step 5: Run the focused console tests and verify they pass**
+- [x] **Step 5: Run the focused console tests and verify they pass**
 
 Run:
 
@@ -415,7 +415,7 @@ Expected:
 2 passed
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add \
@@ -435,7 +435,7 @@ git commit -m "feat: allow steering input during active cli tasks"
 - Test: `tests/hooks/test_cli_steering_before_llm_hook.py`
 - Test: `tests/test_interactive_steering.py`
 
-- [ ] **Step 1: Write the failing hook test**
+- [x] **Step 1: Write the failing hook test**
 
 Create `tests/hooks/test_cli_steering_before_llm_hook.py` with a focused test like:
 
@@ -474,7 +474,7 @@ async def test_before_llm_hook_appends_pending_steering_messages():
     assert coordinator.snapshot("sess-1")["pending_count"] == 0
 ```
 
-- [ ] **Step 2: Run the focused hook test and verify it fails**
+- [x] **Step 2: Run the focused hook test and verify it fails**
 
 Run:
 
@@ -488,7 +488,7 @@ Expected:
 FAIL because SteeringBeforeLlmHook is not registered or does not exist yet.
 ```
 
-- [ ] **Step 3: Implement the hook and attach steering state to task contexts**
+- [x] **Step 3: Implement the hook and attach steering state to task contexts**
 
 Create `aworld-cli/src/aworld_cli/executors/steering_before_llm_hook.py`:
 
@@ -533,7 +533,7 @@ if runtime is not None and getattr(runtime, "_steering", None) is not None:
     context._aworld_cli_steering = runtime._steering
 ```
 
-- [ ] **Step 4: Add terminal fallback continuation after task completion**
+- [x] **Step 4: Add terminal fallback continuation after task completion**
 
 After `_run_executor_prompt(...)` returns in the active steering path, consume a fallback prompt when needed:
 
@@ -552,7 +552,7 @@ async def _run_terminal_fallback_continuation(self, *, runtime, session_id, exec
 
 Call this helper when the active steerable executor task exits with pending steering still queued.
 
-- [ ] **Step 5: Run the focused hook and steering tests**
+- [x] **Step 5: Run the focused hook and steering tests**
 
 Run:
 
@@ -566,7 +566,7 @@ Expected:
 All focused steering hook and fallback tests pass.
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add \
@@ -589,7 +589,7 @@ git commit -m "feat: apply queued steering before llm calls"
 - Modify: `tests/plugins/test_plugin_commands.py`
 - Modify: `tests/plugins/test_plugin_hud.py`
 
-- [ ] **Step 1: Add failing plugin command and HUD tests**
+- [x] **Step 1: Add failing plugin command and HUD tests**
 
 Extend `tests/plugins/test_plugin_commands.py` with a built-in plugin registration check like:
 
@@ -628,7 +628,7 @@ def test_steering_hud_renders_pending_count():
     assert any("Pending: 2" in line.text for line in lines)
 ```
 
-- [ ] **Step 2: Run the focused plugin tests and verify they fail**
+- [x] **Step 2: Run the focused plugin tests and verify they fail**
 
 Run:
 
@@ -642,7 +642,7 @@ Expected:
 FAIL because the steering plugin and HUD provider do not exist yet.
 ```
 
-- [ ] **Step 3: Implement the built-in plugin**
+- [x] **Step 3: Implement the built-in plugin**
 
 Create `aworld-cli/src/aworld_cli/builtin_plugins/steering_cli/.aworld-plugin/plugin.json`:
 
@@ -723,7 +723,7 @@ def render_lines(context, plugin_state):
     ]
 ```
 
-- [ ] **Step 4: Publish steering snapshots to the HUD context**
+- [x] **Step 4: Publish steering snapshots to the HUD context**
 
 Update runtime/console/executor code so HUD snapshots include a `steering` bucket:
 
@@ -745,7 +745,7 @@ Refresh that bucket when:
 - an interrupt is requested
 - the active task finishes and steering state is cleared
 
-- [ ] **Step 5: Run the focused plugin tests and verify they pass**
+- [x] **Step 5: Run the focused plugin tests and verify they pass**
 
 Run:
 
@@ -759,7 +759,7 @@ Expected:
 Focused plugin command and HUD tests pass with the new built-in steering plugin.
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add \
@@ -784,7 +784,7 @@ git commit -m "feat: add steering plugin command and hud"
 - Reference: `tests/plugins/test_plugin_hud.py`
 - Reference: `openspec/changes/2026-05-12-aworld-cli-interactive-steering/specs/cli-experience/spec.md`
 
-- [ ] **Step 1: Run the full focused steering regression suite**
+- [x] **Step 1: Run the full focused steering regression suite**
 
 Run:
 
@@ -803,7 +803,7 @@ Expected:
 All steering-specific focused tests pass.
 ```
 
-- [ ] **Step 2: Re-run OpenSpec validation**
+- [x] **Step 2: Re-run OpenSpec validation**
 
 Run:
 
@@ -817,7 +817,7 @@ Expected:
 Change '2026-05-12-aworld-cli-interactive-steering' is valid
 ```
 
-- [ ] **Step 3: Run one broader CLI regression that exercises command registration**
+- [x] **Step 3: Run one broader CLI regression that exercises command registration**
 
 Run:
 
@@ -831,7 +831,7 @@ Expected:
 The broader CLI command registration regression remains green.
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add \
