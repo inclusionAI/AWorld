@@ -1664,9 +1664,13 @@ class ApplicationContext(AmniContext):
     def _is_default_namespace(self, namespace):
         return namespace == "default"
 
-    def deep_copy(self) -> 'ApplicationContext':
+    def deep_copy(self, preserve_merge_baseline: bool = False) -> 'ApplicationContext':
         new_context = object.__new__(ApplicationContext)
-        Context._deep_copy(self, new_context)
+        Context._deep_copy(
+            self,
+            new_context,
+            preserve_merge_baseline=preserve_merge_baseline,
+        )
 
         try:
             new_context.task_state = copy.deepcopy(self.task_state)
