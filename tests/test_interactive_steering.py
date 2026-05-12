@@ -7,8 +7,12 @@ import pytest
 
 import aworld_cli.console as console_module
 import aworld_cli.executors.file_parse_hook as file_parse_hook_module
+from aworld.agents.llm_agent import Agent
+from aworld.config import AgentConfig
+from aworld.core.agent.swarm import Swarm
 from aworld.core.event.base import Message
 from aworld_cli.console import AWorldCLI, _ESC_INTERRUPT_SENTINEL
+from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.steering.coordinator import SteeringCoordinator
 
 
@@ -394,6 +398,36 @@ async def test_active_steering_run_installs_and_removes_executor_event_sink():
     assert result == "done"
     assert executor_instance._active_steering_event_sink is None
     assert getattr(executor_instance.context, "_aworld_cli_status_sink", None) is None
+
+
+@pytest.mark.asyncio
+async def test_active_steering_streaming_output_stays_disabled_when_event_sink_is_active(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    monkeypatch.setenv("STREAM", "1")
+    executor_instance = LocalAgentExecutor(Swarm(Agent(name="developer", conf=AgentConfig(skill_configs={}))))
+    executor_instance.context = SimpleNamespace(task_id="task-1", workspace_path="/tmp")
+    observed_streaming: list[bool] = []
+
+    async def fake_executor(_prompt: str):
+        observed_streaming.append(executor_instance._streaming_output_enabled())
+        return "done"
+
+    result = await cli._run_executor_with_active_steering(
+        prompt="continue",
+        executor=fake_executor,
+        completer=None,
+        runtime=runtime,
+        agent_name="Aworld",
+        executor_instance=executor_instance,
+        is_terminal=True,
+    )
+
+    assert result == "done"
+    assert observed_streaming == [False]
+    assert executor_instance._streaming_output_enabled() is True
 
 
 def test_active_steering_event_commits_message_and_tool_blocks():

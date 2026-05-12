@@ -37,7 +37,12 @@ from aworld_cli.core.skill_activation_resolver import (
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
 from .stats import StreamTokenStats, build_llm_usage_observability, format_elapsed
-from .stream import StreamDisplayConfig, StreamDisplayController, _print_tool_result_lines
+from .stream import (
+    ActiveSteeringCommitBuffer,
+    StreamDisplayConfig,
+    StreamDisplayController,
+    _print_tool_result_lines,
+)
 
 # Try to import WorkSpace for local workspace creation
 try:
@@ -196,7 +201,56 @@ class LocalAgentExecutor(BaseAgentExecutor):
         stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         if not stream_on:
             return False
+        if self._active_steering_event_mode_enabled():
+            return False
         return not bool(getattr(self, "_suppress_interactive_stream_output", False))
+
+    def _active_steering_event_mode_enabled(self) -> bool:
+        return callable(getattr(self, "_active_steering_event_sink", None))
+
+    def _emit_active_steering_event(self, kind: str, **payload: Any) -> None:
+        sink = getattr(self, "_active_steering_event_sink", None)
+        if sink is None:
+            return
+        sink({"kind": kind, **payload})
+
+    def _emit_active_steering_status(self, text: str) -> None:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return
+        self._emit_active_steering_event("status_changed", text=normalized)
+
+    def _active_steering_buffer(self) -> ActiveSteeringCommitBuffer:
+        buffer = getattr(self, "_active_steering_commit_buffer", None)
+        if buffer is None:
+            buffer = ActiveSteeringCommitBuffer()
+            self._active_steering_commit_buffer = buffer
+        return buffer
+
+    def _buffer_active_steering_message_chunk(self, text: str) -> None:
+        self._active_steering_buffer().append_message_delta(text)
+
+    def _flush_active_steering_message_buffer(
+        self,
+        *,
+        agent_name: str | None = None,
+    ) -> None:
+        event = self._active_steering_buffer().commit_message(agent_name=agent_name)
+        if event is not None:
+            self._emit_active_steering_event(**event)
+
+    def _emit_active_steering_tool_result_lines(
+        self,
+        lines: list[str],
+        *,
+        exit_code: int | None = None,
+    ) -> None:
+        event = self._active_steering_buffer().commit_tool_result(
+            lines,
+            exit_code=exit_code,
+        )
+        if event is not None:
+            self._emit_active_steering_event(**event)
 
     def _publish_hud_stream_update(
         self,
@@ -805,7 +859,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     from .._globals import console as global_console
                     self.console = global_console
 
-                if self.console:
+                if self.console and not self._active_steering_event_mode_enabled():
                     self.console.print(f"[dim]🔄 Running task: {task.id}[/dim]")
                 
                 # Get streaming outputs
@@ -835,6 +889,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                             getattr(self, "_suppress_interactive_loading_status", False)
                         ),
                     )
+                    active_event_mode = self._active_steering_event_mode_enabled()
 
                     try:
                         from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput, ChunkOutput
@@ -864,7 +919,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                     tool_calls = output.tool_calls if hasattr(output, "tool_calls") and output.tool_calls else []
                                     current_tool_name = None
-                                    if tool_calls:
+                                    if tool_calls and not active_event_mode:
                                         first_tool = tool_calls[0]
                                         tool_data = getattr(first_tool, "data", first_tool)
                                         function = getattr(tool_data, "function", None)
@@ -1079,8 +1134,39 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             except Exception as save_err:
                                                 logger.warning(f"💾 Failed to save round to history: {save_err}")
                                     
+                                    if active_event_mode:
+                                        response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
+                                        had_buffered_message_chunks = bool(
+                                            self._active_steering_buffer().message_chunks
+                                        )
+                                        self._flush_active_steering_message_buffer(
+                                            agent_name=current_agent_name or "Assistant",
+                                        )
+                                        if response_text.strip():
+                                            answer = response_text if not answer else (response_text if response_text not in answer else answer)
+                                            if not had_buffered_message_chunks:
+                                                self._buffer_active_steering_message_chunk(response_text)
+                                                self._flush_active_steering_message_buffer(
+                                                    agent_name=current_agent_name or "Assistant",
+                                                )
+                                        if tool_calls:
+                                            tool_lines = self._format_tool_calls_display_lines(tool_calls)
+                                            if tool_lines:
+                                                self._emit_active_steering_event(
+                                                    "tool_calls_committed",
+                                                    text="\n".join(tool_lines),
+                                                )
+                                                current_tool_name = None
+                                                first_tool = tool_calls[0]
+                                                tool_data = getattr(first_tool, "data", first_tool)
+                                                function = getattr(tool_data, "function", None)
+                                                current_tool_name = getattr(function, "name", None)
+                                                if current_tool_name:
+                                                    self._emit_active_steering_status(f"Calling {current_tool_name}")
+                                        else:
+                                            self._emit_active_steering_status("Working")
                                     # When STREAM=1: render message output; when STREAM=0: skip output, only update answer
-                                    if not stream_on:
+                                    elif not stream_on:
                                         logger.info(f"Rendering message output for agent: {current_agent_name}")
                                         logger.info(f"Output: {output}")
                                         logger.info(f"Answer: {answer}")
@@ -1132,7 +1218,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 ctrl.set_deferred_thinking("💭 Thinking...")
                                             else:
                                                 ctrl.start_loading("💭 Thinking...")
-                                    elif not tool_calls and (current_agent_name or "").lower() != "aworld":
+                                    elif not active_event_mode and not tool_calls and (current_agent_name or "").lower() != "aworld":
                                         # No tool calls and not Aworld: agent may produce more output
                                         if has_pending_display:
                                             ctrl.set_deferred_thinking("💭 Thinking...")
@@ -1142,6 +1228,19 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 # Handle ToolResultOutput - add to buffer for gradual display
                                 elif isinstance(output, ToolResultOutput):
                                     tr_lines = self._format_tool_result_display_lines(output)
+                                    if active_event_mode and tr_lines:
+                                        metadata = getattr(output, "metadata", None) or {}
+                                        exit_code = metadata.get("exit_code")
+                                        if isinstance(exit_code, str) and exit_code.strip().lstrip("-").isdigit():
+                                            exit_code = int(exit_code)
+                                        elif not isinstance(exit_code, int):
+                                            exit_code = None
+                                        self._emit_active_steering_tool_result_lines(
+                                            tr_lines,
+                                            exit_code=exit_code,
+                                        )
+                                        self._emit_active_steering_status("Working")
+                                        continue
                                     if tr_lines:
                                         ctrl.buffer.accumulated_tool_result_lines.extend(tr_lines)
                                     stream_on = self._streaming_output_enabled()
@@ -1173,6 +1272,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     stream_on = self._streaming_output_enabled()
                                     chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
+                                    if active_event_mode and chunk:
+                                        if content := getattr(chunk, "content", None):
+                                            self._buffer_active_steering_message_chunk(content)
                                     if stream_on and chunk:
                                         if content := getattr(chunk, "content", None):
                                             ctrl.buffer.accumulated_content += content
@@ -1260,6 +1362,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         )
                                     else:
                                         logger.debug(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
+                                    if active_event_mode:
+                                        current_tool_calls = ctrl.buffer.accumulated_tool_calls or getattr(chunk, "tool_calls", None) or []
+                                        if current_tool_calls:
+                                            first_tool = current_tool_calls[0]
+                                            tool_data = getattr(first_tool, "data", first_tool)
+                                            function = getattr(tool_data, "function", None)
+                                            current_tool_name = getattr(function, "name", None)
+                                            if current_tool_name:
+                                                self._emit_active_steering_status(f"Calling {current_tool_name}")
+                                        continue
                                     # When STREAM=1: buffer content; Live display is refreshed at fixed interval
                                     if stream_on and self.console and (ctrl.buffer.has_content() or ctrl.buffer.has_tool_calls() or ctrl.buffer.has_tool_results() or stream_token_stats.get_current_stats()):
                                         ctrl.ensure_live_running()
@@ -1320,7 +1432,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 try:
                     await consume_stream()
                 except (asyncio.CancelledError, KeyboardInterrupt):
-                    if self.console:
+                    if self._active_steering_event_mode_enabled():
+                        self._emit_active_steering_event("system_notice", text="Interrupted.")
+                    elif self.console:
                         self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
                     return await self._handle_task_interrupted(task, answer=answer)
 
@@ -1556,7 +1670,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 )
 
                 error_msg = f"Error: {err}, traceback: {traceback.format_exc()}"
-                if self.console:
+                if self._active_steering_event_mode_enabled():
+                    self._emit_active_steering_event("error", text=error_msg)
+                elif self.console:
                     self.console.print("[red]❌ [/red]", end=" ")
                     self.console.print(error_msg, markup=False)
                 self._publish_hud_task_finished(task.id, task_status="error")
