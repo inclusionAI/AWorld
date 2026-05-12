@@ -176,3 +176,53 @@ def test_local_executor_streaming_output_can_be_suppressed_for_interactive_steer
 
     executor._suppress_interactive_stream_output = True
     assert executor._streaming_output_enabled() is False
+
+
+def test_local_executor_flushes_buffered_message_chunks_to_commit_event():
+    agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
+    executor = LocalAgentExecutor(Swarm(agent))
+    events: list[dict[str, str]] = []
+    executor._active_steering_event_sink = events.append
+
+    executor._buffer_active_steering_message_chunk("Repository ")
+    executor._buffer_active_steering_message_chunk("scan complete.")
+    executor._flush_active_steering_message_buffer(agent_name="Aworld")
+
+    assert events == [
+        {
+            "kind": "message_committed",
+            "text": "Repository scan complete.",
+            "agent_name": "Aworld",
+        }
+    ]
+
+
+def test_local_executor_b_granularity_tool_result_summary():
+    agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
+    executor = LocalAgentExecutor(Swarm(agent))
+    events: list[dict[str, str]] = []
+    executor._active_steering_event_sink = events.append
+
+    executor._emit_active_steering_tool_result_lines(
+        [f"line {index}" for index in range(1, 10)],
+        exit_code=7,
+    )
+
+    assert events == [
+        {
+            "kind": "tool_result_committed",
+            "text": "Exit code: 7\nline 1\nline 2\nline 3\nline 4\n... (5 more lines)",
+        }
+    ]
+
+
+def test_local_executor_streaming_output_is_disabled_when_event_sink_is_active(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
+    executor = LocalAgentExecutor(Swarm(agent))
+
+    monkeypatch.setenv("STREAM", "1")
+    executor._active_steering_event_sink = lambda _event: None
+
+    assert executor._streaming_output_enabled() is False
