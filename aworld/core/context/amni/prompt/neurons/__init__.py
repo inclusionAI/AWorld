@@ -20,6 +20,7 @@ class Neurons:
     ENTITY = "entity"
     AWORLD_FILE = "aworld_file"
     RELEVANT_MEMORY = "relevant_memory"
+    TASK_GROUNDING = "task_grounding"
 
 class Neuron(ABC):
     """
