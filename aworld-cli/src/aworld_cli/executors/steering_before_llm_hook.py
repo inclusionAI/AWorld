@@ -2,6 +2,8 @@ from aworld.core.event.base import Message
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook
 
+from ..steering.observability import log_applied_steering_event
+
 
 @HookFactory.register(name="SteeringBeforeLlmHook")
 class SteeringBeforeLlmHook(PreLLMCallHook):
@@ -19,6 +21,14 @@ class SteeringBeforeLlmHook(PreLLMCallHook):
         drained = steering.drain_for_checkpoint(session_id)
         if not drained:
             return message
+
+        log_applied_steering_event(
+            workspace_path=getattr(context, "workspace_path", None),
+            session_id=session_id,
+            task_id=getattr(context, "task_id", None),
+            steering_items=drained,
+            checkpoint="before_llm_call",
+        )
 
         updated_messages = list(messages)
         for item in drained:

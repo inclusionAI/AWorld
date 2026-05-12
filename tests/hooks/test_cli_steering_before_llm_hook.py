@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -60,6 +61,52 @@ async def test_before_llm_hook_skips_drain_when_payload_has_no_messages():
     assert coordinator.snapshot("sess-1")["pending_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_before_llm_hook_logs_drained_steering_checkpoint_event(tmp_path):
+    from aworld_cli.executors.steering_before_llm_hook import SteeringBeforeLlmHook
+
+    coordinator = SteeringCoordinator()
+    coordinator.begin_task("sess-1", "task-1")
+    coordinator.enqueue_text("sess-1", "Focus on failing tests first.")
+    coordinator.enqueue_text("sess-1", "Only touch the current branch.")
+    context = SimpleNamespace(
+        session_id="sess-1",
+        task_id="task-1",
+        workspace_path=str(tmp_path),
+        _aworld_cli_steering=coordinator,
+    )
+    hook = SteeringBeforeLlmHook()
+    message = Message(
+        category="agent_hook",
+        payload={
+            "messages": [
+                {"role": "user", "content": "Initial task"},
+            ]
+        },
+        sender="llm_model",
+        headers={},
+    )
+
+    result = await hook.exec(message, context=context)
+
+    assert result.headers["updated_input"]["messages"][-2:] == [
+        {"role": "user", "content": "Focus on failing tests first."},
+        {"role": "user", "content": "Only touch the current branch."},
+    ]
+
+    log_path = tmp_path / ".aworld" / "memory" / "sessions" / "sess-1.jsonl"
+    payload = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["event"] == "steering_applied_at_checkpoint"
+    assert payload["session_id"] == "sess-1"
+    assert payload["task_id"] == "task-1"
+    assert payload["checkpoint"] == "before_llm_call"
+    assert payload["applied_count"] == 2
+    assert [item["text"] for item in payload["steering"]] == [
+        "Focus on failing tests first.",
+        "Only touch the current branch.",
+    ]
+
+
 class _DummyContext:
     def __init__(self, task_input):
         self.task_id = task_input.task_id
@@ -116,3 +163,16 @@ async def test_local_executor_reattaches_steering_after_post_build_context_repla
 
     assert captured["hook_context_steering"] is coordinator
     assert task.context._aworld_cli_steering is coordinator
+
+
+def test_local_executor_streaming_output_can_be_suppressed_for_interactive_steering(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
+    executor = LocalAgentExecutor(Swarm(agent))
+
+    monkeypatch.setenv("STREAM", "1")
+    assert executor._streaming_output_enabled() is True
+
+    executor._suppress_interactive_stream_output = True
+    assert executor._streaming_output_enabled() is False

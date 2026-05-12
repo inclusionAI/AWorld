@@ -28,6 +28,7 @@ from aworld.logs.util import logger
 from ._globals import console
 from .core.command_system import CommandRegistry, CommandContext
 from .models import AgentInfo
+from .steering.observability import log_queued_steering_event
 from .user_input import UserInputHandler
 
 
@@ -2241,6 +2242,8 @@ class AWorldCLI:
         runtime: Any,
         session_id: str | None,
         executor_task: asyncio.Task,
+        workspace_path: str | None = None,
+        task_id: str | None = None,
     ) -> bool:
         normalized = (user_input or "").strip()
         if not normalized:
@@ -2266,7 +2269,15 @@ class AWorldCLI:
         if steering is None or not session_id:
             return False
 
-        steering.enqueue_text(session_id, normalized)
+        item = steering.enqueue_text(session_id, normalized)
+        snapshot = steering.snapshot(session_id)
+        log_queued_steering_event(
+            workspace_path=workspace_path,
+            session_id=session_id,
+            task_id=task_id or snapshot.get("task_id"),
+            steering_item=item,
+            pending_count=int(snapshot.get("pending_count", 0) or 0),
+        )
         self.console.print("[dim]Steering queued for the next checkpoint.[/dim]")
         return True
 
@@ -2373,13 +2384,20 @@ class AWorldCLI:
         session_id = getattr(executor_instance, "session_id", None)
         wait_started_at = time.monotonic()
         previous_loading_suppressed = None
+        previous_stream_suppressed = None
         if executor_instance is not None and is_terminal:
             previous_loading_suppressed = getattr(
                 executor_instance,
                 "_suppress_interactive_loading_status",
                 False,
             )
+            previous_stream_suppressed = getattr(
+                executor_instance,
+                "_suppress_interactive_stream_output",
+                False,
+            )
             executor_instance._suppress_interactive_loading_status = True
+            executor_instance._suppress_interactive_stream_output = True
         executor_task = asyncio.create_task(
             self._run_executor_prompt(
                 prompt,
@@ -2464,6 +2482,8 @@ class AWorldCLI:
                     runtime=runtime,
                     session_id=session_id,
                     executor_task=executor_task,
+                    workspace_path=getattr(getattr(executor_instance, "context", None), "workspace_path", None),
+                    task_id=getattr(getattr(executor_instance, "context", None), "task_id", None),
                 )
                 if executor_task.done() or executor_task.cancelling():
                     result = await self._await_active_executor_result(executor_task)
@@ -2486,6 +2506,8 @@ class AWorldCLI:
                     pass
             if executor_instance is not None and previous_loading_suppressed is not None:
                 executor_instance._suppress_interactive_loading_status = previous_loading_suppressed
+            if executor_instance is not None and previous_stream_suppressed is not None:
+                executor_instance._suppress_interactive_stream_output = previous_stream_suppressed
             self._current_executor_task = None
 
     async def _render_skills_table(
