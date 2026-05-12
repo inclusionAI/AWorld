@@ -589,7 +589,7 @@ class OpenAIProvider(LLMProviderBase):
             "prompt_cache_key", "safety_identifier", "store", "verbosity", "extra_body", "model"
         ]
 
-        llm_params = self.kwargs.get("params", {})
+        llm_params = dict(self.kwargs.get("params", {}))
         llm_params.update(kwargs)
         llm_params.update(lowered_request_kwargs)
         llm_params.pop("response_parse_args", None)
@@ -607,6 +607,8 @@ class OpenAIProvider(LLMProviderBase):
                 merged_stream_options = dict(stream_options)
                 merged_stream_options.setdefault("include_usage", True)
                 llm_params["stream_options"] = merged_stream_options
+        else:
+            llm_params.pop("stream_options", None)
         log_llm_record("OPENAI_PARAMS", model_name, llm_params, {"request_id": llm_params.pop("llm_request_id", None)})
 
         for param in llm_params:
