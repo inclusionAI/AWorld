@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 
 from aworld_cli.executors.stats import StreamTokenStats
 from aworld_cli.executors.stream import (
+    ActiveSteeringCommitBuffer,
     StreamDisplayController,
     StreamDisplayBuffer,
     StreamDisplayConfig,
@@ -66,3 +67,51 @@ def test_stream_display_controller_can_disable_loading_status():
 
     assert controller.loading_status is None
     assert controller.status_start_time is not None
+
+
+def test_commit_buffer_keeps_short_tool_results_full():
+    buffer = ActiveSteeringCommitBuffer(max_full_result_lines=8, max_summary_lines=4)
+
+    committed = buffer.commit_tool_result(
+        ["first line", "second line", "third line"],
+        exit_code=0,
+    )
+
+    assert committed == {
+        "role": "assistant",
+        "content": "first line\nsecond line\nthird line",
+    }
+
+
+def test_commit_buffer_summarizes_long_tool_results():
+    buffer = ActiveSteeringCommitBuffer(max_full_result_lines=4, max_summary_lines=3)
+
+    committed = buffer.commit_tool_result(
+        [
+            "line 1",
+            "line 2",
+            "line 3",
+            "line 4",
+            "line 5",
+            "line 6",
+        ],
+        exit_code=7,
+    )
+
+    assert committed == {
+        "role": "assistant",
+        "content": "Exit code: 7\nline 1\nline 2\nline 3\n... (3 more lines)",
+    }
+
+
+def test_commit_buffer_sanitizes_message_text():
+    buffer = ActiveSteeringCommitBuffer()
+
+    buffer.append_message_delta("\x1b[?1;36m\talpha")
+    committed = buffer.commit_message("\n?[1;36m\x1b[0m\tbeta\x07\n", agent_name="Aworld")
+
+    assert committed == {
+        "role": "assistant",
+        "name": "Aworld",
+        "content": "    alpha\n    beta",
+    }
