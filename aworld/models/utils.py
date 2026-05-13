@@ -9,6 +9,7 @@ from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from aworld.models.qwen_tokenizer import qwen_tokenizer
 from aworld.models.openai_tokenizer import openai_tokenizer
+from aworld.models.usage import normalize_usage
 from aworld.utils import import_package
 
 
@@ -243,6 +244,7 @@ class ModelUtils:
 def usage_process(usage: Dict[str, Union[int, Dict[str, int]]] = {}, context: Context = None):
     if not context:
         context = Context()
+    usage = normalize_usage(usage)
 
     stacks = inspect.stack()
     index = 0

@@ -32,6 +32,55 @@ from aworld.sandbox.runtime import SandboxManager
 if TYPE_CHECKING:
     from aworld.sandbox.implementations.sandbox import Sandbox
 
+
+def _coalesce_tool_result_content(content_items: List[str]) -> Any:
+    """Keep single text outputs as plain strings instead of JSON array strings."""
+    if not content_items:
+        return ""
+    if len(content_items) == 1:
+        return content_items[0]
+    return content_items
+
+
+def _summarize_tool_parameters(parameter: Dict[str, Any] | None, *, max_items: int = 4) -> str:
+    if not isinstance(parameter, dict) or not parameter:
+        return ""
+    items = []
+    for idx, (key, value) in enumerate(parameter.items()):
+        if idx >= max_items:
+            items.append(f"+{len(parameter) - max_items} more")
+            break
+        text = str(value).replace("\n", "\\n")
+        if len(text) > 120:
+            text = text[:117] + "..."
+        items.append(f"{key}={text}")
+    return ", ".join(items)
+
+
+def _build_tool_call_failure_result(
+    *,
+    server_name: str,
+    tool_name: str,
+    parameter: Dict[str, Any] | None,
+    error: BaseException | None,
+) -> ActionResult:
+    error_text = "Unknown error"
+    if error is not None:
+        error_text = f"{type(error).__name__}: {error}"
+    content = f"Error calling tool {server_name}__{tool_name}: {error_text}"
+    parameter_summary = _summarize_tool_parameters(parameter)
+    if parameter_summary:
+        content += f". Arguments: {parameter_summary}"
+    return ActionResult(
+        tool_name=server_name,
+        action_name=tool_name,
+        content=content,
+        keep=True,
+        metadata={},
+        parameter=parameter,
+    )
+
+
 class McpServers:
 
     def __init__(
@@ -472,13 +521,11 @@ class McpServers:
 
                 if not call_result_raw:
                     logger.warning(f"Error calling tool: {server_name}__{tool_name}")
-                    action_result = ActionResult(
-                        tool_name=server_name,
-                        action_name=tool_name,
-                        content=f"Error calling tool {tool_name}",
-                        keep=True,
-                        metadata={},
-                        parameter=parameter
+                    action_result = _build_tool_call_failure_result(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
+                        error=call_mcp_e,
                     )
                     results.append(action_result)
                     self._update_metadata(result_key, {"error": call_mcp_e}, operation_info)
@@ -513,7 +560,7 @@ class McpServers:
                     action_result = ActionResult(
                         tool_name=server_name,
                         action_name=tool_name,
-                        content=json.dumps(content_list, ensure_ascii=False),
+                        content=_coalesce_tool_result_content(content_list),
                         keep=True,
                         metadata=metadata,
                         parameter=parameter

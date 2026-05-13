@@ -5,27 +5,27 @@ import shlex
 from collections import Counter
 from pathlib import Path
 
-from aworld_cli.core.command_system import CommandContext
-from aworld_cli.plugin_capabilities.commands import PluginBoundCommand
-from aworld_cli.memory.durable import (
-    durable_memory_file,
-    normalize_durable_memory_type,
-    normalize_memory_kind,
-)
-from aworld_cli.memory.cache_observability import (
-    format_cache_observability_summary,
-    summarize_cache_observability,
-)
-from aworld_cli.memory.metrics import summarize_promotion_metrics
-from aworld_cli.memory.discovery import discover_workspace_instruction_layers
-from aworld_cli.memory.governance import governance_mode
-from aworld_cli.memory.promotion import auto_promotion_enabled
-from aworld_cli.memory.provider import CliDurableMemoryProvider
 from aworld_cli.builtin_plugins.memory_cli.common import (
     ensure_workspace_memory_file,
     open_in_editor,
     remove_remembered_guidance,
 )
+from aworld_cli.core.command_system import CommandContext
+from aworld_cli.memory.cache_observability import (
+    format_cache_observability_summary,
+    summarize_cache_observability,
+)
+from aworld_cli.memory.discovery import discover_workspace_instruction_layers
+from aworld_cli.memory.durable import (
+    durable_memory_file,
+    normalize_durable_memory_type,
+    normalize_memory_kind,
+)
+from aworld_cli.memory.governance import governance_mode
+from aworld_cli.memory.metrics import summarize_promotion_metrics
+from aworld_cli.memory.promotion import auto_promotion_enabled
+from aworld_cli.memory.provider import CliDurableMemoryProvider
+from aworld_cli.plugin_capabilities.commands import PluginBoundCommand
 
 
 class MemoryCommand(PluginBoundCommand):
@@ -36,6 +36,7 @@ class MemoryCommand(PluginBoundCommand):
     @property
     def completion_items(self) -> dict[str, str]:
         return {
+            "/memory clear": "Clear recalled memory artifacts for this workspace",
             "/memory view": "View effective workspace memory instructions",
             "/memory reload": "Explain current memory reload behavior",
             "/memory status": "Show workspace memory status",
@@ -51,29 +52,33 @@ class MemoryCommand(PluginBoundCommand):
         if isinstance(parsed, str):
             return parsed
 
-        subcommand, memory_type, positional_args = parsed
+        subcommand, memory_type, scope, positional_args = parsed
         if not subcommand or subcommand == "edit":
-            if positional_args:
+            if scope is not None or positional_args:
                 return self._usage()
             return self._edit_workspace_memory(context)
-        if subcommand == "view":
+        if subcommand == "clear":
             if positional_args:
+                return self._usage()
+            return self._clear_workspace_memory(context, scope=scope)
+        if subcommand == "view":
+            if scope is not None or positional_args:
                 return self._usage()
             return self._view_workspace_memory(context, memory_type=memory_type)
         if subcommand == "status":
-            if positional_args:
+            if scope is not None or positional_args:
                 return self._usage()
             return self._status_workspace_memory(context)
         if subcommand == "cache":
-            if positional_args:
+            if scope is not None or positional_args:
                 return self._usage()
             return self._cache_workspace_memory(context)
         if subcommand == "reload":
-            if positional_args:
+            if scope is not None or positional_args:
                 return self._usage()
             return self._reload_workspace_memory()
         if subcommand == "promotions":
-            if memory_type is not None:
+            if memory_type is not None or scope is not None:
                 return self._usage()
             if not positional_args:
                 return self._promotions_workspace_memory(context)
@@ -120,6 +125,8 @@ class MemoryCommand(PluginBoundCommand):
         layers = self._workspace_layers(context)
         durable_records = self._provider().get_active_durable_memory_records(context.cwd)
         durable_path = durable_memory_file(context.cwd)
+        sessions_dir = Path(context.cwd).resolve() / ".aworld" / "memory" / "sessions"
+        session_log_files = tuple(sorted(sessions_dir.glob("*.jsonl"))) if sessions_dir.exists() else ()
         metrics = summarize_promotion_metrics(context.cwd)
         lines = [
             "Memory instruction status",
@@ -139,6 +146,8 @@ class MemoryCommand(PluginBoundCommand):
             lines.append("Active read files: none")
         lines.append(f"Durable record file: {durable_path}")
         lines.append(f"Durable record count: {len(durable_records)}")
+        lines.append(f"Session log directory: {sessions_dir}")
+        lines.append(f"Session log file count: {len(session_log_files)}")
         if durable_records:
             lines.append("Durable record types:")
             counts = Counter(record.memory_type for record in durable_records)
@@ -236,6 +245,39 @@ class MemoryCommand(PluginBoundCommand):
                 )
         return "\n".join(lines)
 
+    def _clear_workspace_memory(self, context: CommandContext, *, scope: str | None = None) -> str:
+        workspace = Path(context.cwd).resolve()
+        memory_root = workspace / ".aworld" / "memory"
+        sessions_dir = memory_root / "sessions"
+        durable_path = durable_memory_file(workspace)
+        metrics_path = summarize_promotion_metrics(workspace).metrics_path
+
+        effective_scope = scope or "sessions"
+        cleared_session_logs = 0
+        cleared_durable = False
+        cleared_metrics = False
+
+        if effective_scope in {"sessions", "all"} and sessions_dir.exists():
+            for path in sessions_dir.glob("*.jsonl"):
+                path.unlink(missing_ok=True)
+                cleared_session_logs += 1
+
+        if effective_scope in {"durable", "all"} and durable_path.exists():
+            durable_path.unlink(missing_ok=True)
+            cleared_durable = True
+
+        if effective_scope in {"metrics", "all"} and metrics_path.exists():
+            metrics_path.unlink(missing_ok=True)
+            cleared_metrics = True
+
+        lines = [f"Cleared session logs: {cleared_session_logs} file(s)"]
+        if effective_scope in {"durable", "all"}:
+            lines.append(f"Cleared durable records: {'yes' if cleared_durable else 'no'}")
+        if effective_scope in {"metrics", "all"}:
+            lines.append(f"Cleared promotion metrics: {'yes' if cleared_metrics else 'no'}")
+        lines.append("Workspace instruction files were left unchanged.")
+        return "\n".join(lines)
+
     def _cache_workspace_memory(self, context: CommandContext) -> str:
         summary = summarize_cache_observability(context.cwd)
         return format_cache_observability_summary(summary)
@@ -310,10 +352,7 @@ class MemoryCommand(PluginBoundCommand):
                     active_records = provider.get_active_durable_memory_records(context.cwd)
                     if not any(record.content == content for record in active_records):
                         remove_remembered_guidance(context.cwd, content)
-            return (
-                f"Recorded review action: {review_action} "
-                f"for {normalized_decision_id}"
-            )
+            return f"Recorded review action: {review_action} for {normalized_decision_id}"
 
         decisions = provider.list_governed_decisions(context.cwd)
         lines = ["Governed promotions"]
@@ -350,17 +389,18 @@ class MemoryCommand(PluginBoundCommand):
     def _parse_args(
         self,
         user_args: str,
-    ) -> tuple[str, str | None, tuple[str, ...]] | str:
+    ) -> tuple[str, str | None, str | None, tuple[str, ...]] | str:
         try:
             tokens = shlex.split(user_args)
         except ValueError as exc:
             return f"Unable to parse /memory arguments: {exc}"
 
         if not tokens:
-            return "", None, ()
+            return "", None, None, ()
 
         subcommand = tokens[0]
         memory_type: str | None = None
+        scope: str | None = None
         positional_args: list[str] = []
         index = 1
         while index < len(tokens):
@@ -381,10 +421,36 @@ class MemoryCommand(PluginBoundCommand):
                     return str(exc)
                 index += 1
                 continue
+            if token == "--scope":
+                if index + 1 >= len(tokens):
+                    return self._usage()
+                scope = self._normalize_scope(tokens[index + 1])
+                if scope is None:
+                    return self._usage()
+                index += 2
+                continue
+            if token.startswith("--scope="):
+                scope = self._normalize_scope(token.split("=", 1)[1])
+                if scope is None:
+                    return self._usage()
+                index += 1
+                continue
             positional_args.append(token)
             index += 1
 
-        return subcommand, memory_type, tuple(positional_args)
+        return subcommand, memory_type, scope, tuple(positional_args)
+
+    def _normalize_scope(self, value: str) -> str | None:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"session", "sessions", "session_logs", "session-log", "session-logs"}:
+            return "sessions"
+        if normalized in {"durable", "durable_records", "durable-records"}:
+            return "durable"
+        if normalized in {"metrics", "promotion_metrics", "promotion-metrics"}:
+            return "metrics"
+        if normalized == "all":
+            return "all"
+        return None
 
     def _reload_workspace_memory(self) -> str:
         return (
@@ -394,8 +460,9 @@ class MemoryCommand(PluginBoundCommand):
 
     def _usage(self) -> str:
         return (
-            "Usage: /memory [view|status|cache|reload|promotions] [--type <memory-type>]\n"
+            "Usage: /memory [view|status|cache|reload|clear|promotions] [--type <memory-type>] [--scope sessions|durable|metrics|all]\n"
             "       /memory promotions [accept|reject|revert] <decision-id>\n"
+            "Default clear scope is session logs only.\n"
             "Default action opens the workspace AWORLD.md file in your editor."
         )
 
