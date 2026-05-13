@@ -194,6 +194,7 @@ class AWorldCLI:
         self._toolbar_git_branch = self._detect_git_branch()
         self._pending_skill_overrides: list[str] = []
         self._active_steering_view: ActiveSteeringView | None = None
+        self._active_steering_escape_cooldown_until = 0.0
 
     def _detect_workspace_name(self) -> str:
         """Detect the current workspace name for status-bar display."""
@@ -534,6 +535,10 @@ class AWorldCLI:
         if session is not None and session is self._active_prompt_session:
             return session
         return self._create_prompt_session(completer)
+
+    def _clear_prompt_session_reference(self, session: PromptSession | None = None) -> None:
+        if session is None or self._active_prompt_session is session:
+            self._active_prompt_session = None
 
     def _handle_runtime_plugin_capability_refresh(self, previous_capabilities: tuple[str, ...], runtime) -> None:
         had_hud = "hud" in tuple(previous_capabilities or ())
@@ -2267,6 +2272,12 @@ class AWorldCLI:
             pending_count = int(snapshot.get("pending_count", 0) or 0)
 
         if normalized in {_ESC_INTERRUPT_SENTINEL, "/interrupt"}:
+            if (
+                normalized == _ESC_INTERRUPT_SENTINEL
+                and pending_count <= 0
+                and time.monotonic() < self._active_steering_escape_cooldown_until
+            ):
+                return True
             interrupt_requested = normalized == _ESC_INTERRUPT_SENTINEL
             esc_submits_queued_steering_immediately = (
                 normalized == _ESC_INTERRUPT_SENTINEL and pending_count > 0
@@ -2287,6 +2298,7 @@ class AWorldCLI:
             if not executor_task.done():
                 executor_task.cancel()
             if esc_submits_queued_steering_immediately:
+                self._active_steering_escape_cooldown_until = time.monotonic() + 0.25
                 self._append_active_steering_history(
                     "system_notice",
                     "Interrupting current run to submit queued steering immediately.",
@@ -2476,6 +2488,7 @@ class AWorldCLI:
         if not follow_up_prompt:
             return False, None
 
+        self._clear_prompt_session_reference()
         self.console.print("[dim]Applying queued steering in a follow-up turn.[/dim]")
         result = await self._run_executor_with_active_steering(
             prompt=follow_up_prompt,
@@ -2591,6 +2604,7 @@ class AWorldCLI:
                         await prompt_task
                     except BaseException:
                         pass
+                    self._clear_prompt_session_reference(steering_session)
                     result = await self._await_active_executor_result(executor_task)
                     continued, follow_up_result = await self._run_terminal_fallback_continuation(
                         runtime=runtime,
@@ -2606,8 +2620,10 @@ class AWorldCLI:
                 try:
                     user_input = await prompt_task
                 except BaseException:
+                    self._clear_prompt_session_reference(steering_session)
                     await self._cancel_active_executor_task(executor_task)
                     raise
+                self._clear_prompt_session_reference(steering_session)
 
                 await self._handle_active_task_input(
                     user_input,
