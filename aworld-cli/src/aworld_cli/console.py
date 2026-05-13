@@ -518,7 +518,7 @@ class AWorldCLI:
         if on_escape is not None:
             key_bindings = KeyBindings()
 
-            @key_bindings.add("escape")
+            @key_bindings.add("escape", eager=True)
             def _interrupt(event) -> None:
                 try:
                     on_escape()
