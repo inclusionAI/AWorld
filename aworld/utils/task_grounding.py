@@ -1,5 +1,5 @@
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 _HANDLE_RE = re.compile(r"(?<!\w)@?[A-Za-z0-9_]{3,32}")
 _URL_RE = re.compile(r"https?://[^\s)>\]\"']+")
@@ -66,6 +66,37 @@ def _dedupe_preserve_order(values: Iterable[str]) -> list[str]:
     return deduped
 
 
+def extract_path_candidates(value: Any, *, max_paths: int = 12) -> list[str]:
+    candidates: list[str] = []
+
+    def visit(node: Any) -> None:
+        if len(candidates) >= max(max_paths, 0):
+            return
+        if isinstance(node, str):
+            for match in _PATH_RE.finditer(node):
+                path = match.group(0)
+                if "/" in path:
+                    candidates.append(path)
+                    if len(candidates) >= max(max_paths, 0):
+                        return
+            return
+        if isinstance(node, dict):
+            for key, item in node.items():
+                visit(key)
+                visit(item)
+                if len(candidates) >= max(max_paths, 0):
+                    return
+            return
+        if isinstance(node, (list, tuple, set)):
+            for item in node:
+                visit(item)
+                if len(candidates) >= max(max_paths, 0):
+                    return
+
+    visit(value)
+    return _dedupe_preserve_order(candidates)[:max(max_paths, 0)]
+
+
 def extract_required_anchors(request: str | None, *, max_anchors: int = 8) -> list[str]:
     if not request:
         return []
@@ -109,4 +140,3 @@ def anchor_matches_text(anchor: str, text: str | None) -> bool:
         return anchor_lower in text_lower
 
     return _canonical_match_text(anchor) in _canonical_match_text(text)
-
