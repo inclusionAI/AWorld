@@ -2268,16 +2268,31 @@ class AWorldCLI:
 
         if normalized in {_ESC_INTERRUPT_SENTINEL, "/interrupt"}:
             interrupt_requested = normalized == _ESC_INTERRUPT_SENTINEL
-            if not interrupt_requested and runtime is not None and hasattr(runtime, "request_session_interrupt"):
+            esc_submits_queued_steering_immediately = (
+                normalized == _ESC_INTERRUPT_SENTINEL and pending_count > 0
+            )
+            if (
+                not interrupt_requested
+                and runtime is not None
+                and hasattr(runtime, "request_session_interrupt")
+            ):
                 interrupt_requested = bool(runtime.request_session_interrupt(session_id))
-            elif interrupt_requested and runtime is not None and hasattr(runtime, "request_session_interrupt"):
+            elif (
+                interrupt_requested
+                and not esc_submits_queued_steering_immediately
+                and runtime is not None
+                and hasattr(runtime, "request_session_interrupt")
+            ):
                 interrupt_requested = bool(runtime.request_session_interrupt(session_id))
             if not executor_task.done():
                 executor_task.cancel()
-            if interrupt_requested:
+            if esc_submits_queued_steering_immediately:
+                self._append_active_steering_history(
+                    "system_notice",
+                    "Interrupting current run to submit queued steering immediately.",
+                )
+            elif interrupt_requested:
                 notice = "Interrupt requested."
-                if pending_count > 0:
-                    notice = "Interrupting current run to submit queued steering immediately."
                 self._append_active_steering_history("system_notice", notice)
             else:
                 self._append_active_steering_history(

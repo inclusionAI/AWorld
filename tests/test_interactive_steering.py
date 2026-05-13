@@ -191,7 +191,7 @@ async def test_escape_interrupts_and_keeps_pending_steering_for_immediate_follow
     )
 
     assert handled is True
-    assert runtime.interrupt_requests == ["sess-1"]
+    assert runtime.interrupt_requests == []
     assert task.cancelled() or task.cancelling()
 
     with pytest.raises(asyncio.CancelledError):
@@ -199,7 +199,7 @@ async def test_escape_interrupts_and_keeps_pending_steering_for_immediate_follow
 
     snapshot = runtime._steering.snapshot("sess-1")
     assert snapshot["pending_count"] == 1
-    assert snapshot["interrupt_requested"] is True
+    assert snapshot["interrupt_requested"] is False
     assert cli._active_steering_view.history[-1] == {
         "kind": "system_notice",
         "text": "Interrupting current run to submit queued steering immediately.",
@@ -477,6 +477,49 @@ async def test_active_run_checkpoint_pause_immediately_hands_off_to_follow_up_tu
     assert "Focus on the architecture first." in prompts[1]
     assert runtime._steering.snapshot("sess-1")["pending_count"] == 0
     assert runtime._steering.snapshot("sess-1")["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_escape_with_queued_steering_immediately_starts_follow_up_without_interrupt_marker():
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    executor_instance = SimpleNamespace(session_id="sess-1", context=None)
+    prompts: list[str] = []
+    prompt_inputs = iter(
+        [
+            "Focus on the architecture first.",
+            _ESC_INTERRUPT_SENTINEL,
+        ]
+    )
+
+    class FakePromptSession:
+        async def prompt_async(self, *_args, **_kwargs):
+            return next(prompt_inputs)
+
+    async def fake_executor(prompt: str):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            while True:
+                await asyncio.sleep(60)
+        return "follow-up-result"
+
+    cli._create_prompt_session = lambda *_args, **_kwargs: FakePromptSession()
+
+    result = await cli._run_executor_with_active_steering(
+        prompt="Initial task",
+        executor=fake_executor,
+        completer=object(),
+        runtime=runtime,
+        agent_name="Aworld",
+        executor_instance=executor_instance,
+        is_terminal=True,
+    )
+
+    assert result == "follow-up-result"
+    assert runtime.interrupt_requests == []
+    assert prompts[0] == "Initial task"
+    assert "Focus on the architecture first." in prompts[1]
+    assert "Interrupt requested by operator." not in prompts[1]
 
 
 @pytest.mark.asyncio
