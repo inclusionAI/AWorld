@@ -5,6 +5,7 @@ import time
 import asyncio
 import json
 import os
+import re
 import traceback
 import uuid
 from collections import OrderedDict
@@ -50,7 +51,7 @@ from aworld.runners.post_tool_progress import mark_post_tool_progress_llm_starte
 from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
-from aworld.utils.task_grounding import anchor_matches_text, extract_required_anchors
+from aworld.utils.task_grounding import anchor_matches_text, extract_required_anchors, extract_path_candidates
 from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
 
@@ -1227,7 +1228,151 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _authoritative_request_from_context(self, context: Context) -> str:
         return str(getattr(context, "origin_user_input", None) or getattr(context, "task_input", None) or "").strip()
 
-    def _collect_result_validation_evidence(self, context: Context, *, limit: int = 8) -> str:
+    @staticmethod
+    def _stringify_result_validation_content(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (dict, list)):
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except Exception:
+                return str(content)
+        return str(content)
+
+    def _extract_tool_observation_text(self, content: Any) -> str:
+        text = self._stringify_result_validation_content(content).strip()
+        if not text:
+            return ""
+
+        try:
+            parsed = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            message = parsed.get("message")
+            if isinstance(message, str):
+                output_match = re.search(r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", message, re.DOTALL)
+                if output_match:
+                    return output_match.group(1).strip()
+                return message.strip()
+            if "output" in parsed:
+                return self._stringify_result_validation_content(parsed.get("output")).strip()
+
+        output_match = re.search(r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", text, re.DOTALL)
+        if output_match:
+            return output_match.group(1).strip()
+        return text
+
+    def _classify_result_validation_observation(self, observation_text: str) -> str:
+        stripped = observation_text.strip()
+        if not stripped:
+            return "ignore"
+
+        if len(stripped) < 80 and "http://" not in stripped and "https://" not in stripped and "\n" not in stripped:
+            return "ignore"
+
+        local_paths = [
+            path for path in extract_path_candidates(stripped, max_paths=8)
+            if self._is_validation_local_path(path)
+        ]
+        preview_markers = (
+            "--- 文件前",
+            "--- File Preview",
+            "title:",
+            "source:",
+            "# ",
+            "## ",
+        )
+        if local_paths and any(marker in stripped for marker in preview_markers):
+            return "artifact"
+
+        return "source"
+
+    @staticmethod
+    def _is_validation_local_path(path: str) -> bool:
+        if not path or path.startswith(("http://", "https://")):
+            return False
+        if path.startswith(("~/", "./", "../")):
+            return True
+        if not path.startswith("/"):
+            return False
+
+        normalized = os.path.normpath(path)
+        common_roots = ("/Users/", "/tmp/", "/var/", "/private/", "/home/")
+        if normalized.startswith(common_roots):
+            return True
+
+        basename = os.path.basename(normalized)
+        return "." in basename
+
+    def _extract_validation_candidate_paths(self, value: Any) -> list[str]:
+        if hasattr(value, "to_dict") and callable(getattr(value, "to_dict")):
+            try:
+                value = value.to_dict()
+            except Exception:
+                pass
+        elif hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+            try:
+                value = value.model_dump()
+            except Exception:
+                pass
+        return [
+            path for path in extract_path_candidates(value, max_paths=24)
+            if self._is_validation_local_path(path)
+        ]
+
+    def _collect_validation_artifact_previews(
+        self,
+        *,
+        context: Context,
+        candidate_paths: list[str],
+        preview_chars: int = 1600,
+    ) -> list[str]:
+        task_start_time = getattr(context, "start_time", None)
+        text_file_exts = {
+            ".md", ".txt", ".json", ".yaml", ".yml", ".html", ".xml", ".csv",
+            ".py", ".js", ".ts", ".tsx", ".jsx", ".sh",
+        }
+        previews: list[str] = []
+        seen: set[str] = set()
+
+        for raw_path in candidate_paths:
+            expanded = os.path.expanduser(str(raw_path))
+            normalized = os.path.abspath(expanded)
+            if normalized in seen or not os.path.isfile(normalized):
+                continue
+            seen.add(normalized)
+
+            _, ext = os.path.splitext(normalized)
+            if ext.lower() not in text_file_exts:
+                continue
+
+            try:
+                stat = os.stat(normalized)
+            except OSError:
+                continue
+
+            if stat.st_size <= 0 or stat.st_size > 256 * 1024:
+                continue
+            if task_start_time and stat.st_mtime + 2 < float(task_start_time):
+                continue
+
+            try:
+                with open(normalized, "r", encoding="utf-8") as handle:
+                    content = handle.read(preview_chars).strip()
+            except Exception:
+                continue
+
+            if not content:
+                continue
+            previews.append(f"[artifact:{normalized}]\n{content}")
+
+        return previews
+
+    def _collect_result_validation_evidence(self, context: Context, *, limit: int = 8) -> dict[str, str]:
         try:
             memory = MemoryFactory.instance()
             agent_memory_config = context.get_agent_memory_config(self.id())
@@ -1235,42 +1380,86 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             histories = memory.get_last_n(limit, filters=filters, agent_memory_config=agent_memory_config)
         except Exception:
             logger.debug("failed to collect result validation evidence: %s", traceback.format_exc())
-            return ""
+            return {"source": "", "artifact": ""}
 
-        evidence_parts: list[str] = []
+        source_parts: list[str] = []
+        artifact_parts: list[str] = []
+        artifact_candidate_paths: list[str] = []
+        tool_call_map: dict[str, Any] = {}
         for history in histories or []:
-            if not isinstance(history, (MemoryToolMessage, MemoryAIMessage)):
+            if isinstance(history, MemoryAIMessage):
+                for tool_call in history.tool_calls or []:
+                    tool_call_map[tool_call.id] = tool_call
                 continue
-            content = getattr(history, "content", None)
-            if content:
-                evidence_parts.append(str(content))
-        return "\n".join(evidence_parts[-limit:])
+            if not isinstance(history, MemoryToolMessage):
+                continue
+
+            observation_text = self._extract_tool_observation_text(getattr(history, "content", None))
+            tool_call = tool_call_map.get(history.tool_call_id)
+            tool_name = str(getattr(getattr(tool_call, "function", None), "name", "") or "").lower()
+            if "spawn_subagent" in tool_name:
+                continue
+            evidence_kind = self._classify_result_validation_observation(observation_text)
+            if evidence_kind == "source":
+                source_parts.append(observation_text)
+            elif evidence_kind == "artifact":
+                artifact_parts.append(observation_text)
+                artifact_candidate_paths.extend(self._extract_validation_candidate_paths(getattr(history, "content", None)))
+                artifact_candidate_paths.extend(self._extract_validation_candidate_paths(tool_call))
+
+        artifact_parts.extend(
+            self._collect_validation_artifact_previews(context=context, candidate_paths=artifact_candidate_paths)
+        )
+
+        return {
+            "source": "\n".join(source_parts[-limit:]),
+            "artifact": "\n".join(artifact_parts[-limit:]),
+        }
 
     def _build_result_validation_feedback(
         self,
         *,
         authoritative_request: str,
         final_response_text: str,
-        evidence_text: str,
+        source_evidence_text: str,
+        artifact_evidence_text: str = "",
     ) -> str | None:
         anchors = extract_required_anchors(authoritative_request)
         if not anchors:
             return None
 
-        combined_text = "\n".join(part for part in [final_response_text, evidence_text] if part).strip()
-        if not combined_text:
+        source_text = (source_evidence_text or "").strip()
+        if not source_text:
             return None
 
-        missing = [anchor for anchor in anchors if not anchor_matches_text(anchor, combined_text)]
-        if not missing:
-            return None
+        missing_in_source = [anchor for anchor in anchors if not anchor_matches_text(anchor, source_text)]
+        if missing_in_source:
+            missing_preview = ", ".join(missing_in_source[:4])
+            artifact_hint = ""
+            artifact_text = (artifact_evidence_text or "").strip()
+            if artifact_text and any(anchor_matches_text(anchor, artifact_text) for anchor in missing_in_source):
+                artifact_hint = (
+                    " Some missing anchors appear only in generated artifacts or final wording, which does not count "
+                    "as verified source evidence."
+                )
+            return (
+                "Result validation mismatch: the authoritative request still requires these anchors to be present in "
+                f"source evidence from this run, but they are still missing: {missing_preview}.{artifact_hint} "
+                "Do not declare success yet. Continue investigating the exact target or explain the mismatch explicitly."
+            )
 
-        missing_preview = ", ".join(missing[:4])
-        return (
-            "Result validation mismatch: the authoritative request still requires these anchors to be present in "
-            f"the verified result, but current-run evidence is missing them: {missing_preview}. "
-            "Do not declare success yet. Continue investigating the exact target or explain the mismatch explicitly."
-        )
+        artifact_text = (artifact_evidence_text or "").strip()
+        if artifact_text:
+            missing_in_artifact = [anchor for anchor in anchors if not anchor_matches_text(anchor, artifact_text)]
+            if missing_in_artifact:
+                missing_preview = ", ".join(missing_in_artifact[:4])
+                return (
+                    "Result validation mismatch: source evidence matches the target, but the generated artifact still "
+                    f"does not preserve these required anchors: {missing_preview}. "
+                    "Do not declare success yet. Keep fixing the saved result or explain the mismatch explicitly."
+                )
+
+        return None
 
     def _build_result_validation_feedback_from_context(
         self,
@@ -1283,16 +1472,59 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         authoritative_request = self._authoritative_request_from_context(context)
         if not authoritative_request:
             return None
-        evidence_text = self._collect_result_validation_evidence(context)
+        evidence = self._collect_result_validation_evidence(context)
         return self._build_result_validation_feedback(
             authoritative_request=authoritative_request,
             final_response_text=final_response_text,
-            evidence_text=evidence_text,
+            source_evidence_text=evidence.get("source", ""),
+            artifact_evidence_text=evidence.get("artifact", ""),
+        )
+
+    @staticmethod
+    def _truncate_result_validation_text(value: str, *, limit: int = 1200) -> str:
+        text = (value or "").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit].rstrip()} ...(truncated)"
+
+    def _build_result_validation_recovery_brief(
+        self,
+        *,
+        authoritative_request: str,
+        validation_feedback: str,
+        source_evidence_text: str = "",
+        artifact_evidence_text: str = "",
+    ) -> str:
+        anchors = extract_required_anchors(authoritative_request)
+        anchor_lines = "\n".join(f"- {anchor}" for anchor in anchors[:6]) or "- (none extracted)"
+        source_excerpt = self._truncate_result_validation_text(source_evidence_text, limit=1600) or "(none)"
+        artifact_excerpt = self._truncate_result_validation_text(artifact_evidence_text, limit=1200) or "(none)"
+        return (
+            "Result validation blocked finalization. Treat this as unfinished.\n\n"
+            f"Original request:\n{authoritative_request}\n\n"
+            f"Validation feedback:\n{validation_feedback}\n\n"
+            f"Target anchors to preserve:\n{anchor_lines}\n\n"
+            f"Verified source evidence from this run:\n{source_excerpt}\n\n"
+            f"Generated artifact evidence from this run:\n{artifact_excerpt}\n\n"
+            "Recovery requirements:\n"
+            "1. Re-identify the exact target using the original request and verified source evidence from this run.\n"
+            "2. If the current evidence is adjacent but wrong, discard it and search again with narrower anchors.\n"
+            "3. Prefer the most specific missing anchors before broad summaries or paraphrases.\n"
+            "4. Only claim success after source evidence confirms the exact target and the saved artifact preserves the same anchors.\n"
+            "5. If you still cannot verify the target, explain the exact mismatch and what evidence is still missing.\n"
         )
 
     @staticmethod
     def _result_validation_retry_key(agent_id: str) -> str:
         return f"result_validation_retry_count:{agent_id}"
+
+    @staticmethod
+    def _should_degrade_result_validation_retry_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "empty or invalid response" in message
+            or "failed to get llm response" in message
+        )
 
     async def _retry_for_result_validation(
         self,
@@ -1305,6 +1537,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> List[ActionModel]:
         retry_key = self._result_validation_retry_key(self.id())
         retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
+        recovery_brief = validation_feedback
+        authoritative_request = self._authoritative_request_from_context(message.context)
+        if authoritative_request:
+            evidence = self._collect_result_validation_evidence(message.context)
+            recovery_brief = self._build_result_validation_recovery_brief(
+                authoritative_request=authoritative_request,
+                validation_feedback=validation_feedback,
+                source_evidence_text=evidence.get("source", ""),
+                artifact_evidence_text=evidence.get("artifact", ""),
+            )
 
         if retry_count >= 1:
             self._finished = True
@@ -1323,13 +1565,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             observer=self.id(),
             from_agent_name=observation.from_agent_name or self.id(),
             to_agent_name=self.id(),
-            content=validation_feedback,
+            content=recovery_brief,
             action_result=[
                 ActionResult(
-                    content=validation_feedback,
+                    content=recovery_brief,
                     success=False,
                     tool_name="result_validation",
-                    action_name="feedback",
+                    action_name="recovery",
                 )
             ],
         )
@@ -1338,12 +1580,35 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             for key, value in kwargs.items()
             if key not in {"response_parse_args", "prepared_tools", "prompt_assembly_plan", "provider_native_prompt_cache"}
         }
-        return await self.async_policy(
-            followup_observation,
-            info=info,
-            message=message,
-            **recursive_kwargs,
-        )
+        try:
+            return await self.async_policy(
+                followup_observation,
+                info=info,
+                message=message,
+                **recursive_kwargs,
+            )
+        except Exception as exc:
+            if not self._should_degrade_result_validation_retry_error(exc):
+                raise
+
+            logger.warning(
+                "Result validation follow-up degraded for agent %s after LLM retry failure: %s",
+                self.id(),
+                exc,
+            )
+            message.context.context_info.pop(retry_key, None)
+            self._finished = True
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info=(
+                        f"{validation_feedback}\n"
+                        "The follow-up validation round failed because the model returned an empty or invalid "
+                        "response. I cannot confirm the task is complete with the current evidence, so I am not "
+                        "claiming success."
+                    ),
+                )
+            ]
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
         """Tool execution operations.
