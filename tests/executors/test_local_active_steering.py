@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import StringIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from rich.console import Console
@@ -13,6 +13,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.task import TaskResponse
 from aworld.output.base import ToolResultOutput
 from aworld_cli.executors.local import LocalAgentExecutor
+from aworld_cli.steering.coordinator import SteeringCoordinator
 
 
 class _FakeStreamingOutputs:
@@ -47,12 +48,13 @@ class _ExplodingStreamingOutputs:
         return self._task_response
 
 
-def _build_executor():
+def _build_executor(*, session_id: str = "sess-1"):
     agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
     output_buffer = StringIO()
     executor = LocalAgentExecutor(
         Swarm(agent),
         console=Console(file=output_buffer, force_terminal=False, width=100),
+        session_id=session_id,
     )
     return executor, output_buffer
 
@@ -154,3 +156,77 @@ async def test_local_executor_active_steering_real_tool_result_path_uses_commit_
     tool_event = next(event for event in events if event["kind"] == "tool_result_committed")
     assert "Exit code: 7" in tool_event["text"]
     assert "... (" in tool_event["text"]
+
+
+@pytest.mark.asyncio
+async def test_local_executor_active_steering_yields_at_tool_checkpoint_when_pending_steering_exists(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    executor, _output_buffer = _build_executor(session_id="sess-1")
+    events: list[dict[str, str]] = []
+    executor._active_steering_event_sink = events.append
+    executor._base_runtime = SimpleNamespace(_steering=SteeringCoordinator())
+    executor._base_runtime._steering.begin_task("sess-1", "task-1")
+    executor._base_runtime._steering.enqueue_text("sess-1", "Focus on the architecture.")
+    _stub_chat_dependencies(
+        executor,
+        monkeypatch,
+        _FakeStreamingOutputs(
+            events=[
+                ToolResultOutput(
+                    tool_name="terminal",
+                    action_name="bash",
+                    data="first line\nsecond line",
+                    metadata={"exit_code": 0},
+                )
+            ],
+            response=TaskResponse(success=True, answer="done", msg="ok"),
+        ),
+    )
+
+    result = await executor.chat("hello")
+
+    assert result == ""
+    assert any(event["kind"] == "tool_result_committed" for event in events)
+    assert any(
+        call.args[0] == "steering_checkpoint"
+        for call in executor._run_plugin_task_hook.await_args_list
+    )
+    assert not any(
+        call.args[0] == "task_completed"
+        for call in executor._run_plugin_task_hook.await_args_list
+    )
+    snapshot = executor._base_runtime._steering.snapshot("sess-1")
+    assert snapshot["pending_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_local_executor_steering_checkpoint_hook_can_defer_pause():
+    executor = object.__new__(LocalAgentExecutor)
+    executor.session_id = "sess-1"
+    executor._active_steering_event_sink = lambda _event: None
+    executor._base_runtime = SimpleNamespace(_steering=SteeringCoordinator())
+    executor._base_runtime._steering.begin_task("sess-1", "task-1")
+    executor._base_runtime._steering.enqueue_text("sess-1", "Focus on the architecture.")
+    executor._run_plugin_task_hook = AsyncMock(
+        return_value=[
+            (
+                None,
+                SimpleNamespace(
+                    action="deny",
+                    system_message=None,
+                ),
+            )
+        ]
+    )
+    executor._emit_active_steering_event = MagicMock()
+
+    should_pause = await executor._should_pause_for_queued_steering_checkpoint(
+        task_id="task-1",
+        checkpoint="after_tool_result",
+        current_tool="terminal",
+        partial_answer="",
+    )
+
+    assert should_pause is False
+    executor._run_plugin_task_hook.assert_awaited_once()
