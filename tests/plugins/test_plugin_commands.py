@@ -211,6 +211,11 @@ async def test_memory_plugin_status_reports_workspace_layers(tmp_path, monkeypat
         '{"recorded_at":"2026-04-29T00:01:00+00:00","memory_type":"reference","content":"Document release steps","source":"remember_command"}\n',
         encoding="utf-8",
     )
+    (workspace / ".aworld" / "memory" / "sessions").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl").write_text(
+        '{"recorded_at":"2026-04-29T00:00:00+00:00","session_id":"session-1","task_id":"task-1","final_answer":"Temporary note"}\n',
+        encoding="utf-8",
+    )
     (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
     (workspace / ".aworld" / "memory" / "metrics" / "promotion.jsonl").write_text(
         '{"recorded_at":"2026-04-29T00:00:00+00:00","session_id":"session-1","task_id":"task-1","memory_type":"workspace","confidence":"medium","promotion":"session_log_only","reason":"instructional_candidate_auto_promotion_disabled","eligible_for_auto_promotion":true}\n'
@@ -237,6 +242,9 @@ async def test_memory_plugin_status_reports_workspace_layers(tmp_path, monkeypat
         assert "Durable record file:" in result
         assert str(workspace / ".aworld" / "memory" / "durable.jsonl") in result
         assert "Durable record count: 2" in result
+        assert "Session log directory:" in result
+        assert str(workspace / ".aworld" / "memory" / "sessions") in result
+        assert "Session log file count: 1" in result
         assert "- reference: 1" in result
         assert "- workspace: 1" in result
         assert "Promotion evaluations: 2" in result
@@ -251,6 +259,38 @@ async def test_memory_plugin_status_reports_workspace_layers(tmp_path, monkeypat
         assert "Promotion reasons:" in result
         assert "- instructional_candidate_auto_promotion_disabled: 1" in result
         assert "- non_instructional_turn_end_observation: 1" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_clear_defaults_to_session_logs_only(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl").write_text(
+        '{"recorded_at":"2026-04-29T00:00:00+00:00","session_id":"session-1","task_id":"task-1","final_answer":"Temporary note"}\n',
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory").mkdir(parents=True, exist_ok=True)
+    (workspace / ".aworld" / "memory" / "durable.jsonl").write_text(
+        '{"recorded_at":"2026-04-29T00:00:00+00:00","memory_type":"workspace","content":"Use pnpm","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(CommandContext(cwd=str(workspace), user_args="clear"))
+
+        assert "Cleared session logs: 1 file(s)" in result
+        assert not (workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl").exists()
+        assert (workspace / ".aworld" / "memory" / "durable.jsonl").exists()
     finally:
         CommandRegistry.restore(snapshot)
 
@@ -281,6 +321,47 @@ async def test_memory_plugin_status_reports_durable_record_kind_counts(tmp_path)
         assert "- fact: 1" in result
         assert "- legacy_untyped: 1" in result
         assert "- workflow: 1" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_clear_all_removes_session_logs_durable_records_and_metrics(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl").write_text(
+        '{"recorded_at":"2026-04-29T00:00:00+00:00","session_id":"session-1","task_id":"task-1","final_answer":"Temporary note"}\n',
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory" / "durable.jsonl").write_text(
+        '{"recorded_at":"2026-04-29T00:00:00+00:00","memory_type":"workspace","content":"Use pnpm","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion.jsonl").write_text(
+        '{"recorded_at":"2026-04-29T00:00:00+00:00","session_id":"session-1","task_id":"task-1","memory_type":"workspace","confidence":"low","promotion":"session_log_only","reason":"non_instructional_turn_end_observation","eligible_for_auto_promotion":false}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="clear --scope all")
+        )
+
+        assert "Cleared session logs: 1 file(s)" in result
+        assert "Cleared durable records: yes" in result
+        assert "Cleared promotion metrics: yes" in result
+        assert not (workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl").exists()
+        assert not (workspace / ".aworld" / "memory" / "durable.jsonl").exists()
+        assert not (workspace / ".aworld" / "memory" / "metrics" / "promotion.jsonl").exists()
     finally:
         CommandRegistry.restore(snapshot)
 
@@ -1217,10 +1298,13 @@ async def test_memory_plugin_view_filters_explicit_durable_records_by_type(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_memory_plugin_view_shows_filtered_durable_records_without_instruction_file(tmp_path, monkeypatch):
+async def test_memory_plugin_view_shows_filtered_durable_records_without_instruction_file(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
-    home = tmp_path / "home"
     monkeypatch.setattr(Path, "home", lambda: home)
 
     (workspace / ".aworld" / "memory").mkdir(parents=True)

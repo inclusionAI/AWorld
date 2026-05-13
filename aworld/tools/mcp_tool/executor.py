@@ -12,6 +12,7 @@ from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.tool.base import ToolActionExecutor, Tool, AsyncTool
 from aworld.logs.util import logger
 from aworld.mcp_client.server import MCPServer, MCPServerSse
+from aworld.memory.tool_call_compaction import compacted_replay_execution_error
 import aworld.mcp_client.utils as mcp_utils
 from aworld.utils.common import sync_exec, find_file
 
@@ -186,6 +187,14 @@ class MCPToolExecutor(ToolActionExecutor):
                 raise ValueError("Missing action_name in action model")
 
             params = action.params or {}
+            replay_error = compacted_replay_execution_error(
+                params,
+                tool_name=f"{server_name}.{action_name}",
+            )
+            if replay_error:
+                logger.warning(f"Blocking replay-compacted MCP tool call: {replay_error}")
+                results.append(ActionResult(content=replay_error, keep=True))
+                continue
 
             try:
                 server = self.mcp_servers.get(server_name, {}).get('instance', None)

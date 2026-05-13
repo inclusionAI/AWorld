@@ -2,6 +2,7 @@ from typing import Any, Optional
 
 from .. import ApplicationContext
 from aworld.core.common import ActionResult
+from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 from aworld.memory.models import MemoryHumanMessage, MessageMetadata, MemoryToolMessage, MemoryMessage
 
 
@@ -54,11 +55,33 @@ class MemoryItemConvertor:
     async def _convert_tool_result_to_memory(namespace: str, tool_call_id: str, tool_result: ActionResult,
                                             context: ApplicationContext):
         """Add tool result to memory"""
+        tool_result_metadata = tool_result.metadata if isinstance(tool_result, ActionResult) and isinstance(tool_result.metadata, dict) else {}
         tool_use_summary = None
         if isinstance(tool_result, ActionResult):
-            tool_use_summary = tool_result.metadata.get("tool_use_summary")
+            tool_use_summary = tool_result_metadata.get("tool_use_summary")
+
+        compaction = compact_tool_result_for_memory(
+            tool_result.content if hasattr(tool_result, "content") else tool_result,
+            tool_name=getattr(tool_result, "tool_name", None),
+            action_name=getattr(tool_result, "action_name", None),
+            summary_content=tool_use_summary,
+            enabled=True,
+            preview_chars=2000,
+            force=bool(tool_result_metadata.get("offload") is True),
+        )
+        tool_content = compaction.content if compaction.applied else (
+            tool_result.content if hasattr(tool_result, "content") else tool_result
+        )
+        ext_info = {}
+        if compaction.applied:
+            ext_info["tool_result_compaction"] = compaction.metadata
+        if getattr(tool_result, "tool_name", None):
+            ext_info["tool_name"] = tool_result.tool_name
+        if getattr(tool_result, "action_name", None):
+            ext_info["action_name"] = tool_result.action_name
+
         return MemoryToolMessage(
-            content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
+            content=tool_content,
             tool_call_id=tool_call_id,
             status="success",
             metadata=MessageMetadata(
@@ -67,7 +90,8 @@ class MemoryItemConvertor:
                 task_id=context.task_id,
                 agent_id=namespace,
                 agent_name=namespace,
-                summary_content=tool_use_summary
+                summary_content=tool_use_summary,
+                ext_info=ext_info,
             )
         )
 

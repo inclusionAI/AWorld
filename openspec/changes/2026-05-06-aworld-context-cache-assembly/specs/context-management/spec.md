@@ -1,0 +1,83 @@
+## ADDED Requirements
+
+### Requirement: AWorld MUST separate context content production from prompt assembly
+
+The AWorld context system MUST keep `amni` responsible for context content production and governance, while a separate prompt-assembly provider is responsible for prompt structuring.
+
+#### Scenario: Existing `amni` context producers remain the source of content
+
+- **WHEN** AWorld prepares a model request using AWORLD.md, relevant memory, summaries, history, or other neuron-produced content
+- **THEN** `amni` MUST remain the source of those content items
+- **AND** the prompt-assembly provider MUST consume those items without taking over their underlying production logic
+
+### Requirement: AWorld MUST extend `amni` through an injected prompt-assembly provider rather than a parallel context backend
+
+The AWorld context system MUST introduce cache-friendly prompt assembly through an injected provider or strategy beneath `amni`, and MUST NOT require a parallel replacement for `AmniContext` in phase 1.
+
+#### Scenario: Enabling cache-friendly prompt assembly
+
+- **WHEN** contributors add the phase-1 context cache assembly capability
+- **THEN** they MUST extend `amni` through an injected prompt-assembly provider or equivalent strategy
+- **AND** they MUST NOT require a separate parallel context backend to preserve existing `amni` content-governance behavior
+
+### Requirement: AWorld MUST build a provider-neutral prompt assembly plan
+
+The AWorld context system MUST express prompt structure through a provider-neutral prompt assembly object rather than directly embedding provider-specific cache fields in context-layer data models.
+
+#### Scenario: Prompt assembly is constructed for a cache-capable request
+
+- **WHEN** AWorld assembles a request intended to be cache-friendly
+- **THEN** it MUST produce a provider-neutral assembly plan that distinguishes stable and dynamic prompt sections
+- **AND** that assembly plan MUST NOT require Anthropic-specific or other provider-specific request fields to exist in the context layer
+
+### Requirement: Stable prefix MUST be request-time only and MUST NOT be persisted as ordinary history
+
+The AWorld context system MUST treat stable prompt prefix assembly as request-time state rather than as persisted conversation history.
+
+#### Scenario: A request reuses the same stable prompt prefix
+
+- **WHEN** two requests produce the same stable prompt content according to the configured stable-prefix strategy
+- **THEN** AWorld MAY reuse the stable prefix through request-time runtime state
+- **AND** it MUST NOT require that stable prefix to be stored as an ordinary persisted system message in history or memory
+
+### Requirement: Phase-1 stable and dynamic classification MUST follow the agreed defaults
+
+The AWorld context system MUST classify stable and dynamic prompt inputs according to the phase-1 default boundary unless explicitly extended by a future change.
+
+#### Scenario: Phase-1 prompt sections are assembled
+
+- **WHEN** AWorld builds the phase-1 prompt assembly plan
+- **THEN** base system rules, AWORLD.md or workspace instruction, stable skill or policy descriptions, and tools semantic hints MUST be treated as stable inputs
+- **AND** relevant memory recall, conversation history, summaries, and current task-related prompt injection MUST be treated as dynamic inputs
+
+### Requirement: Context cache assembly MUST be configurable at both agent and model layers
+
+The AWorld context system MUST allow both agent-level and model-level configuration to enable or disable context cache assembly behavior.
+
+#### Scenario: Either config layer disables the feature
+
+- **WHEN** the agent config or model config explicitly disables context cache assembly
+- **THEN** AWorld MUST fall back to ordinary prompt assembly behavior for that request path
+- **AND** it MUST NOT require provider-native prompt cache handling to keep the request functional
+
+### Requirement: Runtime context MUST preserve per-call LLM request snapshots without overwrite
+
+The AWorld context system MUST preserve real LLM request snapshots as append-only per-call runtime records instead of relying on a single mutable `llm_input` slot.
+
+#### Scenario: One agent message triggers multiple LLM calls
+
+- **WHEN** the same agent message causes more than one LLM call during a single task flow
+- **THEN** AWorld MUST preserve a distinct runtime call record for each LLM call rather than overwriting the previous request snapshot
+- **AND** each record MUST include a unique call identifier together with the request messages actually sent for that call
+- **AND** legacy single-value fields MAY continue to expose only the latest call for backward compatibility
+
+### Requirement: Trajectory prompt snapshots MUST prefer captured per-call request messages
+
+The AWorld context system MUST prefer captured per-call request snapshots over post-hoc reconstruction when generating trajectory prompt data.
+
+#### Scenario: Trajectory is generated for a message that has LLM call snapshots
+
+- **WHEN** `trajectory.log` or equivalent trajectory data is generated for a message whose runtime context contains captured LLM call snapshots
+- **THEN** the trajectory prompt snapshot MUST use the corresponding captured request messages from those call records
+- **AND** it MUST NOT fall back to memory-based prompt reconstruction for that message unless the captured request snapshot is unavailable
+- **AND** trajectory output MUST NOT be required to include normalized prompt-cache token usage
