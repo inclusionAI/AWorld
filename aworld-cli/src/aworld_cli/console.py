@@ -21,7 +21,6 @@ from rich import box
 from rich.color import Color
 from rich.panel import Panel
 from rich.prompt import Prompt
-from rich.rule import Rule
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
@@ -2641,6 +2640,23 @@ class AWorldCLI:
     def _create_active_steering_view(self) -> ActiveSteeringView:
         return ActiveSteeringView(started_at=time.monotonic())
 
+    def _build_active_steering_completion_marker(
+        self,
+        text: str,
+        *,
+        max_width: int = 96,
+    ) -> str:
+        label = str(text or "").strip() or "Worked"
+        width = max(len(label) + 8, max_width)
+        target_width = min(width, max_width)
+        base = f" {label} "
+        if len(base) >= target_width:
+            return base[:target_width]
+        remaining = target_width - len(base)
+        left = remaining // 2
+        right = remaining - left
+        return f"{'─' * left}{base}{'─' * right}"
+
     def _append_active_steering_history(
         self,
         kind: str,
@@ -2698,7 +2714,8 @@ class AWorldCLI:
                 self.console.print()
                 return
             if kind == "task_complete":
-                self.console.print(Rule(f"[dim]{normalized}[/dim]", style="dim"))
+                marker = self._build_active_steering_completion_marker(normalized)
+                self.console.print(f"[dim]{marker}[/dim]")
                 return
             self.console.print(f"[dim]• {normalized}[/dim]")
 
