@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 from types import SimpleNamespace
 
@@ -679,6 +680,22 @@ def test_active_steering_completion_marker_caps_visual_width():
 
     assert "Worked for 2m 50s" in marker
     assert len(marker) == 64
+
+
+def test_active_steering_completion_marker_uses_terminal_width_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cli = AWorldCLI()
+    monkeypatch.setattr(
+        console_module.shutil,
+        "get_terminal_size",
+        lambda fallback=(0, 0): os.terminal_size((120, 40)),
+    )
+
+    marker = cli._build_active_steering_completion_marker("Worked for 9s")
+
+    assert "Worked for 9s" in marker
+    assert len(marker) == 120
 
 
 def test_active_steering_deltas_do_not_append_history_directly():
