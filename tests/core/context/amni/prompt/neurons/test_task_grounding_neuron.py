@@ -73,3 +73,18 @@ async def test_task_grounding_neuron_desc():
 
     assert desc == "Task grounding rules derived from the authoritative user request"
     assert neuron.name == TASK_GROUNDING_NEURON_NAME
+
+
+@pytest.mark.asyncio
+async def test_task_grounding_neuron_surfaces_required_anchors():
+    context = create_test_context(
+        task_content="查找帖子并保存结果",
+        origin_user_input="看看我的x账号关注的elliotchen100用户发布的帖子，将其中AI 编程的下一个瓶颈，不是代码，是理解主题的文章添加到我的本地知识库Obsidian中管理起来",
+    )
+    neuron = TaskGroundingNeuron()
+
+    formatted = await neuron.format(context)
+
+    assert "Required anchors to preserve" in formatted
+    assert "@elliotchen100" in formatted or "elliotchen100" in formatted
+    assert "AI 编程的下一个瓶颈，不是代码，是理解" in formatted

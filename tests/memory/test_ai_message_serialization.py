@@ -195,3 +195,21 @@ def test_normalize_tool_call_arguments_compacts_large_string_fields_before_full_
     assert parsed["command"]["_aworld_replay"] == "compacted_string_field"
     assert parsed["command"]["field_hint"] == "command"
     assert parsed["command"]["sanitized_reason"] == "oversized_string_field_compaction"
+
+
+def test_normalize_tool_call_arguments_preserves_moderate_subagent_directive_text():
+    directive = (
+        "使用 agent-browser 技能连接到本地 CDP (端口 9222)，访问 X 平台，查看用户 elliotchen100 的帖子列表。"
+        "找到标题或内容包含“AI 编程的下一个瓶颈，不是代码，是理解”相关主题的帖子，提取完整内容，"
+        "并返回标题、链接、发布时间、关键摘要与是否确认命中目标。"
+    ) * 6
+
+    normalized = normalize_tool_call_arguments_for_replay(
+        json.dumps({"directive": directive, "name": "developer"}, ensure_ascii=False),
+        tool_name="async_spawn_subagent__spawn",
+        token_threshold=100000,
+    )
+    parsed = json.loads(normalized)
+
+    assert parsed["name"] == "developer"
+    assert parsed["directive"] == directive

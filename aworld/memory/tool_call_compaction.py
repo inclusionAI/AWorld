@@ -11,6 +11,9 @@ _MAX_SUMMARY_KEYS = 8
 _MAX_STRING_FIELD_TOKENS = 256
 _MAX_STRING_FIELD_CHARS = 4096
 _MAX_MULTILINE_STRING_FIELD_CHARS = 1200
+_PRESERVE_SEMANTIC_STRING_FIELDS = {"directive", "instruction", "request", "query", "goal", "task"}
+_SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD = 1024
+_SEMANTIC_STRING_FIELD_CHAR_THRESHOLD = 8192
 
 
 def _canonical_json(value: Any) -> str:
@@ -96,9 +99,12 @@ def _string_field_placeholder(
     }
 
 
-def _should_compact_string_field(value: str) -> bool:
+def _should_compact_string_field(value: str, *, field_hint: str | None = None) -> bool:
     if not value:
         return False
+    if field_hint and field_hint.lower() in _PRESERVE_SEMANTIC_STRING_FIELDS:
+        if len(value) <= _SEMANTIC_STRING_FIELD_CHAR_THRESHOLD and num_tokens_from_string(value) <= _SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD:
+            return False
     if len(value) > _MAX_STRING_FIELD_CHARS:
         return True
     if "\n" in value and len(value) > _MAX_MULTILINE_STRING_FIELD_CHARS:
@@ -122,7 +128,7 @@ def _compact_large_string_fields(value: Any, *, field_hint: str | None = None) -
             _compact_large_string_fields(item, field_hint=field_hint)
             for item in value
         ]
-    if isinstance(value, str) and _should_compact_string_field(value):
+    if isinstance(value, str) and _should_compact_string_field(value, field_hint=field_hint):
         return _string_field_placeholder(field_hint=field_hint, value=value)
     return value
 
