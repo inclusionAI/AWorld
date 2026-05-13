@@ -174,7 +174,7 @@ async def test_fallback_interrupt_command_cancels_active_task():
 
 
 @pytest.mark.asyncio
-async def test_escape_does_not_interrupt_when_pending_steering_exists():
+async def test_escape_interrupts_and_keeps_pending_steering_for_immediate_follow_up():
     cli = AWorldCLI()
     cli._active_steering_view = cli._create_active_steering_view()
     runtime = FakeRuntime()
@@ -189,13 +189,20 @@ async def test_escape_does_not_interrupt_when_pending_steering_exists():
         executor_task=task,
     )
 
-    task.cancel()
+    assert handled is True
+    assert runtime.interrupt_requests == ["sess-1"]
+    assert task.cancelled() or task.cancelling()
+
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert handled is True
-    assert runtime.interrupt_requests == []
-    assert cli._active_steering_view.history == []
+    snapshot = runtime._steering.snapshot("sess-1")
+    assert snapshot["pending_count"] == 1
+    assert snapshot["interrupt_requested"] is True
+    assert cli._active_steering_view.history[-1] == {
+        "kind": "system_notice",
+        "text": "Interrupting current run to submit queued steering immediately.",
+    }
 
 
 @pytest.mark.asyncio
@@ -228,6 +235,43 @@ async def test_executor_cancellation_from_interrupt_does_not_escape():
 
     assert result is None
     assert runtime.interrupt_requests == ["sess-1"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_fallback_continues_with_pending_steering_after_interrupt():
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    runtime._steering.begin_task("sess-1", "task-1")
+    runtime._steering.enqueue_text("sess-1", "Focus on the failing test first.")
+    runtime.request_session_interrupt("sess-1")
+    captured: dict[str, object] = {}
+
+    async def fake_follow_up_runner(**kwargs):
+        captured.update(kwargs)
+        return "follow-up result"
+
+    cli._run_executor_with_active_steering = fake_follow_up_runner
+
+    continued, result = await cli._run_terminal_fallback_continuation(
+        runtime=runtime,
+        session_id="sess-1",
+        executor=lambda _prompt: None,
+        completer=object(),
+        agent_name="Aworld",
+        executor_instance=SimpleNamespace(session_id="sess-1", context=None),
+        is_terminal=True,
+    )
+
+    assert continued is True
+    assert result == "follow-up result"
+    assert captured["prompt"] == (
+        "Continue the current task with this additional operator steering:\n\n"
+        "Interrupt requested by operator. Pause at the next safe checkpoint before continuing.\n\n"
+        "1. Focus on the failing test first."
+    )
+    snapshot = runtime._steering.snapshot("sess-1")
+    assert snapshot["pending_count"] == 0
+    assert snapshot["interrupt_requested"] is False
 
 
 @pytest.mark.asyncio
