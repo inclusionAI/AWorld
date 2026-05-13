@@ -903,6 +903,7 @@ def test_create_prompt_session_uses_eager_escape_binding():
 
     assert escape_bindings
     assert any(binding.eager() for binding in escape_bindings)
+    assert session.app.ttimeoutlen == 0
 
 
 def test_active_steering_status_without_appending_history():
