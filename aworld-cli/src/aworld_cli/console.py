@@ -2261,13 +2261,10 @@ class AWorldCLI:
             return True
 
         steering = getattr(runtime, "_steering", None) if runtime is not None else None
-        if normalized == _ESC_INTERRUPT_SENTINEL:
-            pending_count = 0
-            if steering is not None and session_id:
-                snapshot = steering.snapshot(session_id)
-                pending_count = int(snapshot.get("pending_count", 0) or 0)
-            if pending_count > 0:
-                return True
+        pending_count = 0
+        if steering is not None and session_id:
+            snapshot = steering.snapshot(session_id)
+            pending_count = int(snapshot.get("pending_count", 0) or 0)
 
         if normalized in {_ESC_INTERRUPT_SENTINEL, "/interrupt"}:
             interrupt_requested = normalized == _ESC_INTERRUPT_SENTINEL
@@ -2278,7 +2275,10 @@ class AWorldCLI:
             if not executor_task.done():
                 executor_task.cancel()
             if interrupt_requested:
-                self._append_active_steering_history("system_notice", "Interrupt requested.")
+                notice = "Interrupt requested."
+                if pending_count > 0:
+                    notice = "Interrupting current run to submit queued steering immediately."
+                self._append_active_steering_history("system_notice", notice)
             else:
                 self._append_active_steering_history(
                     "system_notice",
@@ -2455,8 +2455,6 @@ class AWorldCLI:
 
         snapshot = steering.snapshot(session_id)
         if int(snapshot.get("pending_count", 0) or 0) <= 0:
-            return False, None
-        if bool(snapshot.get("interrupt_requested")):
             return False, None
 
         follow_up_prompt = steering.consume_terminal_fallback_prompt(session_id)
