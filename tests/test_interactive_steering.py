@@ -584,6 +584,18 @@ def test_active_steering_task_finished_clears_status_and_appends_completion_mark
     }
 
 
+def test_active_steering_completion_marker_caps_visual_width():
+    cli = AWorldCLI()
+
+    marker = cli._build_active_steering_completion_marker(
+        "Worked for 2m 50s",
+        max_width=64,
+    )
+
+    assert "Worked for 2m 50s" in marker
+    assert len(marker) == 64
+
+
 def test_active_steering_deltas_do_not_append_history_directly():
     cli = AWorldCLI()
     cli._active_steering_view = cli._create_active_steering_view()
