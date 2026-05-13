@@ -146,8 +146,8 @@ async def test_plain_text_steering_ack_is_committed_into_active_history():
 
     assert handled is True
     assert cli._active_steering_view.history[-1] == {
-        "kind": "system_notice",
-        "text": "Steering captured. Waiting for next checkpoint.",
+        "kind": "queued_steering",
+        "text": "Focus on the failing test first.",
     }
 
 
@@ -195,10 +195,7 @@ async def test_escape_does_not_interrupt_when_pending_steering_exists():
 
     assert handled is True
     assert runtime.interrupt_requests == []
-    assert cli._active_steering_view.history[-1] == {
-        "kind": "system_notice",
-        "text": "Steering captured. Waiting for next checkpoint.",
-    }
+    assert cli._active_steering_view.history == []
 
 
 @pytest.mark.asyncio
