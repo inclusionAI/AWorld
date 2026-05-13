@@ -818,10 +818,18 @@ def test_discard_prompt_session_typeahead_flushes_input_and_clears_typeahead(
         "clear_typeahead",
         lambda input_obj: calls.append(f"clear:{type(input_obj).__name__}"),
     )
+    monkeypatch.setattr(console_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(console_module.sys.stdin, "fileno", lambda: 9)
+    monkeypatch.setattr(
+        console_module,
+        "termios",
+        SimpleNamespace(TCIFLUSH=123, tcflush=lambda fd, mode: calls.append(f"tcflush:{fd}:{mode}")),
+        raising=False,
+    )
 
     cli._discard_prompt_session_typeahead(session)
 
-    assert calls == ["flush_keys", "clear:FakeInput"]
+    assert calls == ["flush_keys", "clear:FakeInput", "tcflush:9:123"]
 
 
 def test_active_steering_status_without_appending_history():
