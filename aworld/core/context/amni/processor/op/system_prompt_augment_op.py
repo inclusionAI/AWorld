@@ -1,10 +1,12 @@
 import asyncio
+import json
 import os
 import time
 import traceback
 from typing import Any, Dict, List, Optional
 
 from aworld.core.agent.base import AgentFactory
+from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from ... import ApplicationContext
@@ -291,10 +293,15 @@ class SystemPromptAugmentOp(BaseOp):
         agent_name = event.agent_name
         user_query = event.user_query
 
-        # Combine system prompt and augment_prompts
-        appended_prompt = event.system_prompt
-        if augment_prompts:
-            appended_prompt = event.system_prompt + "\n\n" + "\n".join(augment_prompts.values())
+        provider = self._get_prompt_assembly_provider(context, agent_id)
+        prompt_messages = self._build_system_prompt_messages(event.system_prompt, augment_prompts)
+        appended_prompt = self._assemble_system_prompt(
+            provider=provider,
+            messages=prompt_messages,
+            metadata={
+                "system_section_hints": self._build_system_section_hints(augment_prompts),
+            },
+        )
 
         formatted_system_prompt = await ContextPromptTemplate(template=appended_prompt).async_format(
             context=context,
@@ -304,7 +311,7 @@ class SystemPromptAugmentOp(BaseOp):
             context=context,
             content=formatted_system_prompt,
             agent_id=agent_id,
-            agent_name=agent_name
+            agent_name=agent_name,
         )
 
         return MemoryCommand(
@@ -371,3 +378,89 @@ class SystemPromptAugmentOp(BaseOp):
         )
 
         return system_message
+
+    def _get_prompt_assembly_provider(self, context: ApplicationContext, agent_id: Optional[str]):
+        agent = AgentFactory.agent_instance(agent_id) if agent_id else None
+        provider_getter = getattr(context, "get_prompt_assembly_provider", None)
+        if callable(provider_getter):
+            return provider_getter(agent=agent)
+
+        provider = getattr(context, "prompt_assembly_provider", None)
+        if provider is not None:
+            return provider
+
+        if agent is not None:
+            provider = getattr(agent, "prompt_assembly_provider", None)
+            if provider is not None:
+                return provider
+
+        return DefaultPromptAssemblyProvider()
+
+    @staticmethod
+    def _build_system_prompt_messages(
+        system_prompt: Optional[str],
+        augment_prompts: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        for prompt in (augment_prompts or {}).values():
+            if prompt:
+                messages.append({"role": "system", "content": prompt})
+        return messages
+
+    @staticmethod
+    def _build_system_section_hints(augment_prompts: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        hints = [{"name": "system_prompt", "stability": "stable"}]
+        for name in (augment_prompts or {}).keys():
+            hints.append({"name": name})
+        return hints
+
+    @staticmethod
+    def _stringify_system_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+                elif item is not None:
+                    parts.append(json.dumps(item, ensure_ascii=False, default=str))
+            return "\n".join(part for part in parts if part)
+        if content is None:
+            return ""
+        return json.dumps(content, ensure_ascii=False, default=str)
+
+    def _assemble_system_prompt(
+        self,
+        *,
+        provider: Any,
+        messages: List[Dict[str, Any]],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        if not messages:
+            return ""
+
+        plan = provider.build_plan(messages=messages, tools=None, metadata=metadata or {})
+        assembled_messages = (
+            plan.to_model_messages()
+            if hasattr(plan, "to_model_messages")
+            else getattr(plan, "messages", messages)
+        )
+
+        system_parts = []
+        for message in assembled_messages or []:
+            if isinstance(message, dict) and message.get("role") == "system":
+                content = self._stringify_system_content(message.get("content"))
+                if content:
+                    system_parts.append(content)
+
+        if not system_parts:
+            for message in messages:
+                if isinstance(message, dict) and message.get("role") == "system":
+                    content = self._stringify_system_content(message.get("content"))
+                if content:
+                    system_parts.append(content)
+
+        return "\n\n".join(system_parts)

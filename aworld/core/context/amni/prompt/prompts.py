@@ -94,10 +94,12 @@ AMNI_CONTEXT_PROMPT["KNOWLEDGE_PART"] = """
 </knowledge_relevant_chunks>
 
 <knowledge_tools_tip>
-you can read knowledge index and use the below tools to retrival more information:
-1. get_knowledge(knowledge_id): obtain full content of knowledge, only return 2000 characters
-2. get_knowledge_chunk(knowledge_id, chunk_index): obtain special chunk content of knowledge, start from 0
-2. search_knowledge_chunks(query): Search knowledge by semantic query in the workspace
+You can read the knowledge index and use the tools below to retrieve more information:
+1. list_knowledge_info(limit, offset): discover knowledge artifact ids in the current workspace
+2. get_knowledge_by_id(knowledge_id): obtain the full content of a knowledge artifact
+3. grep_knowledge(knowledge_id, pattern): search within a knowledge artifact before loading more content
+4. get_knowledge_by_lines(knowledge_id, start_line, end_line): load only the lines you need from a knowledge artifact
+5. search_knowledge(user_query, top_k): search knowledge by semantic query in the workspace
 </knowledge_tools_tip>
 """
 

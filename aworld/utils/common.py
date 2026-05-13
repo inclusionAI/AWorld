@@ -255,31 +255,87 @@ def trigger_background_task(context_or_message: Any, coro: Any, agent_id: str = 
     return asyncio.create_task(_wrapper())
 
 
+def _coerce_count_value(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
                       other: Dict[str, Union[int, Dict[str, int]]],
                       ignore_zero: bool = False):
     """Add counts from two dicts or nest dicts."""
     result = {}
-    for elem, count in usage.items():
-        # nest dict
-        if isinstance(count, Dict):
-            res = nest_dict_counter(usage[elem], other.get(elem, {}))
-            result[elem] = res
+    usage = usage or {}
+    other = other or {}
+
+    for elem in set(usage.keys()) | set(other.keys()):
+        usage_value = usage.get(elem, 0)
+        other_value = other.get(elem, 0)
+
+        if isinstance(usage_value, Dict) or isinstance(other_value, Dict):
+            nested_usage = usage_value if isinstance(usage_value, Dict) else {}
+            nested_other = other_value if isinstance(other_value, Dict) else {}
+            res = nest_dict_counter(nested_usage, nested_other, ignore_zero=ignore_zero)
+            if res or not ignore_zero:
+                result[elem] = res
             continue
 
-        # Handle None values by treating them as 0
-        count_val = count if count is not None else 0
-        other_val = other.get(elem, 0)
-        other_val = other_val if other_val is not None else 0
-
-        newcount = count_val + other_val
+        newcount = _coerce_count_value(usage_value) + _coerce_count_value(other_value)
         if not ignore_zero or newcount > 0:
             result[elem] = newcount
+    return result
 
-    for elem, count in other.items():
-        if elem not in usage and not ignore_zero:
-            # Handle None values
-            result[elem] = count if count is not None else 0
+
+def nest_dict_diff(
+    usage: Dict[str, Union[int, Dict[str, int]]],
+    baseline: Dict[str, Union[int, Dict[str, int]]],
+    ignore_zero: bool = True,
+):
+    """Recursively compute the positive net increment between two nested usage dicts."""
+    result = {}
+    keys = set(usage.keys()) | set(baseline.keys())
+
+    for elem in keys:
+        usage_value = usage.get(elem, 0)
+        baseline_value = baseline.get(elem, 0)
+
+        if isinstance(usage_value, Dict) or isinstance(baseline_value, Dict):
+            nested_usage = usage_value if isinstance(usage_value, Dict) else {}
+            nested_baseline = baseline_value if isinstance(baseline_value, Dict) else {}
+            nested_result = nest_dict_diff(
+                nested_usage,
+                nested_baseline,
+                ignore_zero=ignore_zero,
+            )
+            if nested_result or not ignore_zero:
+                result[elem] = nested_result
+            continue
+
+        usage_numeric = usage_value if usage_value is not None else 0
+        baseline_numeric = baseline_value if baseline_value is not None else 0
+
+        try:
+            net_value = usage_numeric - baseline_numeric
+        except TypeError:
+            try:
+                net_value = int(usage_numeric) - int(baseline_numeric)
+            except (TypeError, ValueError):
+                continue
+
+        if ignore_zero:
+            if net_value > 0:
+                result[elem] = net_value
+        elif net_value != 0:
+            result[elem] = net_value
+
     return result
 
 
