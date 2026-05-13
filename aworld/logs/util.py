@@ -323,9 +323,33 @@ def log_llm_record(
     from aworld.utils.serialized_util import to_serializable
 
     resolved_trace_id = trace_id or get_trace_id()
+    enriched_params = dict(params or {})
+
+    provider_request_id = None
+    raw_usage = None
+    if isinstance(data, dict):
+        provider_request_id = data.get("provider_request_id")
+        raw_usage = data.get("raw_usage")
+    else:
+        provider_request_id = getattr(data, "provider_request_id", None)
+        raw_usage = getattr(data, "raw_usage", None)
+
+    if provider_request_id and "provider_request_id" not in enriched_params:
+        enriched_params["provider_request_id"] = provider_request_id
+
+    if isinstance(raw_usage, dict):
+        for key in (
+            "cache_hit_tokens",
+            "cache_write_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ):
+            if key in raw_usage and key not in enriched_params:
+                enriched_params[key] = raw_usage[key]
+
     meta_parts = []
-    if params:
-        meta_parts = [f"{k}={v}" for k, v in params.items()]
+    if enriched_params:
+        meta_parts = [f"{k}={v}" for k, v in enriched_params.items()]
 
     body = to_serializable(data)
     if isinstance(body, dict):

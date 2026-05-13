@@ -116,12 +116,10 @@ class LocalCliAgentBackend:
     ) -> str:
         chunks: list[str] = []
         saw_chunk_output = False
+        task = await executor._build_task(text, session_id=session_id)
+        outputs = Runners.streamed_run_task(task=task)
 
-        async for output in self._stream_outputs(
-            executor=executor,
-            text=text,
-            session_id=session_id,
-        ):
+        async for output in outputs.stream_events():
             callback_result = on_output(output)
             if isawaitable(callback_result):
                 await callback_result
@@ -136,6 +134,9 @@ class LocalCliAgentBackend:
                 saw_chunk_output = True
             chunks.append(chunk)
 
+        final_answer = self._extract_final_task_answer(outputs)
+        if final_answer:
+            return final_answer
         return "".join(chunks).strip()
 
     async def _stream_outputs(
@@ -199,6 +200,31 @@ class LocalCliAgentBackend:
                 return source_content
 
         return ""
+
+    @staticmethod
+    def _extract_final_task_answer(outputs: Any) -> str:
+        response_getter = getattr(outputs, "response", None)
+        if not callable(response_getter):
+            return ""
+        task_response = response_getter()
+        if task_response is None:
+            return ""
+        return LocalCliAgentBackend._coerce_final_answer(
+            getattr(task_response, "answer", None)
+        )
+
+    @staticmethod
+    def _coerce_final_answer(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+
+        content = getattr(value, "content", None)
+        if isinstance(content, str):
+            return content.strip()
+
+        return str(value).strip()
 
 
 class GatewayRouter:

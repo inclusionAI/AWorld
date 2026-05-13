@@ -5,10 +5,12 @@ from pathlib import Path
 
 from aworld_cli.builtin_plugins.memory_cli.common import append_remembered_guidance
 from aworld_cli.memory.durable import (
-    INSTRUCTION_MEMORY_TYPES,
     DurableMemoryRecord,
     DurableMemoryWriteResult,
     append_durable_memory_record,
+    is_instruction_eligible_memory,
+    normalize_memory_kind,
+    read_all_durable_memory_records,
     read_durable_memory_records,
 )
 from aworld_cli.memory.discovery import (
@@ -16,7 +18,11 @@ from aworld_cli.memory.discovery import (
     discover_workspace_instruction_layers,
     load_instruction_text,
 )
-from aworld_cli.memory.relevance import recall_relevant_session_log_texts
+from aworld_cli.memory.governance import (
+    append_governed_review,
+    list_governed_decisions as load_governed_decisions,
+)
+from aworld_cli.memory.relevance import recall_relevant_memory_texts
 
 
 @dataclass(frozen=True)
@@ -67,7 +73,7 @@ class CliDurableMemoryProvider:
         query: str = "",
         limit: int = 3,
     ) -> RelevantMemoryContext:
-        texts, source_files = recall_relevant_session_log_texts(
+        texts, source_files = recall_relevant_memory_texts(
             workspace_path=workspace_path,
             query=query,
             limit=limit,
@@ -79,8 +85,39 @@ class CliDurableMemoryProvider:
         workspace_path: str | Path,
         memory_type: str | None = None,
     ) -> tuple[DurableMemoryRecord, ...]:
-        return read_durable_memory_records(
+        return read_all_durable_memory_records(
             workspace_path=workspace_path,
+            memory_type=memory_type,
+        )
+
+    def list_governed_decisions(
+        self,
+        workspace_path: str | Path,
+    ) -> tuple[dict, ...]:
+        return tuple(load_governed_decisions(workspace_path))
+
+    def record_governed_review(
+        self,
+        workspace_path: str | Path,
+        *,
+        decision_id: str,
+        review_action: str,
+    ) -> Path:
+        return append_governed_review(
+            workspace_path,
+            {
+                "decision_id": decision_id,
+                "review_action": review_action,
+            },
+        )
+
+    def get_active_durable_memory_records(
+        self,
+        workspace_path: str | Path,
+        memory_type: str | None = None,
+    ) -> tuple[DurableMemoryRecord, ...]:
+        return read_durable_memory_records(
+            workspace_path,
             memory_type=memory_type,
         )
 
@@ -91,17 +128,27 @@ class CliDurableMemoryProvider:
         text: str,
         memory_type: str,
         source: str,
+        memory_kind: str | None = None,
+        decision_id: str | None = None,
+        source_ref: dict[str, str] | None = None,
     ) -> ExplicitDurableWriteResult:
+        normalized_memory_kind = normalize_memory_kind(memory_kind)
         write_result: DurableMemoryWriteResult = append_durable_memory_record(
             workspace_path=workspace_path,
             text=text,
             memory_type=memory_type,
             source=source,
+            memory_kind=normalized_memory_kind,
+            decision_id=decision_id,
+            source_ref=source_ref,
         )
 
         instruction_target: Path | None = None
         instruction_updated = False
-        if write_result.memory_type in INSTRUCTION_MEMORY_TYPES:
+        if is_instruction_eligible_memory(
+            memory_type=write_result.memory_type,
+            memory_kind=normalized_memory_kind,
+        ):
             instruction_target, instruction_updated = append_remembered_guidance(
                 workspace_path=workspace_path,
                 text=text,

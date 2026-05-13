@@ -457,7 +457,7 @@ class BaseCliRuntime:
                 local_agent = LocalAgentRegistry.get_agent(agent_name)
                 if not local_agent:
                     return None
-                return await local_agent.get_swarm()
+                return await local_agent.get_swarm(refresh=agent_name == "Aworld")
 
             # Create notification center
             self._notification_center = CronNotificationCenter()

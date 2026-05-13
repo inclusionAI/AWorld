@@ -11,8 +11,10 @@ or coordinated multi-agent collaboration.
 import os
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
+from zoneinfo import ZoneInfo
 
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
@@ -46,8 +48,27 @@ from aworld.config import AgentConfig, ModelConfig
 # for skills use
 CAST_ANALYSIS, CAST_CODER
 
+_BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
+    prompt_template = (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
+    current = now or datetime.now(_BEIJING_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=_BEIJING_TZ)
+    current = current.astimezone(_BEIJING_TZ)
+    replacements = {
+        "{{current_date}}": current.strftime("%Y-%m-%d"),
+        "{{current_datetime}}": current.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    rendered = prompt_template
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    return rendered
+
+
 def load_aworld_system_prompt() -> str:
-    return (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
+    return render_aworld_system_prompt()
 
 def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
     """
