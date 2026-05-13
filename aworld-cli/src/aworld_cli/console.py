@@ -31,7 +31,10 @@ from aworld.logs.util import logger
 from ._globals import console
 from .core.command_system import CommandRegistry, CommandContext
 from .models import AgentInfo
-from .steering.observability import log_queued_steering_event
+from .steering.observability import (
+    log_applied_steering_event,
+    log_queued_steering_event,
+)
 from .user_input import UserInputHandler
 
 
@@ -2526,6 +2529,14 @@ class AWorldCLI:
         self._active_steering_ignore_escape_until_progress = self._active_steering_handoff_from_escape
         self._active_steering_handoff_from_escape = False
         if drained_items:
+            context = getattr(executor_instance, "context", None) if executor_instance is not None else None
+            log_applied_steering_event(
+                workspace_path=getattr(context, "workspace_path", None),
+                session_id=session_id,
+                task_id=getattr(context, "task_id", None),
+                steering_items=drained_items,
+                checkpoint="terminal_fallback",
+            )
             applied_lines = [item.text for item in drained_items]
             if interrupt_requested:
                 applied_lines.insert(0, "Interrupt requested by operator.")
