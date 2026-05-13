@@ -2642,12 +2642,21 @@ class AWorldCLI:
         self,
         text: str,
         *,
-        max_width: int = 96,
+        max_width: int | None = None,
     ) -> str:
         label = str(text or "").strip() or "Worked"
-        width = max(len(label) + 8, max_width)
-        target_width = min(width, max_width)
         base = f" {label} "
+        target_width = max_width
+        if target_width is None:
+            console_width = int(getattr(self.console, "width", 0) or 0)
+            try:
+                terminal_width = int(
+                    shutil.get_terminal_size(fallback=(console_width or 96, 24)).columns
+                )
+            except Exception:
+                terminal_width = console_width or 96
+            target_width = terminal_width or console_width or 96
+        target_width = max(target_width, len(base))
         if len(base) >= target_width:
             return base[:target_width]
         remaining = target_width - len(base)
