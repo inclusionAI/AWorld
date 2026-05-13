@@ -438,6 +438,47 @@ async def test_terminal_fallback_continuation_runs_follow_up_turn_for_pending_st
 
 
 @pytest.mark.asyncio
+async def test_active_run_checkpoint_pause_immediately_hands_off_to_follow_up_turn():
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    executor_instance = SimpleNamespace(session_id="sess-1", context=None)
+    prompts: list[str] = []
+    first_call_ready = asyncio.Event()
+
+    class FakePromptSession:
+        async def prompt_async(self, *_args, **_kwargs):
+            await first_call_ready.wait()
+            return "Focus on the architecture first."
+
+    async def fake_executor(prompt: str):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            first_call_ready.set()
+            while runtime._steering.snapshot("sess-1")["pending_count"] <= 0:
+                await asyncio.sleep(0)
+            return ""
+        return "follow-up-result"
+
+    cli._create_prompt_session = lambda *_args, **_kwargs: FakePromptSession()
+
+    result = await cli._run_executor_with_active_steering(
+        prompt="Initial task",
+        executor=fake_executor,
+        completer=object(),
+        runtime=runtime,
+        agent_name="Aworld",
+        executor_instance=executor_instance,
+        is_terminal=True,
+    )
+
+    assert result == "follow-up-result"
+    assert prompts[0] == "Initial task"
+    assert "Focus on the architecture first." in prompts[1]
+    assert runtime._steering.snapshot("sess-1")["pending_count"] == 0
+    assert runtime._steering.snapshot("sess-1")["active"] is False
+
+
+@pytest.mark.asyncio
 async def test_active_steering_temporarily_suppresses_executor_stream_rendering():
     cli = AWorldCLI()
     runtime = FakeRuntime()
