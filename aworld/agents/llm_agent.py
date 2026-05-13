@@ -50,6 +50,8 @@ from aworld.runners.post_tool_progress import mark_post_tool_progress_llm_starte
 from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
+from aworld.utils.task_grounding import anchor_matches_text, extract_required_anchors
+from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
 
 
@@ -1095,6 +1097,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         serializable_messages = to_serializable(messages)
         llm_response = None
         agent_result = None
+        validation_feedback = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
         mark_post_tool_progress_llm_started(message.context, agent_id=self.id())
@@ -1163,11 +1166,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                                                          agent_id=self.id(),
                                                                          agent=self,
                                                                          use_tools_in_prompt=self.use_tools_in_prompt)
+                    candidate_finished = not agent_result.is_call_tool
+                    if candidate_finished:
+                        validation_feedback = self._build_result_validation_feedback_from_context(
+                            context=message.context,
+                            final_response_text=llm_response.content or "",
+                        )
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
                                                       message_type=MemoryType.AI,
                                                       context=message.context,
-                                                      skip_summary=self.is_agent_finished(llm_response, agent_result))
+                                                      skip_summary=candidate_finished and not validation_feedback)
 
                     try:
                         events = []
@@ -1184,6 +1193,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         logger.info(f"agent_result: {agent_result}")
 
+        if validation_feedback:
+            logger.warning(
+                "Result validation asked agent %s to continue before finishing: %s",
+                self.id(),
+                validation_feedback,
+            )
+            return await self._retry_for_result_validation(
+                validation_feedback=validation_feedback,
+                observation=observation,
+                info=info,
+                message=message,
+                kwargs=kwargs,
+            )
+
+        message.context.context_info.pop(self._result_validation_retry_key(self.id()), None)
+
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
@@ -1198,6 +1223,127 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 policy_result = await self.execution_tools(agent_result.actions, message)
         await self.send_agent_response_output(self, llm_response, message.context, kwargs.get("outputs"))
         return policy_result
+
+    def _authoritative_request_from_context(self, context: Context) -> str:
+        return str(getattr(context, "origin_user_input", None) or getattr(context, "task_input", None) or "").strip()
+
+    def _collect_result_validation_evidence(self, context: Context, *, limit: int = 8) -> str:
+        try:
+            memory = MemoryFactory.instance()
+            agent_memory_config = context.get_agent_memory_config(self.id())
+            filters = self._build_memory_filters(context, additional_filters={"memory_type": "message"})
+            histories = memory.get_last_n(limit, filters=filters, agent_memory_config=agent_memory_config)
+        except Exception:
+            logger.debug("failed to collect result validation evidence: %s", traceback.format_exc())
+            return ""
+
+        evidence_parts: list[str] = []
+        for history in histories or []:
+            if not isinstance(history, (MemoryToolMessage, MemoryAIMessage)):
+                continue
+            content = getattr(history, "content", None)
+            if content:
+                evidence_parts.append(str(content))
+        return "\n".join(evidence_parts[-limit:])
+
+    def _build_result_validation_feedback(
+        self,
+        *,
+        authoritative_request: str,
+        final_response_text: str,
+        evidence_text: str,
+    ) -> str | None:
+        anchors = extract_required_anchors(authoritative_request)
+        if not anchors:
+            return None
+
+        combined_text = "\n".join(part for part in [final_response_text, evidence_text] if part).strip()
+        if not combined_text:
+            return None
+
+        missing = [anchor for anchor in anchors if not anchor_matches_text(anchor, combined_text)]
+        if not missing:
+            return None
+
+        missing_preview = ", ".join(missing[:4])
+        return (
+            "Result validation mismatch: the authoritative request still requires these anchors to be present in "
+            f"the verified result, but current-run evidence is missing them: {missing_preview}. "
+            "Do not declare success yet. Continue investigating the exact target or explain the mismatch explicitly."
+        )
+
+    def _build_result_validation_feedback_from_context(
+        self,
+        *,
+        context: Context,
+        final_response_text: str,
+    ) -> str | None:
+        if self.name() != "Aworld":
+            return None
+        authoritative_request = self._authoritative_request_from_context(context)
+        if not authoritative_request:
+            return None
+        evidence_text = self._collect_result_validation_evidence(context)
+        return self._build_result_validation_feedback(
+            authoritative_request=authoritative_request,
+            final_response_text=final_response_text,
+            evidence_text=evidence_text,
+        )
+
+    @staticmethod
+    def _result_validation_retry_key(agent_id: str) -> str:
+        return f"result_validation_retry_count:{agent_id}"
+
+    async def _retry_for_result_validation(
+        self,
+        *,
+        validation_feedback: str,
+        observation: Observation,
+        info: Dict[str, Any],
+        message: Message,
+        kwargs: Dict[str, Any],
+    ) -> List[ActionModel]:
+        retry_key = self._result_validation_retry_key(self.id())
+        retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
+
+        if retry_count >= 1:
+            self._finished = True
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info=(
+                        f"{validation_feedback}\n"
+                        "I cannot confirm the task is complete with the current evidence, so I am not claiming success."
+                    ),
+                )
+            ]
+
+        message.context.context_info[retry_key] = retry_count + 1
+        followup_observation = Observation(
+            observer=self.id(),
+            from_agent_name=observation.from_agent_name or self.id(),
+            to_agent_name=self.id(),
+            content=validation_feedback,
+            action_result=[
+                ActionResult(
+                    content=validation_feedback,
+                    success=False,
+                    tool_name="result_validation",
+                    action_name="feedback",
+                )
+            ],
+        )
+        recursive_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in {"response_parse_args", "prepared_tools", "prompt_assembly_plan", "provider_native_prompt_cache"}
+        }
+        return await self.async_policy(
+            followup_observation,
+            info=info,
+            message=message,
+            **recursive_kwargs,
+        )
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
         """Tool execution operations.
@@ -1276,7 +1422,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         content = result.content
         if result.tool_name != "cron" or not isinstance(content, dict):
-            return str(content)
+            compaction = compact_tool_result_for_memory(
+                content,
+                tool_name=result.tool_name,
+                action_name=result.action_name,
+                summary_content=(result.metadata or {}).get("tool_use_summary") if isinstance(result.metadata, dict) else None,
+                enabled=True,
+                preview_chars=2000,
+                force=bool(isinstance(result.metadata, dict) and result.metadata.get("offload") is True),
+            )
+            return str(compaction.content if compaction.applied else content)
 
         serialized = json.dumps(content, ensure_ascii=False)
         if not content.get("success"):

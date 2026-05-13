@@ -2,6 +2,7 @@ from typing import List
 
 from ... import ApplicationContext
 from ...utils.context_tree_utils import format_task_content
+from aworld.utils.task_grounding import extract_required_anchors
 from . import Neuron
 from .neuron_factory import neuron_factory
 
@@ -53,15 +54,23 @@ class TaskGroundingNeuron(Neuron):
         if current_task_view and current_task_view != authoritative_request:
             current_task_block = f"\nCurrent task view:\n- {current_task_view}\n"
 
+        anchors = extract_required_anchors(authoritative_request)
+        anchor_block = ""
+        if anchors:
+            anchor_lines = "\n".join(f"- {anchor}" for anchor in anchors)
+            anchor_block = f"\nRequired anchors to preserve:\n{anchor_lines}\n"
+
         return f"""
 ## Task Grounding
 
 Authoritative user request:
 - {authoritative_request}
 {current_task_block}
+{anchor_block}
 Grounding rules:
 - Treat the authoritative user request as the fixed source of truth for the goal, target, scope, output, and success bar.
 - Do not silently change named entities, handles, URLs, file paths, dates, time windows, topic filters, or requested deliverables.
+- Preserve the required anchors above unless the user explicitly changes them.
 - If current evidence points to a different target or scope, do not reinterpret the task to fit that evidence.
 - Before claiming success, verify the final result matches the authoritative request using evidence from this run.
 - If evidence is missing or conflicts with the authoritative request, keep working or report the mismatch instead of declaring success.
