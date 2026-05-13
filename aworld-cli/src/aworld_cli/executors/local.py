@@ -1456,6 +1456,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             tool_data = getattr(first_tool, "data", first_tool)
                                             function = getattr(tool_data, "function", None)
                                             current_tool_name = getattr(function, "name", None)
+                                            if await self._should_pause_for_queued_steering_checkpoint(
+                                                task_id=task.id,
+                                                checkpoint="before_tool_call",
+                                                current_tool=current_tool_name,
+                                                partial_answer=answer,
+                                            ):
+                                                raise _PauseForQueuedSteeringCheckpoint()
                                             if current_tool_name:
                                                 self._emit_active_steering_status(f"Calling {current_tool_name}")
                                         continue

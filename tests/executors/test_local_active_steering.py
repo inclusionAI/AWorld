@@ -11,7 +11,8 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import TaskResponse
-from aworld.output.base import ToolResultOutput
+from aworld.models.model_response import ModelResponse, ToolCall
+from aworld.output.base import ChunkOutput, ToolResultOutput
 from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.steering.coordinator import SteeringCoordinator
 
@@ -198,6 +199,62 @@ async def test_local_executor_active_steering_yields_at_tool_checkpoint_when_pen
     )
     snapshot = executor._base_runtime._steering.snapshot("sess-1")
     assert snapshot["pending_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_local_executor_active_steering_yields_before_planned_tool_executes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    executor, _output_buffer = _build_executor(session_id="sess-1")
+    events: list[dict[str, str]] = []
+    executor._active_steering_event_sink = events.append
+    executor._base_runtime = SimpleNamespace(_steering=SteeringCoordinator())
+    executor._base_runtime._steering.begin_task("sess-1", "task-1")
+    executor._base_runtime._steering.enqueue_text("sess-1", "Focus on the architecture.")
+    _stub_chat_dependencies(
+        executor,
+        monkeypatch,
+        _FakeStreamingOutputs(
+            events=[
+                ChunkOutput(
+                    data=ModelResponse(
+                        id="resp-1",
+                        model="test-model",
+                        tool_calls=[
+                            ToolCall.from_dict(
+                                {
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "CAST_SEARCH__glob_search",
+                                        "arguments": '{"pattern":"**/context*.py"}',
+                                    },
+                                }
+                            )
+                        ],
+                    ),
+                    metadata={},
+                )
+            ],
+            response=TaskResponse(success=True, answer="done", msg="ok"),
+        ),
+    )
+
+    result = await executor.chat("hello")
+
+    assert result == ""
+    assert any(
+        call.args[0] == "steering_checkpoint"
+        and call.args[1]["checkpoint"] == "before_tool_call"
+        for call in executor._run_plugin_task_hook.await_args_list
+    )
+    assert any(
+        event["kind"] == "status_changed" and "Applying queued steering" in event["text"]
+        for event in events
+    )
+    assert not any(
+        call.args[0] == "task_completed"
+        for call in executor._run_plugin_task_hook.await_args_list
+    )
 
 
 @pytest.mark.asyncio
