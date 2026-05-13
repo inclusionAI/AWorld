@@ -230,14 +230,25 @@ class LocalAgentExecutor(BaseAgentExecutor):
     def _buffer_active_steering_message_chunk(self, text: str) -> None:
         self._active_steering_buffer().append_message_delta(text)
 
+    def _emit_active_steering_message(
+        self,
+        *,
+        text: str | None = None,
+        agent_name: str | None = None,
+    ) -> None:
+        event = self._active_steering_buffer().commit_message(
+            text=text,
+            agent_name=agent_name,
+        )
+        if event is not None:
+            self._emit_active_steering_event(**event)
+
     def _flush_active_steering_message_buffer(
         self,
         *,
         agent_name: str | None = None,
     ) -> None:
-        event = self._active_steering_buffer().commit_message(agent_name=agent_name)
-        if event is not None:
-            self._emit_active_steering_event(**event)
+        self._emit_active_steering_message(agent_name=agent_name)
 
     def _emit_active_steering_tool_result_lines(
         self,
@@ -1184,7 +1195,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 elapsed_str = format_elapsed(elapsed_sec)
                                                 msg = stream_token_stats.format_streaming_line(elapsed_str)
                                                 if msg and self.console:
-                                                    from rich.text import Text
                                                     self.console.print(Text.from_markup(msg))
                                                     self.console.print()  # Add spacing
                                     else:
@@ -1230,7 +1240,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 
                                 # Handle ToolResultOutput - add to buffer for gradual display
                                 elif isinstance(output, ToolResultOutput):
-                                    tr_lines = self._format_tool_result_display_lines(output)
+                                    tr_lines = self._format_tool_result_display_lines(
+                                        output,
+                                        truncate=not active_event_mode,
+                                    )
                                     if active_event_mode and tr_lines:
                                         metadata = getattr(output, "metadata", None) or {}
                                         exit_code = metadata.get("exit_code")
@@ -1418,7 +1431,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         raise  # Re-raise so caller can handle (e.g. continue to next prompt)
                     except Exception as e:
                         logger.error(f"📊 consume_stream error - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
-                        if self.console:
+                        if self.console and not active_event_mode:
                             error_body = Text("Error in stream consumption: ")
                             error_body.append(str(e))
                             error_panel = Panel(
@@ -1470,7 +1483,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         final_answer = f"{hook_system_message}\n{final_answer}".strip()
                     if final_answer:
                         answer = final_answer
-                        if not last_message_output and self.console:
+                        if not last_message_output:
                             root_agent = getattr(self.swarm, "communicate_agent", None)
                             if isinstance(root_agent, list):
                                 root_agent = root_agent[0] if root_agent else None
@@ -1482,9 +1495,21 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 if not agent_name:
                                     agent_id = getattr(root_agent, "id", None)
                                     agent_name = agent_id() if callable(agent_id) else agent_id
-                            self.console.print(f"🤖 [bold]{agent_name or 'Assistant'}[/bold]")
-                            self.console.print(answer)
-                            self.console.print()
+                            resolved_agent_name = agent_name or "Assistant"
+                            if self._active_steering_event_mode_enabled():
+                                if self._active_steering_buffer().has_pending_message():
+                                    self._flush_active_steering_message_buffer(
+                                        agent_name=resolved_agent_name,
+                                    )
+                                else:
+                                    self._emit_active_steering_message(
+                                        text=answer,
+                                        agent_name=resolved_agent_name,
+                                    )
+                            elif self.console:
+                                self.console.print(f"🤖 [bold]{resolved_agent_name}[/bold]")
+                                self.console.print(answer)
+                                self.console.print()
                 
                 # 🔥 Hook: POST_RUN_TASK
                 hook_kwargs = {
@@ -1631,7 +1656,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     
                 except Exception as e:
                         logger.error(f"💾 Failed to save to history: {e}")
-                        import traceback
                         logger.error(f"💾 Traceback: {traceback.format_exc()}")
                         # Don't fail the whole request if history save fails
 
