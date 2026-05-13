@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import termios
 import time
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
@@ -558,6 +559,12 @@ class AWorldCLI:
 
         try:
             clear_typeahead(input_obj)
+        except Exception:
+            pass
+
+        try:
+            if sys.stdin.isatty():
+                termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
         except Exception:
             pass
 
