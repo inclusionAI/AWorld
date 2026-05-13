@@ -318,6 +318,7 @@ def log_llm_record(
         params: Optional dict of extra call parameters (temperature, max_tokens, etc.).
         trace_id: Optional trace ID; auto-resolved from context when omitted.
     """
+    from aworld.models.usage import normalize_usage
     from aworld.trace.base import get_trace_id
     from aworld.utils.serialized_util import to_serializable
 
@@ -349,9 +350,38 @@ def log_llm_record(
     meta_parts = []
     if enriched_params:
         meta_parts = [f"{k}={v}" for k, v in enriched_params.items()]
-    meta_str = ", ".join(meta_parts) if meta_parts else ""
 
     body = to_serializable(data)
+    if isinstance(body, dict):
+        usage_source = body.get("raw_usage") if isinstance(body.get("raw_usage"), dict) else body.get("usage")
+        if isinstance(usage_source, dict):
+            normalized_usage = normalize_usage(usage_source)
+            if any(normalized_usage.get(key, 0) for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
+                meta_parts.extend(
+                    [
+                        f"prompt_tokens={normalized_usage.get('prompt_tokens', 0)}",
+                        f"completion_tokens={normalized_usage.get('completion_tokens', 0)}",
+                        f"total_tokens={normalized_usage.get('total_tokens', 0)}",
+                    ]
+                )
+            if normalized_usage.get("cache_hit_tokens", 0):
+                meta_parts.append(f"cache_hit_tokens={normalized_usage['cache_hit_tokens']}")
+            if normalized_usage.get("cache_write_tokens", 0):
+                meta_parts.append(f"cache_write_tokens={normalized_usage['cache_write_tokens']}")
+
+        provider_request_id = body.get("provider_request_id")
+        if provider_request_id:
+            meta_parts.append(f"provider_request_id={provider_request_id}")
+
+        prompt_cache_key = body.get("prompt_cache_key")
+        if prompt_cache_key:
+            meta_parts.append(f"prompt_cache_key={prompt_cache_key}")
+
+        stream_options = body.get("stream_options")
+        if isinstance(stream_options, dict) and "include_usage" in stream_options:
+            meta_parts.append(f"stream_include_usage={stream_options['include_usage']}")
+
+    meta_str = ", ".join(meta_parts) if meta_parts else ""
 
     llm_logger._logger.bind(
         trace_id=resolved_trace_id,

@@ -10,13 +10,15 @@ from typing import Any, Union, List, Dict, Callable, Optional, Literal, TYPE_CHE
 from aworld.core.event.base import Message
 from aworld.utils.serialized_util import to_serializable
 
-from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config, Observation, StreamingMode, TaskStatus, TaskStatusValue
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
 from aworld.core.context.amni.config import AmniContextConfig
+
+if TYPE_CHECKING:
+    from aworld.agents.llm_agent import Agent
+    from aworld.core.agent.swarm import Swarm
 
 
 @dataclass
@@ -37,8 +39,8 @@ class Task:
     tools_conf: Config = field(default_factory=dict)
     # custom mcp servers conf
     mcp_servers_conf: Config = field(default_factory=dict)
-    swarm: Optional[Swarm] = field(default=None)
-    agent: Optional[Agent] = field(default=None)
+    swarm: Optional['Swarm'] = field(default=None)
+    agent: Optional['Agent'] = field(default=None)
     event_driven: bool = field(default=True)
     # for loop detect
     endless_threshold: int = field(default=3)

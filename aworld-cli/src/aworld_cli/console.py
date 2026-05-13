@@ -272,8 +272,9 @@ class AWorldCLI:
             fallback_segments = self._fallback_status_segments(hud_context, agent_name, mode)
             return self._render_status_line(fallback_segments, max_width)
 
+        plugin_lines = self._select_status_bar_lines(plugin_lines, max_lines=2)
         rendered_lines = []
-        for line in plugin_lines[:2]:
+        for line in plugin_lines:
             segments = list(getattr(line, "segments", ()) or ())
             if not segments:
                 text = getattr(line, "text", "")
@@ -289,6 +290,35 @@ class AWorldCLI:
             return self._render_status_line(fallback_segments, max_width)
 
         return "\n".join(rendered_lines)
+
+    def _select_status_bar_lines(self, plugin_lines: list[Any], max_lines: int = 2) -> list[Any]:
+        if len(plugin_lines) <= max_lines:
+            return list(plugin_lines)
+
+        preferred_sections = ("identity", "activity", "context", "session", "tasks", "custom")
+        selected: list[Any] = []
+        used_indexes: set[int] = set()
+
+        for section in preferred_sections:
+            for index, line in enumerate(plugin_lines):
+                if index in used_indexes:
+                    continue
+                if getattr(line, "section", "") != section:
+                    continue
+                selected.append(line)
+                used_indexes.add(index)
+                break
+            if len(selected) >= max_lines:
+                return selected
+
+        for index, line in enumerate(plugin_lines):
+            if index in used_indexes:
+                continue
+            selected.append(line)
+            if len(selected) >= max_lines:
+                break
+
+        return selected
 
     def _should_render_status_bar(self, runtime) -> bool:
         if runtime is None:

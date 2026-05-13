@@ -155,7 +155,7 @@ def build_context_config(debug_mode):
     config.debug_mode = debug_mode
     config.agent_config = AgentContextConfig(
         enable_system_prompt_augment=True,
-        neuron_names=["skills"],
+        neuron_names=["task_grounding", "skills"],
         history_scope='session'
     )
     config.env_config = ContextEnvConfig()
