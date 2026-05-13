@@ -40,6 +40,7 @@ from .user_input import UserInputHandler
 # Notification polling configuration
 NOTIFICATION_POLL_INTERVAL = 2.0  # Seconds (1-3s latency target)
 _ESC_INTERRUPT_SENTINEL = "__aworld_cli_interrupt__"
+_ACTIVE_STEERING_ESCAPE_HANDOFF_COOLDOWN_SECONDS = 1.0
 
 
 @dataclass
@@ -2326,7 +2327,11 @@ class AWorldCLI:
             if not executor_task.done():
                 executor_task.cancel()
             if esc_submits_queued_steering_immediately:
-                self._active_steering_escape_cooldown_until = time.monotonic() + 0.25
+                # Ignore any trailing Esc that can surface during prompt_toolkit's
+                # own escape flush window while the follow-up turn is taking over.
+                self._active_steering_escape_cooldown_until = (
+                    time.monotonic() + _ACTIVE_STEERING_ESCAPE_HANDOFF_COOLDOWN_SECONDS
+                )
                 self._append_active_steering_history(
                     "system_notice",
                     "Interrupting current run to submit queued steering immediately.",

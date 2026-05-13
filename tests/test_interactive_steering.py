@@ -590,6 +590,60 @@ async def test_escape_handoff_ignores_stale_follow_up_escape_repeat():
 
 
 @pytest.mark.asyncio
+async def test_escape_handoff_ignores_delayed_stale_follow_up_escape_repeat():
+    cli = AWorldCLI()
+    runtime = FakeRuntime()
+    executor_instance = SimpleNamespace(session_id="sess-1", context=None)
+    prompts: list[str] = []
+    prompt_calls = 0
+    delayed_escape_seen = asyncio.Event()
+
+    class FakePromptSession:
+        async def prompt_async(self, *_args, **_kwargs):
+            nonlocal prompt_calls
+            prompt_calls += 1
+            if prompt_calls == 1:
+                return "Focus on the architecture first."
+            if prompt_calls == 2:
+                return _ESC_INTERRUPT_SENTINEL
+            if prompt_calls == 3:
+                await asyncio.sleep(0.6)
+                delayed_escape_seen.set()
+                return _ESC_INTERRUPT_SENTINEL
+            await asyncio.sleep(60)
+
+    async def fake_executor(prompt: str):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            await asyncio.sleep(60)
+        await delayed_escape_seen.wait()
+        await asyncio.sleep(0.1)
+        return "follow-up-result"
+
+    cli._create_prompt_session = lambda *_args, **_kwargs: FakePromptSession()
+
+    result = await cli._run_executor_with_active_steering(
+        prompt="Initial task",
+        executor=fake_executor,
+        completer=object(),
+        runtime=runtime,
+        agent_name="Aworld",
+        executor_instance=executor_instance,
+        is_terminal=True,
+    )
+
+    assert result == "follow-up-result"
+    assert runtime.interrupt_requests == []
+    assert prompts == [
+        "Initial task",
+        (
+            "Continue the current task with this additional operator steering:\n\n"
+            "1. Focus on the architecture first."
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_active_steering_clears_prompt_session_reference_after_prompt_returns():
     cli = AWorldCLI()
     runtime = FakeRuntime()
