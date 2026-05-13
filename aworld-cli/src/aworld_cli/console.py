@@ -15,6 +15,7 @@ from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.input.typeahead import clear_typeahead
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PromptToolkitStyle
 from rich import box
@@ -539,6 +540,26 @@ class AWorldCLI:
     def _clear_prompt_session_reference(self, session: PromptSession | None = None) -> None:
         if session is None or self._active_prompt_session is session:
             self._active_prompt_session = None
+
+    def _discard_prompt_session_typeahead(self, session: PromptSession | None) -> None:
+        if session is None:
+            return
+
+        input_obj = getattr(getattr(session, "app", None), "input", None) or getattr(session, "input", None)
+        if input_obj is None:
+            return
+
+        try:
+            flush_keys = getattr(input_obj, "flush_keys", None)
+            if callable(flush_keys):
+                flush_keys()
+        except Exception:
+            pass
+
+        try:
+            clear_typeahead(input_obj)
+        except Exception:
+            pass
 
     def _handle_runtime_plugin_capability_refresh(self, previous_capabilities: tuple[str, ...], runtime) -> None:
         had_hud = "hud" in tuple(previous_capabilities or ())
@@ -2623,6 +2644,8 @@ class AWorldCLI:
                     self._clear_prompt_session_reference(steering_session)
                     await self._cancel_active_executor_task(executor_task)
                     raise
+                if user_input == _ESC_INTERRUPT_SENTINEL:
+                    self._discard_prompt_session_typeahead(steering_session)
                 self._clear_prompt_session_reference(steering_session)
 
                 await self._handle_active_task_input(
