@@ -890,6 +890,21 @@ def test_discard_prompt_session_typeahead_flushes_input_and_clears_typeahead(
     assert calls == ["flush_keys", "clear:FakeInput", "tcflush:9:123"]
 
 
+def test_create_prompt_session_uses_eager_escape_binding():
+    cli = AWorldCLI()
+
+    session = cli._create_prompt_session(object(), on_escape=lambda: None)
+
+    escape_bindings = [
+        binding
+        for binding in session.app.key_bindings.bindings
+        if tuple(str(key) for key in binding.keys) == ("Keys.Escape",)
+    ]
+
+    assert escape_bindings
+    assert any(binding.eager() for binding in escape_bindings)
+
+
 def test_active_steering_status_without_appending_history():
     cli = AWorldCLI()
     cli._active_steering_view = cli._create_active_steering_view()
