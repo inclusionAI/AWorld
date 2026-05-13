@@ -530,6 +530,7 @@ async def test_escape_handoff_ignores_stale_follow_up_escape_repeat():
     prompts: list[str] = []
     prompt_calls = 0
     stale_escape_seen = asyncio.Event()
+    discarded_sessions: list[object] = []
 
     class FakePromptSession:
         async def prompt_async(self, *_args, **_kwargs):
@@ -552,6 +553,13 @@ async def test_escape_handoff_ignores_stale_follow_up_escape_repeat():
         return "follow-up-result"
 
     cli._create_prompt_session = lambda *_args, **_kwargs: FakePromptSession()
+    original_discard = cli._discard_prompt_session_typeahead
+
+    def tracking_discard(session):
+        discarded_sessions.append(session)
+        return original_discard(session)
+
+    cli._discard_prompt_session_typeahead = tracking_discard
 
     result = await cli._run_executor_with_active_steering(
         prompt="Initial task",
@@ -566,6 +574,7 @@ async def test_escape_handoff_ignores_stale_follow_up_escape_repeat():
     assert result == "follow-up-result"
     assert runtime.interrupt_requests == []
     assert prompt_calls >= 3
+    assert discarded_sessions
     assert prompts == [
         "Initial task",
         (
@@ -769,6 +778,30 @@ def test_active_steering_event_commits_message_and_tool_blocks():
         {"kind": "tool_calls", "text": "▶ [cyan]bash[/cyan]\n   command: find . -type f | head -20"},
         {"kind": "tool_result", "text": "⚡ [bold]terminal → bash[/bold]\n  ⎿  ./tests/test_interactive_steering.py"},
     ]
+
+
+def test_discard_prompt_session_typeahead_flushes_input_and_clears_typeahead(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cli = AWorldCLI()
+    calls: list[str] = []
+
+    class FakeInput:
+        def flush_keys(self):
+            calls.append("flush_keys")
+            return []
+
+    session = SimpleNamespace(app=SimpleNamespace(input=FakeInput()))
+
+    monkeypatch.setattr(
+        console_module,
+        "clear_typeahead",
+        lambda input_obj: calls.append(f"clear:{type(input_obj).__name__}"),
+    )
+
+    cli._discard_prompt_session_typeahead(session)
+
+    assert calls == ["flush_keys", "clear:FakeInput"]
 
 
 def test_active_steering_status_without_appending_history():
