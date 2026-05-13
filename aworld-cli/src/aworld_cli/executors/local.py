@@ -60,6 +60,12 @@ except ImportError:
         pass
 
 
+class _PauseForQueuedSteeringCheckpoint(Exception):
+    """Internal control-flow signal for yielding to queued steering at a safe checkpoint."""
+
+    pass
+
+
 class LocalAgentExecutor(BaseAgentExecutor):
     """
     Executor for local agents.
@@ -392,6 +398,57 @@ class LocalAgentExecutor(BaseAgentExecutor):
         except Exception as exc:
             logger.warning(f"Plugin task hook '{hook_point}' failed: {exc}")
             return []
+
+    async def _should_pause_for_queued_steering_checkpoint(
+        self,
+        *,
+        task_id: str,
+        checkpoint: str,
+        current_tool: str | None = None,
+        partial_answer: str = "",
+    ) -> bool:
+        if not self._active_steering_event_mode_enabled():
+            return False
+
+        runtime = getattr(self, "_base_runtime", None)
+        steering = getattr(runtime, "_steering", None) if runtime is not None else None
+        if steering is None or not self.session_id:
+            return False
+
+        snapshot = steering.snapshot(self.session_id)
+        pending_count = int(snapshot.get("pending_count", 0) or 0)
+        interrupt_requested = bool(snapshot.get("interrupt_requested"))
+
+        should_pause = pending_count > 0
+        hook_results = await self._run_plugin_task_hook(
+            "steering_checkpoint",
+            {
+                "task_id": task_id,
+                "session_id": self.session_id,
+                "checkpoint": checkpoint,
+                "current_tool": current_tool,
+                "pending_count": pending_count,
+                "interrupt_requested": interrupt_requested,
+                "partial_answer": partial_answer or "",
+            },
+        )
+        for _, result in hook_results:
+            system_message = getattr(result, "system_message", None)
+            if system_message:
+                self._emit_active_steering_event(
+                    "system_notice",
+                    text=str(system_message).strip(),
+                )
+
+            action = str(getattr(result, "action", "allow") or "allow").strip().lower()
+            if action == "deny":
+                should_pause = False
+            elif action == "block_and_continue" and pending_count > 0:
+                should_pause = True
+
+        if should_pause:
+            self._emit_active_steering_status("Applying queued steering")
+        return should_pause
 
     async def _handle_task_interrupted(self, task: Task, answer: str = "") -> str:
         await self._run_plugin_task_hook(
@@ -1179,6 +1236,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     self._emit_active_steering_status(f"Calling {current_tool_name}")
                                         else:
                                             self._emit_active_steering_status("Working")
+                                        if await self._should_pause_for_queued_steering_checkpoint(
+                                            task_id=task.id,
+                                            checkpoint="after_message_output",
+                                            current_tool=current_tool_name if tool_calls else None,
+                                            partial_answer=answer,
+                                        ):
+                                            raise _PauseForQueuedSteeringCheckpoint()
                                     # When STREAM=1: render message output; when STREAM=0: skip output, only update answer
                                     elif not stream_on:
                                         logger.info(f"Rendering message output for agent: {current_agent_name}")
@@ -1255,6 +1319,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             tr_lines,
                                             exit_code=exit_code,
                                         )
+                                        if await self._should_pause_for_queued_steering_checkpoint(
+                                            task_id=task.id,
+                                            checkpoint="after_tool_result",
+                                            current_tool=getattr(output, "tool_name", None),
+                                            partial_answer=answer,
+                                        ):
+                                            raise _PauseForQueuedSteeringCheckpoint()
                                         self._emit_active_steering_status("Working")
                                         continue
                                     if tr_lines:
@@ -1447,6 +1518,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 # Consume all stream events (Ctrl+C raises CancelledError/KeyboardInterrupt → abort and return)
                 try:
                     await consume_stream()
+                except _PauseForQueuedSteeringCheckpoint:
+                    self._reset_active_steering_buffer()
+                    self._publish_hud_task_finished(task.id, task_status="idle")
+                    return answer or ""
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     self._reset_active_steering_buffer()
                     if self._active_steering_event_mode_enabled():
