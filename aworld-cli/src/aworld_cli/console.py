@@ -2505,12 +2505,24 @@ class AWorldCLI:
         if int(snapshot.get("pending_count", 0) or 0) <= 0:
             return False, None
 
-        follow_up_prompt = steering.consume_terminal_fallback_prompt(session_id)
+        follow_up_prompt, drained_items, interrupt_requested = steering.consume_terminal_fallback(session_id)
         if not follow_up_prompt:
             return False, None
 
         self._clear_prompt_session_reference()
-        self.console.print("[dim]Applying queued steering in a follow-up turn.[/dim]")
+        if drained_items:
+            applied_lines = [item.text for item in drained_items]
+            if interrupt_requested:
+                applied_lines.insert(0, "Interrupt requested by operator.")
+            self._append_active_steering_history(
+                "applied_steering",
+                "\n".join(applied_lines),
+            )
+        else:
+            self._append_active_steering_history(
+                "system_notice",
+                "Applying queued steering in a follow-up turn.",
+            )
         result = await self._run_executor_with_active_steering(
             prompt=follow_up_prompt,
             executor=executor,
@@ -2767,6 +2779,16 @@ class AWorldCLI:
             if kind == "queued_steering":
                 self.console.print("[bold]Messages to be submitted after next checkpoint[/bold]")
                 self.console.print("[dim](task continues until the next checkpoint)[/dim]")
+                lines = normalized.splitlines()
+                if lines:
+                    self.console.print(f"   ↳ {lines[0]}")
+                    for line in lines[1:]:
+                        self.console.print(f"     {line}")
+                self.console.print()
+                return
+            if kind == "applied_steering":
+                self.console.print("[bold]Messages submitted at this checkpoint[/bold]")
+                self.console.print("[dim](task is now continuing with the updated direction)[/dim]")
                 lines = normalized.splitlines()
                 if lines:
                     self.console.print(f"   ↳ {lines[0]}")

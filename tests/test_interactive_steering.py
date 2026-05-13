@@ -241,6 +241,7 @@ async def test_executor_cancellation_from_interrupt_does_not_escape():
 @pytest.mark.asyncio
 async def test_terminal_fallback_continues_with_pending_steering_after_interrupt():
     cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
     runtime = FakeRuntime()
     runtime._steering.begin_task("sess-1", "task-1")
     runtime._steering.enqueue_text("sess-1", "Focus on the failing test first.")
@@ -270,6 +271,10 @@ async def test_terminal_fallback_continues_with_pending_steering_after_interrupt
         "Interrupt requested by operator. Pause at the next safe checkpoint before continuing.\n\n"
         "1. Focus on the failing test first."
     )
+    assert cli._active_steering_view.history[-1] == {
+        "kind": "applied_steering",
+        "text": "Interrupt requested by operator.\nFocus on the failing test first.",
+    }
     snapshot = runtime._steering.snapshot("sess-1")
     assert snapshot["pending_count"] == 0
     assert snapshot["interrupt_requested"] is False
@@ -778,6 +783,21 @@ def test_active_steering_event_commits_message_and_tool_blocks():
         {"kind": "tool_calls", "text": "▶ [cyan]bash[/cyan]\n   command: find . -type f | head -20"},
         {"kind": "tool_result", "text": "⚡ [bold]terminal → bash[/bold]\n  ⎿  ./tests/test_interactive_steering.py"},
     ]
+
+
+def test_applied_steering_history_uses_checkpoint_hierarchy_render():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+
+    cli._append_active_steering_history(
+        "applied_steering",
+        "Focus on the skill architecture.\nList the currently available skills.",
+    )
+
+    assert cli._active_steering_view.history[-1] == {
+        "kind": "applied_steering",
+        "text": "Focus on the skill architecture.\nList the currently available skills.",
+    }
 
 
 def test_discard_prompt_session_typeahead_flushes_input_and_clears_typeahead(

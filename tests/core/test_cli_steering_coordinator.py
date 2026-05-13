@@ -64,6 +64,23 @@ def test_interrupt_and_text_are_both_rendered_in_fallback_prompt():
     assert coordinator.snapshot("sess-1")["interrupt_requested"] is False
 
 
+def test_consume_terminal_fallback_returns_prompt_and_drained_inputs():
+    coordinator = SteeringCoordinator()
+    coordinator.begin_task(session_id="sess-1", task_id="task-1")
+    coordinator.enqueue_text("sess-1", "Focus on the skill architecture.")
+    coordinator.enqueue_text("sess-1", "List the currently available skills.")
+
+    prompt, drained, interrupt_requested = coordinator.consume_terminal_fallback("sess-1")
+
+    assert prompt is not None
+    assert interrupt_requested is False
+    assert [item.text for item in drained] == [
+        "Focus on the skill architecture.",
+        "List the currently available skills.",
+    ]
+    assert coordinator.snapshot("sess-1")["pending_count"] == 0
+
+
 def test_interrupt_only_consumption_returns_prompt_and_clears_flag():
     coordinator = SteeringCoordinator()
     coordinator.begin_task(session_id="sess-1", task_id="task-1")
