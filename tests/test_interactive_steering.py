@@ -283,6 +283,54 @@ async def test_terminal_fallback_continues_with_pending_steering_after_interrupt
 
 
 @pytest.mark.asyncio
+async def test_terminal_fallback_logs_applied_steering_checkpoint_event(tmp_path):
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+    runtime = FakeRuntime()
+    runtime._steering.begin_task("sess-1", "task-1")
+    runtime._steering.enqueue_text("sess-1", "Focus on MAS architecture.")
+    runtime._steering.enqueue_text("sess-1", "List supported types.")
+    captured: dict[str, object] = {}
+
+    async def fake_follow_up_runner(**kwargs):
+        captured.update(kwargs)
+        return "follow-up result"
+
+    cli._run_executor_with_active_steering = fake_follow_up_runner
+
+    continued, result = await cli._run_terminal_fallback_continuation(
+        runtime=runtime,
+        session_id="sess-1",
+        executor=lambda _prompt: None,
+        completer=object(),
+        agent_name="Aworld",
+        executor_instance=SimpleNamespace(
+            session_id="sess-1",
+            context=SimpleNamespace(
+                task_id="task-1",
+                workspace_path=str(tmp_path),
+            ),
+        ),
+        is_terminal=True,
+    )
+
+    assert continued is True
+    assert result == "follow-up result"
+    assert "Focus on MAS architecture." in captured["prompt"]
+    log_path = tmp_path / ".aworld" / "memory" / "sessions" / "sess-1.jsonl"
+    payload = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["event"] == "steering_applied_at_checkpoint"
+    assert payload["session_id"] == "sess-1"
+    assert payload["task_id"] == "task-1"
+    assert payload["checkpoint"] == "terminal_fallback"
+    assert payload["applied_count"] == 2
+    assert [item["text"] for item in payload["steering"]] == [
+        "Focus on MAS architecture.",
+        "List supported types.",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_escape_path_requests_interrupt_and_cancels_active_task():
     cli = AWorldCLI()
     runtime = FakeRuntime()
