@@ -2268,10 +2268,6 @@ class AWorldCLI:
                 snapshot = steering.snapshot(session_id)
                 pending_count = int(snapshot.get("pending_count", 0) or 0)
             if pending_count > 0:
-                self._append_active_steering_history(
-                    "system_notice",
-                    "Steering captured. Waiting for next checkpoint.",
-                )
                 return True
 
         if normalized in {_ESC_INTERRUPT_SENTINEL, "/interrupt"}:
@@ -2311,8 +2307,8 @@ class AWorldCLI:
             pending_count=int(snapshot.get("pending_count", 0) or 0),
         )
         self._append_active_steering_history(
-            "system_notice",
-            "Steering captured. Waiting for next checkpoint.",
+            "queued_steering",
+            normalized,
         )
         return True
 
@@ -2689,6 +2685,16 @@ class AWorldCLI:
                 self.console.print(f"[bold red]Error[/bold red]")
                 for line in normalized.splitlines():
                     self.console.print(f"[red]   {line}[/red]")
+                self.console.print()
+                return
+            if kind == "queued_steering":
+                self.console.print("[bold]Messages to be submitted after next checkpoint[/bold]")
+                self.console.print("[dim](task continues until the next checkpoint)[/dim]")
+                lines = normalized.splitlines()
+                if lines:
+                    self.console.print(f"   ↳ {lines[0]}")
+                    for line in lines[1:]:
+                        self.console.print(f"     {line}")
                 self.console.print()
                 return
             if kind == "task_complete":
