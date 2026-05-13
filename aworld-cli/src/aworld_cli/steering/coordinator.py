@@ -98,11 +98,11 @@ class SteeringCoordinator:
             state.pending_inputs.clear()
             return drained
 
-    def consume_terminal_fallback_prompt(self, session_id: str) -> str | None:
+    def consume_terminal_fallback(self, session_id: str) -> tuple[str | None, list[SteeringInput], bool]:
         with self._lock:
             state = self._sessions.get(session_id)
             if state is None:
-                return None
+                return None, [], False
 
             drained = list(state.pending_inputs)
             state.pending_inputs.clear()
@@ -110,7 +110,7 @@ class SteeringCoordinator:
             state.interrupt_requested = False
 
         if not drained and not interrupt_requested:
-            return None
+            return None, [], False
 
         lines = [
             "Continue the current task with this additional operator steering:",
@@ -126,4 +126,8 @@ class SteeringCoordinator:
         for index, item in enumerate(drained, start=1):
             lines.append(f"{index}. {item.text}")
 
-        return "\n".join(lines).strip()
+        return "\n".join(lines).strip(), drained, interrupt_requested
+
+    def consume_terminal_fallback_prompt(self, session_id: str) -> str | None:
+        prompt, _drained, _interrupt_requested = self.consume_terminal_fallback(session_id)
+        return prompt
