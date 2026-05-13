@@ -2,10 +2,12 @@ import asyncio
 import json
 import os
 import time
+from io import StringIO
 from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit.formatted_text import to_formatted_text
+from rich.console import Console
 
 import aworld_cli.console as console_module
 import aworld_cli.executors.file_parse_hook as file_parse_hook_module
@@ -843,8 +845,10 @@ def test_active_steering_event_commits_message_and_tool_blocks():
     ]
 
 
-def test_applied_steering_history_uses_checkpoint_hierarchy_render():
+def test_applied_steering_history_echoes_operator_input_before_follow_up_work():
     cli = AWorldCLI()
+    output = StringIO()
+    cli.console = Console(file=output, force_terminal=False, width=100)
     cli._active_steering_view = cli._create_active_steering_view()
 
     cli._append_active_steering_history(
@@ -856,6 +860,10 @@ def test_applied_steering_history_uses_checkpoint_hierarchy_render():
         "kind": "applied_steering",
         "text": "Focus on the skill architecture.\nList the currently available skills.",
     }
+    rendered = output.getvalue()
+    assert "Messages submitted at this checkpoint" in rendered
+    assert "› Focus on the skill architecture." in rendered
+    assert "↳ Focus on the skill architecture." not in rendered
 
 
 def test_discard_prompt_session_typeahead_flushes_input_and_clears_typeahead(

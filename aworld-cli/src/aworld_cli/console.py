@@ -2804,13 +2804,13 @@ class AWorldCLI:
                 self.console.print()
                 return
             if kind == "applied_steering":
-                self.console.print("[bold]Messages submitted at this checkpoint[/bold]")
-                self.console.print("[dim](task is now continuing with the updated direction)[/dim]")
                 lines = normalized.splitlines()
                 if lines:
-                    self.console.print(f"   ↳ {lines[0]}")
+                    self.console.print(f"[bold]Messages submitted at this checkpoint[/bold]")
+                    self.console.print("[dim](task is now continuing with the updated direction)[/dim]")
+                    self.console.print(f"› {lines[0]}")
                     for line in lines[1:]:
-                        self.console.print(f"     {line}")
+                        self.console.print(f"  {line}")
                 self.console.print()
                 return
             if kind == "task_complete":
