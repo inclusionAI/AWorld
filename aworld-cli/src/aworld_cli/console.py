@@ -531,6 +531,11 @@ class AWorldCLI:
             history=FileHistory(str(history_path)),
             key_bindings=key_bindings,
         )
+        if on_escape is not None:
+            try:
+                session.app.ttimeoutlen = 0
+            except Exception:
+                pass
         self._active_prompt_session = session
         return session
 
