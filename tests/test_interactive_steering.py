@@ -590,13 +590,18 @@ async def test_escape_handoff_ignores_stale_follow_up_escape_repeat():
 
 
 @pytest.mark.asyncio
-async def test_escape_handoff_ignores_delayed_stale_follow_up_escape_repeat():
+async def test_escape_handoff_ignores_delayed_stale_follow_up_escape_repeat(
+    monkeypatch: pytest.MonkeyPatch,
+):
     cli = AWorldCLI()
     runtime = FakeRuntime()
     executor_instance = SimpleNamespace(session_id="sess-1", context=None)
     prompts: list[str] = []
     prompt_calls = 0
     delayed_escape_seen = asyncio.Event()
+    current_time = {"value": 100.0}
+
+    monkeypatch.setattr(console_module.time, "monotonic", lambda: current_time["value"])
 
     class FakePromptSession:
         async def prompt_async(self, *_args, **_kwargs):
@@ -607,7 +612,7 @@ async def test_escape_handoff_ignores_delayed_stale_follow_up_escape_repeat():
             if prompt_calls == 2:
                 return _ESC_INTERRUPT_SENTINEL
             if prompt_calls == 3:
-                await asyncio.sleep(0.6)
+                current_time["value"] = 105.0
                 delayed_escape_seen.set()
                 return _ESC_INTERRUPT_SENTINEL
             await asyncio.sleep(60)
@@ -617,7 +622,6 @@ async def test_escape_handoff_ignores_delayed_stale_follow_up_escape_repeat():
         if len(prompts) == 1:
             await asyncio.sleep(60)
         await delayed_escape_seen.wait()
-        await asyncio.sleep(0.1)
         return "follow-up-result"
 
     cli._create_prompt_session = lambda *_args, **_kwargs: FakePromptSession()

@@ -40,7 +40,6 @@ from .user_input import UserInputHandler
 # Notification polling configuration
 NOTIFICATION_POLL_INTERVAL = 2.0  # Seconds (1-3s latency target)
 _ESC_INTERRUPT_SENTINEL = "__aworld_cli_interrupt__"
-_ACTIVE_STEERING_ESCAPE_HANDOFF_COOLDOWN_SECONDS = 1.0
 
 
 @dataclass
@@ -197,7 +196,8 @@ class AWorldCLI:
         self._toolbar_git_branch = self._detect_git_branch()
         self._pending_skill_overrides: list[str] = []
         self._active_steering_view: ActiveSteeringView | None = None
-        self._active_steering_escape_cooldown_until = 0.0
+        self._active_steering_handoff_from_escape = False
+        self._active_steering_ignore_escape_until_progress = False
 
     def _detect_workspace_name(self) -> str:
         """Detect the current workspace name for status-bar display."""
@@ -2304,7 +2304,7 @@ class AWorldCLI:
             if (
                 normalized == _ESC_INTERRUPT_SENTINEL
                 and pending_count <= 0
-                and time.monotonic() < self._active_steering_escape_cooldown_until
+                and self._active_steering_ignore_escape_until_progress
             ):
                 return True
             interrupt_requested = normalized == _ESC_INTERRUPT_SENTINEL
@@ -2327,11 +2327,7 @@ class AWorldCLI:
             if not executor_task.done():
                 executor_task.cancel()
             if esc_submits_queued_steering_immediately:
-                # Ignore any trailing Esc that can surface during prompt_toolkit's
-                # own escape flush window while the follow-up turn is taking over.
-                self._active_steering_escape_cooldown_until = (
-                    time.monotonic() + _ACTIVE_STEERING_ESCAPE_HANDOFF_COOLDOWN_SECONDS
-                )
+                self._active_steering_handoff_from_escape = True
                 self._append_active_steering_history(
                     "system_notice",
                     "Interrupting current run to submit queued steering immediately.",
@@ -2522,6 +2518,8 @@ class AWorldCLI:
             return False, None
 
         self._clear_prompt_session_reference()
+        self._active_steering_ignore_escape_until_progress = self._active_steering_handoff_from_escape
+        self._active_steering_handoff_from_escape = False
         if drained_items:
             applied_lines = [item.text for item in drained_items]
             if interrupt_requested:
@@ -2701,6 +2699,8 @@ class AWorldCLI:
                     steering.end_task(session_id, clear_pending=True)
                 except Exception:
                     pass
+            self._active_steering_handoff_from_escape = False
+            self._active_steering_ignore_escape_until_progress = False
             if executor_instance is not None and previous_loading_suppressed is not None:
                 executor_instance._suppress_interactive_loading_status = previous_loading_suppressed
             if executor_instance is not None and previous_stream_suppressed is not None:
@@ -2790,7 +2790,7 @@ class AWorldCLI:
                 return
             if kind == "queued_steering":
                 self.console.print("[bold]Messages to be submitted after next checkpoint[/bold]")
-                self.console.print("[dim](task continues until the next checkpoint)[/dim]")
+                self.console.print("[dim](press Esc to interrupt and send immediately)[/dim]")
                 lines = normalized.splitlines()
                 if lines:
                     self.console.print(f"   ↳ {lines[0]}")
@@ -2870,6 +2870,9 @@ class AWorldCLI:
         text = str(event.get("text") or "").strip()
         if not kind:
             return
+
+        if self._active_steering_ignore_escape_until_progress:
+            self._active_steering_ignore_escape_until_progress = False
 
         if kind == "status_changed":
             self._set_active_steering_status(text)
