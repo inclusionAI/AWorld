@@ -202,7 +202,7 @@ class ModelResponse:
             tool_calls: List[ToolCall] = None,
             usage: Dict[str, int] = None,
             raw_usage: Dict[str, Any] = None,
-            provider_request_id: str = None,
+            provider_request_id: Optional[str] = None,
             error: str = None,
             raw_response: Any = None,
             message: Dict[str, Any] = None,

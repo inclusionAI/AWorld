@@ -14,6 +14,7 @@ from aworld.output.base import ChunkOutput, MessageOutput, StepOutput, ToolResul
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from aworld_cli.acp import server as acp_server_module
 from aworld_cli.acp.server import AcpExecutorOutputBridge, AcpStdioServer
 from aworld_cli.acp.human_intercept import AcpRequiresHumanError
 from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED
@@ -925,9 +926,19 @@ async def test_current_acp_protocol_emits_shell_tool_notifications() -> None:
         "tool_call_update",
     ]
     assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[0]["params"]["update"]["kind"] == "execute"
+    assert notifications[0]["params"]["update"]["title"] == "pwd"
+    assert notifications[0]["params"]["update"]["rawInput"] == {"command": "pwd"}
+    assert notifications[0]["params"]["update"]["content"] == [
+        {"type": "content", "content": {"type": "text", "text": "pwd"}}
+    ]
     assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "searching sources"}
     assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
     assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["rawOutput"] == {"cwd": "/tmp"}
+    assert notifications[3]["params"]["update"]["content"] == [
+        {"type": "content", "content": {"type": "text", "text": '{"cwd": "/tmp"}'}}
+    ]
 
 
 @pytest.mark.asyncio
@@ -985,9 +996,36 @@ async def test_current_acp_protocol_emits_other_tool_notifications() -> None:
         "tool_call_update",
     ]
     assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[0]["params"]["update"]["kind"] == "Agent"
+    assert notifications[0]["params"]["update"]["rawInput"] == {
+        "items": [
+            {
+                "type": "content",
+                "content": {"type": "text", "text": "search deepseek v4"},
+            },
+            {"type": "text", "text": "web_searcher"},
+        ]
+    }
+    assert notifications[0]["params"]["update"]["content"] == [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": '{"items": [{"type": "content", "content": {"type": "text", "text": "search deepseek v4"}}, {"type": "text", "text": "web_searcher"}]}',
+            },
+        }
+    ]
     assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "我先尝试搜索一下最新信息"}
     assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
     assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["kind"] == "Agent"
+    assert notifications[3]["params"]["update"]["rawOutput"] == {"error": "subagent unavailable"}
+    assert notifications[3]["params"]["update"]["content"] == [
+        {
+            "type": "content",
+            "content": {"type": "text", "text": '{"error": "subagent unavailable"}'},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1042,9 +1080,144 @@ async def test_current_acp_protocol_emits_execute_tool_notifications() -> None:
         "tool_call_update",
     ]
     assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[0]["params"]["update"]["kind"] == "execute"
+    assert notifications[0]["params"]["update"]["title"] == "curl https://x.com"
+    assert notifications[0]["params"]["update"]["rawInput"] == {"command": "curl https://x.com"}
+    assert notifications[0]["params"]["update"]["content"] == [
+        {"type": "content", "content": {"type": "text", "text": "curl https://x.com"}}
+    ]
     assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "我先检查一下页面"}
     assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
     assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["kind"] == "execute"
+    assert notifications[3]["params"]["update"]["rawOutput"] == {"stdout": "ok"}
+    assert notifications[3]["params"]["update"]["content"] == [
+        {"type": "content", "content": {"type": "text", "text": '{"stdout": "ok"}'}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_current_acp_protocol_logs_session_update_summary(monkeypatch) -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-1",
+                function=Function(name="shell", arguments='{"command":"pwd"}'),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-2",
+                    model="demo",
+                    content="final",
+                    reasoning_content="searching sources",
+                    tool_calls=[tool_call],
+                ),
+                metadata={"sender": "Aworld", "is_finished": True},
+            )
+            yield ToolResultOutput(
+                tool_name="shell",
+                data={"cwd": "/tmp"},
+                origin_tool_call=tool_call,
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    server._session_update_method = "session/update"
+    writes: list[dict] = []
+    logged_messages: list[str] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    monkeypatch.setattr(
+        acp_server_module.logger,
+        "info",
+        lambda message, color=None, highlight_key=None: logged_messages.append(str(message)),
+    )
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        6,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "hello"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "session/update"]
+
+    assert response["result"]["status"] == "completed"
+    assert notifications
+    assert any(
+        "ACP session update method=session/update" in message
+        and "type=tool_call" in message
+        and "kind=execute" in message
+        and "title=pwd" in message
+        for message in logged_messages
+    )
+
+
+def test_current_acp_protocol_maps_internal_and_unknown_tools_to_happy_friendly_kinds() -> None:
+    assert AcpStdioServer._current_tool_kind("async_spawn_subagent__spawn") == "Agent"
+    assert AcpStdioServer._current_tool_kind("cron") == "think"
+    assert AcpStdioServer._current_tool_kind("totally_custom_tool") == "think"
+
+
+def test_current_acp_protocol_converts_tool_call_content_to_sdk_shape() -> None:
+    converted = AcpStdioServer._to_current_session_update(
+        {
+            "sessionId": "session-1",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "bash:1",
+                "kind": "bash",
+                "content": {"command": "pwd"},
+            },
+        }
+    )
+
+    update = converted["update"]
+    assert update["kind"] == "execute"
+    assert update["title"] == "pwd"
+    assert update["rawInput"] == {"command": "pwd"}
+    assert update["content"] == [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": "pwd",
+            },
+        }
+    ]
+
+
+def test_current_acp_protocol_converts_tool_update_content_and_status_to_sdk_shape() -> None:
+    converted = AcpStdioServer._to_current_session_update(
+        {
+            "sessionId": "session-1",
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "bash:1",
+                "kind": "bash",
+                "status": "cancelled",
+                "content": {"stdout": "done"},
+            },
+        }
+    )
+
+    update = converted["update"]
+    assert update["kind"] == "execute"
+    assert update["status"] == "failed"
+    assert update["rawOutput"] == {"stdout": "done"}
+    assert update["content"] == [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": '{"stdout": "done"}',
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

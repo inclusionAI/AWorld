@@ -314,12 +314,23 @@ class Context:
     def set_state(self, key: str, value: Any):
         self.context_info[key] = value
 
+    def get_llm_calls(self) -> List[Dict[str, Any]]:
+        llm_calls = self.context_info.get("llm_calls")
+        if not isinstance(llm_calls, list):
+            llm_calls = []
+            self.context_info["llm_calls"] = llm_calls
+        return llm_calls
+
+    def append_llm_call(self, llm_call: Dict[str, Any]) -> None:
+        self.get_llm_calls().append(llm_call)
+
     async def build_sub_context(self, sub_task_content: Any, sub_task_id: str = None, **kwargs):
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
         self._deep_copy(new_context)
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
+        new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
         self.add_task_node(sub_task_id, self.task_id, caller_agent_info=self.agent_info, **kwargs)
         return new_context
 
@@ -417,6 +428,8 @@ class Context:
             except Exception:
                 new_context._agent_token_id_traj = copy.copy(self._agent_token_id_traj)
 
+        new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
+
         return new_context
 
     def merge_context(self, other_context: 'Context') -> None:
@@ -430,10 +443,21 @@ class Context:
                 if hasattr(other_context.context_info, 'local_dict'):
                     local_state = other_context.context_info.local_dict()
                     if local_state:
+                        child_llm_calls = local_state.pop("llm_calls", None)
                         self.context_info.update(local_state)
+                        if isinstance(child_llm_calls, list):
+                            baseline = max(0, min(getattr(other_context, "_merge_llm_calls_baseline", 0), len(child_llm_calls)))
+                            for llm_call in child_llm_calls[baseline:]:
+                                self.append_llm_call(copy.deepcopy(llm_call))
                 else:
                     # If no local_dict method, directly update all states
-                    self.context_info.update(other_context.context_info)
+                    merged_state = other_context.context_info.to_dict()
+                    child_llm_calls = merged_state.pop("llm_calls", None)
+                    self.context_info.update(merged_state)
+                    if isinstance(child_llm_calls, list):
+                        baseline = max(0, min(getattr(other_context, "_merge_llm_calls_baseline", 0), len(child_llm_calls)))
+                        for llm_call in child_llm_calls[baseline:]:
+                            self.append_llm_call(copy.deepcopy(llm_call))
             except Exception as e:
                 logger.warning(f"Failed to merge context_info: {e}")
 

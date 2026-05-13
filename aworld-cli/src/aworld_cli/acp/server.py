@@ -690,13 +690,98 @@ class AcpStdioServer:
         )
 
     async def _write_session_update(self, params: dict[str, Any]) -> None:
-        if self._session_update_method == "session/update":
+        method = self._session_update_method
+        if method == "session/update":
             params = self._to_current_session_update(params)
-        await self._write_message(self._notification(self._session_update_method, params))
+        self._log_session_update_summary(method, params)
+        await self._write_message(self._notification(method, params))
 
     @staticmethod
     def _should_emit_current_session_update(params: dict[str, Any]) -> bool:
         return True
+
+    @staticmethod
+    def _log_session_update_summary(method: str, params: dict[str, Any]) -> None:
+        update = params.get("update")
+        if not isinstance(update, dict):
+            return
+
+        summary = [f"ACP session update method={method}"]
+
+        session_id = params.get("sessionId")
+        if isinstance(session_id, str) and session_id.strip():
+            summary.append(f"session_id={session_id.strip()}")
+
+        update_type = update.get("sessionUpdate")
+        if isinstance(update_type, str) and update_type.strip():
+            summary.append(f"type={update_type.strip()}")
+
+        tool_call_id = update.get("toolCallId")
+        if isinstance(tool_call_id, str) and tool_call_id.strip():
+            summary.append(f"tool_call_id={tool_call_id.strip()}")
+
+        kind = update.get("kind")
+        if isinstance(kind, str) and kind.strip():
+            summary.append(f"kind={kind.strip()}")
+
+        title = AcpStdioServer._session_update_summary_title(update)
+        if title:
+            summary.append(f"title={title}")
+
+        status = update.get("status")
+        if isinstance(status, str) and status.strip():
+            summary.append(f"status={status.strip()}")
+
+        preview = AcpStdioServer._session_update_preview(update)
+        if preview:
+            summary.append(f"preview={preview}")
+
+        logger.info(" ".join(summary))
+
+    @staticmethod
+    def _session_update_summary_title(update: dict[str, Any]) -> str | None:
+        content = update.get("content")
+        if isinstance(content, dict):
+            tool_call = content.get("toolCall")
+            if isinstance(tool_call, dict):
+                nested_title = tool_call.get("title")
+                if isinstance(nested_title, str) and nested_title.strip():
+                    return nested_title.strip()
+
+            command_title = AcpStdioServer._command_title(content.get("command"))
+            if command_title:
+                return command_title
+
+        title = update.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+        return None
+
+    @staticmethod
+    def _session_update_preview(update: dict[str, Any]) -> str | None:
+        content = update.get("content")
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return AcpStdioServer._preview_text(text)
+            stdout = content.get("stdout")
+            if isinstance(stdout, str):
+                return AcpStdioServer._preview_text(stdout)
+            stderr = content.get("stderr")
+            if isinstance(stderr, str):
+                return AcpStdioServer._preview_text(stderr)
+        if isinstance(content, str):
+            return AcpStdioServer._preview_text(content)
+        return None
+
+    @staticmethod
+    def _preview_text(value: str, *, limit: int = 80) -> str | None:
+        normalized = " ".join(value.split())
+        if not normalized:
+            return None
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[: limit - 3]}..."
 
     @staticmethod
     def _to_current_session_update(params: dict[str, Any]) -> dict[str, Any]:
@@ -713,14 +798,15 @@ class AcpStdioServer:
 
         if update_type == "tool_call":
             raw_input = update.get("content")
-            title = str(update.get("title") or update.get("kind") or "tool")
-            update["title"] = title
             update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
+            command_title = (
+                AcpStdioServer._command_title(raw_input.get("command"))
+                if update["kind"] == "execute" and isinstance(raw_input, dict)
+                else None
+            )
+            update["title"] = command_title or str(update.get("title") or update.get("kind") or "tool")
             update["rawInput"] = raw_input
-            if update["kind"] == "step" and isinstance(raw_input, dict):
-                update["content"] = raw_input
-            else:
-                update["content"] = AcpStdioServer._current_tool_content(raw_input)
+            update["content"] = AcpStdioServer._current_tool_input_content(update["kind"], raw_input)
             return converted
 
         if update_type == "tool_call_update":
@@ -728,32 +814,94 @@ class AcpStdioServer:
             title = str(update.get("title") or update.get("kind") or "tool")
             update["title"] = title
             update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
+            update["status"] = AcpStdioServer._current_tool_status(update.get("status"))
             update["rawOutput"] = raw_output
-            if update["kind"] == "step" and isinstance(raw_output, dict):
-                update["content"] = raw_output
-            else:
-                update["content"] = AcpStdioServer._current_tool_content(raw_output)
+            update["content"] = AcpStdioServer._current_tool_output_content(raw_output)
             return converted
 
         return converted
 
     @staticmethod
     def _current_tool_kind(kind: Any) -> str:
-        if kind in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other", "step"}:
-            return str(kind)
-        if kind in {"shell", "terminal", "bash", "command"}:
+        normalized = str(kind or "").strip()
+        lowered = normalized.lower()
+        if normalized in {"Agent", "Task", "AskUserQuestion"}:
+            return normalized
+        if lowered in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "step"}:
+            return lowered
+        if lowered in {"shell", "terminal", "bash", "command"}:
             return "execute"
+        if "spawn_subagent" in lowered or "subagent" in lowered:
+            return "Agent"
+        if "ask_user" in lowered or "question" in lowered:
+            return "AskUserQuestion"
+        if lowered.startswith("task") or lowered.endswith("_task"):
+            return "Task"
+        if lowered:
+            return "think"
         return "other"
 
     @staticmethod
-    def _current_tool_content(value: Any) -> list[dict[str, Any]] | None:
-        if value is None:
+    def _current_tool_status(status: Any) -> str | None:
+        if status is None:
             return None
+        normalized = str(status).strip().lower()
+        if normalized in {"pending", "in_progress", "completed", "failed"}:
+            return normalized
+        if normalized == "running":
+            return "in_progress"
+        if normalized in {"cancelled", "canceled", "error"}:
+            return "failed"
+        return "completed"
+
+    @staticmethod
+    def _current_tool_input_content(kind: str, value: Any) -> list[dict[str, Any]]:
+        if kind == "execute" and isinstance(value, dict):
+            command_title = AcpStdioServer._command_title(value.get("command"))
+            if command_title:
+                return AcpStdioServer._current_tool_text_content(command_title)
+        return AcpStdioServer._current_tool_content(value)
+
+    @staticmethod
+    def _current_tool_output_content(value: Any) -> list[dict[str, Any]]:
+        return AcpStdioServer._current_tool_content(value)
+
+    @staticmethod
+    def _current_tool_content(value: Any) -> list[dict[str, Any]]:
+        if value is None:
+            return []
         if isinstance(value, str):
             text = value
         else:
-            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        return [{"type": "content", "content": {"type": "text", "text": text}}]
+            try:
+                text = json.dumps(value, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                text = str(value)
+        if not text:
+            return []
+        return AcpStdioServer._current_tool_text_content(text)
+
+    @staticmethod
+    def _current_tool_text_content(text: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "content",
+                "content": {
+                    "type": "text",
+                    "text": text,
+                },
+            }
+        ]
+
+    @staticmethod
+    def _command_title(command: Any) -> str | None:
+        if isinstance(command, str):
+            stripped = command.strip()
+            return stripped or None
+        if isinstance(command, list):
+            parts = [str(part).strip() for part in command if str(part).strip()]
+            return " ".join(parts) or None
+        return None
 
     async def _ensure_cron_runtime_started(self) -> None:
         if self._cron_runtime_started:

@@ -52,6 +52,19 @@ class HybridMemoryProvider(MemoryBase):
             limit=limit,
         )
 
+    def list_governed_decisions(self, workspace_path: str | Path):
+        return self.durable_provider.list_governed_decisions(workspace_path)
+
+    def get_active_durable_memory_records(
+        self,
+        workspace_path: str | Path,
+        memory_type: str | None = None,
+    ):
+        return self.durable_provider.get_active_durable_memory_records(
+            workspace_path,
+            memory_type=memory_type,
+        )
+
     def get(self, memory_id) -> Optional[MemoryItem]:
         return self.runtime_memory.get(memory_id)
 

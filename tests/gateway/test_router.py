@@ -15,6 +15,7 @@ from aworld_gateway import router as router_module
 from aworld_gateway.router import GatewayRouter, LocalCliAgentBackend
 from aworld_gateway.session_binding import SessionBinding
 from aworld_gateway.types import InboundEnvelope
+from aworld.core.task import TaskResponse
 from aworld.output.base import ToolResultOutput
 
 
@@ -485,6 +486,85 @@ def test_local_cli_backend_on_output_streams_visible_text_and_cleans_up(monkeypa
     assert seen_output_types == ["chunk", "chunk", "tool_call_result", "message", "step"]
     assert len(_StreamingExecutor.instances) == 1
     assert _StreamingExecutor.instances[0].build_calls == [("hi", "stream-session")]
+    assert _StreamingExecutor.instances[0].cleanup_called is True
+
+
+def test_local_cli_backend_on_output_prefers_final_task_answer_over_accumulated_progress(
+    monkeypatch,
+):
+    class FakeChunkOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "chunk"
+
+    class FakeMessageOutput:
+        def __init__(self, response: str) -> None:
+            self.response = response
+
+        def output_type(self) -> str:
+            return "message"
+
+    class FakeStreamingOutputs:
+        def __init__(self) -> None:
+            self._task_response = TaskResponse(
+                success=True,
+                answer="最终抓取完成。",
+                msg="ok",
+            )
+
+        async def stream_events(self):
+            yield FakeChunkOutput("先打开 X。")
+            yield FakeMessageOutput("先打开 X。")
+            yield ToolResultOutput(tool_name="bash", action_name="bash", data="opened")
+            yield FakeChunkOutput("确认已登录。")
+            yield FakeMessageOutput("确认已登录。")
+            yield FakeChunkOutput("最终抓取完成。")
+            yield FakeMessageOutput("最终抓取完成。")
+
+        def response(self):
+            return self._task_response
+
+    seen_output_types = []
+
+    async def on_output(output) -> None:
+        output_type_getter = getattr(output, "output_type", None)
+        seen_output_types.append(
+            output_type_getter() if callable(output_type_getter) else type(output).__name__
+        )
+
+    _StreamingExecutor.instances = []
+    monkeypatch.setattr(
+        router_module.Runners,
+        "streamed_run_task",
+        lambda *, task: FakeStreamingOutputs(),
+    )
+    backend = LocalCliAgentBackend(
+        registry_cls=_SimpleRegistry,
+        executor_cls=_StreamingExecutor,
+    )
+
+    result = asyncio.run(
+        backend.run(
+            agent_id="aworld",
+            session_id="stream-session",
+            text="hi",
+            on_output=on_output,
+        )
+    )
+
+    assert result == "最终抓取完成。"
+    assert seen_output_types == [
+        "chunk",
+        "message",
+        "tool_call_result",
+        "chunk",
+        "message",
+        "chunk",
+        "message",
+    ]
+    assert len(_StreamingExecutor.instances) == 1
     assert _StreamingExecutor.instances[0].cleanup_called is True
 
 

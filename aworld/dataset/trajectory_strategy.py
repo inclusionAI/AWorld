@@ -111,6 +111,15 @@ class TrajectoryStrategy(abc.ABC):
 class DefaultTrajectoryStrategy(TrajectoryStrategy):
     """Default trajectory generation strategy using standardized SAR structure."""
 
+    CACHE_USAGE_MESSAGE_KEYS = {
+        "cache_hit_tokens",
+        "cache_write_tokens",
+        "prompt_tokens_details",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "input_tokens_details",
+    }
+
     def __init__(self):
         # task_id + agent_id -> step counter
         self.task_agent_map: Dict[str, int] = {}
@@ -169,7 +178,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
     async def build_trajectory_state(self, source: Any, **kwargs) -> Optional[TrajectoryState]:
         """Build TrajectoryItem (SAR) from a source."""
         # State (S)
-        history_messages = self._get_llm_messages_from_context(source)
+        history_messages = self._get_llm_messages_from_truth_source(source)
         if history_messages is None:
             history_messages = self._get_llm_messages_from_memory(source, kwargs.get("use_tools_in_prompt", False))
         ctx_obj = getattr(source, "context", None)
@@ -202,6 +211,83 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             # context=ctx_dict
         )
         return state
+
+    def _get_llm_messages_from_truth_source(self, message: Any) -> Optional[List[Dict[str, Any]]]:
+        context = getattr(message, "context", None)
+        if context is None or not hasattr(context, "context_info"):
+            return None
+
+        llm_calls = context.context_info.get("llm_calls")
+        if not isinstance(llm_calls, list) or not llm_calls:
+            return None
+
+        llm_call = self._select_llm_call_for_message(message, llm_calls)
+        if not isinstance(llm_call, dict):
+            return None
+
+        request = llm_call.get("request")
+        if not isinstance(request, dict):
+            return None
+
+        messages = request.get("messages")
+        if not isinstance(messages, list):
+            return None
+
+        return self._sanitize_trajectory_messages(messages)
+
+    def _select_llm_call_for_message(self, message: Any, llm_calls: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        valid_calls = []
+        for llm_call in llm_calls:
+            if not isinstance(llm_call, dict):
+                continue
+            request = llm_call.get("request")
+            if not isinstance(request, dict) or not isinstance(request.get("messages"), list):
+                continue
+            valid_calls.append(llm_call)
+
+        if not valid_calls:
+            return None
+
+        message_task_id = getattr(message, "task_id", None)
+        if message_task_id is not None:
+            task_matches = [call for call in valid_calls if call.get("task_id") == message_task_id]
+            if task_matches:
+                valid_calls = task_matches
+            elif any(call.get("task_id") is not None for call in valid_calls):
+                return None
+
+        agent_id = getattr(message, "receiver", None)
+        if agent_id is not None:
+            valid_calls = [call for call in valid_calls if call.get("agent_id") == agent_id]
+            if not valid_calls:
+                return None
+
+        message_timestamp = getattr(message, "timestamp", None)
+        if isinstance(message_timestamp, (int, float)):
+            prior_calls = [
+                call for call in valid_calls
+                if (call.get("finished_at") or call.get("started_at")) is not None
+                and (call.get("finished_at") or call.get("started_at")) <= message_timestamp
+            ]
+            if prior_calls:
+                return max(prior_calls, key=lambda call: call.get("finished_at") or call.get("started_at") or 0)
+            return None
+
+        return valid_calls[-1]
+
+    def _sanitize_trajectory_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [self._strip_cache_usage_fields(message) for message in messages]
+
+    def _strip_cache_usage_fields(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: self._strip_cache_usage_fields(item)
+                for key, item in value.items()
+                if key not in self.CACHE_USAGE_MESSAGE_KEYS
+            }
+        if isinstance(value, list):
+            return [self._strip_cache_usage_fields(item) for item in value]
+        return value
 
     async def build_trajectory_action(self, source: Any, **kwargs) -> Optional[TrajectoryAction]:
         from aworld.core.event.base import Message
@@ -619,4 +705,3 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
 
     def validate_trajectory(self, trajectory: List[Dict[str, Any]]) -> bool:
         return True
-

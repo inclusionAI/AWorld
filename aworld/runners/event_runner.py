@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import copy
 import json
 import time
 import traceback
@@ -725,6 +726,7 @@ class TaskEventRunner(TaskRunner):
                                                status=TaskStatusValue.FAILED)
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_raw_llm_resp == True:
             self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
+        self._task_response.llm_calls = copy.deepcopy(self.context.context_info.get("llm_calls", []))
         self._task_response.trace_id = get_trace_id()
         return self._task_response
 
@@ -743,7 +745,8 @@ class TaskEventRunner(TaskRunner):
                 res = {"task_id": self.task.id,
                        "is_sub_task": self.task.is_sub_task,
                        "trajectory": json.dumps(to_serializable(self._task_response.trajectory), ensure_ascii=False),
-                       "token_id_trajectory": token_id_traj}
+                       "token_id_trajectory": token_id_traj,
+                       "llm_calls": json.dumps(copy.deepcopy(self.context.context_info.get("llm_calls", [])), ensure_ascii=False)}
                 trajectory_logger.info(f"{res}")
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")

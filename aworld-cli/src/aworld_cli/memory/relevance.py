@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
+
+from aworld_cli.memory.durable import read_durable_memory_records
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{3,}")
 MANUAL_HANDOFF_HINTS = (
@@ -36,7 +39,62 @@ CONFIDENCE_BONUS = {
 PROMOTION_BONUS = {
     "durable_memory": 200,
     "session_log_only": 0,
+    "rejected": -200,
 }
+
+
+@dataclass(frozen=True)
+class RelevantMemoryHit:
+    score: int
+    recorded_at: str
+    text: str
+    source_file: Path
+
+
+def recall_relevant_memory_texts(
+    workspace_path: str | os.PathLike[str] | None,
+    query: str,
+    *,
+    limit: int = 3,
+    max_records: int = 200,
+) -> tuple[tuple[str, ...], tuple[Path, ...]]:
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return (), ()
+
+    hits = [
+        *_collect_relevant_durable_memory_hits(
+            workspace_path=workspace_path,
+            query_tokens=query_tokens,
+        ),
+        *_collect_relevant_session_log_hits(
+            workspace_path=workspace_path,
+            query_tokens=query_tokens,
+            max_records=max_records,
+        ),
+    ]
+    selected = _select_relevant_hits(hits, limit=limit)
+    return _hits_to_context(selected)
+
+
+def recall_relevant_durable_memory_texts(
+    workspace_path: str | os.PathLike[str] | None,
+    query: str,
+    *,
+    limit: int = 3,
+) -> tuple[tuple[str, ...], tuple[Path, ...]]:
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return (), ()
+
+    selected = _select_relevant_hits(
+        _collect_relevant_durable_memory_hits(
+            workspace_path=workspace_path,
+            query_tokens=query_tokens,
+        ),
+        limit=limit,
+    )
+    return _hits_to_context(selected)
 
 
 def recall_relevant_session_log_texts(
@@ -55,54 +113,15 @@ def recall_relevant_session_log_texts(
     if not query_tokens:
         return (), ()
 
-    ranked: list[tuple[int, str, str, Path]] = []
-    seen_texts: set[str] = set()
-    scanned = 0
-
-    session_files = sorted(
-        sessions_dir.glob("*.jsonl"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
+    selected = _select_relevant_hits(
+        _collect_relevant_session_log_hits(
+            workspace_path=workspace_path,
+            query_tokens=query_tokens,
+            max_records=max_records,
+        ),
+        limit=limit,
     )
-
-    for session_file in session_files:
-        try:
-            lines = session_file.read_text(encoding="utf-8").splitlines()
-        except Exception:
-            continue
-
-        for line in reversed(lines):
-            if scanned >= max_records:
-                break
-            scanned += 1
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            recorded_at = str(payload.get("recorded_at") or "")
-            for candidate in _extract_candidate_entries(payload):
-                normalized = candidate["content"].strip()
-                if not normalized or normalized in seen_texts:
-                    continue
-                score = _score_candidate(candidate, query_tokens)
-                if score <= 0:
-                    continue
-                ranked.append((score, recorded_at, _render_candidate_for_prompt(candidate), session_file))
-                seen_texts.add(normalized)
-
-        if scanned >= max_records:
-            break
-
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    selected = ranked[: max(limit, 0)]
-
-    texts = tuple(item[2] for item in selected)
-    source_files: list[Path] = []
-    for _, _, _, source_file in selected:
-        if source_file not in source_files:
-            source_files.append(source_file)
-    return texts, tuple(source_files)
+    return _hits_to_context(selected)
 
 
 def _extract_candidate_entries(payload: dict) -> list[dict]:
@@ -166,6 +185,120 @@ def _score_candidate(candidate: dict, query_tokens: set[str]) -> int:
         if _looks_like_manual_handoff(candidate["content"]):
             score += GUIDE_LIKE_RECALL_PENALTY
     return score
+
+
+def _collect_relevant_durable_memory_hits(
+    *,
+    workspace_path: str | os.PathLike[str] | None,
+    query_tokens: set[str],
+) -> list[RelevantMemoryHit]:
+    hits: list[RelevantMemoryHit] = []
+    for record in read_durable_memory_records(workspace_path or os.getcwd()):
+        normalized = record.content.strip()
+        if not normalized:
+            continue
+        score = _score_text(normalized, query_tokens)
+        if score <= 0:
+            continue
+        hits.append(
+            RelevantMemoryHit(
+                score=score,
+                recorded_at=record.recorded_at,
+                text=normalized,
+                source_file=record.source_file,
+            )
+        )
+    return hits
+
+
+def _collect_relevant_session_log_hits(
+    *,
+    workspace_path: str | os.PathLike[str] | None,
+    query_tokens: set[str],
+    max_records: int,
+) -> list[RelevantMemoryHit]:
+    workspace = Path(workspace_path or os.getcwd()).expanduser().resolve()
+    sessions_dir = workspace / ".aworld" / "memory" / "sessions"
+    if not sessions_dir.exists():
+        return []
+
+    hits: list[RelevantMemoryHit] = []
+    scanned = 0
+    session_files = sorted(
+        sessions_dir.glob("*.jsonl"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+    for session_file in session_files:
+        try:
+            lines = session_file.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+
+        for line in reversed(lines):
+            if scanned >= max_records:
+                break
+            scanned += 1
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            recorded_at = str(payload.get("recorded_at") or "")
+            for candidate in _extract_candidate_entries(payload):
+                normalized = candidate["content"].strip()
+                if not normalized:
+                    continue
+                score = _score_candidate(candidate, query_tokens)
+                if score <= 0:
+                    continue
+                hits.append(
+                    RelevantMemoryHit(
+                        score=score,
+                        recorded_at=recorded_at,
+                        text=_render_candidate_for_prompt(candidate),
+                        source_file=session_file,
+                    )
+                )
+
+        if scanned >= max_records:
+            break
+
+    return hits
+
+
+def _select_relevant_hits(
+    hits: list[RelevantMemoryHit],
+    *,
+    limit: int,
+) -> tuple[RelevantMemoryHit, ...]:
+    ranked = sorted(
+        hits,
+        key=lambda item: (item.score, item.recorded_at),
+        reverse=True,
+    )
+    selected: list[RelevantMemoryHit] = []
+    seen_texts: set[str] = set()
+    for hit in ranked:
+        if hit.text in seen_texts:
+            continue
+        selected.append(hit)
+        seen_texts.add(hit.text)
+        if len(selected) >= max(limit, 0):
+            break
+    return tuple(selected)
+
+
+def _hits_to_context(
+    hits: tuple[RelevantMemoryHit, ...],
+) -> tuple[tuple[str, ...], tuple[Path, ...]]:
+    texts = tuple(hit.text for hit in hits)
+    source_files: list[Path] = []
+    for hit in hits:
+        if hit.source_file not in source_files:
+            source_files.append(hit.source_file)
+    return texts, tuple(source_files)
 
 
 def _render_candidate_for_prompt(candidate: dict) -> str:
