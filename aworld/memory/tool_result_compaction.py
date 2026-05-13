@@ -4,6 +4,9 @@ from typing import Any, Sequence
 
 from aworld.models.utils import num_tokens_from_string
 
+_TOOL_RESULT_CHAR_THRESHOLD = 8000
+_TOOL_RESULT_LINE_THRESHOLD = 200
+
 
 def serialize_tool_result_content(content: Any) -> str:
     if content is None:
@@ -45,6 +48,7 @@ def compact_tool_result_for_memory(
 ) -> ToolResultCompactionResult:
     serialized_content = serialize_tool_result_content(content)
     token_count = num_tokens_from_string(serialized_content) if serialized_content else 0
+    line_count = serialized_content.count("\n") + 1 if serialized_content else 0
     tool_action_key = f"{tool_name}:{action_name}" if tool_name or action_name else None
     white_list = list(tool_action_white_list or [])
 
@@ -54,6 +58,10 @@ def compact_tool_result_for_memory(
             trigger = "metadata"
         elif tool_action_key and tool_action_key in white_list:
             trigger = "whitelist"
+        elif len(serialized_content) > max(_TOOL_RESULT_CHAR_THRESHOLD, max(preview_chars or 0, 0) * 4):
+            trigger = "char_threshold"
+        elif line_count > _TOOL_RESULT_LINE_THRESHOLD and len(serialized_content) > max(preview_chars or 0, 0) * 2:
+            trigger = "line_threshold"
         elif token_count > max(token_threshold or 0, 0):
             trigger = "threshold"
 
@@ -65,6 +73,7 @@ def compact_tool_result_for_memory(
                 "applied": False,
                 "original_token_count": token_count,
                 "original_char_length": len(serialized_content),
+                "original_line_count": line_count,
             },
         )
 
@@ -94,6 +103,7 @@ def compact_tool_result_for_memory(
             "original_content": serialized_content,
             "original_token_count": token_count,
             "original_char_length": len(serialized_content),
+            "original_line_count": line_count,
             "summary_content": summary,
             "preview_chars": max(preview_chars or 0, 0),
         },

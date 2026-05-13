@@ -171,3 +171,43 @@ async def test_default_memory_handler_keeps_small_tool_results_unchanged(monkeyp
 
     assert stored_item.content == "short output"
     assert "tool_result_compaction" not in stored_item.metadata["ext_info"]
+
+
+@pytest.mark.asyncio
+async def test_default_memory_handler_compacts_large_tool_results_by_char_length(monkeypatch):
+    fake_memory = _FakeMemory()
+    monkeypatch.setattr(
+        "aworld.runners.handler.memory.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+
+    handler = _build_handler()
+    agent = _FakeAgent(
+        AgentMemoryConfig(
+            tool_result_offload=True,
+            tool_result_length_threshold=100000,
+            tool_result_preview_chars=120,
+        )
+    )
+    context = _build_context()
+    raw_output = "HEADER\n" + ("0123456789" * 900) + "\nFOOTER"
+
+    await handler._do_add_tool_result_to_memory(
+        agent,
+        "call-4",
+        ActionResult(
+            content=raw_output,
+            tool_call_id="call-4",
+            tool_name="terminal",
+            action_name="exec",
+            success=True,
+            metadata={},
+        ),
+        context,
+    )
+
+    stored_item, _ = fake_memory.items[0]
+
+    assert stored_item.content != raw_output
+    assert "Tool output compacted for context reuse." in stored_item.content
+    assert stored_item.metadata["ext_info"]["tool_result_compaction"]["trigger"] == "char_threshold"

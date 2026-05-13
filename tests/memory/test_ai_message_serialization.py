@@ -3,6 +3,7 @@
 import json
 
 from aworld.memory.models import MemoryAIMessage, MessageMetadata
+from aworld.memory.tool_call_compaction import normalize_tool_call_arguments_for_replay
 from aworld.models.model_response import ToolCall
 
 
@@ -167,8 +168,30 @@ def test_memory_ai_message_compacts_oversized_tool_call_arguments_for_replay():
     openai_message = message.to_openai_message()
     compacted_args = json.loads(openai_message["tool_calls"][0]["function"]["arguments"])
 
-    assert compacted_args["_aworld_replay"] == "compacted_tool_call_arguments"
-    assert compacted_args["tool_name"] == "bash"
-    assert compacted_args["sanitized_reason"] == "oversized_replay_compaction"
-    assert compacted_args["argument_schema"].startswith("object{")
-    assert compacted_args["content_hash"].startswith("sha256:")
+    assert compacted_args["cmd"] == "python script.py"
+    assert compacted_args["cwd"] == "/tmp/workspace"
+    assert compacted_args["payload"]["_aworld_replay"] == "compacted_string_field"
+    assert compacted_args["payload"]["sanitized_reason"] == "oversized_string_field_compaction"
+    assert compacted_args["payload"]["content_hash"].startswith("sha256:")
+
+
+def test_normalize_tool_call_arguments_compacts_large_string_fields_before_full_placeholder():
+    arguments = json.dumps(
+        {
+            "command": "cat > script.py <<'EOF'\n" + ("print('hello world')\n" * 300) + "EOF\npython3 script.py\n",
+            "timeout": 30,
+        }
+    )
+
+    normalized = normalize_tool_call_arguments_for_replay(
+        arguments,
+        tool_name="bash",
+        token_threshold=100000,
+    )
+    parsed = json.loads(normalized)
+
+    assert parsed["timeout"] == 30
+    assert isinstance(parsed["command"], dict)
+    assert parsed["command"]["_aworld_replay"] == "compacted_string_field"
+    assert parsed["command"]["field_hint"] == "command"
+    assert parsed["command"]["sanitized_reason"] == "oversized_string_field_compaction"

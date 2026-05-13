@@ -8,6 +8,9 @@ REPLAY_TOOL_CALL_ARGUMENT_TOKEN_THRESHOLD = 1024
 _MAX_SCHEMA_KEYS = 6
 _MAX_SCHEMA_DEPTH = 2
 _MAX_SUMMARY_KEYS = 8
+_MAX_STRING_FIELD_TOKENS = 256
+_MAX_STRING_FIELD_CHARS = 4096
+_MAX_MULTILINE_STRING_FIELD_CHARS = 1200
 
 
 def _canonical_json(value: Any) -> str:
@@ -74,6 +77,56 @@ def _content_hash(serialized: str) -> str:
     return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
 
 
+def _string_field_placeholder(
+    *,
+    field_hint: str | None,
+    value: str,
+) -> dict[str, Any]:
+    token_count = num_tokens_from_string(value) if value else 0
+    line_count = value.count("\n") + 1 if value else 0
+    return {
+        "_aworld_replay": "compacted_string_field",
+        "field_hint": field_hint or "unknown",
+        "content_hash": _content_hash(value),
+        "original_chars": len(value),
+        "original_tokens": token_count,
+        "line_count": line_count,
+        "multiline": "\n" in value,
+        "sanitized_reason": "oversized_string_field_compaction",
+    }
+
+
+def _should_compact_string_field(value: str) -> bool:
+    if not value:
+        return False
+    if len(value) > _MAX_STRING_FIELD_CHARS:
+        return True
+    if "\n" in value and len(value) > _MAX_MULTILINE_STRING_FIELD_CHARS:
+        return True
+    return num_tokens_from_string(value) > _MAX_STRING_FIELD_TOKENS
+
+
+def _compact_large_string_fields(value: Any, *, field_hint: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _compact_large_string_fields(inner_value, field_hint=str(key))
+            for key, inner_value in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _compact_large_string_fields(item, field_hint=field_hint)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return [
+            _compact_large_string_fields(item, field_hint=field_hint)
+            for item in value
+        ]
+    if isinstance(value, str) and _should_compact_string_field(value):
+        return _string_field_placeholder(field_hint=field_hint, value=value)
+    return value
+
+
 def _placeholder_arguments(
     *,
     tool_name: str | None,
@@ -123,6 +176,8 @@ def normalize_tool_call_arguments_for_replay(
             )
     elif isinstance(arguments, tuple):
         parsed_value = list(arguments)
+
+    parsed_value = _compact_large_string_fields(parsed_value)
 
     try:
         serialized = _canonical_json(parsed_value)
