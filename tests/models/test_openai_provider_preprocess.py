@@ -72,6 +72,27 @@ def test_openai_provider_preprocess_drops_string_none_tool_calls():
     assert processed[0]["content"] == "Plain assistant reply."
 
 
+def test_openai_provider_preprocess_omits_empty_text_parts_for_tool_call_messages():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": "{\"command\":\"echo hi\"}"},
+                }
+            ],
+        },
+    ]
+
+    processed = sanitize_openai_messages(messages)
+
+    assert processed[0]["content"] == []
+    assert processed[0]["tool_calls"][0]["function"]["name"] == "bash"
+
+
 def test_openai_provider_preprocess_sanitizes_malformed_tool_call_arguments():
     messages = [
         {

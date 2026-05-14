@@ -35,6 +35,34 @@ def test_memory_ai_message_with_tool_calls_serializes_string_content_as_text_par
     assert openai_message["tool_calls"][0]["function"]["name"] == "bash"
 
 
+def test_memory_ai_message_with_tool_calls_omits_empty_string_content_parts():
+    message = MemoryAIMessage(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="toolu_test_empty_content",
+                type="function",
+                function={
+                    "name": "bash",
+                    "arguments": "{\"command\":\"echo hi\"}",
+                },
+            )
+        ],
+        metadata=MessageMetadata(
+            agent_id="agent-1",
+            agent_name="Aworld",
+            session_id="session-1",
+            task_id="task-1",
+            user_id="user-1",
+        ),
+    )
+
+    openai_message = message.to_openai_message()
+
+    assert openai_message["content"] == []
+    assert openai_message["tool_calls"][0]["function"]["name"] == "bash"
+
+
 def test_memory_ai_message_without_tool_calls_keeps_plain_string_content():
     message = MemoryAIMessage(
         content="Normal assistant reply.",

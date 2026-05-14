@@ -478,10 +478,16 @@ class MemoryAIMessage(MemoryMessage):
         def to_text_part(text: str) -> dict:
             return {"type": "text", "text": text}
 
+        def drop_empty_text_parts(parts: list[dict]) -> list[dict]:
+            return [
+                part for part in parts
+                if not (part.get("type") == "text" and part.get("text") == "")
+            ]
+
         if content is None:
             return []
         if isinstance(content, str):
-            return [to_text_part(content)]
+            return [] if content == "" else [to_text_part(content)]
         if isinstance(content, list):
             parts = []
             for item in content:
@@ -489,12 +495,12 @@ class MemoryAIMessage(MemoryMessage):
                     parts.append(item)
                 else:
                     parts.append(to_text_part(str(item)))
-            return parts
+            return drop_empty_text_parts(parts)
         if isinstance(content, dict):
             if content.get("type") == "text" and isinstance(content.get("text"), str):
-                return [content]
-            return [to_text_part(str(content))]
-        return [to_text_part(str(content))]
+                return [] if content.get("text") == "" else [content]
+            return drop_empty_text_parts([to_text_part(str(content))])
+        return drop_empty_text_parts([to_text_part(str(content))])
 
     @staticmethod
     def _normalize_reasoning_details(reasoning_details: Any) -> Optional[list[dict]]:
