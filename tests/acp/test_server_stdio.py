@@ -59,6 +59,16 @@ def _read_json_line(proc: subprocess.Popen[str]) -> dict:
     return json.loads(line)
 
 
+def _close_sync_proc(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait(timeout=5)
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(proc, stream_name, None)
+        if stream is not None and not stream.closed:
+            stream.close()
+
+
 def test_acp_server_initialize_round_trip() -> None:
     proc = _spawn_acp_server()
     try:
@@ -71,8 +81,7 @@ def test_acp_server_initialize_round_trip() -> None:
         assert payload["id"] == 1
         assert payload["result"]["serverInfo"]["name"] == "aworld-cli"
     finally:
-        proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_bootstrap_warnings_stay_on_stderr(tmp_path: Path) -> None:
@@ -125,9 +134,7 @@ def test_acp_server_bootstrap_warnings_stay_on_stderr(tmp_path: Path) -> None:
         assert payload["result"]["serverInfo"]["name"] == "aworld-cli"
         assert "bootstrap degraded for test" in stderr_text
     finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_new_session_and_prompt_emit_session_update() -> None:
@@ -168,9 +175,7 @@ def test_acp_server_new_session_and_prompt_emit_session_update() -> None:
         assert response["id"] == 3
         assert response["result"]["status"] == "completed"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_accepts_current_acp_session_methods() -> None:
@@ -225,9 +230,7 @@ def test_acp_server_accepts_current_acp_session_methods() -> None:
         assert response["id"] == 3
         assert response["result"]["status"] == "completed"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_cancel_missing_session_returns_error() -> None:
@@ -242,8 +245,7 @@ def test_acp_server_cancel_missing_session_returns_error() -> None:
         assert payload["id"] == 1
         assert payload["error"]["message"] == "AWORLD_ACP_SESSION_NOT_FOUND"
     finally:
-        proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_invalid_cwd_returns_structured_error_data(tmp_path: Path) -> None:
@@ -271,8 +273,7 @@ def test_acp_server_invalid_cwd_returns_structured_error_data(tmp_path: Path) ->
         assert payload["error"]["data"]["code"] == "AWORLD_ACP_INVALID_CWD"
         assert payload["error"]["data"]["message"] == "AWORLD_ACP_INVALID_CWD"
     finally:
-        proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_invalid_mcp_servers_returns_structured_error_data() -> None:
@@ -298,8 +299,7 @@ def test_acp_server_invalid_mcp_servers_returns_structured_error_data() -> None:
         assert payload["error"]["message"] == "AWORLD_ACP_UNSUPPORTED_MCP_SERVERS"
         assert payload["error"]["data"]["code"] == "AWORLD_ACP_UNSUPPORTED_MCP_SERVERS"
     finally:
-        proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_invalid_prompt_content_returns_structured_error_data() -> None:
@@ -336,9 +336,7 @@ def test_acp_server_invalid_prompt_content_returns_structured_error_data() -> No
         assert payload["error"]["message"] == "AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT"
         assert payload["error"]["data"]["code"] == "AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_closes_tool_lifecycle_before_requires_human_pause_notice(tmp_path: Path) -> None:
@@ -435,9 +433,7 @@ def test_acp_server_closes_tool_lifecycle_before_requires_human_pause_notice(tmp
         assert fourth["id"] == 3
         assert fourth["result"]["status"] == "completed"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_treats_runtime_turn_error_as_pause_notice_by_default(tmp_path: Path) -> None:
@@ -518,9 +514,7 @@ def test_acp_server_treats_runtime_turn_error_as_pause_notice_by_default(tmp_pat
         assert second["id"] == 3
         assert second["result"]["status"] == "completed"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_closes_all_same_name_tool_lifecycles_before_runtime_pause_notice(tmp_path: Path) -> None:
@@ -639,9 +633,7 @@ def test_acp_server_closes_all_same_name_tool_lifecycles_before_runtime_pause_no
         assert "Execution paused." in fifth["params"]["update"]["content"]["text"]
         assert sixth["result"]["status"] == "completed"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 def test_acp_server_suppresses_events_emitted_after_runtime_turn_error(tmp_path: Path) -> None:
@@ -760,9 +752,7 @@ def test_acp_server_suppresses_events_emitted_after_runtime_turn_error(tmp_path:
         remaining_stdout = proc.stdout.read() if proc.stdout is not None else ""
         assert remaining_stdout == ""
     finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+        _close_sync_proc(proc)
 
 
 @pytest.mark.asyncio
