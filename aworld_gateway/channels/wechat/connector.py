@@ -362,6 +362,7 @@ class WechatConnector:
         self._send_session: object | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._conversation_tails: dict[str, asyncio.Future[None]] = {}
         self._account_id = ""
         self._token = ""
         self._base_url = DEFAULT_BASE_URL
@@ -1092,9 +1093,39 @@ class WechatConnector:
         logger.info(f"WeChat poll loop stopped account={self._account_id}")
 
     def _schedule_message(self, message: dict[str, Any]) -> None:
-        task = asyncio.create_task(self._process_message_with_logging(message))
+        conversation_key = self._conversation_key_for_message(message)
+        task = asyncio.create_task(
+            self._process_message_serialized(conversation_key, message)
+        )
         self._background_tasks.add(task)
         task.add_done_callback(self._finalize_background_task)
+
+    async def _process_message_serialized(
+        self,
+        conversation_key: str | None,
+        message: dict[str, Any],
+    ) -> None:
+        previous: asyncio.Future[None] | None = None
+        current: asyncio.Future[None] | None = None
+        if conversation_key:
+            loop = asyncio.get_running_loop()
+            previous = self._conversation_tails.get(conversation_key)
+            current = loop.create_future()
+            self._conversation_tails[conversation_key] = current
+
+        try:
+            if previous is not None:
+                try:
+                    await previous
+                except Exception:
+                    pass
+            await self._process_message_with_logging(message)
+        finally:
+            if current is not None:
+                if self._conversation_tails.get(conversation_key or "") is current:
+                    self._conversation_tails.pop(conversation_key or "", None)
+                if not current.done():
+                    current.set_result(None)
 
     async def _process_message_with_logging(self, message: dict[str, Any]) -> None:
         try:
@@ -1113,6 +1144,16 @@ class WechatConnector:
     @staticmethod
     def _poll_retry_delay_seconds() -> float:
         return POLL_RETRY_DELAY_SECONDS
+
+    @staticmethod
+    def _conversation_key_for_message(message: dict[str, Any]) -> str | None:
+        room_id = str(message.get("roomid") or "").strip()
+        if room_id:
+            return f"group:{room_id}"
+        sender_id = str(message.get("from_user_id") or "").strip()
+        if sender_id:
+            return f"dm:{sender_id}"
+        return None
 
     @staticmethod
     def _truncate_log_text(value: object, *, limit: int = LOG_TEXT_TRUNCATE_LIMIT) -> str:
