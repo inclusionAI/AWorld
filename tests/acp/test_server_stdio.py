@@ -851,6 +851,100 @@ async def test_acp_server_resumes_paused_prompt_with_follow_up_steering() -> Non
 
 
 @pytest.mark.asyncio
+async def test_acp_server_cancel_clears_paused_state_before_next_prompt() -> None:
+    proc = await _spawn_async_acp_server({"AWORLD_ACP_SELF_TEST_BRIDGE": "1"})
+    try:
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+
+        proc.stdin.write(b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n')
+        await proc.stdin.drain()
+        _ = json.loads((await asyncio.wait_for(proc.stdout.readline(), timeout=10)).decode("utf-8"))
+
+        proc.stdin.write(
+            b'{"jsonrpc":"2.0","id":2,"method":"newSession","params":{"cwd":".","mcpServers":[]}}\n'
+        )
+        await proc.stdin.drain()
+        new_session = json.loads((await asyncio.wait_for(proc.stdout.readline(), timeout=10)).decode("utf-8"))
+        session_id = new_session["result"]["sessionId"]
+
+        pause_prompt = {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "prompt",
+            "params": {
+                "sessionId": session_id,
+                "prompt": {"content": [{"type": "text", "text": SELF_TEST_TURN_ERROR_PROMPT}]},
+            },
+        }
+        cancel = {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "cancel",
+            "params": {"sessionId": session_id},
+        }
+        fresh_prompt = {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "prompt",
+            "params": {
+                "sessionId": session_id,
+                "prompt": {"content": [{"type": "text", "text": "__acp_self_test_text__"}]},
+            },
+        }
+
+        proc.stdin.write((json.dumps(pause_prompt) + "\n").encode("utf-8"))
+        await proc.stdin.drain()
+
+        seen_by_id: dict[int, dict] = {}
+        session_updates: list[dict] = []
+        deadline = asyncio.get_running_loop().time() + 10
+        while 3 not in seen_by_id:
+            timeout = max(0.1, deadline - asyncio.get_running_loop().time())
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+            assert line, (await proc.stderr.read()).decode("utf-8", errors="replace")
+            message = json.loads(line.decode("utf-8"))
+            if "id" in message:
+                seen_by_id[int(message["id"])] = message
+            elif message.get("method") == "sessionUpdate":
+                session_updates.append(message)
+
+        proc.stdin.write((json.dumps(cancel) + "\n").encode("utf-8"))
+        proc.stdin.write((json.dumps(fresh_prompt) + "\n").encode("utf-8"))
+        await proc.stdin.drain()
+
+        while {4, 5} - seen_by_id.keys():
+            timeout = max(0.1, deadline - asyncio.get_running_loop().time())
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+            assert line, (await proc.stderr.read()).decode("utf-8", errors="replace")
+            message = json.loads(line.decode("utf-8"))
+            if "id" in message:
+                seen_by_id[int(message["id"])] = message
+            elif message.get("method") == "sessionUpdate":
+                session_updates.append(message)
+
+        assert seen_by_id[3]["result"]["status"] == "completed"
+        assert seen_by_id[4]["result"]["status"] == "cancelled"
+        assert seen_by_id[5]["result"]["status"] == "completed"
+        assert any(
+            item.get("params", {}).get("update", {}).get("sessionUpdate") == "agent_message_chunk"
+            and item.get("params", {}).get("update", {}).get("content", {}).get("text") == "self-test"
+            for item in session_updates
+        )
+        assert not any(
+            "Continue the current task with this additional operator steering:"
+            in item.get("params", {}).get("update", {}).get("content", {}).get("text", "")
+            for item in session_updates
+            if item.get("params", {}).get("update", {}).get("sessionUpdate") == "agent_message_chunk"
+        )
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+
+
+@pytest.mark.asyncio
 async def test_acp_server_can_cancel_active_prompt_with_self_test_bridge() -> None:
     proc = await _spawn_async_acp_server({"AWORLD_ACP_SELF_TEST_BRIDGE": "1"})
     try:

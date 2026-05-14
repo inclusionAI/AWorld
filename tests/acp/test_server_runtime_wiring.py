@@ -1589,6 +1589,68 @@ async def test_next_prompt_after_pause_resumes_through_steering_follow_up() -> N
 
 
 @pytest.mark.asyncio
+async def test_cancel_clears_paused_state_so_next_prompt_starts_fresh() -> None:
+    class PauseThenFreshBridge:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.resume_prompts: list[str] = []
+
+        def prepare_paused_resume_prompt(self, *, record, text: str) -> tuple[str, list[object]]:
+            prompt = "Continue the current task with this additional operator steering:\n\n1. " + text
+            self.resume_prompts.append(prompt)
+            return (prompt, [])
+
+        async def stream_outputs(self, *, record, prompt_text):
+            self.calls.append(prompt_text)
+            if len(self.calls) == 1:
+                raise AcpRequiresHumanError("Human approval/input flow is not bridged in ACP mode.")
+
+            yield MessageOutput(
+                source=ModelResponse(id="resp-fresh", model="demo", content=prompt_text),
+            )
+
+    bridge = PauseThenFreshBridge()
+    server = AcpStdioServer(output_bridge=bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    first = await server._handle_prompt(
+        19,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "needs approval"}]},
+        },
+    )
+    cancelled = await server._handle_cancel(
+        20,
+        {
+            "sessionId": session["sessionId"],
+        },
+    )
+    fresh = await server._handle_prompt(
+        21,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "fresh-start"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert first["result"]["status"] == "completed"
+    assert cancelled["result"]["status"] == "cancelled"
+    assert fresh["result"]["status"] == "completed"
+    assert bridge.resume_prompts == []
+    assert bridge.calls == ["needs approval", "fresh-start"]
+    assert notifications[-1]["params"]["update"]["content"]["text"] == "fresh-start"
+
+
+@pytest.mark.asyncio
 async def test_prompt_suppresses_events_emitted_after_runtime_turn_error() -> None:
     class TurnErrorBridge:
         async def stream_outputs(self, *, record, prompt_text):
