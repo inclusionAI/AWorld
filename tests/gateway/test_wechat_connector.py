@@ -181,6 +181,78 @@ async def test_connector_process_message_routes_slash_command_through_router(
 
 
 @pytest.mark.asyncio
+async def test_connector_process_message_reset_command_rotates_session_and_sends_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    connector._token_store.set("wx-account", "user-1", "ctx-old")
+
+    await connector._process_message(
+        {
+            "message_id": "m-new-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-new",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+    )
+    first_session_binding = connector._session_binding_conversation_ids["dm:user-1"]
+
+    await connector._process_message(
+        {
+            "message_id": "m-new-2",
+            "from_user_id": "user-1",
+            "context_token": "ctx-newer",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+    )
+    second_session_binding = connector._session_binding_conversation_ids["dm:user-1"]
+
+    await connector._process_message(
+        {
+            "message_id": "m-after-new",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "hello again"}}],
+        }
+    )
+
+    inbound, channel_default_agent_id, on_output = router.calls[0]
+    assert sent == [
+        ("user-1", "✨ 已开启新会话，之前的上下文已清空。", None),
+        ("user-1", "✨ 已开启新会话，之前的上下文已清空。", None),
+        ("user-1", "echo:hello again", {}),
+    ]
+    assert first_session_binding != second_session_binding
+    assert connector._token_store.get("wx-account", "user-1") is None
+    assert len(router.calls) == 1
+    assert inbound.text == "hello again"
+    assert inbound.metadata["session_binding_conversation_id"] == second_session_binding
+    assert channel_default_agent_id == "aworld"
+    assert callable(on_output)
+    await connector.stop()
+
+
+@pytest.mark.asyncio
 async def test_connector_serializes_same_conversation_messages_in_poll_batch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
