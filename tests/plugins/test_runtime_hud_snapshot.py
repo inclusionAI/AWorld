@@ -12,6 +12,9 @@ from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.executors.stats import StreamTokenStats, build_llm_usage_observability
 from aworld_cli.executors.base_executor import BaseAgentExecutor
 from aworld_cli.runtime.base import BaseCliRuntime
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.core.plugin_manager import get_builtin_plugin_roots
+from aworld_cli.plugin_capabilities.hud import collect_hud_lines
 
 
 class DummyRuntime(BaseCliRuntime):
@@ -30,6 +33,13 @@ class DummyRuntime(BaseCliRuntime):
 
     def _get_source_location(self):
         return "test://runtime"
+
+
+def _get_builtin_steering_plugin_root() -> Path:
+    for root in get_builtin_plugin_roots():
+        if root.name == "steering_cli":
+            return root
+    raise AssertionError("built-in steering_cli plugin root not found")
 
 
 def test_build_hud_context_merges_live_snapshot():
@@ -55,6 +65,31 @@ def test_build_hud_context_merges_live_snapshot():
     assert context["task"]["current_task_id"] == "task_001"
     assert context["activity"]["recent_tools"] == ["bash"]
     assert context["usage"]["context_percent"] == 34
+
+
+def test_build_hud_context_exposes_steering_snapshot_to_hud_provider():
+    runtime = DummyRuntime()
+    runtime.update_hud_snapshot(session={"session_id": "session-1"})
+    runtime._steering.begin_task("session-1", "task-1")
+    runtime._steering.enqueue_text("session-1", "Focus on failing tests first.")
+
+    context = runtime.build_hud_context(
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="feat/steering",
+    )
+    plugin = discover_plugins([_get_builtin_steering_plugin_root()])[0]
+    lines = collect_hud_lines([plugin], context)
+
+    assert context["steering"]["active"] is True
+    assert context["steering"]["pending_count"] == 1
+    assert [line.section for line in lines] == ["session"]
+    assert lines[0].segments == (
+        "Steering: active",
+        "Pending: 1",
+        "Interrupt: no",
+    )
 
 
 def test_settle_hud_snapshot_keeps_last_useful_state():

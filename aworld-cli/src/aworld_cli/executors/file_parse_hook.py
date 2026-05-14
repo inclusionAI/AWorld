@@ -32,6 +32,12 @@ except ImportError:
     global_console = None
 
 
+def _strip_rich_markup(text: str) -> str:
+    normalized = str(text or "")
+    normalized = re.sub(r"\[[^\]]+\]", "", normalized)
+    return " ".join(normalized.split()).strip()
+
+
 @HookFactory.register(name="FileParseHook")
 class FileParseHook(PostInputParseHook):
     """
@@ -70,10 +76,18 @@ class FileParseHook(PostInputParseHook):
         console = message.headers.get('console') if message.headers else None
         if not console and global_console:
             console = global_console
+
+        status_sink = getattr(context, "_aworld_cli_status_sink", None) if context is not None else None
+
+        def emit_status(text: str) -> None:
+            if callable(status_sink):
+                status_sink(_strip_rich_markup(text))
+                return
+            if console:
+                console.print(text)
         
         if not context or not isinstance(context, ApplicationContext):
-            if console:
-                console.print("[dim]🔍 [FileParseHook] Context is not ApplicationContext, skipping file processing[/dim]")
+            emit_status("[dim]🔍 [FileParseHook] Context is not ApplicationContext, skipping file processing[/dim]")
             logger.debug("🔍 [FileParseHook] Context is not ApplicationContext, skipping file processing")
             return message
         
@@ -81,8 +95,7 @@ class FileParseHook(PostInputParseHook):
             # Get user_message from headers
             user_message = message.headers.get('user_message', '')
             if not user_message or not isinstance(user_message, str):
-                if console:
-                    console.print("[dim]🔍 [FileParseHook] No user_message found, skipping[/dim]")
+                emit_status("[dim]🔍 [FileParseHook] No user_message found, skipping[/dim]")
                 logger.debug("🔍 [FileParseHook] No user_message found, skipping")
                 return message
             
@@ -98,8 +111,7 @@ class FileParseHook(PostInputParseHook):
             matches = list(re.finditer(pattern, user_message))
             
             if not matches:
-                if console:
-                    console.print("[dim]🔍 [FileParseHook] No @filename references found[/dim]")
+                emit_status("[dim]🔍 [FileParseHook] No @filename references found[/dim]")
                 logger.debug("🔍 [FileParseHook] No @filename references found")
                 return message
             
@@ -127,13 +139,11 @@ class FileParseHook(PostInputParseHook):
                 valid_matches.append((match.start(), match.end(), file_ref))
             
             if not valid_matches:
-                if console:
-                    console.print("[dim]🔍 [FileParseHook] No valid @filename references found[/dim]")
+                emit_status("[dim]🔍 [FileParseHook] No valid @filename references found[/dim]")
                 logger.debug("🔍 [FileParseHook] No valid @filename references found")
                 return message
             
-            if console:
-                console.print(f"[dim]📁 [FileParseHook] Processing {len(valid_matches)} file reference(s)[/dim]")
+            emit_status(f"[dim]📁 [FileParseHook] Processing {len(valid_matches)} file reference(s)[/dim]")
             logger.info(f"📁 [FileParseHook] Processing {len(valid_matches)} file reference(s)")
             
             # Store text file replacements: (start_pos, end_pos, content, filename)
@@ -165,12 +175,10 @@ class FileParseHook(PostInputParseHook):
                             # Store removal info (images are removed, not replaced)
                             image_removals.append((start, end))
                             
-                            if console:
-                                console.print(f"[dim]📷 [FileParseHook] Downloaded remote image: {file_ref}[/dim]")
+                            emit_status(f"[dim]📷 [FileParseHook] Downloaded remote image: {file_ref}[/dim]")
                             logger.info(f"📷 [FileParseHook] Downloaded remote image: {file_ref}")
                     except Exception as e:
-                        if console:
-                            console.print(f"[yellow]⚠️ [FileParseHook] Failed to download remote file {file_ref}: {e}[/yellow]")
+                        emit_status(f"[yellow]⚠️ [FileParseHook] Failed to download remote file {file_ref}: {e}[/yellow]")
                         logger.warning(f"⚠️ [FileParseHook] Failed to download remote file {file_ref}: {e}")
                 else:
                     # Handle local file path
@@ -228,12 +236,10 @@ class FileParseHook(PostInputParseHook):
                                 # Store removal info (images are removed, not replaced)
                                 image_removals.append((start, end))
                                 
-                                if console:
-                                    console.print(f"[dim]📷 [FileParseHook] Saved image to {image_path_in_context} ({width}x{height})[/dim]")
+                                emit_status(f"[dim]📷 [FileParseHook] Saved image to {image_path_in_context} ({width}x{height})[/dim]")
                                 logger.info(f"📷 [FileParseHook] Saved image to {image_path_in_context} ({width}x{height})")
                             except Exception as e:
-                                if console:
-                                    console.print(f"[yellow]⚠️ [FileParseHook] Failed to read image file {file_path}: {e}[/yellow]")
+                                emit_status(f"[yellow]⚠️ [FileParseHook] Failed to read image file {file_path}: {e}[/yellow]")
                                 logger.warning(f"⚠️ [FileParseHook] Failed to read image file {file_path}: {e}")
                         else:
                             # Try to read as text file (including .txt, .md, .markdown, etc.)
@@ -253,8 +259,7 @@ class FileParseHook(PostInputParseHook):
                                         except UnicodeDecodeError:
                                             continue
                                     else:
-                                        if console:
-                                            console.print(f"[yellow]⚠️ [FileParseHook] Failed to decode text file {file_path} with common encodings[/yellow]")
+                                        emit_status(f"[yellow]⚠️ [FileParseHook] Failed to decode text file {file_path} with common encodings[/yellow]")
                                         logger.warning(f"⚠️ [FileParseHook] Failed to decode text file {file_path} with common encodings")
                                         continue
                                 
@@ -262,12 +267,10 @@ class FileParseHook(PostInputParseHook):
                                 file_name = file_path.name
                                 text_file_replacements.append((start, end, file_content, file_name))
                                 
-                                if console:
-                                    console.print(f"[dim]📄 [FileParseHook] Read text file: {file_path} ({len(file_content)} characters)[/dim]")
+                                emit_status(f"[dim]📄 [FileParseHook] Read text file: {file_path} ({len(file_content)} characters)[/dim]")
                                 logger.info(f"📄 [FileParseHook] Read text file: {file_path} ({len(file_content)} characters)")
                             except Exception as e:
-                                if console:
-                                    console.print(f"[yellow]⚠️ [FileParseHook] Failed to read text file {file_path}: {e}[/yellow]")
+                                emit_status(f"[yellow]⚠️ [FileParseHook] Failed to read text file {file_path}: {e}[/yellow]")
                                 logger.warning(f"⚠️ [FileParseHook] Failed to read text file {file_path}: {e}")
                     else:
                         # Only warn if the reference looks like a valid file path
@@ -278,8 +281,7 @@ class FileParseHook(PostInputParseHook):
                             or file_ref.startswith(('./', '../'))  # Relative path
                         )
                         if looks_like_file:
-                            if console:
-                                console.print(f"[yellow]⚠️ [FileParseHook] File not found: {file_path} (resolved from: {file_ref})[/yellow]")
+                            emit_status(f"[yellow]⚠️ [FileParseHook] File not found: {file_path} (resolved from: {file_ref})[/yellow]")
                             logger.warning(f"⚠️ [FileParseHook] File not found: {file_path} (resolved from: {file_ref})")
                         else:
                             # Silently skip - likely not a file reference
@@ -292,8 +294,7 @@ class FileParseHook(PostInputParseHook):
             # Add text file replacements (type='replace')
             for start, end, content, filename in text_file_replacements:
                 all_operations.append(('replace', start, end, content))
-                if console:
-                    console.print(f"[dim]🔧 [FileParseHook] Will replace @{filename} at position {start}-{end} with {len(content)} characters[/dim]")
+                emit_status(f"[dim]🔧 [FileParseHook] Will replace @{filename} at position {start}-{end} with {len(content)} characters[/dim]")
                 logger.debug(f"🔧 [FileParseHook] Will replace @{filename} at position {start}-{end} with {len(content)} characters")
             
             # Add image removals (type='remove')
@@ -310,8 +311,7 @@ class FileParseHook(PostInputParseHook):
                     before_len = len(cleaned_text)
                     cleaned_text = cleaned_text[:start] + content + cleaned_text[end:]
                     after_len = len(cleaned_text)
-                    if console:
-                        console.print(f"[dim]✅ [FileParseHook] Replaced text at {start}-{end}: {before_len} -> {after_len} chars[/dim]")
+                    emit_status(f"[dim]✅ [FileParseHook] Replaced text at {start}-{end}: {before_len} -> {after_len} chars[/dim]")
                     logger.debug(f"✅ [FileParseHook] Replaced text at {start}-{end}: {before_len} -> {after_len} chars")
                 elif op_type == 'remove':
                     # Remove @filename reference (for images)
@@ -319,8 +319,8 @@ class FileParseHook(PostInputParseHook):
             
             final_text = cleaned_text.strip()
             
-            if console and text_file_replacements:
-                console.print(f"[dim]📝 [FileParseHook] Final text length: {len(final_text)} characters (original: {len(user_message)})[/dim]")
+            if text_file_replacements:
+                emit_status(f"[dim]📝 [FileParseHook] Final text length: {len(final_text)} characters (original: {len(user_message)})[/dim]")
             logger.debug(f"📝 [FileParseHook] Final text length: {len(final_text)} characters (original: {len(user_message)})")
             
             # Update message headers with processed content
@@ -338,15 +338,13 @@ class FileParseHook(PostInputParseHook):
                 message.headers['task_input'] = task_input
             
             if text_file_replacements or image_urls:
-                if console:
-                    console.print(f"[dim]✅ [FileParseHook] Processed files: {len(text_file_replacements)} text file(s), {len(image_urls)} image(s)[/dim]")
+                emit_status(f"[dim]✅ [FileParseHook] Processed files: {len(text_file_replacements)} text file(s), {len(image_urls)} image(s)[/dim]")
                 logger.info(f"✅ [FileParseHook] Processed files: {len(text_file_replacements)} text file(s), {len(image_urls)} image(s)")
             
             return message
             
         except Exception as e:
-            if console:
-                console.print(f"[red]❌ [FileParseHook] Error processing files: {e}[/red]")
+            emit_status(f"[red]❌ [FileParseHook] Error processing files: {e}[/red]")
             logger.error(f"❌ [FileParseHook] Error processing files: {e}", exc_info=True)
             return message
     

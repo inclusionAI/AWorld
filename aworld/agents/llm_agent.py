@@ -16,7 +16,7 @@ import aworld.trace as trace
 from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
-from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
+from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem, TaskStatusValue
 from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
@@ -1063,6 +1063,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         return sync_exec(self.async_policy, observation, info, message, **kwargs)
 
+    @staticmethod
+    async def _current_task_status(context: Optional[Context]) -> Optional[str]:
+        if context is None or not hasattr(context, "get_task_status"):
+            return None
+        try:
+            return await context.get_task_status()
+        except Exception as exc:
+            logger.debug(f"Failed to inspect task status for interruption handling: {exc}")
+            return None
+
+    async def _raise_if_task_interrupted(
+        self,
+        context: Optional[Context],
+        *,
+        reason: str,
+        source_exception: Exception | None = None,
+    ) -> None:
+        current_task = asyncio.current_task()
+        if current_task and current_task.cancelling():
+            logger.info(f"{self.id()} treating LLM flow as cancelled: {reason}")
+            if source_exception is None:
+                raise asyncio.CancelledError(reason)
+            raise asyncio.CancelledError(reason) from source_exception
+
+        task_status = await self._current_task_status(context)
+        if task_status in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}:
+            cancel_reason = f"{reason} ({task_status})"
+            logger.info(f"{self.id()} treating LLM flow as task interruption: {cancel_reason}")
+            if source_exception is None:
+                raise asyncio.CancelledError(cancel_reason)
+            raise asyncio.CancelledError(cancel_reason) from source_exception
+
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
                            **kwargs) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
@@ -1133,7 +1165,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     prompt_assembly_observability.get("provider_native_cache")
                 )
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
+        except asyncio.CancelledError:
+            logger.info(f"{self.id()} LLM flow interrupted during invoke_model")
+            raise
         except Exception as e:
+            await self._raise_if_task_interrupted(
+                message.context if message else None,
+                reason=f"{self.id()} interrupted while waiting for LLM response",
+                source_exception=e,
+            )
             logger.warn(f"{self.id()} result error: {e}")
             raise AWorldRuntimeException(str(e))
         finally:
@@ -1189,6 +1229,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             f"{self.id()} failed to run POST_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
                         raise AWorldRuntimeException(str(e))
             else:
+                await self._raise_if_task_interrupted(
+                    message.context if message else None,
+                    reason=f"{self.id()} interrupted before receiving a usable LLM response",
+                )
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise AWorldRuntimeException(f"{self.id()} failed to get LLM response")
 
@@ -1766,6 +1810,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             LLM response
         """
         llm_response = None
+        context = message.context if message else None
+        failure_output_sent = False
 
         # Prepare parameters once before retry loop
         try:
@@ -1907,6 +1953,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             usage_process(llm_response.usage, message.context)
                         return llm_response
                     else:
+                        await self._raise_if_task_interrupted(
+                            context,
+                            reason="LLM stream interrupted before any final response was assembled",
+                        )
                         # Invalid response, treat as failure
                         error_msg = f"LLM returned empty or invalid response: {llm_response}"
                         logger.warning(f"⚠️[attempt {attempt}/{self.llm_max_attempts}] {error_msg}")
@@ -1918,6 +1968,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             raise AWorldRuntimeException(error_msg)
 
                 except Exception as e:
+                    await self._raise_if_task_interrupted(
+                        context,
+                        reason="LLM call interrupted during provider execution",
+                        source_exception=e,
+                    )
                     last_exception = e
                     logger.warn(f"❌[attempt {attempt}/{self.llm_max_attempts}] LLM call failed : {str(e)}")
 
@@ -1979,6 +2034,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             session_id=message.context.session_id if message.context else "",
                             headers={"context": message.context}
                         ))
+                        failure_output_sent = True
                         raise e
 
             # This should not be reached, but just in case
@@ -1987,16 +2043,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return llm_response
 
         except Exception as e:
+            await self._raise_if_task_interrupted(
+                context,
+                reason="LLM call interrupted while bubbling provider failure",
+                source_exception=e,
+            )
             logger.warn(f"Failed to call llm model: {e}")
-            await send_message(Message(
-                category=Constants.OUTPUT,
-                payload=Output(
-                    data=f"Failed to call llm model: {e}"
-                ),
-                sender=self.id(),
-                session_id=message.context.session_id if message.context else "",
-                headers={"context": message.context}
-            ))
+            if not failure_output_sent:
+                await send_message(Message(
+                    category=Constants.OUTPUT,
+                    payload=Output(
+                        data=f"Failed to call llm model: {e}"
+                    ),
+                    sender=self.id(),
+                    session_id=message.context.session_id if message.context else "",
+                    headers={"context": message.context}
+                ))
+                failure_output_sent = True
 
             if "Please reduce the length of the messages" in str(e):
                 # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.

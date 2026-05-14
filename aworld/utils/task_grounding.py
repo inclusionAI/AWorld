@@ -2,7 +2,7 @@ import re
 from typing import Any, Iterable
 
 _HANDLE_RE = re.compile(r"(?<!\w)@?[A-Za-z0-9_]{3,32}")
-_URL_RE = re.compile(r"https?://[^\s)>\]\"']+")
+_URL_RE = re.compile(r"https?://[^\s)>\]\"'，。！？；：、”’》」】]+")
 _PATH_RE = re.compile(r"(?:~/|/|\.?/)[^\s`\"'>)]+")
 _QUOTED_PATTERNS = (
     re.compile(r"[\"“”'`《》「」](.{4,120}?)[\"“”'`《》「」]"),
@@ -66,6 +66,14 @@ def _dedupe_preserve_order(values: Iterable[str]) -> list[str]:
     return deduped
 
 
+def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
+
+
+def _url_spans(text: str) -> list[tuple[int, int]]:
+    return [match.span() for match in _URL_RE.finditer(text or "")]
+
+
 def extract_path_candidates(value: Any, *, max_paths: int = 12) -> list[str]:
     candidates: list[str] = []
 
@@ -73,9 +81,12 @@ def extract_path_candidates(value: Any, *, max_paths: int = 12) -> list[str]:
         if len(candidates) >= max(max_paths, 0):
             return
         if isinstance(node, str):
+            url_spans = _url_spans(node)
             for match in _PATH_RE.finditer(node):
+                if any(_spans_overlap(match.span(), span) for span in url_spans):
+                    continue
                 path = match.group(0)
-                if "/" in path:
+                if "/" in path and not path.startswith("//"):
                     candidates.append(path)
                     if len(candidates) >= max(max_paths, 0):
                         return
@@ -104,12 +115,16 @@ def extract_required_anchors(request: str | None, *, max_anchors: int = 8) -> li
     request = _normalize_whitespace(request)
     anchors: list[str] = []
 
+    url_spans = _url_spans(request)
+
     for match in _URL_RE.finditer(request):
         anchors.append(match.group(0))
 
     for match in _PATH_RE.finditer(request):
+        if any(_spans_overlap(match.span(), span) for span in url_spans):
+            continue
         path = match.group(0)
-        if "/" in path:
+        if "/" in path and not path.startswith("//"):
             anchors.append(path)
 
     for match in _HANDLE_RE.finditer(request):

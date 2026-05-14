@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 
 import pytest
 
@@ -84,3 +85,37 @@ async def test_streaming_outputs_does_not_cancel_finishing_producer_after_mark_c
 
     await asyncio.wait_for(outputs._run_impl_task, timeout=1.0)
     assert not outputs._run_impl_task.cancelled()
+
+
+@pytest.mark.anyio
+async def test_streaming_outputs_ignores_expected_cancelled_producer_after_consumer_interrupt():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def producer():
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def consume(outputs: StreamingOutputs):
+        async for _ in outputs.stream_events():
+            pass
+
+    outputs = StreamingOutputs(task_id="task-1", cancel_run_impl_task_on_cleanup=True)
+    outputs._run_impl_task = asyncio.create_task(producer())
+
+    await started.wait()
+    consumer_task = asyncio.create_task(consume(outputs))
+    await asyncio.sleep(0)
+    consumer_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await consumer_task
+
+    await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+    assert outputs._run_impl_task.cancelled()
+
+    outputs._check_errors()
+    assert outputs._stored_exception is None

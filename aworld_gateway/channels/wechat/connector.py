@@ -361,6 +361,8 @@ class WechatConnector:
         self._poll_session: object | None = None
         self._send_session: object | None = None
         self._poll_task: asyncio.Task[None] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._conversation_tails: dict[str, asyncio.Future[None]] = {}
         self._account_id = ""
         self._token = ""
         self._base_url = DEFAULT_BASE_URL
@@ -422,6 +424,11 @@ class WechatConnector:
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
         await _close_session(self._poll_session)
         await _close_session(self._send_session)
         self._poll_session = None
@@ -1082,20 +1089,71 @@ class WechatConnector:
                     f"account={self._account_id} message_count={len(messages)}"
                 )
             for message in messages:
-                try:
-                    await self._process_message(message)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception(
-                        "WeChat poll loop failed to process message "
-                        f"message_id={str(message.get('message_id') or '').strip()}"
-                    )
+                self._schedule_message(message)
         logger.info(f"WeChat poll loop stopped account={self._account_id}")
+
+    def _schedule_message(self, message: dict[str, Any]) -> None:
+        conversation_key = self._conversation_key_for_message(message)
+        task = asyncio.create_task(
+            self._process_message_serialized(conversation_key, message)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._finalize_background_task)
+
+    async def _process_message_serialized(
+        self,
+        conversation_key: str | None,
+        message: dict[str, Any],
+    ) -> None:
+        previous: asyncio.Future[None] | None = None
+        current: asyncio.Future[None] | None = None
+        if conversation_key:
+            loop = asyncio.get_running_loop()
+            previous = self._conversation_tails.get(conversation_key)
+            current = loop.create_future()
+            self._conversation_tails[conversation_key] = current
+
+        try:
+            if previous is not None:
+                try:
+                    await previous
+                except Exception:
+                    pass
+            await self._process_message_with_logging(message)
+        finally:
+            if current is not None:
+                if self._conversation_tails.get(conversation_key or "") is current:
+                    self._conversation_tails.pop(conversation_key or "", None)
+                if not current.done():
+                    current.set_result(None)
+
+    async def _process_message_with_logging(self, message: dict[str, Any]) -> None:
+        try:
+            await self._process_message(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "WeChat poll loop failed to process message "
+                f"message_id={str(message.get('message_id') or '').strip()}"
+            )
+
+    def _finalize_background_task(self, task: asyncio.Task[None]) -> None:
+        self._background_tasks.discard(task)
 
     @staticmethod
     def _poll_retry_delay_seconds() -> float:
         return POLL_RETRY_DELAY_SECONDS
+
+    @staticmethod
+    def _conversation_key_for_message(message: dict[str, Any]) -> str | None:
+        room_id = str(message.get("roomid") or "").strip()
+        if room_id:
+            return f"group:{room_id}"
+        sender_id = str(message.get("from_user_id") or "").strip()
+        if sender_id:
+            return f"dm:{sender_id}"
+        return None
 
     @staticmethod
     def _truncate_log_text(value: object, *, limit: int = LOG_TEXT_TRUNCATE_LIMIT) -> str:

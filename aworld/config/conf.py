@@ -142,8 +142,9 @@ class ModelConfig(BaseConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        declared_fields = type(self).model_fields
         for key, value in kwargs.items():
-            if key in self.model_fields:
+            if key in declared_fields:
                 continue
             if hasattr(self, key):
                 setattr(self, key, value)

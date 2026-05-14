@@ -5,6 +5,7 @@ import base64
 import logging
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -20,6 +21,30 @@ class _FakeRouter:
 
     async def handle_inbound(self, inbound, *, channel_default_agent_id):
         self.calls.append((inbound, channel_default_agent_id))
+        return OutboundEnvelope(
+            channel="wecom",
+            account_id=inbound.account_id,
+            conversation_id=inbound.conversation_id,
+            reply_to_message_id=inbound.message_id,
+            text=f"echo:{inbound.text}",
+        )
+
+
+class _BlockingWecomRouter:
+    def __init__(self) -> None:
+        self.started_texts: list[str] = []
+        self.first_started = asyncio.Event()
+        self.second_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def handle_inbound(self, inbound, *, channel_default_agent_id):
+        del channel_default_agent_id
+        self.started_texts.append(inbound.text)
+        if len(self.started_texts) == 1:
+            self.first_started.set()
+            await self.release_first.wait()
+        elif len(self.started_texts) == 2:
+            self.second_started.set()
         return OutboundEnvelope(
             channel="wecom",
             account_id=inbound.account_id,
@@ -162,6 +187,65 @@ async def test_connector_processes_callback_routes_text_and_uses_reply_request(
     assert transport.sent[-1]["cmd"] == "aibot_respond_msg"
 
     await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_serializes_same_chat_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aworld_gateway.channels.wecom.connector import WecomConnector
+
+    router = _BlockingWecomRouter()
+    transport = _FakeTransport()
+    monkeypatch.setenv("AWORLD_WECOM_BOT_ID", "bot-1")
+    monkeypatch.setenv("AWORLD_WECOM_SECRET", "secret-1")
+
+    connector = WecomConnector(
+        config=WecomChannelConfig(default_agent_id="aworld"),
+        router=router,
+        connect_func=lambda url: asyncio.sleep(0, result=transport),
+    )
+    connector.send_text = AsyncMock(return_value={"errcode": 0})  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_callback(
+        {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "chat-1",
+                "chattype": "single",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "first"},
+            },
+        }
+    )
+    connector._schedule_callback(
+        {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-2"},
+            "body": {
+                "msgid": "msg-2",
+                "chatid": "chat-1",
+                "chattype": "single",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "second"},
+            },
+        }
+    )
+
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+    assert router.second_started.is_set() is False
+
+    router.release_first.set()
+    await asyncio.wait_for(router.second_started.wait(), timeout=1.0)
+    await connector.stop()
+
+    assert router.started_texts == ["first", "second"]
 
 
 @pytest.mark.asyncio
