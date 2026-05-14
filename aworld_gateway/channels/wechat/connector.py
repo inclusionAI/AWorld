@@ -361,6 +361,7 @@ class WechatConnector:
         self._poll_session: object | None = None
         self._send_session: object | None = None
         self._poll_task: asyncio.Task[None] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._account_id = ""
         self._token = ""
         self._base_url = DEFAULT_BASE_URL
@@ -422,6 +423,11 @@ class WechatConnector:
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
         await _close_session(self._poll_session)
         await _close_session(self._send_session)
         self._poll_session = None
@@ -1082,16 +1088,27 @@ class WechatConnector:
                     f"account={self._account_id} message_count={len(messages)}"
                 )
             for message in messages:
-                try:
-                    await self._process_message(message)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception(
-                        "WeChat poll loop failed to process message "
-                        f"message_id={str(message.get('message_id') or '').strip()}"
-                    )
+                self._schedule_message(message)
         logger.info(f"WeChat poll loop stopped account={self._account_id}")
+
+    def _schedule_message(self, message: dict[str, Any]) -> None:
+        task = asyncio.create_task(self._process_message_with_logging(message))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._finalize_background_task)
+
+    async def _process_message_with_logging(self, message: dict[str, Any]) -> None:
+        try:
+            await self._process_message(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "WeChat poll loop failed to process message "
+                f"message_id={str(message.get('message_id') or '').strip()}"
+            )
+
+    def _finalize_background_task(self, task: asyncio.Task[None]) -> None:
+        self._background_tasks.discard(task)
 
     @staticmethod
     def _poll_retry_delay_seconds() -> float:

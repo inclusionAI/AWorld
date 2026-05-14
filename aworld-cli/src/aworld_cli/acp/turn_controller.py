@@ -39,6 +39,15 @@ class TurnController:
         task.cancel()
         return "cancelled"
 
+    def has_active_turn(self, session_id: str) -> bool:
+        task = self._tasks.get(session_id)
+        if task is None:
+            return False
+        if task.done():
+            self._tasks.pop(session_id, None)
+            return False
+        return True
+
     @staticmethod
     def _close_if_possible(turn_coro: Awaitable[Any]) -> None:
         close = getattr(turn_coro, "close", None)

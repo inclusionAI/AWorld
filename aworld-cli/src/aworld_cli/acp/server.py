@@ -39,6 +39,11 @@ from .protocol import decode_jsonrpc_line, encode_jsonrpc_message
 from .runtime_adapter import adapt_output_to_runtime_events
 from .session_runtime import apply_requested_mcp_servers
 from .session_store import AcpSessionRecord, AcpSessionStore
+from ..steering import SessionSteeringRuntime, SteeringCoordinator, STEERING_CAPTURED_ACK
+from ..steering.observability import (
+    log_applied_steering_event,
+    log_queued_steering_event,
+)
 from .turn_controller import TurnController
 
 
@@ -83,6 +88,7 @@ class AcpExecutorOutputBridge:
         self._loaded_agent_dirs: set[str] = set()
         self._agent_load_lock = asyncio.Lock()
         self._bootstrap = bootstrap_func(bootstrap_base_dir or Path.cwd())
+        self._steering = SteeringCoordinator()
         self._emit_bootstrap_warnings()
 
     async def stream_outputs(
@@ -108,14 +114,84 @@ class AcpExecutorOutputBridge:
             )
             swarm = getattr(executor, "swarm", None)
             with temporary_tool_filter(swarm, allowed_tools):
-                task = await executor._build_task(
-                    prompt_text,
-                    session_id=record.aworld_session_id,
-                )
-                outputs = Runners.streamed_run_task(task=task)
-                async for output in outputs.stream_events():
-                    yield output
+                current_prompt = prompt_text
+                while True:
+                    task = await executor._build_task(
+                        current_prompt,
+                        session_id=record.aworld_session_id,
+                    )
+                    task_id = self._task_id(task, fallback=f"acp-{record.aworld_session_id}")
+                    executor.context = getattr(task, "context", None)
+                    self._steering.begin_task(record.aworld_session_id, task_id)
+                    outputs = Runners.streamed_run_task(task=task)
+                    chunks: list[str] = []
+                    saw_chunk_output = False
+                    paused = False
+
+                    async for output in outputs.stream_events():
+                        output_type = self._output_type(output)
+                        if output_type == "chunk":
+                            raw_chunk = getattr(output, "data", None)
+                            tool_calls = getattr(raw_chunk, "tool_calls", None) or []
+                            if tool_calls and await self._should_pause_for_queued_steering_checkpoint(
+                                executor=executor,
+                                task_id=task_id,
+                                checkpoint="before_tool_call",
+                                current_tool=self._tool_name_from_call(tool_calls[0]),
+                                partial_answer="".join(chunks).strip(),
+                            ):
+                                paused = True
+                                break
+
+                        chunk = self._extract_visible_text(output)
+                        if output_type == "message" and saw_chunk_output:
+                            chunk = ""
+                        if output_type == "chunk":
+                            saw_chunk_output = True
+                        if chunk:
+                            chunks.append(chunk)
+
+                        yield output
+
+                        if output_type == "message" and await self._should_pause_for_queued_steering_checkpoint(
+                            executor=executor,
+                            task_id=task_id,
+                            checkpoint="after_message_output",
+                            current_tool=self._tool_name_from_output(output),
+                            partial_answer="".join(chunks).strip(),
+                        ):
+                            paused = True
+                            break
+
+                        if output_type == "tool_call_result" and await self._should_pause_for_queued_steering_checkpoint(
+                            executor=executor,
+                            task_id=task_id,
+                            checkpoint="after_tool_result",
+                            current_tool=getattr(output, "tool_name", None),
+                            partial_answer="".join(chunks).strip(),
+                        ):
+                            paused = True
+                            break
+
+                    follow_up_prompt, drained_items, _interrupt_requested = self._steering.consume_terminal_fallback(
+                        record.aworld_session_id
+                    )
+                    if not follow_up_prompt:
+                        break
+
+                    context = getattr(executor, "context", None)
+                    log_applied_steering_event(
+                        workspace_path=getattr(context, "workspace_path", None) or record.cwd,
+                        session_id=record.aworld_session_id,
+                        task_id=getattr(context, "task_id", None),
+                        steering_items=drained_items,
+                        checkpoint="acp_follow_up",
+                    )
+                    current_prompt = follow_up_prompt
+                    if not paused:
+                        continue
         finally:
+            self._steering.end_task(record.aworld_session_id, clear_pending=True)
             if executor is not None:
                 cleanup = getattr(executor, "cleanup_resources", None)
                 if callable(cleanup):
@@ -228,8 +304,12 @@ class AcpExecutorOutputBridge:
             working_directory=record.cwd,
         )
         plugin_runtime = self._build_plugin_runtime(record)
-        if plugin_runtime is not None:
-            executor._base_runtime = plugin_runtime
+        executor._base_runtime = SessionSteeringRuntime(
+            workspace_path=record.cwd,
+            base_runtime=plugin_runtime,
+            steering=self._steering,
+        )
+        executor._allow_session_steering_checkpoints = True
         return executor, restore_sandbox_state
 
     def _build_plugin_runtime(self, record: AcpSessionRecord) -> Any | None:
@@ -265,6 +345,93 @@ class AcpExecutorOutputBridge:
                 context_config=context_config,
             )
             return await agent.get_swarm(temp_context)
+
+    def queue_steering(self, *, record: AcpSessionRecord, text: str) -> str:
+        self._steering.begin_task(record.aworld_session_id, f"acp-{record.aworld_session_id}")
+        item = self._steering.enqueue_text(record.aworld_session_id, text)
+        self._steering.request_interrupt(record.aworld_session_id)
+        snapshot = self._steering.snapshot(record.aworld_session_id)
+        log_queued_steering_event(
+            workspace_path=record.cwd,
+            session_id=record.aworld_session_id,
+            task_id=snapshot.get("task_id") if isinstance(snapshot.get("task_id"), str) else None,
+            steering_item=item,
+        )
+        return STEERING_CAPTURED_ACK
+
+    @staticmethod
+    def _output_type(output: Any) -> str:
+        output_type_getter = getattr(output, "output_type", None)
+        return output_type_getter() if callable(output_type_getter) else ""
+
+    @classmethod
+    def _extract_visible_text(cls, output: Any) -> str:
+        output_type = cls._output_type(output)
+        if output_type in {"tool_call", "tool_call_result", "finished_signal", "step"}:
+            return ""
+        if output_type == "message":
+            response = getattr(output, "response", None)
+            if isinstance(response, str):
+                return response
+        for attr_name in ("content", "payload"):
+            value = getattr(output, attr_name, None)
+            if isinstance(value, str):
+                return value
+        data = getattr(output, "data", None)
+        if isinstance(data, str):
+            return data
+        if data is not None:
+            data_content = getattr(data, "content", None)
+            if isinstance(data_content, str):
+                return data_content
+        source = getattr(output, "source", None)
+        if source is not None:
+            source_content = getattr(source, "content", None)
+            if isinstance(source_content, str):
+                return source_content
+        return ""
+
+    @staticmethod
+    def _tool_name_from_call(tool_call: Any) -> str | None:
+        tool_data = getattr(tool_call, "data", tool_call)
+        function = getattr(tool_data, "function", None)
+        name = getattr(function, "name", None)
+        return str(name).strip() if isinstance(name, str) and name.strip() else None
+
+    @classmethod
+    def _tool_name_from_output(cls, output: Any) -> str | None:
+        tool_calls = getattr(output, "tool_calls", None)
+        if tool_calls:
+            return cls._tool_name_from_call(tool_calls[0])
+        source = getattr(output, "source", None)
+        source_tool_calls = getattr(source, "tool_calls", None)
+        if source_tool_calls:
+            return cls._tool_name_from_call(source_tool_calls[0])
+        return None
+
+    @staticmethod
+    def _task_id(task: Any, *, fallback: str) -> str:
+        task_id = getattr(task, "id", None)
+        return str(task_id).strip() if isinstance(task_id, str) and task_id.strip() else fallback
+
+    @staticmethod
+    async def _should_pause_for_queued_steering_checkpoint(
+        *,
+        executor: Any,
+        task_id: str,
+        checkpoint: str,
+        current_tool: str | None,
+        partial_answer: str,
+    ) -> bool:
+        checker = getattr(executor, "_should_pause_for_queued_steering_checkpoint", None)
+        if not callable(checker):
+            return False
+        return await checker(
+            task_id=task_id,
+            checkpoint=checkpoint,
+            current_tool=current_tool,
+            partial_answer=partial_answer,
+        )
 
 
 class AcpStdioServer:
@@ -393,6 +560,17 @@ class AcpStdioServer:
 
         await self._ensure_cron_runtime_started()
 
+        if self._turns.has_active_turn(session_id) and hasattr(self._output_bridge, "queue_steering"):
+            ack_text = self._output_bridge.queue_steering(record=record, text=prompt_text)
+            await self._write_session_update_for_session(
+                session_id,
+                {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"text": ack_text},
+                },
+            )
+            return self._response(request_id, {"status": "queued"})
+
         async def _run_streaming_prompt(
             *,
             executed_prompt_text: str,
@@ -443,6 +621,19 @@ class AcpStdioServer:
             try:
                 task = await self._turns.start_turn(session_id, _run_turn())
             except AcpBusyError:
+                if hasattr(self._output_bridge, "queue_steering"):
+                    ack_text = self._output_bridge.queue_steering(
+                        record=record,
+                        text=executed_prompt_text,
+                    )
+                    await self._write_session_update_for_session(
+                        session_id,
+                        {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"text": ack_text},
+                        },
+                    )
+                    return self._response(request_id, {"status": "queued"})
                 return self._error(
                     request_id,
                     -32002,
