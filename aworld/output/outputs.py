@@ -132,6 +132,7 @@ class StreamingOutputs(AsyncOutputs):
     _stored_exception: Exception | None = field(default=None, repr=False)  # Stores any exceptions that occur
     _run_impl_task: asyncio.Task[Any] | None = field(default=None, repr=False)  # The running task
     _task_response: Optional[Any] = field(default=None, repr=False)
+    _run_impl_cancelled_by_cleanup: bool = field(default=False, repr=False)
 
     async def add_output(self, output: Output):
         """Add an output to the queue asynchronously.
@@ -208,6 +209,13 @@ class StreamingOutputs(AsyncOutputs):
         """
         # Check the task for any exceptions
         if self._run_impl_task and self._run_impl_task.done():
+            if self._run_impl_task.cancelled():
+                if self._run_impl_cancelled_by_cleanup:
+                    logger.info(
+                        f"StreamingOutputs|_check_errors|expected_run_impl_cancelled|{self.task_id}"
+                    )
+                    return
+                raise asyncio.CancelledError()
             exc = self._run_impl_task.exception()
             if exc and isinstance(exc, Exception):
                 self._stored_exception = exc
@@ -220,6 +228,7 @@ class StreamingOutputs(AsyncOutputs):
             return
         if not self._run_impl_task or self._run_impl_task.done():
             return
+        self._run_impl_cancelled_by_cleanup = True
         self._run_impl_task.cancel()
 
     async def mark_completed(self, task_response: "TaskResponse" = None) -> None:

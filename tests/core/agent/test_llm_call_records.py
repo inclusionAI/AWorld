@@ -1,9 +1,11 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
+from aworld.core.common import TaskStatusValue
 from aworld.core.context.amni.config import AgentContextConfig, ContextCacheConfig
 from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan
 from aworld.core.context.base import Context
@@ -280,6 +282,49 @@ async def test_async_policy_does_not_forward_prompt_cache_kwargs_to_unknown_prov
     ]
     assert "prompt_assembly_plan" not in captured["kwargs"]
     assert "provider_native_prompt_cache" not in captured["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_async_policy_raises_cancelled_error_when_context_is_interrupted_and_llm_returns_none():
+    class InterruptedAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content": "hello"},
+            ]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            return None
+
+    agent = InterruptedAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    context = _build_context()
+
+    async def interrupted_status():
+        return TaskStatusValue.INTERRUPTED
+
+    context.get_task_status = interrupted_status
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.async_policy(
+            SimpleNamespace(observer="user", from_agent_name=None, context=None),
+            message=message,
+        )
 
 
 def test_context_cache_effective_enablement_defaults_to_true_without_amni_context():
