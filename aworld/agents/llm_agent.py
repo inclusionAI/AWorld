@@ -1811,6 +1811,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         llm_response = None
         context = message.context if message else None
+        failure_output_sent = False
 
         # Prepare parameters once before retry loop
         try:
@@ -2033,6 +2034,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             session_id=message.context.session_id if message.context else "",
                             headers={"context": message.context}
                         ))
+                        failure_output_sent = True
                         raise e
 
             # This should not be reached, but just in case
@@ -2047,15 +2049,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 source_exception=e,
             )
             logger.warn(f"Failed to call llm model: {e}")
-            await send_message(Message(
-                category=Constants.OUTPUT,
-                payload=Output(
-                    data=f"Failed to call llm model: {e}"
-                ),
-                sender=self.id(),
-                session_id=message.context.session_id if message.context else "",
-                headers={"context": message.context}
-            ))
+            if not failure_output_sent:
+                await send_message(Message(
+                    category=Constants.OUTPUT,
+                    payload=Output(
+                        data=f"Failed to call llm model: {e}"
+                    ),
+                    sender=self.id(),
+                    session_id=message.context.session_id if message.context else "",
+                    headers={"context": message.context}
+                ))
+                failure_output_sent = True
 
             if "Please reduce the length of the messages" in str(e):
                 # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.
