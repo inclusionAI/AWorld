@@ -52,6 +52,18 @@ _ERROR_DETAIL_MESSAGES = {
     AWORLD_ACP_APPROVAL_UNSUPPORTED: "Approval flow is not bridged in phase 1.",
 }
 
+_PAUSE_NOTICE_MESSAGES = {
+    AWORLD_ACP_REQUIRES_HUMAN: "Execution paused. Send another prompt to steer the task forward.",
+    AWORLD_ACP_APPROVAL_UNSUPPORTED: (
+        "Execution paused at an approval boundary. Send another prompt to steer the task forward."
+    ),
+}
+
+
+def _legacy_human_error_mode_enabled() -> bool:
+    raw = os.getenv("AWORLD_ACP_LEGACY_HUMAN_ERROR_MODE", "").strip().lower()
+    return raw in {"1", "true", "yes"}
+
 
 class AcpExecutorOutputBridge:
     def __init__(
@@ -359,6 +371,21 @@ class AcpExecutorOutputBridge:
         )
         return STEERING_CAPTURED_ACK
 
+    def prepare_paused_resume_prompt(
+        self,
+        *,
+        record: AcpSessionRecord,
+        text: str,
+    ) -> tuple[str, list[object]]:
+        self._steering.begin_task(record.aworld_session_id, f"acp-{record.aworld_session_id}")
+        self._steering.enqueue_text(record.aworld_session_id, text)
+        follow_up_prompt, drained_items, _interrupt_requested = self._steering.consume_terminal_fallback(
+            record.aworld_session_id
+        )
+        if not follow_up_prompt:
+            raise ValueError("expected paused steering follow-up prompt")
+        return follow_up_prompt, drained_items
+
     @staticmethod
     def _output_type(output: Any) -> str:
         output_type_getter = getattr(output, "output_type", None)
@@ -560,7 +587,13 @@ class AcpStdioServer:
 
         await self._ensure_cron_runtime_started()
 
-        if self._turns.has_active_turn(session_id) and hasattr(self._output_bridge, "queue_steering"):
+        resume_paused = self._turns.is_paused(session_id)
+
+        if (
+            not resume_paused
+            and self._turns.has_active_turn(session_id)
+            and hasattr(self._output_bridge, "queue_steering")
+        ):
             ack_text = self._output_bridge.queue_steering(record=record, text=prompt_text)
             await self._write_session_update_for_session(
                 session_id,
@@ -575,12 +608,14 @@ class AcpStdioServer:
             *,
             executed_prompt_text: str,
             allowed_tools: list[str] | None = None,
+            resume_paused: bool = False,
         ) -> dict[str, Any]:
             state: dict[str, Any] = {}
             terminal_error: dict[str, Any] | None = None
+            paused_code: str | None = None
 
             async def _run_turn() -> None:
-                nonlocal terminal_error
+                nonlocal terminal_error, paused_code
                 stream_kwargs: dict[str, Any] = {
                     "record": record,
                     "prompt_text": executed_prompt_text,
@@ -588,38 +623,89 @@ class AcpStdioServer:
                 if allowed_tools is not None:
                     stream_kwargs["allowed_tools"] = allowed_tools
 
-                async for output in self._output_bridge.stream_outputs(**stream_kwargs):
-                    events = self._normalize_runtime_events(state, output)
-                    for event in events:
-                        if event.get("event_type") == "turn_error":
-                            terminal_error = event
-                            await self._close_open_tool_lifecycles_with_error(
-                                session_id,
-                                state,
-                                code=str(event["code"]),
-                                message=str(event["message"]),
-                            )
-                            return
-                        if event.get("event_type") == "tool_start":
-                            tool_call_id = event.get("tool_call_id")
-                            if isinstance(tool_call_id, str):
-                                state[f"tool_input::{tool_call_id}"] = event.get("raw_input")
-                        if event.get("event_type") == "tool_end":
-                            tool_name = event.get("tool_name")
-                            tool_call_id = event.get("tool_call_id")
-                            if isinstance(tool_name, str) and isinstance(tool_call_id, str):
-                                state[f"tool_closed::{tool_name}"] = tool_call_id
-                            self._cron_bridge.bind_from_tool_result(
-                                session_id=session_id,
-                                tool_name=tool_name if isinstance(tool_name, str) else None,
-                                payload=event.get("raw_output"),
-                                tool_input=state.get(f"tool_input::{tool_call_id}") if isinstance(tool_call_id, str) else None,
-                            )
-                        update = map_runtime_event_to_session_update(session_id, event)
-                        await self._write_session_update(update)
+                try:
+                    async for output in self._output_bridge.stream_outputs(**stream_kwargs):
+                        events = self._normalize_runtime_events(state, output)
+                        for event in events:
+                            if event.get("event_type") == "turn_error":
+                                event_code = str(event["code"])
+                                if (
+                                    not _legacy_human_error_mode_enabled()
+                                    and self._is_happy_compatible_pause_code(event_code)
+                                ):
+                                    paused_code = event_code
+                                    await self._close_open_tool_lifecycles_with_error(
+                                        session_id,
+                                        state,
+                                        code=event_code,
+                                        message=str(event["message"]),
+                                    )
+                                    self._turns.pause_turn(session_id)
+                                    await self._emit_pause_notice(session_id, code=event_code)
+                                    return
+                                terminal_error = event
+                                await self._close_open_tool_lifecycles_with_error(
+                                    session_id,
+                                    state,
+                                    code=event_code,
+                                    message=str(event["message"]),
+                                )
+                                return
+                            if event.get("event_type") == "tool_start":
+                                tool_call_id = event.get("tool_call_id")
+                                if isinstance(tool_call_id, str):
+                                    state[f"tool_input::{tool_call_id}"] = event.get("raw_input")
+                            if event.get("event_type") == "tool_end":
+                                tool_name = event.get("tool_name")
+                                tool_call_id = event.get("tool_call_id")
+                                if isinstance(tool_name, str) and isinstance(tool_call_id, str):
+                                    state[f"tool_closed::{tool_name}"] = tool_call_id
+                                self._cron_bridge.bind_from_tool_result(
+                                    session_id=session_id,
+                                    tool_name=tool_name if isinstance(tool_name, str) else None,
+                                    payload=event.get("raw_output"),
+                                    tool_input=(
+                                        state.get(f"tool_input::{tool_call_id}")
+                                        if isinstance(tool_call_id, str)
+                                        else None
+                                    ),
+                                )
+                            update = map_runtime_event_to_session_update(session_id, event)
+                            await self._write_session_update(update)
+                except AcpRequiresHumanError:
+                    if _legacy_human_error_mode_enabled():
+                        raise
+                    paused_code = AWORLD_ACP_REQUIRES_HUMAN
+                    await self._close_open_tool_lifecycles_with_error(
+                        session_id,
+                        state,
+                        code=AWORLD_ACP_REQUIRES_HUMAN,
+                        message=self._error_detail_message(AWORLD_ACP_REQUIRES_HUMAN),
+                    )
+                    self._turns.pause_turn(session_id)
+                    await self._emit_pause_notice(session_id, code=AWORLD_ACP_REQUIRES_HUMAN)
+                except ValueError as exc:
+                    detail = self._known_error_detail(str(exc))
+                    if detail is not None and _legacy_human_error_mode_enabled():
+                        raise
+                    if detail is not None and self._is_happy_compatible_pause_code(detail.code):
+                        paused_code = detail.code
+                        await self._close_open_tool_lifecycles_with_error(
+                            session_id,
+                            state,
+                            code=detail.code,
+                            message=detail.message,
+                        )
+                        self._turns.pause_turn(session_id)
+                        await self._emit_pause_notice(session_id, code=detail.code)
+                        return
+                    raise
 
             try:
-                task = await self._turns.start_turn(session_id, _run_turn())
+                if resume_paused:
+                    task = await self._turns.resume_turn(session_id, _run_turn())
+                else:
+                    task = await self._turns.start_turn(session_id, _run_turn())
             except AcpBusyError:
                 if hasattr(self._output_bridge, "queue_steering"):
                     ack_text = self._output_bridge.queue_steering(
@@ -686,6 +772,8 @@ class AcpStdioServer:
                     )
                 raise
 
+            if paused_code is not None and not _legacy_human_error_mode_enabled():
+                return self._response(request_id, {"status": "completed"})
             if terminal_error is not None:
                 detail = AcpErrorDetail(
                     code=str(terminal_error["code"]),
@@ -702,6 +790,16 @@ class AcpStdioServer:
                     data=build_error_data(detail),
                 )
             return self._response(request_id, {"status": "completed"})
+
+        if resume_paused:
+            resume_prompt = self._prepare_paused_resume_prompt(
+                record=record,
+                steering_text=prompt_text,
+            )
+            return await _run_streaming_prompt(
+                executed_prompt_text=resume_prompt,
+                resume_paused=True,
+            )
 
         prompt_command_response: dict[str, Any] | None = None
 
@@ -1235,6 +1333,38 @@ class AcpStdioServer:
             state[f"tool_closed::{tool_name}"] = tool_call_id
         if isinstance(open_tool_calls, list):
             open_tool_calls.clear()
+
+    def _prepare_paused_resume_prompt(
+        self,
+        *,
+        record: AcpSessionRecord,
+        steering_text: str,
+    ) -> str:
+        preparer = getattr(self._output_bridge, "prepare_paused_resume_prompt", None)
+        if callable(preparer):
+            follow_up_prompt, _drained_items = preparer(record=record, text=steering_text)
+            return follow_up_prompt
+        return (
+            "Continue the current task with this additional operator steering:\n\n"
+            f"1. {steering_text.strip()}"
+        )
+
+    async def _emit_pause_notice(self, session_id: str, *, code: str) -> None:
+        text = _PAUSE_NOTICE_MESSAGES.get(
+            code,
+            "Execution paused. Send another prompt to steer the task forward.",
+        )
+        await self._write_session_update_for_session(
+            session_id,
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"text": text},
+            },
+        )
+
+    @staticmethod
+    def _is_happy_compatible_pause_code(code: str) -> bool:
+        return code in {AWORLD_ACP_REQUIRES_HUMAN, AWORLD_ACP_APPROVAL_UNSUPPORTED}
 
     @staticmethod
     def _response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:

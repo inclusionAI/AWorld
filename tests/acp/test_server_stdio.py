@@ -16,6 +16,7 @@ ENV = {
     "PYTHONPATH": str(REPO_ROOT / "aworld-cli" / "src") + ":" + str(REPO_ROOT),
 }
 SELF_TEST_SLOW_PROMPT = "__acp_self_test_slow__"
+SELF_TEST_TURN_ERROR_PROMPT = "__acp_self_test_turn_error__"
 
 
 def _spawn_acp_server() -> subprocess.Popen[str]:
@@ -340,7 +341,7 @@ def test_acp_server_invalid_prompt_content_returns_structured_error_data() -> No
         proc.wait(timeout=5)
 
 
-def test_acp_server_closes_tool_lifecycle_before_terminal_requires_human_failure(tmp_path: Path) -> None:
+def test_acp_server_closes_tool_lifecycle_before_requires_human_pause_notice(tmp_path: Path) -> None:
     patch_dir = tmp_path / "patches"
     patch_dir.mkdir()
     (patch_dir / "sitecustomize.py").write_text(
@@ -421,22 +422,25 @@ def test_acp_server_closes_tool_lifecycle_before_terminal_requires_human_failure
         first = _read_json_line(proc)
         second = _read_json_line(proc)
         third = _read_json_line(proc)
+        fourth = _read_json_line(proc)
 
         assert first["method"] == "sessionUpdate"
         assert first["params"]["update"]["sessionUpdate"] == "tool_call"
         assert second["method"] == "sessionUpdate"
         assert second["params"]["update"]["sessionUpdate"] == "tool_call_update"
         assert second["params"]["update"]["status"] == "failed"
-        assert third["id"] == 3
-        assert third["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-        assert third["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+        assert third["method"] == "sessionUpdate"
+        assert third["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        assert "Execution paused." in third["params"]["update"]["content"]["text"]
+        assert fourth["id"] == 3
+        assert fourth["result"]["status"] == "completed"
     finally:
         if proc.poll() is None:
             proc.kill()
         proc.wait(timeout=5)
 
 
-def test_acp_server_treats_runtime_turn_error_as_terminal_structured_failure(tmp_path: Path) -> None:
+def test_acp_server_treats_runtime_turn_error_as_pause_notice_by_default(tmp_path: Path) -> None:
     patch_dir = tmp_path / "patches"
     patch_dir.mkdir()
     (patch_dir / "sitecustomize.py").write_text(
@@ -505,21 +509,21 @@ def test_acp_server_treats_runtime_turn_error_as_terminal_structured_failure(tmp
         )
         proc.stdin.flush()
 
-        payload = _read_json_line(proc)
+        first = _read_json_line(proc)
+        second = _read_json_line(proc)
 
-        assert payload["id"] == 3
-        assert payload["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-        assert payload["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
-        assert payload["error"]["data"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-        assert payload["error"]["data"]["retryable"] is True
-        assert payload["error"]["data"]["data"]["origin"] == "runtime"
+        assert first["method"] == "sessionUpdate"
+        assert first["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        assert "Execution paused." in first["params"]["update"]["content"]["text"]
+        assert second["id"] == 3
+        assert second["result"]["status"] == "completed"
     finally:
         if proc.poll() is None:
             proc.kill()
         proc.wait(timeout=5)
 
 
-def test_acp_server_closes_all_same_name_tool_lifecycles_before_terminal_failure(tmp_path: Path) -> None:
+def test_acp_server_closes_all_same_name_tool_lifecycles_before_runtime_pause_notice(tmp_path: Path) -> None:
     patch_dir = tmp_path / "patches"
     patch_dir.mkdir()
     (patch_dir / "sitecustomize.py").write_text(
@@ -621,6 +625,7 @@ def test_acp_server_closes_all_same_name_tool_lifecycles_before_terminal_failure
         third = _read_json_line(proc)
         fourth = _read_json_line(proc)
         fifth = _read_json_line(proc)
+        sixth = _read_json_line(proc)
 
         assert first["params"]["update"]["sessionUpdate"] == "tool_call"
         assert second["params"]["update"]["sessionUpdate"] == "tool_call"
@@ -630,8 +635,9 @@ def test_acp_server_closes_all_same_name_tool_lifecycles_before_terminal_failure
             "call-1",
             "call-2",
         ]
-        assert fifth["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-        assert fifth["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+        assert fifth["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        assert "Execution paused." in fifth["params"]["update"]["content"]["text"]
+        assert sixth["result"]["status"] == "completed"
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -741,10 +747,13 @@ def test_acp_server_suppresses_events_emitted_after_runtime_turn_error(tmp_path:
         first = _read_json_line(proc)
         second = _read_json_line(proc)
         third = _read_json_line(proc)
+        fourth = _read_json_line(proc)
 
         assert first["params"]["update"]["sessionUpdate"] == "tool_call"
         assert second["params"]["update"]["sessionUpdate"] == "tool_call_update"
-        assert third["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
+        assert third["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        assert "Execution paused." in third["params"]["update"]["content"]["text"]
+        assert fourth["result"]["status"] == "completed"
 
         proc.kill()
         proc.wait(timeout=5)
@@ -754,6 +763,91 @@ def test_acp_server_suppresses_events_emitted_after_runtime_turn_error(tmp_path:
         if proc.poll() is None:
             proc.kill()
         proc.wait(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_acp_server_resumes_paused_prompt_with_follow_up_steering() -> None:
+    proc = await _spawn_async_acp_server({"AWORLD_ACP_SELF_TEST_BRIDGE": "1"})
+    try:
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+
+        proc.stdin.write(b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n')
+        await proc.stdin.drain()
+        _ = json.loads((await asyncio.wait_for(proc.stdout.readline(), timeout=10)).decode("utf-8"))
+
+        proc.stdin.write(
+            b'{"jsonrpc":"2.0","id":2,"method":"newSession","params":{"cwd":".","mcpServers":[]}}\n'
+        )
+        await proc.stdin.drain()
+        new_session = json.loads((await asyncio.wait_for(proc.stdout.readline(), timeout=10)).decode("utf-8"))
+        session_id = new_session["result"]["sessionId"]
+
+        first_prompt = {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "prompt",
+            "params": {
+                "sessionId": session_id,
+                "prompt": {"content": [{"type": "text", "text": SELF_TEST_TURN_ERROR_PROMPT}]},
+            },
+        }
+        follow_up = {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "prompt",
+            "params": {
+                "sessionId": session_id,
+                "prompt": {"content": [{"type": "text", "text": "continue anyway"}]},
+            },
+        }
+        proc.stdin.write((json.dumps(first_prompt) + "\n").encode("utf-8"))
+        await proc.stdin.drain()
+
+        seen_by_id: dict[int, dict] = {}
+        session_updates: list[dict] = []
+        deadline = asyncio.get_running_loop().time() + 10
+        while 3 not in seen_by_id:
+            timeout = max(0.1, deadline - asyncio.get_running_loop().time())
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+            assert line, (await proc.stderr.read()).decode("utf-8", errors="replace")
+            message = json.loads(line.decode("utf-8"))
+            if "id" in message:
+                seen_by_id[int(message["id"])] = message
+            elif message.get("method") == "sessionUpdate":
+                session_updates.append(message)
+
+        proc.stdin.write((json.dumps(follow_up) + "\n").encode("utf-8"))
+        await proc.stdin.drain()
+
+        while 4 not in seen_by_id:
+            timeout = max(0.1, deadline - asyncio.get_running_loop().time())
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+            assert line, (await proc.stderr.read()).decode("utf-8", errors="replace")
+            message = json.loads(line.decode("utf-8"))
+            if "id" in message:
+                seen_by_id[int(message["id"])] = message
+            elif message.get("method") == "sessionUpdate":
+                session_updates.append(message)
+
+        assert any(
+            item.get("params", {}).get("update", {}).get("sessionUpdate") == "agent_message_chunk"
+            and "Execution paused." in item.get("params", {}).get("update", {}).get("content", {}).get("text", "")
+            for item in session_updates
+        )
+        assert seen_by_id[3]["result"]["status"] == "completed"
+        assert seen_by_id[4]["result"]["status"] == "completed"
+        assert any(
+            "continue anyway"
+            in item.get("params", {}).get("update", {}).get("content", {}).get("text", "")
+            for item in session_updates
+            if item.get("params", {}).get("update", {}).get("sessionUpdate") == "agent_message_chunk"
+        )
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
 
 
 @pytest.mark.asyncio
