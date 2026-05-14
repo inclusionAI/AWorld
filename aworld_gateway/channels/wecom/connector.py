@@ -122,6 +122,7 @@ class WecomConnector:
         self._transport: WecomTransport | None = None
         self._listen_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._pending_responses: dict[str, asyncio.Future[dict[str, object]]] = {}
         self._reply_req_ids: dict[str, str] = {}
         self._last_chat_req_ids: dict[str, str] = {}
@@ -161,6 +162,11 @@ class WecomConnector:
             except asyncio.CancelledError:
                 pass
         self._heartbeat_task = None
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
         self._fail_pending_responses(RuntimeError("WeCom connector stopped"))
         await self._close_transport()
         logger.info(f"WeCom connector stopped bot_id={self._bot_id}")
@@ -323,9 +329,25 @@ class WecomConnector:
             return
 
         if cmd in CALLBACK_COMMANDS:
-            await self._process_callback(payload)
+            self._schedule_callback(payload)
             return
         logger.info(f"WeCom payload ignored cmd={cmd or 'unknown'}")
+
+    def _schedule_callback(self, payload: dict[str, object]) -> None:
+        task = asyncio.create_task(self._process_callback_with_logging(payload))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._finalize_background_task)
+
+    def _finalize_background_task(self, task: asyncio.Task[None]) -> None:
+        self._background_tasks.discard(task)
+
+    async def _process_callback_with_logging(self, payload: dict[str, object]) -> None:
+        try:
+            await self._process_callback(payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("WeCom callback processing failed")
 
     async def _process_callback(self, payload: dict[str, object]) -> None:
         body = payload.get("body")

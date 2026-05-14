@@ -115,7 +115,10 @@ def test_acp_server_bootstrap_warnings_stay_on_stderr(tmp_path: Path) -> None:
         proc.stdin.flush()
 
         payload = _read_json_line(proc)
-        stderr_text = proc.stderr.readline()
+        if proc.poll() is None:
+            proc.kill()
+        stderr_text = proc.stderr.read()
+        proc.wait(timeout=5)
 
         assert payload["id"] == 1
         assert payload["result"]["serverInfo"]["name"] == "aworld-cli"
@@ -810,7 +813,7 @@ async def test_acp_server_can_cancel_active_prompt_with_self_test_bridge() -> No
 
 
 @pytest.mark.asyncio
-async def test_acp_server_rejects_busy_prompt_with_self_test_bridge() -> None:
+async def test_acp_server_queues_busy_prompt_with_self_test_bridge() -> None:
     proc = await _spawn_async_acp_server({"AWORLD_ACP_SELF_TEST_BRIDGE": "1"})
     try:
         assert proc.stdin is not None
@@ -858,6 +861,7 @@ async def test_acp_server_rejects_busy_prompt_with_self_test_bridge() -> None:
         await proc.stdin.drain()
 
         seen_by_id: dict[int, dict] = {}
+        session_updates: list[dict] = []
         deadline = asyncio.get_running_loop().time() + 10
         while {3, 4, 5} - seen_by_id.keys():
             timeout = max(0.1, deadline - asyncio.get_running_loop().time())
@@ -866,10 +870,17 @@ async def test_acp_server_rejects_busy_prompt_with_self_test_bridge() -> None:
             message = json.loads(line.decode("utf-8"))
             if "id" in message:
                 seen_by_id[int(message["id"])] = message
+            elif message.get("method") == "sessionUpdate":
+                session_updates.append(message)
 
-        assert seen_by_id[4]["error"]["message"] == "AWORLD_ACP_SESSION_BUSY"
+        assert seen_by_id[4]["result"]["status"] == "queued"
         assert seen_by_id[5]["result"]["status"] == "cancelled"
         assert seen_by_id[3]["result"]["status"] == "cancelled"
+        assert any(
+            item["params"]["update"]["content"]["text"] == "Steering captured. Applying at next checkpoint."
+            for item in session_updates
+            if item.get("params", {}).get("update", {}).get("sessionUpdate") == "agent_message_chunk"
+        )
     finally:
         if proc.returncode is None:
             proc.kill()

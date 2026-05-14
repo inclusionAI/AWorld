@@ -214,6 +214,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
     def _active_steering_event_mode_enabled(self) -> bool:
         return callable(getattr(self, "_active_steering_event_sink", None))
 
+    def _session_steering_checkpoint_mode_enabled(self) -> bool:
+        if self._active_steering_event_mode_enabled():
+            return True
+        return bool(getattr(self, "_allow_session_steering_checkpoints", False))
+
     def _emit_active_steering_event(self, kind: str, **payload: Any) -> None:
         sink = getattr(self, "_active_steering_event_sink", None)
         if sink is None:
@@ -407,7 +412,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         current_tool: str | None = None,
         partial_answer: str = "",
     ) -> bool:
-        if not self._active_steering_event_mode_enabled():
+        if not self._session_steering_checkpoint_mode_enabled():
             return False
 
         runtime = getattr(self, "_base_runtime", None)
@@ -903,6 +908,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 requested_skill_names=requested_skill_names,
             )
             self.context = getattr(task, "context", None)
+            runtime = getattr(self, "_base_runtime", None)
+            steering = getattr(runtime, "_steering", None) if runtime is not None else None
+            if steering is not None and self.session_id:
+                try:
+                    steering.begin_task(self.session_id, task.id)
+                except Exception:
+                    pass
             self._publish_hud_task_started(task)
             await self._run_plugin_task_hook(
                 "task_started",
@@ -963,6 +975,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         ),
                     )
                     active_event_mode = self._active_steering_event_mode_enabled()
+                    checkpoint_mode = self._session_steering_checkpoint_mode_enabled()
 
                     try:
                         from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput, ChunkOutput
@@ -1207,6 +1220,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             except Exception as save_err:
                                                 logger.warning(f"💾 Failed to save round to history: {save_err}")
                                     
+                                    current_tool_name = None
+                                    if tool_calls:
+                                        first_tool = tool_calls[0]
+                                        tool_data = getattr(first_tool, "data", first_tool)
+                                        function = getattr(tool_data, "function", None)
+                                        current_tool_name = getattr(function, "name", None)
+
                                     if active_event_mode:
                                         response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
                                         had_buffered_message_chunks = self._active_steering_buffer().has_pending_message()
@@ -1227,11 +1247,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     "tool_calls_committed",
                                                     text="\n".join(tool_lines),
                                                 )
-                                                current_tool_name = None
-                                                first_tool = tool_calls[0]
-                                                tool_data = getattr(first_tool, "data", first_tool)
-                                                function = getattr(tool_data, "function", None)
-                                                current_tool_name = getattr(function, "name", None)
                                                 if current_tool_name:
                                                     self._emit_active_steering_status(f"Calling {current_tool_name}")
                                         else:
@@ -1243,6 +1258,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             partial_answer=answer,
                                         ):
                                             raise _PauseForQueuedSteeringCheckpoint()
+                                    elif checkpoint_mode and await self._should_pause_for_queued_steering_checkpoint(
+                                        task_id=task.id,
+                                        checkpoint="after_message_output",
+                                        current_tool=current_tool_name if tool_calls else None,
+                                        partial_answer=answer,
+                                    ):
+                                        raise _PauseForQueuedSteeringCheckpoint()
                                     # When STREAM=1: render message output; when STREAM=0: skip output, only update answer
                                     elif not stream_on:
                                         logger.info(f"Rendering message output for agent: {current_agent_name}")
@@ -1328,6 +1350,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             raise _PauseForQueuedSteeringCheckpoint()
                                         self._emit_active_steering_status("Working")
                                         continue
+                                    if checkpoint_mode and await self._should_pause_for_queued_steering_checkpoint(
+                                        task_id=task.id,
+                                        checkpoint="after_tool_result",
+                                        current_tool=getattr(output, "tool_name", None),
+                                        partial_answer=answer,
+                                    ):
+                                        raise _PauseForQueuedSteeringCheckpoint()
                                     if tr_lines:
                                         ctrl.buffer.accumulated_tool_result_lines.extend(tr_lines)
                                     stream_on = self._streaming_output_enabled()
@@ -1449,7 +1478,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         )
                                     else:
                                         logger.debug(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
-                                    if active_event_mode:
+                                    if checkpoint_mode:
                                         current_tool_calls = ctrl.buffer.accumulated_tool_calls or getattr(chunk, "tool_calls", None) or []
                                         if current_tool_calls:
                                             first_tool = current_tool_calls[0]
@@ -1463,9 +1492,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 partial_answer=answer,
                                             ):
                                                 raise _PauseForQueuedSteeringCheckpoint()
-                                            if current_tool_name:
+                                            if active_event_mode and current_tool_name:
                                                 self._emit_active_steering_status(f"Calling {current_tool_name}")
-                                        continue
+                                        if active_event_mode:
+                                            continue
                                     # When STREAM=1: buffer content; Live display is refreshed at fixed interval
                                     if stream_on and self.console and (ctrl.buffer.has_content() or ctrl.buffer.has_tool_calls() or ctrl.buffer.has_tool_results() or stream_token_stats.get_current_stats()):
                                         ctrl.ensure_live_running()

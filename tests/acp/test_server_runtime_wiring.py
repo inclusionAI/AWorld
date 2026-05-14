@@ -19,6 +19,7 @@ from aworld_cli.acp.server import AcpExecutorOutputBridge, AcpStdioServer
 from aworld_cli.acp.human_intercept import AcpRequiresHumanError
 from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED
 from aworld_cli.acp.session_store import AcpSessionRecord
+from aworld_cli.steering import SessionSteeringRuntime
 
 
 @pytest.mark.asyncio
@@ -2076,7 +2077,8 @@ async def test_executor_output_bridge_attaches_bootstrap_runtime_to_executor(
         )
     ]
 
-    assert isinstance(FakeExecutor.instances[0]._base_runtime, FakeRuntime)
+    assert isinstance(FakeExecutor.instances[0]._base_runtime, SessionSteeringRuntime)
+    assert isinstance(FakeExecutor.instances[0]._base_runtime._base_runtime, FakeRuntime)
     assert FakeRuntime.instances[0].workspace_path == str(tmp_path)
     assert FakeRuntime.instances[0].plugin_roots == [plugin_root]
 
