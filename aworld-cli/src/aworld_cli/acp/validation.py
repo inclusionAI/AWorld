@@ -19,6 +19,8 @@ REQUIRED_PHASE1_CASE_IDS = (
     "turn_error_pauses_for_steering",
     "turn_error_suppresses_followup_events",
     "post_turn_error_session_continues",
+    "cancel_paused_turn",
+    "post_cancel_paused_turn_starts_fresh",
     "final_text_fallback",
     "prompt_busy_queued",
     "cancel_active_terminal",
@@ -321,6 +323,76 @@ async def run_phase1_validation_cases(
                 "detail": {
                     "notification": post_error_notification,
                     "result": post_error_result,
+                },
+            }
+        )
+
+        await harness.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": {"content": [{"type": "text", "text": profile.turn_error_prompt}]},
+                },
+            }
+        )
+        _pause_again_start = await harness.read_notification("sessionUpdate")
+        _pause_again_end = await harness.read_notification("sessionUpdate")
+        _pause_again_notice = await harness.read_notification("sessionUpdate")
+        pause_again_result = await harness.read_response(12)
+        await harness.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 13,
+                "method": "cancel",
+                "params": {"sessionId": session_id},
+            }
+        )
+        cancel_paused_result = await harness.read_response(13)
+        cases.append(
+            {
+                "id": "cancel_paused_turn",
+                "ok": (
+                    pause_again_result.get("result", {}).get("status") == "completed"
+                    and cancel_paused_result.get("result", {}).get("status") == "cancelled"
+                ),
+                "detail": {
+                    "pause_result": pause_again_result,
+                    "cancel_result": cancel_paused_result,
+                },
+            }
+        )
+
+        await harness.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 14,
+                "method": "prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": {"content": [{"type": "text", "text": profile.visible_text_prompt}]},
+                },
+            }
+        )
+        post_cancel_notification = await harness.read_notification("sessionUpdate")
+        post_cancel_result = await harness.read_response(14)
+        cases.append(
+            {
+                "id": "post_cancel_paused_turn_starts_fresh",
+                "ok": (
+                    post_cancel_notification.get("method") == "sessionUpdate"
+                    and post_cancel_notification.get("params", {})
+                    .get("update", {})
+                    .get("content", {})
+                    .get("text")
+                    == profile.visible_text_expected
+                    and post_cancel_result.get("result", {}).get("status") == "completed"
+                ),
+                "detail": {
+                    "notification": post_cancel_notification,
+                    "result": post_cancel_result,
                 },
             }
         )

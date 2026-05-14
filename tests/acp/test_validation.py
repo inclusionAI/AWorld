@@ -42,6 +42,11 @@ async def test_run_phase1_validation_cases_matches_required_case_contract() -> N
     continuity_case = next(case for case in cases if case["id"] == "post_turn_error_session_continues")
     assert "__acp_self_test_text__" in continuity_case["detail"]["notification"]["params"]["update"]["content"]["text"]
     assert continuity_case["detail"]["result"]["result"]["status"] == "completed"
+    cancel_paused_case = next(case for case in cases if case["id"] == "cancel_paused_turn")
+    assert cancel_paused_case["detail"]["cancel_result"]["result"]["status"] == "cancelled"
+    fresh_after_cancel_case = next(case for case in cases if case["id"] == "post_cancel_paused_turn_starts_fresh")
+    assert fresh_after_cancel_case["detail"]["notification"]["params"]["update"]["content"]["text"] == "self-test"
+    assert fresh_after_cancel_case["detail"]["result"]["result"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
