@@ -50,6 +50,14 @@ class TaskInterruptedHookEvent(BaseHookEvent, total=False):
     partial_answer: str
 
 
+class SteeringCheckpointHookEvent(BaseHookEvent, total=False):
+    checkpoint: str
+    current_tool: str | None
+    pending_count: int
+    interrupt_requested: bool
+    partial_answer: str
+
+
 HookEventPayload: TypeAlias = (
     StopHookEvent
     | TaskStartedHookEvent
@@ -57,6 +65,7 @@ HookEventPayload: TypeAlias = (
     | TaskCompletedHookEvent
     | TaskErrorHookEvent
     | TaskInterruptedHookEvent
+    | SteeringCheckpointHookEvent
 )
 
 

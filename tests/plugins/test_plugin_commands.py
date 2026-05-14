@@ -59,6 +59,17 @@ def _get_builtin_memory_plugin_root() -> Path:
     )
 
 
+def _get_builtin_steering_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "steering_cli"
+    )
+
+
 @pytest.mark.parametrize("user_args", ['"Build API" --max-iterations 0', '"Build API" --max-iterations -5'])
 def test_parse_loop_args_rejects_non_positive_max_iterations(user_args):
     with pytest.raises(ValueError, match="--max-iterations must be >= 1"):
@@ -101,6 +112,112 @@ def test_register_plugin_command_from_manifest():
         assert command is not None
         assert command.description == "Review the current pull request"
         assert "gh pr view" in command.allowed_tools[0]
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+def test_interrupt_plugin_command_registers():
+    plugin_root = _get_builtin_steering_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("interrupt")
+
+        assert command is not None
+        assert command.command_type == "tool"
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_plugin_command_requests_runtime_interrupt(tmp_path):
+    plugin_root = _get_builtin_steering_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    class InterruptRuntime:
+        def __init__(self):
+            self.calls: list[str | None] = []
+
+        def request_session_interrupt(self, session_id):
+            self.calls.append(session_id)
+            return True
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("interrupt")
+        runtime = InterruptRuntime()
+        result = await command.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args="",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+
+        assert result == "Interrupt requested."
+        assert runtime.calls == ["session-1"]
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_plugin_command_reports_no_active_task(tmp_path):
+    plugin_root = _get_builtin_steering_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    class InterruptRuntime:
+        def request_session_interrupt(self, session_id):
+            return False
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("interrupt")
+        result = await command.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args="",
+                runtime=InterruptRuntime(),
+                session_id="session-1",
+            )
+        )
+
+        assert result == "No active steerable task."
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_plugin_command_reports_unavailable_without_runtime(tmp_path):
+    plugin_root = _get_builtin_steering_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("interrupt")
+        result = await command.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args="",
+                runtime=None,
+                session_id="session-1",
+            )
+        )
+
+        assert result == "Interrupt control is unavailable."
     finally:
         CommandRegistry.restore(snapshot)
 

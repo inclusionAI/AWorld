@@ -814,13 +814,12 @@ class DingTalkConnector:
             active_runs = self._conversation_active_runs.get(conversation_key, 0)
             current_session_id = self._session_ids.get(conversation_key)
 
-            if not current_session_id or active_runs > 0:
+            if not current_session_id:
                 session_id = self._new_session_id(conversation_key)
                 self._session_ids[conversation_key] = session_id
-                isolated_from_inflight = bool(current_session_id) and active_runs > 0
             else:
                 session_id = current_session_id
-                isolated_from_inflight = False
+            isolated_from_inflight = active_runs > 0
 
             self._conversation_active_runs[conversation_key] = active_runs + 1
             return session_id, isolated_from_inflight
