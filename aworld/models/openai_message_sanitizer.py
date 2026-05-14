@@ -45,13 +45,21 @@ def _normalize_content_part(item: Any) -> dict[str, str]:
 
 
 def _normalize_assistant_content(value: Any, *, has_tool_calls: bool) -> Any:
+    def drop_empty_text_parts(parts: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [
+            part for part in parts
+            if not (part.get("type") == "text" and part.get("text") == "")
+        ]
+
     if not has_tool_calls:
         return value
     if value is None:
         return []
     if isinstance(value, list):
-        return [_normalize_content_part(item) for item in value]
-    return [_normalize_content_part(value)]
+        return drop_empty_text_parts([_normalize_content_part(item) for item in value])
+    if value == "":
+        return []
+    return drop_empty_text_parts([_normalize_content_part(value)])
 
 
 def _normalize_tool_content(value: Any) -> list[dict[str, str]]:
