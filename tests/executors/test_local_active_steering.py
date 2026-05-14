@@ -287,3 +287,26 @@ async def test_local_executor_steering_checkpoint_hook_can_defer_pause():
 
     assert should_pause is False
     executor._run_plugin_task_hook.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_local_executor_steering_checkpoint_pauses_for_interrupt_without_text():
+    executor = object.__new__(LocalAgentExecutor)
+    executor.session_id = "sess-1"
+    executor._active_steering_event_sink = lambda _event: None
+    executor._base_runtime = SimpleNamespace(_steering=SteeringCoordinator())
+    executor._base_runtime._steering.begin_task("sess-1", "task-1")
+    assert executor._base_runtime._steering.request_interrupt("sess-1") is True
+    executor._run_plugin_task_hook = AsyncMock(return_value=[])
+    executor._emit_active_steering_status = MagicMock()
+
+    should_pause = await executor._should_pause_for_queued_steering_checkpoint(
+        task_id="task-1",
+        checkpoint="after_tool_result",
+        current_tool="terminal",
+        partial_answer="partial",
+    )
+
+    assert should_pause is True
+    executor._run_plugin_task_hook.assert_awaited_once()
+    executor._emit_active_steering_status.assert_called_once_with("Applying queued steering")

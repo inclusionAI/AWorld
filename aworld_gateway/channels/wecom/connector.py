@@ -123,6 +123,7 @@ class WecomConnector:
         self._listen_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._conversation_tails: dict[str, asyncio.Future[None]] = {}
         self._pending_responses: dict[str, asyncio.Future[dict[str, object]]] = {}
         self._reply_req_ids: dict[str, str] = {}
         self._last_chat_req_ids: dict[str, str] = {}
@@ -334,9 +335,39 @@ class WecomConnector:
         logger.info(f"WeCom payload ignored cmd={cmd or 'unknown'}")
 
     def _schedule_callback(self, payload: dict[str, object]) -> None:
-        task = asyncio.create_task(self._process_callback_with_logging(payload))
+        conversation_key = self._conversation_key_for_payload(payload)
+        task = asyncio.create_task(
+            self._process_callback_serialized(conversation_key, payload)
+        )
         self._background_tasks.add(task)
         task.add_done_callback(self._finalize_background_task)
+
+    async def _process_callback_serialized(
+        self,
+        conversation_key: str | None,
+        payload: dict[str, object],
+    ) -> None:
+        previous: asyncio.Future[None] | None = None
+        current: asyncio.Future[None] | None = None
+        if conversation_key:
+            loop = asyncio.get_running_loop()
+            previous = self._conversation_tails.get(conversation_key)
+            current = loop.create_future()
+            self._conversation_tails[conversation_key] = current
+
+        try:
+            if previous is not None:
+                try:
+                    await previous
+                except Exception:
+                    pass
+            await self._process_callback_with_logging(payload)
+        finally:
+            if current is not None:
+                if self._conversation_tails.get(conversation_key or "") is current:
+                    self._conversation_tails.pop(conversation_key or "", None)
+                if not current.done():
+                    current.set_result(None)
 
     def _finalize_background_task(self, task: asyncio.Task[None]) -> None:
         self._background_tasks.discard(task)
@@ -348,6 +379,23 @@ class WecomConnector:
             raise
         except Exception:
             logger.exception("WeCom callback processing failed")
+
+    @staticmethod
+    def _conversation_key_for_payload(payload: dict[str, object]) -> str | None:
+        body = payload.get("body")
+        if not isinstance(body, dict):
+            return None
+        sender = body.get("from") if isinstance(body.get("from"), dict) else {}
+        sender_id = str(sender.get("userid") or "").strip()
+        chat_id = str(body.get("chatid") or sender_id).strip()
+        if not chat_id:
+            return None
+        conversation_type = (
+            "group"
+            if str(body.get("chattype") or "").lower() == "group"
+            else "dm"
+        )
+        return f"{conversation_type}:{chat_id}"
 
     async def _process_callback(self, payload: dict[str, object]) -> None:
         body = payload.get("body")

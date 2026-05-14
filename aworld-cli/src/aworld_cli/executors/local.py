@@ -424,7 +424,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         pending_count = int(snapshot.get("pending_count", 0) or 0)
         interrupt_requested = bool(snapshot.get("interrupt_requested"))
 
-        should_pause = pending_count > 0
+        should_pause = pending_count > 0 or interrupt_requested
         hook_results = await self._run_plugin_task_hook(
             "steering_checkpoint",
             {
@@ -448,7 +448,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             action = str(getattr(result, "action", "allow") or "allow").strip().lower()
             if action == "deny":
                 should_pause = False
-            elif action == "block_and_continue" and pending_count > 0:
+            elif action == "block_and_continue" and (pending_count > 0 or interrupt_requested):
                 should_pause = True
 
         if should_pause:
