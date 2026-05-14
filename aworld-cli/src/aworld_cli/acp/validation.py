@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from .errors import AWORLD_ACP_SESSION_BUSY
 from .stdio_harness import AcpStdioHarness
+from ..steering import STEERING_CAPTURED_ACK
 
 
 REQUIRED_PHASE1_CASE_IDS = (
@@ -15,11 +16,11 @@ REQUIRED_PHASE1_CASE_IDS = (
     "prompt_visible_text",
     "cancel_idle_noop",
     "tool_lifecycle_closes",
-    "turn_error_terminal",
+    "turn_error_pauses_for_steering",
     "turn_error_suppresses_followup_events",
     "post_turn_error_session_continues",
     "final_text_fallback",
-    "prompt_busy_rejected",
+    "prompt_busy_queued",
     "cancel_active_terminal",
     "stdout_protocol_only",
     "stderr_diagnostics_only",
@@ -231,10 +232,11 @@ async def run_phase1_validation_cases(
         )
         turn_error_start = await harness.read_notification("sessionUpdate")
         turn_error_end = await harness.read_notification("sessionUpdate")
+        pause_notice = await harness.read_notification("sessionUpdate")
         turn_error_result = await harness.read_response(10)
         cases.append(
             {
-                "id": "turn_error_terminal",
+                "id": "turn_error_pauses_for_steering",
                 "ok": (
                     turn_error_start.get("method") == "sessionUpdate"
                     and turn_error_start.get("params", {}).get("update", {}).get("sessionUpdate")
@@ -250,12 +252,16 @@ async def run_phase1_validation_cases(
                     .get("content", {})
                     .get("code")
                     == "AWORLD_ACP_REQUIRES_HUMAN"
-                    and turn_error_result.get("error", {}).get("message") == "AWORLD_ACP_REQUIRES_HUMAN"
-                    and turn_error_result.get("error", {}).get("data", {}).get("retryable") is True
+                    and pause_notice.get("params", {}).get("update", {}).get("sessionUpdate")
+                    == "agent_message_chunk"
+                    and "Execution paused."
+                    in pause_notice.get("params", {}).get("update", {}).get("content", {}).get("text", "")
+                    and turn_error_result.get("result", {}).get("status") == "completed"
                 ),
                 "detail": {
                     "start": turn_error_start,
                     "end": turn_error_end,
+                    "pause": pause_notice,
                     "result": turn_error_result,
                 },
             }
@@ -304,7 +310,12 @@ async def run_phase1_validation_cases(
                     .get("update", {})
                     .get("content", {})
                     .get("text")
-                    == profile.visible_text_expected
+                    is not None
+                    and profile.visible_text_prompt
+                    in post_error_notification.get("params", {})
+                    .get("update", {})
+                    .get("content", {})
+                    .get("text", "")
                     and post_error_result.get("result", {}).get("status") == "completed"
                 ),
                 "detail": {
@@ -382,12 +393,22 @@ async def run_phase1_validation_cases(
             }
         )
         seen_by_id = await harness.read_responses({7, 8, 9})
+        busy_session_update = await harness.read_notification("sessionUpdate")
 
         cases.append(
             {
-                "id": "prompt_busy_rejected",
-                "ok": seen_by_id[8].get("error", {}).get("message") == AWORLD_ACP_SESSION_BUSY,
-                "detail": seen_by_id[8],
+                "id": "prompt_busy_queued",
+                "ok": (
+                    seen_by_id[8].get("result", {}).get("status") == "queued"
+                    and busy_session_update.get("params", {}).get("update", {}).get("sessionUpdate")
+                    == "agent_message_chunk"
+                    and busy_session_update.get("params", {}).get("update", {}).get("content", {}).get("text")
+                    == STEERING_CAPTURED_ACK
+                ),
+                "detail": {
+                    "response": seen_by_id[8],
+                    "update": busy_session_update,
+                },
             }
         )
         cases.append(

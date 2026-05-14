@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from aworld_cli.acp import server as acp_server_module
 from aworld_cli.acp.server import AcpExecutorOutputBridge, AcpStdioServer
 from aworld_cli.acp.human_intercept import AcpRequiresHumanError
-from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED
+from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED, AWORLD_ACP_REQUIRES_HUMAN
 from aworld_cli.acp.session_store import AcpSessionRecord
 from aworld_cli.steering import SessionSteeringRuntime
 
@@ -1251,13 +1251,19 @@ def test_new_session_rejects_unsupported_mcp_servers_with_structured_error() -> 
 
 
 @pytest.mark.asyncio
-async def test_prompt_translates_human_intercept_error_to_retryable_structured_error() -> None:
+async def test_prompt_emits_pause_notice_for_human_intercept_in_default_mode() -> None:
     class HumanBridge:
         async def stream_outputs(self, *, record, prompt_text):
             raise AcpRequiresHumanError("Human approval/input flow is not bridged in ACP mode.")
             yield  # pragma: no cover
 
     server = AcpStdioServer(output_bridge=HumanBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
     session = server._handle_new_session({"cwd": ".", "mcpServers": []})
 
     response = await server._handle_prompt(
@@ -1268,14 +1274,17 @@ async def test_prompt_translates_human_intercept_error_to_retryable_structured_e
         },
     )
 
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
-    assert response["error"]["data"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["retryable"] is True
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk",
+    ]
+    assert "Execution paused" in notifications[-1]["params"]["update"]["content"]["text"]
 
 
 @pytest.mark.asyncio
-async def test_prompt_closes_open_tool_lifecycle_before_requires_human_failure() -> None:
+async def test_prompt_closes_open_tool_lifecycle_before_requires_human_pause_notice() -> None:
     class HumanBridge:
         async def stream_outputs(self, *, record, prompt_text):
             yield MessageOutput(
@@ -1315,22 +1324,29 @@ async def test_prompt_closes_open_tool_lifecycle_before_requires_human_failure()
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
         "tool_call_update",
+        "agent_message_chunk",
     ]
     assert notifications[1]["params"]["update"]["toolCallId"] == "call-1"
     assert notifications[1]["params"]["update"]["status"] == "failed"
-    assert notifications[1]["params"]["update"]["content"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert notifications[1]["params"]["update"]["content"]["code"] == AWORLD_ACP_REQUIRES_HUMAN
+    assert "Execution paused." in notifications[2]["params"]["update"]["content"]["text"]
+    assert response["result"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_prompt_translates_approval_unsupported_to_retryable_structured_error() -> None:
+async def test_prompt_emits_pause_notice_for_approval_boundary_in_default_mode() -> None:
     class ApprovalBridge:
         async def stream_outputs(self, *, record, prompt_text):
             raise ValueError(AWORLD_ACP_APPROVAL_UNSUPPORTED)
             yield  # pragma: no cover
 
     server = AcpStdioServer(output_bridge=ApprovalBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
     session = server._handle_new_session({"cwd": ".", "mcpServers": []})
 
     response = await server._handle_prompt(
@@ -1341,14 +1357,17 @@ async def test_prompt_translates_approval_unsupported_to_retryable_structured_er
         },
     )
 
-    assert response["error"]["message"] == AWORLD_ACP_APPROVAL_UNSUPPORTED
-    assert response["error"]["data"]["message"] == "Approval flow is not bridged in phase 1."
-    assert response["error"]["data"]["code"] == AWORLD_ACP_APPROVAL_UNSUPPORTED
-    assert response["error"]["data"]["retryable"] is True
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk",
+    ]
+    assert "Execution paused" in notifications[-1]["params"]["update"]["content"]["text"]
 
 
 @pytest.mark.asyncio
-async def test_prompt_treats_runtime_turn_error_as_terminal_structured_failure() -> None:
+async def test_prompt_treats_runtime_turn_error_as_pause_notice_by_default() -> None:
     class TurnErrorBridge:
         async def stream_outputs(self, *, record, prompt_text):
             yield {
@@ -1361,6 +1380,12 @@ async def test_prompt_treats_runtime_turn_error_as_terminal_structured_failure()
             }
 
     server = AcpStdioServer(output_bridge=TurnErrorBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
     session = server._handle_new_session({"cwd": ".", "mcpServers": []})
 
     response = await server._handle_prompt(
@@ -1371,14 +1396,17 @@ async def test_prompt_treats_runtime_turn_error_as_terminal_structured_failure()
         },
     )
 
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
-    assert response["error"]["data"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["retryable"] is True
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk",
+    ]
+    assert "Execution paused." in notifications[-1]["params"]["update"]["content"]["text"]
 
 
 @pytest.mark.asyncio
-async def test_prompt_closes_open_tool_lifecycle_before_runtime_turn_error_failure() -> None:
+async def test_prompt_closes_open_tool_lifecycle_before_runtime_turn_error_pause_notice() -> None:
     class TurnErrorBridge:
         async def stream_outputs(self, *, record, prompt_text):
             yield MessageOutput(
@@ -1425,15 +1453,16 @@ async def test_prompt_closes_open_tool_lifecycle_before_runtime_turn_error_failu
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
         "tool_call_update",
+        "agent_message_chunk",
     ]
     assert notifications[1]["params"]["update"]["status"] == "failed"
-    assert notifications[1]["params"]["update"]["content"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert notifications[1]["params"]["update"]["content"]["code"] == AWORLD_ACP_REQUIRES_HUMAN
+    assert "Execution paused." in notifications[2]["params"]["update"]["content"]["text"]
+    assert response["result"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_prompt_closes_all_open_same_name_tool_lifecycles_before_runtime_turn_error_failure() -> None:
+async def test_prompt_closes_all_open_same_name_tool_lifecycles_before_runtime_turn_error_pause_notice() -> None:
     class TurnErrorBridge:
         async def stream_outputs(self, *, record, prompt_text):
             yield MessageOutput(
@@ -1495,37 +1524,38 @@ async def test_prompt_closes_all_open_same_name_tool_lifecycles_before_runtime_t
         "tool_call",
         "tool_call_update",
         "tool_call_update",
+        "agent_message_chunk",
     ]
-    assert [item["params"]["update"]["toolCallId"] for item in notifications[2:]] == ["call-1", "call-2"]
-    assert all(item["params"]["update"]["status"] == "failed" for item in notifications[2:])
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert [item["params"]["update"]["toolCallId"] for item in notifications[2:4]] == ["call-1", "call-2"]
+    assert all(item["params"]["update"]["status"] == "failed" for item in notifications[2:4])
+    assert "Execution paused." in notifications[4]["params"]["update"]["content"]["text"]
+    assert response["result"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_session_continues_after_runtime_turn_error_failure() -> None:
-    class TurnErrorThenSuccessBridge:
+async def test_next_prompt_after_pause_resumes_through_steering_follow_up() -> None:
+    class ResumeBridge:
         def __init__(self) -> None:
-            self.calls = 0
+            self.calls: list[str] = []
+
+        def prepare_paused_resume_prompt(self, *, record, text: str) -> tuple[str, list[object]]:
+            return (
+                "Continue the current task with this additional operator steering:\n\n1. "
+                + text,
+                [],
+            )
 
         async def stream_outputs(self, *, record, prompt_text):
-            self.calls += 1
-            if self.calls == 1:
-                yield {
-                    "event_type": "turn_error",
-                    "seq": 1,
-                    "code": "AWORLD_ACP_REQUIRES_HUMAN",
-                    "message": "Human approval/input flow is not bridged in phase 1.",
-                    "retryable": True,
-                    "origin": "runtime",
-                }
-                return
+            self.calls.append(prompt_text)
+            if len(self.calls) == 1:
+                raise AcpRequiresHumanError("Human approval/input flow is not bridged in ACP mode.")
 
             yield MessageOutput(
                 source=ModelResponse(id="resp-2", model="demo", content="recovered"),
             )
 
-    server = AcpStdioServer(output_bridge=TurnErrorThenSuccessBridge())
+    bridge = ResumeBridge()
+    server = AcpStdioServer(output_bridge=bridge)
     writes: list[dict] = []
 
     async def capture(message: dict) -> None:
@@ -1551,9 +1581,10 @@ async def test_session_continues_after_runtime_turn_error_failure() -> None:
 
     notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
 
-    assert first["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert first["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert first["result"]["status"] == "completed"
     assert second["result"]["status"] == "completed"
+    assert bridge.calls[1].startswith("Continue the current task with this additional operator steering:")
+    assert "follow-up" in bridge.calls[1]
     assert notifications[-1]["params"]["update"]["content"]["text"] == "recovered"
 
 
@@ -1621,8 +1652,61 @@ async def test_prompt_suppresses_events_emitted_after_runtime_turn_error() -> No
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
         "tool_call_update",
+        "agent_message_chunk",
     ]
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
+    assert response["result"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_legacy_mode_preserves_requires_human_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWORLD_ACP_LEGACY_HUMAN_ERROR_MODE", "1")
+
+    class HumanBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            raise AcpRequiresHumanError("Human approval/input flow is not bridged in ACP mode.")
+            yield  # pragma: no cover
+
+    server = AcpStdioServer(output_bridge=HumanBridge())
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        17,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "needs approval"}]},
+        },
+    )
+
+    assert response["error"]["message"] == AWORLD_ACP_REQUIRES_HUMAN
+    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert response["error"]["data"]["code"] == AWORLD_ACP_REQUIRES_HUMAN
+    assert response["error"]["data"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_mode_preserves_approval_boundary_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWORLD_ACP_LEGACY_HUMAN_ERROR_MODE", "1")
+
+    class ApprovalBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            raise ValueError(AWORLD_ACP_APPROVAL_UNSUPPORTED)
+            yield  # pragma: no cover
+
+    server = AcpStdioServer(output_bridge=ApprovalBridge())
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        18,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "approval path"}]},
+        },
+    )
+
+    assert response["error"]["message"] == AWORLD_ACP_APPROVAL_UNSUPPORTED
+    assert response["error"]["data"]["message"] == "Approval flow is not bridged in phase 1."
+    assert response["error"]["data"]["code"] == AWORLD_ACP_APPROVAL_UNSUPPORTED
+    assert response["error"]["data"]["retryable"] is True
 
 
 @pytest.mark.asyncio

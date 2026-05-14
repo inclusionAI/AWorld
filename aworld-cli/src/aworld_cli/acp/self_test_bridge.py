@@ -25,6 +25,16 @@ class DeterministicSelfTestOutputBridge:
         self._steering.request_interrupt(record.aworld_session_id)
         return STEERING_CAPTURED_ACK
 
+    def prepare_paused_resume_prompt(self, *, record, text: str) -> tuple[str, list[object]]:
+        self._steering.begin_task(record.aworld_session_id, f"self-test-{record.aworld_session_id}")
+        self._steering.enqueue_text(record.aworld_session_id, text)
+        follow_up_prompt, drained_items, _interrupt_requested = self._steering.consume_terminal_fallback(
+            record.aworld_session_id
+        )
+        if not follow_up_prompt:
+            raise ValueError("expected paused steering follow-up prompt")
+        return follow_up_prompt, drained_items
+
     async def stream_outputs(self, *, record, prompt_text):
         current_prompt = prompt_text
         while True:
