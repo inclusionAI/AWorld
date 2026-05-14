@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover
 
 
 logger = get_gateway_logger("router")
+SESSION_BINDING_CONVERSATION_ID_METADATA_KEY = "session_binding_conversation_id"
 
 
 class AgentBackend(Protocol):
@@ -439,12 +440,16 @@ class GatewayRouter:
             channel_default_agent_id=channel_default_agent_id,
             matched_route_agent_id=matched_route_agent_id,
         )
+        session_binding_conversation_id = inbound.conversation_id
+        metadata_override = inbound.metadata.get(SESSION_BINDING_CONVERSATION_ID_METADATA_KEY)
+        if isinstance(metadata_override, str) and metadata_override.strip():
+            session_binding_conversation_id = metadata_override.strip()
         session_id = self._session_binding.build(
             agent_id=resolved_agent_id,
             channel=inbound.channel,
             account_id=inbound.account_id,
             conversation_type=inbound.conversation_type,
-            conversation_id=inbound.conversation_id,
+            conversation_id=session_binding_conversation_id,
         )
         logger.info(
             "Gateway router resolved "
@@ -508,13 +513,15 @@ class GatewayRouter:
             )
             raise
 
+        outbound_metadata = dict(inbound.metadata)
+        outbound_metadata.pop(SESSION_BINDING_CONVERSATION_ID_METADATA_KEY, None)
         outbound = OutboundEnvelope(
             channel=inbound.channel,
             account_id=inbound.account_id,
             conversation_id=inbound.conversation_id,
             reply_to_message_id=inbound.message_id,
             text=response_text,
-            metadata=dict(inbound.metadata),
+            metadata=outbound_metadata,
         )
         logger.info(
             "Gateway router outbound "

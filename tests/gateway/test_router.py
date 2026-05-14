@@ -117,6 +117,44 @@ def test_handle_inbound_resolves_agent_builds_session_and_routes_execution():
     assert outbound.text == "backend reply"
 
 
+def test_handle_inbound_uses_session_binding_conversation_override_from_metadata():
+    backend = FakeAgentBackend()
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
+    inbound = InboundEnvelope(
+        channel="wechat",
+        account_id="acct-override",
+        conversation_id="conv-visible",
+        conversation_type="dm",
+        sender_id="sender-override",
+        sender_name="Sender",
+        message_id="msg-override",
+        text="hello after reset",
+        metadata={"session_binding_conversation_id": "conv-reset-2"},
+    )
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert backend.calls == [
+        {
+            "agent_id": "channel-agent",
+            "session_id": "gw:channel-agent:wechat:acct-override:dm:conv-reset-2",
+            "text": "hello after reset",
+        }
+    ]
+    assert outbound.conversation_id == "conv-visible"
+    assert outbound.reply_to_message_id == "msg-override"
+    assert outbound.metadata == {}
+
+
 def test_handle_inbound_prefers_explicit_agent_id_over_other_sources():
     backend = FakeAgentBackend()
     router = GatewayRouter(
