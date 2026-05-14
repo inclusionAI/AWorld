@@ -1,0 +1,4058 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://www.inclusion-ai.org/AWorld/superpowers/plans/2026-05-07-governed-session-log-promotion/">
+      
+      
+        <link rel="prev" href="../../evaluations/2026-05-12-steering-implementation-evaluation/">
+      
+      
+        <link rel="next" href="../2026-05-07-llm-calls-truth-source/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../imgs/logo.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>2026-05-07-Governed-Session-Log-Promotion - AWorld (Agent World) harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../css/aworld.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="deep-purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#governed-session-log-promotion-implementation-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="AWorld (Agent World) harness" class="md-header__button md-logo" aria-label="AWorld (Agent World) harness" data-md-component="logo">
+      
+  <img src="../../../imgs/logo.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AWorld (Agent World) harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              2026-05-07-Governed-Session-Log-Promotion
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="deep-purple"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="deep-purple"  aria-hidden="true"  type="radio" name="__palette" id="__palette_1">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    inclusionAI/AWorld
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Get%20Start/Overview/" class="md-tabs__link">
+          
+  
+  
+  Get Start
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Agents/Build%20Agent/" class="md-tabs__link">
+          
+  
+  
+  Agents
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../AWorld%20CLI/Overview/" class="md-tabs__link">
+          
+  
+  
+  AWorld CLI
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Environment/Overview/" class="md-tabs__link">
+          
+  
+  
+  Environment
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Training/Trainer/" class="md-tabs__link">
+          
+  
+  
+  Training
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../evaluations/2026-05-12-steering-implementation-evaluation/" class="md-tabs__link">
+          
+  
+  
+  superpowers
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="AWorld (Agent World) harness" class="md-nav__button md-logo" aria-label="AWorld (Agent World) harness" data-md-component="logo">
+      
+  <img src="../../../imgs/logo.png" alt="logo">
+
+    </a>
+    AWorld (Agent World) harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    inclusionAI/AWorld
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Start
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Get Start
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Quick%20Start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Core%20Capabilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Parallel%20Tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Tasks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Streaming%20Response/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming Response
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/HITL/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Human in the Loop (HITL)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Build%20Agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Build%20Multi-Agent%20System%28MAS%29/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-Agent System(MAS)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Build%20WorkFlow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Custom%20Agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6" id="__nav_3_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Runtime
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Runtime/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Runtime/Custom%20Runner/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Runner
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Runtime/Hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Runtime/Ralph%20Runner/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ralph Runner
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Trace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Parallel%20Subagents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Subagents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AWorld CLI
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    AWorld CLI
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Commands
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Commands/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Commands/Memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Commands/Cron/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cron
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Commands/Plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Commands/Gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Commands/Parallel%20Tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Tasks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Hooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Hooks/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_5_2" id="__nav_4_5_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_4_5_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Hooks/Examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    README
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_6" id="__nav_4_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Plugins
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Plugins/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Plugins/Plugin%20SDK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugin SDK
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Plugins/Ralph%20Session%20Loop/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ralph Session Loop
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_7" id="__nav_4_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recipes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Recipes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Recipes/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Recipes/Deep%20Search/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deep Search
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Recipes/Mini%20App%20Build/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mini App Build
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../AWorld%20CLI/Recipes/Video%20Creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Video Creation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Environment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/Using%20API/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/Env%20Client/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Env Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/Advanced%20Capabilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advanced Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/OceanBase/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OceanBase
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Training
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Training
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Training/Trainer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Training/Trajectory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trajectory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Training/Evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    superpowers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    superpowers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_1" id="__nav_7_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    evaluations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    evaluations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../evaluations/2026-05-12-steering-implementation-evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-12-Steering-Implementation-Evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7_2" id="__nav_7_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plans
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plans
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-07-Governed-Session-Log-Promotion
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-07-Governed-Session-Log-Promotion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Structure
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="File Structure">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#create" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#modify" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Modify
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#do-not-modify-as-part-of-this-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Do not modify as part of this plan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-1-add-governed-decision-models-and-append-only-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 1: Add Governed Decision Models And Append-Only Stores
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-2-route-hook-and-provider-through-governed-promotion-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 2: Route Hook And Provider Through Governed Promotion Modes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-3-add-review-actions-and-memory-promotions-command-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 3: Add Review Actions And /memory promotions Command Surface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-4-extend-metrics-threshold-readiness-and-runtime-regression-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 4: Extend Metrics, Threshold Readiness, And Runtime Regression Coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#self-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-Review
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Self-Review">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#spec-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Spec coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#placeholder-scan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Placeholder scan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#type-consistency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Type consistency
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-05-07-llm-calls-truth-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-07-Llm-Calls-Truth-Source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-05-08-typed-durable-memory-taxonomy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-08-Typed-Durable-Memory-Taxonomy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-05-12-active-steering-terminal-redesign/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-12-Active-Steering-Terminal-Redesign
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-05-12-aworld-cli-interactive-steering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-12-Aworld-Cli-Interactive-Steering
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-05-14-acp-paused-steering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-14-Acp-Paused-Steering
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_3" id="__nav_7_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    specs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    specs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../specs/2026-05-07-cli-memory-followups-backlog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-07-Cli-Memory-Followups-Backlog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../specs/2026-05-07-llm-calls-truth-source-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-07-Llm-Calls-Truth-Source-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../specs/2026-05-12-active-steering-terminal-redesign/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-12-Active-Steering-Terminal-Redesign
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../specs/2026-05-14-acp-paused-steering-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-05-14-Acp-Paused-Steering-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Structure
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="File Structure">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#create" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#modify" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Modify
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#do-not-modify-as-part-of-this-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Do not modify as part of this plan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-1-add-governed-decision-models-and-append-only-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 1: Add Governed Decision Models And Append-Only Stores
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-2-route-hook-and-provider-through-governed-promotion-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 2: Route Hook And Provider Through Governed Promotion Modes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-3-add-review-actions-and-memory-promotions-command-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 3: Add Review Actions And /memory promotions Command Surface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-4-extend-metrics-threshold-readiness-and-runtime-regression-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 4: Extend Metrics, Threshold Readiness, And Runtime Regression Coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#self-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-Review
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Self-Review">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#spec-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Spec coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#placeholder-scan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Placeholder scan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#type-consistency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Type consistency
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/inclusionAI/AWorld/tree/main/docs/superpowers/plans/2026-05-07-governed-session-log-promotion.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="governed-session-log-promotion-implementation-plan">Governed Session-Log Promotion Implementation Plan</h1>
+<blockquote>
+<p><strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (<code>- [ ]</code>) syntax for tracking.</p>
+</blockquote>
+<p><strong>Goal:</strong> Add governed promotion from workspace session logs into active durable memory without changing <code>AworldMemory</code> runtime message-memory semantics.</p>
+<p><strong>Architecture:</strong> Keep promotion governance inside the CLI durable-memory layer. Session logs remain the append-only truth source, the memory hook writes candidate and decision records, <code>CliDurableMemoryProvider</code> becomes the read/write surface for governed state and review actions, and <code>HybridMemoryProvider</code> only forwards new durable-memory APIs while leaving runtime <code>AworldMemory</code> behavior untouched.</p>
+<p><strong>Tech Stack:</strong> Python 3.10+, <code>pytest</code>, JSONL append-only storage, existing <code>aworld-cli</code> memory provider / hybrid provider / memory plugin command and hook surfaces.</p>
+<hr />
+<h2 id="file-structure">File Structure</h2>
+<h3 id="create">Create</h3>
+<ul>
+<li><code>aworld-cli/src/aworld_cli/memory/governance.py</code>
+  Owns governance mode resolution, governed decision data model, source refs, policy gating, and append-only decision/review record helpers.</li>
+<li><code>tests/cli_memory/test_governance.py</code>
+  Covers policy modes, decision payload shape, duplicate / temporary blockers, and append-only review actions.</li>
+</ul>
+<h3 id="modify">Modify</h3>
+<ul>
+<li><code>aworld-cli/src/aworld_cli/memory/promotion.py</code>
+  Keeps extraction helpers but drops boolean auto-promotion as the primary policy contract.</li>
+<li><code>aworld-cli/src/aworld_cli/memory/metrics.py</code>
+  Extends promotion metrics from simple counts to governed quality and threshold readiness.</li>
+<li><code>aworld-cli/src/aworld_cli/memory/provider.py</code>
+  Exposes governed decision listing, review actions, and active durable-memory reads that honor reverts.</li>
+<li><code>aworld-cli/src/aworld_cli/memory/hybrid.py</code>
+  Forwards governed durable-memory APIs without touching runtime-memory methods.</li>
+<li><code>aworld-cli/src/aworld_cli/memory/relevance.py</code>
+  Reads only active governed durable records when scoring promoted durable content.</li>
+<li><code>aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py</code>
+  Writes session-log candidates, governed decisions, and mode-aware durable promotions.</li>
+<li><code>aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/commands/memory.py</code>
+  Adds governance status, promotions listing, and accept / reject / revert actions.</li>
+<li><code>tests/cli_memory/test_metrics.py</code>
+  Verifies quality metrics and rollout-threshold readiness.</li>
+<li><code>tests/cli_memory/test_durable_memory.py</code>
+  Verifies provider APIs for active durable reads and review-driven state.</li>
+<li><code>tests/cli_memory/test_memory_acceptance.py</code>
+  Locks <code>/remember</code> bypass and active recall behavior under <code>shadow</code> and <code>governed</code>.</li>
+<li><code>tests/plugins/test_plugin_hooks.py</code>
+  Verifies <code>task_completed</code> hook behavior for <code>off</code>, <code>shadow</code>, and <code>governed</code>.</li>
+<li><code>tests/plugins/test_plugin_commands.py</code>
+  Verifies <code>/memory status</code> and <code>/memory promotions ...</code> surfaces.</li>
+<li><code>openspec/changes/2026-05-07-governed-session-log-promotion/tasks.md</code>
+  Marks completed tasks as implementation lands.</li>
+</ul>
+<h3 id="do-not-modify-as-part-of-this-plan">Do not modify as part of this plan</h3>
+<ul>
+<li><code>aworld/memory/main.py</code></li>
+<li><code>aworld/core/memory.py</code></li>
+<li><code>aworld/core/context/amni/prompt/neurons/aworld_file_neuron.py</code></li>
+<li><code>AworldMemory</code> summary / history / long-term extraction behavior</li>
+<li>trajectory or <code>llm_calls</code> contracts</li>
+</ul>
+<p>Those files are outside the allowed implementation surface frozen by the spec.</p>
+<hr />
+<h3 id="task-1-add-governed-decision-models-and-append-only-stores">Task 1: Add Governed Decision Models And Append-Only Stores</h3>
+<p><strong>Files:</strong>
+- Create: <code>aworld-cli/src/aworld_cli/memory/governance.py</code>
+- Create: <code>tests/cli_memory/test_governance.py</code>
+- Modify: <code>aworld-cli/src/aworld_cli/memory/promotion.py</code></p>
+<ul>
+<li>[ ] <strong>Step 1: Write the failing governance tests</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># tests/cli_memory/test_governance.py</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">aworld_cli.memory.governance</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">append_governed_decision</span><span class="p">,</span>
+    <span class="n">append_governed_review</span><span class="p">,</span>
+    <span class="n">evaluate_governed_candidate</span><span class="p">,</span>
+    <span class="n">governance_mode</span><span class="p">,</span>
+    <span class="n">list_governed_decisions</span><span class="p">,</span>
+<span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">test_governance_mode_defaults_to_shadow</span><span class="p">(</span><span class="n">monkeypatch</span><span class="p">):</span>
+    <span class="n">monkeypatch</span><span class="o">.</span><span class="n">delenv</span><span class="p">(</span><span class="s2">&quot;AWORLD_CLI_PROMOTION_MODE&quot;</span><span class="p">,</span> <span class="n">raising</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="n">governance_mode</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;shadow&quot;</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">test_evaluate_governed_candidate_blocks_temporary_content</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">workspace</span><span class="o">.</span><span class="n">mkdir</span><span class="p">()</span>
+
+    <span class="n">decision</span> <span class="o">=</span> <span class="n">evaluate_governed_candidate</span><span class="p">(</span>
+        <span class="n">workspace_path</span><span class="o">=</span><span class="n">workspace</span><span class="p">,</span>
+        <span class="n">candidate</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">&quot;candidate_id&quot;</span><span class="p">:</span> <span class="s2">&quot;cand-1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="s2">&quot;Temporary debug note for the current task only.&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;memory_type&quot;</span><span class="p">:</span> <span class="s2">&quot;workspace&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;confidence&quot;</span><span class="p">:</span> <span class="s2">&quot;low&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;source_ref&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;session_id&quot;</span><span class="p">:</span> <span class="s2">&quot;s1&quot;</span><span class="p">,</span> <span class="s2">&quot;task_id&quot;</span><span class="p">:</span> <span class="s2">&quot;t1&quot;</span><span class="p">,</span> <span class="s2">&quot;candidate_id&quot;</span><span class="p">:</span> <span class="s2">&quot;cand-1&quot;</span><span class="p">},</span>
+        <span class="p">},</span>
+        <span class="n">mode</span><span class="o">=</span><span class="s2">&quot;governed&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="k">assert</span> <span class="n">decision</span><span class="o">.</span><span class="n">decision</span> <span class="o">==</span> <span class="s2">&quot;rejected&quot;</span>
+    <span class="k">assert</span> <span class="s2">&quot;temporary_candidate&quot;</span> <span class="ow">in</span> <span class="n">decision</span><span class="o">.</span><span class="n">blockers</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">test_append_governed_decision_and_review_are_append_only</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">workspace</span><span class="o">.</span><span class="n">mkdir</span><span class="p">()</span>
+
+    <span class="n">append_governed_decision</span><span class="p">(</span>
+        <span class="n">workspace</span><span class="p">,</span>
+        <span class="p">{</span>
+            <span class="s2">&quot;decision_id&quot;</span><span class="p">:</span> <span class="s2">&quot;dec-1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;decision&quot;</span><span class="p">:</span> <span class="s2">&quot;session_log_only&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;policy_mode&quot;</span><span class="p">:</span> <span class="s2">&quot;shadow&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;source_ref&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;session_id&quot;</span><span class="p">:</span> <span class="s2">&quot;s1&quot;</span><span class="p">,</span> <span class="s2">&quot;task_id&quot;</span><span class="p">:</span> <span class="s2">&quot;t1&quot;</span><span class="p">,</span> <span class="s2">&quot;candidate_id&quot;</span><span class="p">:</span> <span class="s2">&quot;cand-1&quot;</span><span class="p">},</span>
+        <span class="p">},</span>
+    <span class="p">)</span>
+    <span class="n">append_governed_review</span><span class="p">(</span>
+        <span class="n">workspace</span><span class="p">,</span>
+        <span class="p">{</span>
+            <span class="s2">&quot;decision_id&quot;</span><span class="p">:</span> <span class="s2">&quot;dec-1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;review_action&quot;</span><span class="p">:</span> <span class="s2">&quot;confirmed&quot;</span><span class="p">,</span>
+        <span class="p">},</span>
+    <span class="p">)</span>
+
+    <span class="n">decisions</span> <span class="o">=</span> <span class="n">list_governed_decisions</span><span class="p">(</span><span class="n">workspace</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="n">decisions</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;decision_id&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;dec-1&quot;</span>
+    <span class="k">assert</span> <span class="n">decisions</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;reviews&quot;</span><span class="p">][</span><span class="o">-</span><span class="mi">1</span><span class="p">][</span><span class="s2">&quot;review_action&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;confirmed&quot;</span>
+</code></pre></div>
+
+<ul>
+<li>[ ] <strong>Step 2: Run the focused governance tests to verify the feature is missing</strong></li>
+</ul>
+<p>Run: <code>pytest tests/cli_memory/test_governance.py -q</code></p>
+<p>Expected: FAIL with <code>ModuleNotFoundError: No module named 'aworld_cli.memory.governance'</code>.</p>
+<ul>
+<li>[ ] <strong>Step 3: Implement governed decision and review storage</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># aworld-cli/src/aworld_cli/memory/governance.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">asdict</span><span class="p">,</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span><span class="p">,</span> <span class="n">timezone</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">uuid</span><span class="w"> </span><span class="kn">import</span> <span class="n">uuid4</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">aworld_cli.memory.durable</span><span class="w"> </span><span class="kn">import</span> <span class="n">INSTRUCTION_MEMORY_TYPES</span><span class="p">,</span> <span class="n">read_durable_memory_records</span>
+
+
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">GovernedDecision</span><span class="p">:</span>
+    <span class="n">decision_id</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">candidate_id</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">decision</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">policy_mode</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">policy_version</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">reason</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">blockers</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">()</span>
+    <span class="n">confidence</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+    <span class="n">memory_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">content</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+    <span class="n">source_ref</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">)</span>
+    <span class="n">evaluated_at</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">to_payload</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">governance_mode</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="n">raw</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s2">&quot;AWORLD_CLI_PROMOTION_MODE&quot;</span><span class="p">,</span> <span class="s2">&quot;shadow&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">raw</span> <span class="k">if</span> <span class="n">raw</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">&quot;off&quot;</span><span class="p">,</span> <span class="s2">&quot;shadow&quot;</span><span class="p">,</span> <span class="s2">&quot;governed&quot;</span><span class="p">}</span> <span class="k">else</span> <span class="s2">&quot;shadow&quot;</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">decisions_file</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Path</span><span class="p">:</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span><span class="o">.</span><span class="n">expanduser</span><span class="p">()</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;metrics&quot;</span> <span class="o">/</span> <span class="s2">&quot;promotion_decisions.jsonl&quot;</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">reviews_file</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Path</span><span class="p">:</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span><span class="o">.</span><span class="n">expanduser</span><span class="p">()</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;metrics&quot;</span> <span class="o">/</span> <span class="s2">&quot;promotion_reviews.jsonl&quot;</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">evaluate_governed_candidate</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="n">candidate</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">GovernedDecision</span><span class="p">:</span>
+    <span class="n">mode</span> <span class="o">=</span> <span class="n">mode</span> <span class="ow">or</span> <span class="n">governance_mode</span><span class="p">()</span>
+    <span class="n">content</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">candidate</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;content&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">&quot;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+    <span class="n">memory_type</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">candidate</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;memory_type&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">&quot;workspace&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+    <span class="n">blockers</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">if</span> <span class="s2">&quot;temporary&quot;</span> <span class="ow">in</span> <span class="n">content</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">or</span> <span class="s2">&quot;current task&quot;</span> <span class="ow">in</span> <span class="n">content</span><span class="o">.</span><span class="n">lower</span><span class="p">():</span>
+        <span class="n">blockers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;temporary_candidate&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">memory_type</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">INSTRUCTION_MEMORY_TYPES</span><span class="p">:</span>
+        <span class="n">blockers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;ineligible_memory_type&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">record</span><span class="o">.</span><span class="n">content</span> <span class="o">==</span> <span class="n">content</span> <span class="k">for</span> <span class="n">record</span> <span class="ow">in</span> <span class="n">read_durable_memory_records</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">,</span> <span class="n">memory_type</span><span class="o">=</span><span class="n">memory_type</span><span class="p">)):</span>
+        <span class="n">blockers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;duplicate_active_durable_memory&quot;</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">blockers</span><span class="p">:</span>
+        <span class="n">decision</span> <span class="o">=</span> <span class="s2">&quot;rejected&quot;</span>
+        <span class="n">reason</span> <span class="o">=</span> <span class="n">blockers</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="k">elif</span> <span class="n">mode</span> <span class="o">==</span> <span class="s2">&quot;off&quot;</span><span class="p">:</span>
+        <span class="n">decision</span> <span class="o">=</span> <span class="s2">&quot;session_log_only&quot;</span>
+        <span class="n">reason</span> <span class="o">=</span> <span class="s2">&quot;governance_mode_off&quot;</span>
+    <span class="k">elif</span> <span class="n">mode</span> <span class="o">==</span> <span class="s2">&quot;shadow&quot;</span><span class="p">:</span>
+        <span class="n">decision</span> <span class="o">=</span> <span class="s2">&quot;session_log_only&quot;</span>
+        <span class="n">reason</span> <span class="o">=</span> <span class="s2">&quot;shadow_mode_no_auto_promotion&quot;</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">decision</span> <span class="o">=</span> <span class="s2">&quot;durable_memory&quot;</span>
+        <span class="n">reason</span> <span class="o">=</span> <span class="s2">&quot;governed_policy_pass&quot;</span>
+
+    <span class="k">return</span> <span class="n">GovernedDecision</span><span class="p">(</span>
+        <span class="n">decision_id</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;gdec_</span><span class="si">{</span><span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span><span class="p">[:</span><span class="mi">12</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+        <span class="n">candidate_id</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">candidate</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;candidate_id&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span><span class="p">[:</span><span class="mi">12</span><span class="p">]),</span>
+        <span class="n">decision</span><span class="o">=</span><span class="n">decision</span><span class="p">,</span>
+        <span class="n">policy_mode</span><span class="o">=</span><span class="n">mode</span><span class="p">,</span>
+        <span class="n">policy_version</span><span class="o">=</span><span class="s2">&quot;2026-05-07&quot;</span><span class="p">,</span>
+        <span class="n">reason</span><span class="o">=</span><span class="n">reason</span><span class="p">,</span>
+        <span class="n">blockers</span><span class="o">=</span><span class="nb">tuple</span><span class="p">(</span><span class="n">blockers</span><span class="p">),</span>
+        <span class="n">confidence</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">candidate</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;confidence&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">&quot;&quot;</span><span class="p">),</span>
+        <span class="n">memory_type</span><span class="o">=</span><span class="n">memory_type</span><span class="p">,</span>
+        <span class="n">content</span><span class="o">=</span><span class="n">content</span><span class="p">,</span>
+        <span class="n">source_ref</span><span class="o">=</span><span class="nb">dict</span><span class="p">(</span><span class="n">candidate</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;source_ref&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="p">{}),</span>
+        <span class="n">evaluated_at</span><span class="o">=</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">(</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span><span class="o">.</span><span class="n">isoformat</span><span class="p">(),</span>
+    <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">append_governed_decision</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="n">payload</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Path</span><span class="p">:</span>
+    <span class="n">target</span> <span class="o">=</span> <span class="n">decisions_file</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span>
+    <span class="n">target</span><span class="o">.</span><span class="n">parent</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">target</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">handle</span><span class="p">:</span>
+        <span class="n">handle</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">payload</span><span class="p">,</span> <span class="n">ensure_ascii</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+        <span class="n">handle</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">target</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">append_governed_review</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="n">payload</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Path</span><span class="p">:</span>
+    <span class="n">target</span> <span class="o">=</span> <span class="n">reviews_file</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span>
+    <span class="n">target</span><span class="o">.</span><span class="n">parent</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">target</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">handle</span><span class="p">:</span>
+        <span class="n">handle</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">payload</span><span class="p">,</span> <span class="n">ensure_ascii</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+        <span class="n">handle</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">target</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">list_governed_decisions</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+    <span class="n">decision_lines</span> <span class="o">=</span> <span class="n">decisions_file</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span><span class="o">.</span><span class="n">read_text</span><span class="p">(</span><span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">splitlines</span><span class="p">()</span> <span class="k">if</span> <span class="n">decisions_file</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span><span class="o">.</span><span class="n">exists</span><span class="p">()</span> <span class="k">else</span> <span class="p">[]</span>
+    <span class="n">review_lines</span> <span class="o">=</span> <span class="n">reviews_file</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span><span class="o">.</span><span class="n">read_text</span><span class="p">(</span><span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">splitlines</span><span class="p">()</span> <span class="k">if</span> <span class="n">reviews_file</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span><span class="o">.</span><span class="n">exists</span><span class="p">()</span> <span class="k">else</span> <span class="p">[]</span>
+    <span class="n">reviews_by_decision</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">review_lines</span><span class="p">:</span>
+        <span class="n">payload</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+        <span class="n">reviews_by_decision</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">payload</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;decision_id&quot;</span><span class="p">)),</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">payload</span><span class="p">)</span>
+    <span class="n">merged</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">decision_lines</span><span class="p">:</span>
+        <span class="n">payload</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+        <span class="n">payload</span><span class="p">[</span><span class="s2">&quot;reviews&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">reviews_by_decision</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">payload</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;decision_id&quot;</span><span class="p">)),</span> <span class="p">[])</span>
+        <span class="n">merged</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">payload</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">merged</span>
+</code></pre></div>
+
+<ul>
+<li>[ ] <strong>Step 4: Run the governance tests to verify the new store works</strong></li>
+</ul>
+<p>Run: <code>pytest tests/cli_memory/test_governance.py -q</code></p>
+<p>Expected: PASS</p>
+<ul>
+<li>[ ] <strong>Step 5: Commit the governance storage baseline</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code>git<span class="w"> </span>add<span class="w"> </span>tests/cli_memory/test_governance.py<span class="w"> </span>aworld-cli/src/aworld_cli/memory/governance.py<span class="w"> </span>aworld-cli/src/aworld_cli/memory/promotion.py
+git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add governed promotion decision store&quot;</span>
+</code></pre></div>
+
+<h3 id="task-2-route-hook-and-provider-through-governed-promotion-modes">Task 2: Route Hook And Provider Through Governed Promotion Modes</h3>
+<p><strong>Files:</strong>
+- Modify: <code>aworld-cli/src/aworld_cli/memory/provider.py</code>
+- Modify: <code>aworld-cli/src/aworld_cli/memory/hybrid.py</code>
+- Modify: <code>aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py</code>
+- Modify: <code>tests/cli_memory/test_durable_memory.py</code>
+- Modify: <code>tests/plugins/test_plugin_hooks.py</code>
+- Modify: <code>tests/cli_memory/test_memory_acceptance.py</code></p>
+<ul>
+<li>[ ] <strong>Step 1: Write the failing integration tests for <code>shadow</code> and <code>governed</code></strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># tests/plugins/test_plugin_hooks.py</span>
+<span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_memory_plugin_task_completed_hook_records_shadow_decision_without_durable_write</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">,</span> <span class="n">monkeypatch</span><span class="p">):</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">workspace</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">monkeypatch</span><span class="o">.</span><span class="n">setenv</span><span class="p">(</span><span class="s2">&quot;AWORLD_CLI_PROMOTION_MODE&quot;</span><span class="p">,</span> <span class="s2">&quot;shadow&quot;</span><span class="p">)</span>
+
+    <span class="n">plugin</span> <span class="o">=</span> <span class="n">discover_plugins</span><span class="p">([</span><span class="n">_get_builtin_memory_plugin_root</span><span class="p">()])[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">hooks</span> <span class="o">=</span> <span class="n">load_plugin_hooks</span><span class="p">([</span><span class="n">plugin</span><span class="p">])</span>
+
+    <span class="k">await</span> <span class="n">hooks</span><span class="p">[</span><span class="s2">&quot;task_completed&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+        <span class="n">event</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">&quot;session_id&quot;</span><span class="p">:</span> <span class="s2">&quot;session-1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;task_id&quot;</span><span class="p">:</span> <span class="s2">&quot;task-1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;workspace_path&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">workspace</span><span class="p">),</span>
+            <span class="s2">&quot;task_status&quot;</span><span class="p">:</span> <span class="s2">&quot;idle&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;final_answer&quot;</span><span class="p">:</span> <span class="s2">&quot;Always use pnpm for workspace package management and never run npm install here.&quot;</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">state</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;workspace_path&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">workspace</span><span class="p">)},</span>
+    <span class="p">)</span>
+
+    <span class="k">assert</span> <span class="ow">not</span> <span class="p">(</span><span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;durable.jsonl&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">exists</span><span class="p">()</span>
+    <span class="n">decisions</span> <span class="o">=</span> <span class="p">(</span><span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;metrics&quot;</span> <span class="o">/</span> <span class="s2">&quot;promotion_decisions.jsonl&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_text</span><span class="p">(</span><span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="s2">&quot;shadow_mode_no_auto_promotion&quot;</span> <span class="ow">in</span> <span class="n">decisions</span>
+
+
+<span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_memory_plugin_task_completed_hook_governed_mode_writes_durable_memory</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">,</span> <span class="n">monkeypatch</span><span class="p">):</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">workspace</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">monkeypatch</span><span class="o">.</span><span class="n">setenv</span><span class="p">(</span><span class="s2">&quot;AWORLD_CLI_PROMOTION_MODE&quot;</span><span class="p">,</span> <span class="s2">&quot;governed&quot;</span><span class="p">)</span>
+
+    <span class="n">plugin</span> <span class="o">=</span> <span class="n">discover_plugins</span><span class="p">([</span><span class="n">_get_builtin_memory_plugin_root</span><span class="p">()])[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">hooks</span> <span class="o">=</span> <span class="n">load_plugin_hooks</span><span class="p">([</span><span class="n">plugin</span><span class="p">])</span>
+
+    <span class="k">await</span> <span class="n">hooks</span><span class="p">[</span><span class="s2">&quot;task_completed&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+        <span class="n">event</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">&quot;session_id&quot;</span><span class="p">:</span> <span class="s2">&quot;session-1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;task_id&quot;</span><span class="p">:</span> <span class="s2">&quot;task-1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;workspace_path&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">workspace</span><span class="p">),</span>
+            <span class="s2">&quot;task_status&quot;</span><span class="p">:</span> <span class="s2">&quot;idle&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;final_answer&quot;</span><span class="p">:</span> <span class="s2">&quot;Always use pnpm for workspace package management and never run npm install here.&quot;</span><span class="p">,</span>
+        <span class="p">},</span>
+        <span class="n">state</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;workspace_path&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">workspace</span><span class="p">)},</span>
+    <span class="p">)</span>
+
+    <span class="n">durable_payload</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">((</span><span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;durable.jsonl&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_text</span><span class="p">(</span><span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">())</span>
+    <span class="k">assert</span> <span class="n">durable_payload</span><span class="p">[</span><span class="s2">&quot;source&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;governed_auto_promotion&quot;</span>
+    <span class="k">assert</span> <span class="n">durable_payload</span><span class="p">[</span><span class="s2">&quot;decision_id&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;gdec_&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># tests/cli_memory/test_durable_memory.py</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">test_provider_active_durable_records_exclude_reverted_promotions</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">workspace</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">provider</span> <span class="o">=</span> <span class="n">CliDurableMemoryProvider</span><span class="p">()</span>
+
+    <span class="n">provider</span><span class="o">.</span><span class="n">append_durable_memory_record</span><span class="p">(</span>
+        <span class="n">workspace_path</span><span class="o">=</span><span class="n">workspace</span><span class="p">,</span>
+        <span class="n">text</span><span class="o">=</span><span class="s2">&quot;Use pnpm for workspace package management&quot;</span><span class="p">,</span>
+        <span class="n">memory_type</span><span class="o">=</span><span class="s2">&quot;workspace&quot;</span><span class="p">,</span>
+        <span class="n">source</span><span class="o">=</span><span class="s2">&quot;governed_auto_promotion&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">provider</span><span class="o">.</span><span class="n">record_governed_review</span><span class="p">(</span>
+        <span class="n">workspace_path</span><span class="o">=</span><span class="n">workspace</span><span class="p">,</span>
+        <span class="n">decision_id</span><span class="o">=</span><span class="s2">&quot;gdec_123&quot;</span><span class="p">,</span>
+        <span class="n">review_action</span><span class="o">=</span><span class="s2">&quot;reverted&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="k">assert</span> <span class="n">provider</span><span class="o">.</span><span class="n">get_active_durable_memory_records</span><span class="p">(</span><span class="n">workspace</span><span class="p">)</span> <span class="o">==</span> <span class="p">()</span>
+</code></pre></div>
+
+<ul>
+<li>[ ] <strong>Step 2: Run the focused provider and hook tests to verify the APIs are missing</strong></li>
+</ul>
+<p>Run: <code>pytest tests/cli_memory/test_durable_memory.py tests/plugins/test_plugin_hooks.py tests/cli_memory/test_memory_acceptance.py -q</code></p>
+<p>Expected: FAIL because provider methods like <code>get_active_durable_memory_records()</code> and governed hook writes do not exist yet.</p>
+<ul>
+<li>[ ] <strong>Step 3: Implement provider and hook integration</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># aworld-cli/src/aworld_cli/memory/provider.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">aworld_cli.memory.governance</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">append_governed_review</span><span class="p">,</span>
+    <span class="n">list_governed_decisions</span><span class="p">,</span>
+<span class="p">)</span>
+
+
+<span class="c1"># add these methods inside the existing CliDurableMemoryProvider class</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">list_governed_decisions</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">dict</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
+    <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">list_governed_decisions</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">record_governed_review</span><span class="p">(</span>
+    <span class="bp">self</span><span class="p">,</span>
+    <span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">decision_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">review_action</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Path</span><span class="p">:</span>
+    <span class="k">return</span> <span class="n">append_governed_review</span><span class="p">(</span>
+        <span class="n">workspace_path</span><span class="p">,</span>
+        <span class="p">{</span><span class="s2">&quot;decision_id&quot;</span><span class="p">:</span> <span class="n">decision_id</span><span class="p">,</span> <span class="s2">&quot;review_action&quot;</span><span class="p">:</span> <span class="n">review_action</span><span class="p">},</span>
+    <span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">get_active_durable_memory_records</span><span class="p">(</span>
+    <span class="bp">self</span><span class="p">,</span>
+    <span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span>
+    <span class="n">memory_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">DurableMemoryRecord</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
+    <span class="n">records</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_durable_memory_records</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">,</span> <span class="n">memory_type</span><span class="o">=</span><span class="n">memory_type</span><span class="p">)</span>
+    <span class="n">decisions</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="n">item</span><span class="p">[</span><span class="s2">&quot;decision_id&quot;</span><span class="p">]:</span> <span class="n">item</span>
+        <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">list_governed_decisions</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span>
+    <span class="p">}</span>
+    <span class="n">active</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">DurableMemoryRecord</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">record</span> <span class="ow">in</span> <span class="n">records</span><span class="p">:</span>
+        <span class="n">decision_id</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">record</span><span class="p">,</span> <span class="s2">&quot;decision_id&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">reviews</span> <span class="o">=</span> <span class="n">decisions</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">decision_id</span><span class="p">,</span> <span class="p">{})</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;reviews&quot;</span><span class="p">,</span> <span class="p">[])</span>
+        <span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">review</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;review_action&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;reverted&quot;</span> <span class="k">for</span> <span class="n">review</span> <span class="ow">in</span> <span class="n">reviews</span><span class="p">):</span>
+            <span class="k">continue</span>
+        <span class="n">active</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">record</span><span class="p">)</span>
+    <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">active</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">aworld_cli.memory.governance</span><span class="w"> </span><span class="kn">import</span> <span class="n">append_governed_decision</span><span class="p">,</span> <span class="n">evaluate_governed_candidate</span>
+
+
+<span class="n">provider</span> <span class="o">=</span> <span class="n">CliDurableMemoryProvider</span><span class="p">()</span>
+<span class="k">if</span> <span class="n">final_answer</span><span class="p">:</span>
+    <span class="n">extracted</span> <span class="o">=</span> <span class="n">evaluate_turn_end_candidate</span><span class="p">(</span><span class="n">final_answer</span><span class="p">)</span>
+    <span class="n">candidate_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">session_id</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">event</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;task_id&#39;</span><span class="p">)</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">candidates</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+    <span class="n">candidate</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;candidate_id&quot;</span><span class="p">:</span> <span class="n">candidate_id</span><span class="p">,</span>
+        <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="n">extracted</span><span class="o">.</span><span class="n">content</span><span class="p">,</span>
+        <span class="s2">&quot;memory_type&quot;</span><span class="p">:</span> <span class="n">extracted</span><span class="o">.</span><span class="n">memory_type</span><span class="p">,</span>
+        <span class="s2">&quot;confidence&quot;</span><span class="p">:</span> <span class="n">extracted</span><span class="o">.</span><span class="n">confidence</span><span class="p">,</span>
+        <span class="s2">&quot;source_ref&quot;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">&quot;session_id&quot;</span><span class="p">:</span> <span class="n">session_id</span><span class="p">,</span>
+            <span class="s2">&quot;task_id&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;task_id&quot;</span><span class="p">),</span>
+            <span class="s2">&quot;candidate_id&quot;</span><span class="p">:</span> <span class="n">candidate_id</span><span class="p">,</span>
+        <span class="p">},</span>
+    <span class="p">}</span>
+    <span class="n">governed</span> <span class="o">=</span> <span class="n">evaluate_governed_candidate</span><span class="p">(</span>
+        <span class="n">workspace_path</span><span class="o">=</span><span class="n">workspace_path</span><span class="p">,</span>
+        <span class="n">candidate</span><span class="o">=</span><span class="n">candidate</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">append_governed_decision</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">,</span> <span class="n">governed</span><span class="o">.</span><span class="n">to_payload</span><span class="p">())</span>
+    <span class="n">candidates</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+        <span class="n">candidate_payload</span><span class="p">(</span>
+            <span class="n">extracted</span><span class="p">,</span>
+            <span class="n">auto_promoted</span><span class="o">=</span><span class="n">governed</span><span class="o">.</span><span class="n">decision</span> <span class="o">==</span> <span class="s2">&quot;durable_memory&quot;</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="o">|</span> <span class="p">{</span>
+            <span class="s2">&quot;candidate_id&quot;</span><span class="p">:</span> <span class="n">candidate_id</span><span class="p">,</span>
+            <span class="s2">&quot;governed_decision_id&quot;</span><span class="p">:</span> <span class="n">governed</span><span class="o">.</span><span class="n">decision_id</span><span class="p">,</span>
+            <span class="s2">&quot;governed_decision&quot;</span><span class="p">:</span> <span class="n">governed</span><span class="o">.</span><span class="n">decision</span><span class="p">,</span>
+            <span class="s2">&quot;governed_reason&quot;</span><span class="p">:</span> <span class="n">governed</span><span class="o">.</span><span class="n">reason</span><span class="p">,</span>
+            <span class="s2">&quot;governed_blockers&quot;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">governed</span><span class="o">.</span><span class="n">blockers</span><span class="p">),</span>
+        <span class="p">}</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">governed</span><span class="o">.</span><span class="n">decision</span> <span class="o">==</span> <span class="s2">&quot;durable_memory&quot;</span><span class="p">:</span>
+        <span class="n">provider</span><span class="o">.</span><span class="n">append_durable_memory_record</span><span class="p">(</span>
+            <span class="n">workspace_path</span><span class="o">=</span><span class="n">workspace_path</span><span class="p">,</span>
+            <span class="n">text</span><span class="o">=</span><span class="n">governed</span><span class="o">.</span><span class="n">content</span><span class="p">,</span>
+            <span class="n">memory_type</span><span class="o">=</span><span class="n">governed</span><span class="o">.</span><span class="n">memory_type</span><span class="p">,</span>
+            <span class="n">source</span><span class="o">=</span><span class="s2">&quot;governed_auto_promotion&quot;</span><span class="p">,</span>
+        <span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># aworld-cli/src/aworld_cli/memory/hybrid.py</span>
+<span class="c1"># add these methods inside the existing HybridMemoryProvider class</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">list_governed_decisions</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">):</span>
+    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">durable_provider</span><span class="o">.</span><span class="n">list_governed_decisions</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">get_active_durable_memory_records</span><span class="p">(</span>
+    <span class="bp">self</span><span class="p">,</span>
+    <span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span>
+    <span class="n">memory_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">):</span>
+    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">durable_provider</span><span class="o">.</span><span class="n">get_active_durable_memory_records</span><span class="p">(</span>
+        <span class="n">workspace_path</span><span class="p">,</span>
+        <span class="n">memory_type</span><span class="o">=</span><span class="n">memory_type</span><span class="p">,</span>
+    <span class="p">)</span>
+</code></pre></div>
+
+<ul>
+<li>[ ] <strong>Step 4: Run the focused integration tests to verify mode-aware behavior</strong></li>
+</ul>
+<p>Run: <code>pytest tests/cli_memory/test_durable_memory.py tests/plugins/test_plugin_hooks.py tests/cli_memory/test_memory_acceptance.py -q</code></p>
+<p>Expected: PASS</p>
+<ul>
+<li>[ ] <strong>Step 5: Commit the provider and hook integration</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code>git<span class="w"> </span>add<span class="w"> </span>aworld-cli/src/aworld_cli/memory/provider.py<span class="w"> </span>aworld-cli/src/aworld_cli/memory/hybrid.py<span class="w"> </span>aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py<span class="w"> </span>tests/cli_memory/test_durable_memory.py<span class="w"> </span>tests/plugins/test_plugin_hooks.py<span class="w"> </span>tests/cli_memory/test_memory_acceptance.py
+git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: wire governed promotion through provider and hook&quot;</span>
+</code></pre></div>
+
+<h3 id="task-3-add-review-actions-and-memory-promotions-command-surface">Task 3: Add Review Actions And <code>/memory promotions</code> Command Surface</h3>
+<p><strong>Files:</strong>
+- Modify: <code>aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/commands/memory.py</code>
+- Modify: <code>tests/plugins/test_plugin_commands.py</code></p>
+<ul>
+<li>[ ] <strong>Step 1: Write the failing command tests</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># tests/plugins/test_plugin_commands.py</span>
+<span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_memory_plugin_promotions_lists_governed_decisions</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">workspace</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="p">(</span><span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;metrics&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="p">(</span><span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;metrics&quot;</span> <span class="o">/</span> <span class="s2">&quot;promotion_decisions.jsonl&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span>
+        <span class="s1">&#39;{&quot;decision_id&quot;:&quot;gdec_1&quot;,&quot;decision&quot;:&quot;session_log_only&quot;,&quot;policy_mode&quot;:&quot;shadow&quot;,&quot;reason&quot;:&quot;shadow_mode_no_auto_promotion&quot;,&quot;content&quot;:&quot;Use pnpm for workspace package management&quot;,&quot;source_ref&quot;:{&quot;session_id&quot;:&quot;s1&quot;,&quot;task_id&quot;:&quot;t1&quot;,&quot;candidate_id&quot;:&quot;c1&quot;}}</span><span class="se">\n</span><span class="s1">&#39;</span><span class="p">,</span>
+        <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">plugin</span> <span class="o">=</span> <span class="n">discover_plugins</span><span class="p">([</span><span class="n">_get_builtin_memory_plugin_root</span><span class="p">()])[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">snapshot</span> <span class="o">=</span> <span class="n">CommandRegistry</span><span class="o">.</span><span class="n">snapshot</span><span class="p">()</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">CommandRegistry</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="n">register_plugin_commands</span><span class="p">([</span><span class="n">plugin</span><span class="p">])</span>
+        <span class="n">command</span> <span class="o">=</span> <span class="n">CommandRegistry</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;memory&quot;</span><span class="p">)</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">command</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">CommandContext</span><span class="p">(</span><span class="n">cwd</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">workspace</span><span class="p">),</span> <span class="n">user_args</span><span class="o">=</span><span class="s2">&quot;promotions&quot;</span><span class="p">))</span>
+        <span class="k">assert</span> <span class="s2">&quot;Governed promotions&quot;</span> <span class="ow">in</span> <span class="n">result</span>
+        <span class="k">assert</span> <span class="s2">&quot;gdec_1&quot;</span> <span class="ow">in</span> <span class="n">result</span>
+        <span class="k">assert</span> <span class="s2">&quot;shadow_mode_no_auto_promotion&quot;</span> <span class="ow">in</span> <span class="n">result</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">CommandRegistry</span><span class="o">.</span><span class="n">restore</span><span class="p">(</span><span class="n">snapshot</span><span class="p">)</span>
+
+
+<span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_memory_plugin_promotions_reject_records_review</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">workspace</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="p">(</span><span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;metrics&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="p">(</span><span class="n">workspace</span> <span class="o">/</span> <span class="s2">&quot;.aworld&quot;</span> <span class="o">/</span> <span class="s2">&quot;memory&quot;</span> <span class="o">/</span> <span class="s2">&quot;metrics&quot;</span> <span class="o">/</span> <span class="s2">&quot;promotion_decisions.jsonl&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span>
+        <span class="s1">&#39;{&quot;decision_id&quot;:&quot;gdec_1&quot;,&quot;decision&quot;:&quot;session_log_only&quot;,&quot;policy_mode&quot;:&quot;shadow&quot;,&quot;reason&quot;:&quot;shadow_mode_no_auto_promotion&quot;,&quot;content&quot;:&quot;Use pnpm&quot;,&quot;source_ref&quot;:{&quot;session_id&quot;:&quot;s1&quot;,&quot;task_id&quot;:&quot;t1&quot;,&quot;candidate_id&quot;:&quot;c1&quot;}}</span><span class="se">\n</span><span class="s1">&#39;</span><span class="p">,</span>
+        <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">plugin</span> <span class="o">=</span> <span class="n">discover_plugins</span><span class="p">([</span><span class="n">_get_builtin_memory_plugin_root</span><span class="p">()])[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">snapshot</span> <span class="o">=</span> <span class="n">CommandRegistry</span><span class="o">.</span><span class="n">snapshot</span><span class="p">()</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">CommandRegistry</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="n">register_plugin_commands</span><span class="p">([</span><span class="n">plugin</span><span class="p">])</span>
+        <span class="n">command</span> <span class="o">=</span> <span class="n">CommandRegistry</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;memory&quot;</span><span class="p">)</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">command</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">CommandContext</span><span class="p">(</span><span class="n">cwd</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">workspace</span><span class="p">),</span> <span class="n">user_args</span><span class="o">=</span><span class="s2">&quot;promotions reject gdec_1&quot;</span><span class="p">))</span>
+        <span class="k">assert</span> <span class="s2">&quot;Recorded review action: declined&quot;</span> <span class="ow">in</span> <span class="n">result</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">CommandRegistry</span><span class="o">.</span><span class="n">restore</span><span class="p">(</span><span class="n">snapshot</span><span class="p">)</span>
+</code></pre></div>
+
+<ul>
+<li>[ ] <strong>Step 2: Run the focused command tests to verify the new subcommands are missing</strong></li>
+</ul>
+<p>Run: <code>pytest tests/plugins/test_plugin_commands.py -q</code></p>
+<p>Expected: FAIL because <code>/memory promotions</code> parsing and review actions do not exist.</p>
+<ul>
+<li>[ ] <strong>Step 3: Implement the command surface</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/commands/memory.py</span>
+<span class="c1"># extend the existing MemoryCommand class with these concrete changes</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">completion_items</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
+    <span class="k">return</span> <span class="p">{</span>
+        <span class="s2">&quot;/memory view&quot;</span><span class="p">:</span> <span class="s2">&quot;View effective workspace memory instructions&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;/memory reload&quot;</span><span class="p">:</span> <span class="s2">&quot;Explain current memory reload behavior&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;/memory status&quot;</span><span class="p">:</span> <span class="s2">&quot;Show workspace memory status&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;/memory cache&quot;</span><span class="p">:</span> <span class="s2">&quot;Summarize request-linked cache observability from session logs&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;/memory promotions&quot;</span><span class="p">:</span> <span class="s2">&quot;List governed promotion decisions&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;/memory promotions accept &lt;decision-id&gt;&quot;</span><span class="p">:</span> <span class="s2">&quot;Confirm and promote a shadow candidate&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;/memory promotions reject &lt;decision-id&gt;&quot;</span><span class="p">:</span> <span class="s2">&quot;Record a declined review label&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;/memory promotions revert &lt;decision-id&gt;&quot;</span><span class="p">:</span> <span class="s2">&quot;Disable a previously promoted governed record&quot;</span><span class="p">,</span>
+    <span class="p">}</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_promotions_workspace_memory</span><span class="p">(</span>
+    <span class="bp">self</span><span class="p">,</span>
+    <span class="n">context</span><span class="p">:</span> <span class="n">CommandContext</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">action</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">decision_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="n">provider</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_provider</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">action</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">&quot;accept&quot;</span><span class="p">,</span> <span class="s2">&quot;reject&quot;</span><span class="p">,</span> <span class="s2">&quot;revert&quot;</span><span class="p">}</span> <span class="ow">and</span> <span class="n">decision_id</span><span class="p">:</span>
+        <span class="n">review_action</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s2">&quot;accept&quot;</span><span class="p">:</span> <span class="s2">&quot;confirmed&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;reject&quot;</span><span class="p">:</span> <span class="s2">&quot;declined&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;revert&quot;</span><span class="p">:</span> <span class="s2">&quot;reverted&quot;</span><span class="p">,</span>
+        <span class="p">}[</span><span class="n">action</span><span class="p">]</span>
+        <span class="n">provider</span><span class="o">.</span><span class="n">record_governed_review</span><span class="p">(</span>
+            <span class="n">context</span><span class="o">.</span><span class="n">cwd</span><span class="p">,</span>
+            <span class="n">decision_id</span><span class="o">=</span><span class="n">decision_id</span><span class="p">,</span>
+            <span class="n">review_action</span><span class="o">=</span><span class="n">review_action</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Recorded review action: </span><span class="si">{</span><span class="n">review_action</span><span class="si">}</span><span class="s2"> for </span><span class="si">{</span><span class="n">decision_id</span><span class="si">}</span><span class="s2">&quot;</span>
+
+    <span class="n">decisions</span> <span class="o">=</span> <span class="n">provider</span><span class="o">.</span><span class="n">list_governed_decisions</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">cwd</span><span class="p">)</span>
+    <span class="n">lines</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;Governed promotions&quot;</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">decisions</span><span class="p">[</span><span class="o">-</span><span class="mi">10</span><span class="p">:]:</span>
+        <span class="n">lines</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;- </span><span class="si">{</span><span class="n">item</span><span class="p">[</span><span class="s1">&#39;decision_id&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">item</span><span class="p">[</span><span class="s1">&#39;decision&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2"> &quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="n">item</span><span class="p">[</span><span class="s1">&#39;policy_mode&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">] </span><span class="si">{</span><span class="n">item</span><span class="p">[</span><span class="s1">&#39;reason&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span>
+
+
+<span class="c1"># update execute() to dispatch the new subcommand</span>
+<span class="k">if</span> <span class="n">subcommand</span> <span class="o">==</span> <span class="s2">&quot;promotions&quot;</span><span class="p">:</span>
+    <span class="n">action</span> <span class="o">=</span> <span class="n">tokens</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">tokens</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="n">decision_id</span> <span class="o">=</span> <span class="n">tokens</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">tokens</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">2</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_promotions_workspace_memory</span><span class="p">(</span>
+        <span class="n">context</span><span class="p">,</span>
+        <span class="n">action</span><span class="o">=</span><span class="n">action</span><span class="p">,</span>
+        <span class="n">decision_id</span><span class="o">=</span><span class="n">decision_id</span><span class="p">,</span>
+    <span class="p">)</span>
+</code></pre></div>
+
+<ul>
+<li>[ ] <strong>Step 4: Run the command tests to verify listing and review actions</strong></li>
+</ul>
+<p>Run: <code>pytest tests/plugins/test_plugin_commands.py -q</code></p>
+<p>Expected: PASS</p>
+<ul>
+<li>[ ] <strong>Step 5: Commit the command surface</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code>git<span class="w"> </span>add<span class="w"> </span>aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/commands/memory.py<span class="w"> </span>tests/plugins/test_plugin_commands.py
+git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add governed promotion command surface&quot;</span>
+</code></pre></div>
+
+<h3 id="task-4-extend-metrics-threshold-readiness-and-runtime-regression-coverage">Task 4: Extend Metrics, Threshold Readiness, And Runtime Regression Coverage</h3>
+<p><strong>Files:</strong>
+- Modify: <code>aworld-cli/src/aworld_cli/memory/metrics.py</code>
+- Modify: <code>aworld-cli/src/aworld_cli/memory/relevance.py</code>
+- Modify: <code>tests/cli_memory/test_metrics.py</code>
+- Modify: <code>tests/cli_memory/test_memory_acceptance.py</code>
+- Modify: <code>openspec/changes/2026-05-07-governed-session-log-promotion/tasks.md</code></p>
+<ul>
+<li>[ ] <strong>Step 1: Write the failing metrics and regression tests</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># tests/cli_memory/test_metrics.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">aworld_cli.memory.governance</span><span class="w"> </span><span class="kn">import</span> <span class="n">append_governed_decision</span><span class="p">,</span> <span class="n">append_governed_review</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">aworld_cli.memory.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">summarize_promotion_metrics</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">test_promotion_metrics_summary_reports_quality_and_threshold_readiness</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="n">tmp_path</span> <span class="o">/</span> <span class="s2">&quot;workspace&quot;</span>
+    <span class="n">workspace</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">append_governed_decision</span><span class="p">(</span>
+        <span class="n">workspace</span><span class="p">,</span>
+        <span class="p">{</span>
+            <span class="s2">&quot;decision_id&quot;</span><span class="p">:</span> <span class="s2">&quot;gdec_1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;decision&quot;</span><span class="p">:</span> <span class="s2">&quot;durable_memory&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;policy_mode&quot;</span><span class="p">:</span> <span class="s2">&quot;governed&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;reason&quot;</span><span class="p">:</span> <span class="s2">&quot;governed_policy_pass&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;source_ref&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;session_id&quot;</span><span class="p">:</span> <span class="s2">&quot;s1&quot;</span><span class="p">,</span> <span class="s2">&quot;task_id&quot;</span><span class="p">:</span> <span class="s2">&quot;t1&quot;</span><span class="p">,</span> <span class="s2">&quot;candidate_id&quot;</span><span class="p">:</span> <span class="s2">&quot;c1&quot;</span><span class="p">},</span>
+        <span class="p">},</span>
+    <span class="p">)</span>
+    <span class="n">append_governed_review</span><span class="p">(</span><span class="n">workspace</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;decision_id&quot;</span><span class="p">:</span> <span class="s2">&quot;gdec_1&quot;</span><span class="p">,</span> <span class="s2">&quot;review_action&quot;</span><span class="p">:</span> <span class="s2">&quot;confirmed&quot;</span><span class="p">})</span>
+
+    <span class="n">summary</span> <span class="o">=</span> <span class="n">summarize_promotion_metrics</span><span class="p">(</span><span class="n">workspace</span><span class="p">)</span>
+
+    <span class="k">assert</span> <span class="n">summary</span><span class="o">.</span><span class="n">reviewed_promotions</span> <span class="o">==</span> <span class="mi">1</span>
+    <span class="k">assert</span> <span class="n">summary</span><span class="o">.</span><span class="n">confirmed_promotions</span> <span class="o">==</span> <span class="mi">1</span>
+    <span class="k">assert</span> <span class="n">summary</span><span class="o">.</span><span class="n">reverted_promotions</span> <span class="o">==</span> <span class="mi">0</span>
+    <span class="k">assert</span> <span class="n">summary</span><span class="o">.</span><span class="n">precision_proxy</span> <span class="o">==</span> <span class="mf">1.0</span>
+    <span class="k">assert</span> <span class="n">summary</span><span class="o">.</span><span class="n">pollution_proxy</span> <span class="o">==</span> <span class="mf">0.0</span>
+    <span class="k">assert</span> <span class="n">summary</span><span class="o">.</span><span class="n">default_rollout_ready</span> <span class="ow">is</span> <span class="kc">False</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># tests/cli_memory/test_memory_acceptance.py</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">test_hybrid_runtime_message_memory_contract_is_unchanged</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">):</span>
+    <span class="n">memory</span> <span class="o">=</span> <span class="n">_build_hybrid_memory</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">memory</span><span class="p">,</span> <span class="s2">&quot;get_last_n&quot;</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">memory</span><span class="p">,</span> <span class="s2">&quot;search&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<ul>
+<li>[ ] <strong>Step 2: Run the focused metrics and regression tests to verify the new summary fields are missing</strong></li>
+</ul>
+<p>Run: <code>pytest tests/cli_memory/test_metrics.py tests/cli_memory/test_memory_acceptance.py -q</code></p>
+<p>Expected: FAIL because <code>PromotionMetricsSummary</code> does not expose review-based quality fields yet.</p>
+<ul>
+<li>[ ] <strong>Step 3: Implement governed quality metrics and threshold readiness</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># aworld-cli/src/aworld_cli/memory/metrics.py</span>
+<span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">PromotionMetricsSummary</span><span class="p">:</span>
+    <span class="n">metrics_path</span><span class="p">:</span> <span class="n">Path</span>
+    <span class="n">total_evaluations</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">eligible_for_auto_promotion</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">by_confidence</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span>
+    <span class="n">by_promotion</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span>
+    <span class="n">by_reason</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span>
+    <span class="n">latest_decision</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">last_auto_promoted</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">last_eligible_blocked</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">reviewed_promotions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">confirmed_promotions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">reverted_promotions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">pending_review</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">precision_proxy</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="n">pollution_proxy</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="n">default_rollout_ready</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">summarize_promotion_metrics</span><span class="p">(</span>
+    <span class="n">workspace_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">os</span><span class="o">.</span><span class="n">PathLike</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">max_records</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">500</span><span class="p">,</span>
+<span class="p">):</span>
+    <span class="n">decisions</span> <span class="o">=</span> <span class="n">list_governed_decisions</span><span class="p">(</span><span class="n">workspace_path</span><span class="p">)</span>
+    <span class="n">reviewed_promotions</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">confirmed_promotions</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">reverted_promotions</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">pending_review</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">for</span> <span class="n">decision</span> <span class="ow">in</span> <span class="n">decisions</span><span class="p">:</span>
+        <span class="n">reviews</span> <span class="o">=</span> <span class="n">decision</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;reviews&quot;</span><span class="p">,</span> <span class="p">[])</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">reviews</span><span class="p">:</span>
+            <span class="n">pending_review</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">continue</span>
+        <span class="n">reviewed_promotions</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;review_action&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;confirmed&quot;</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">reviews</span><span class="p">):</span>
+            <span class="n">confirmed_promotions</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;review_action&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;reverted&quot;</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">reviews</span><span class="p">):</span>
+            <span class="n">reverted_promotions</span> <span class="o">+=</span> <span class="mi">1</span>
+    <span class="n">precision_proxy</span> <span class="o">=</span> <span class="n">confirmed_promotions</span> <span class="o">/</span> <span class="n">reviewed_promotions</span> <span class="k">if</span> <span class="n">reviewed_promotions</span> <span class="k">else</span> <span class="mf">0.0</span>
+    <span class="n">pollution_proxy</span> <span class="o">=</span> <span class="n">reverted_promotions</span> <span class="o">/</span> <span class="n">reviewed_promotions</span> <span class="k">if</span> <span class="n">reviewed_promotions</span> <span class="k">else</span> <span class="mf">0.0</span>
+    <span class="n">default_rollout_ready</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">reviewed_promotions</span> <span class="o">&gt;=</span> <span class="mi">100</span>
+        <span class="ow">and</span> <span class="n">precision_proxy</span> <span class="o">&gt;=</span> <span class="mf">0.90</span>
+        <span class="ow">and</span> <span class="n">pollution_proxy</span> <span class="o">&lt;=</span> <span class="mf">0.05</span>
+    <span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># aworld-cli/src/aworld_cli/memory/relevance.py</span>
+<span class="n">PROMOTION_BONUS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;durable_memory&quot;</span><span class="p">:</span> <span class="mi">200</span><span class="p">,</span>
+    <span class="s2">&quot;session_log_only&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="s2">&quot;rejected&quot;</span><span class="p">:</span> <span class="o">-</span><span class="mi">200</span><span class="p">,</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<ul>
+<li>[ ] <strong>Step 4: Run the metrics and regression suite</strong></li>
+</ul>
+<p>Run: <code>pytest tests/cli_memory/test_metrics.py tests/cli_memory/test_memory_acceptance.py tests/cli_memory/test_governance.py tests/cli_memory/test_durable_memory.py tests/plugins/test_plugin_hooks.py tests/plugins/test_plugin_commands.py -q</code></p>
+<p>Expected: PASS</p>
+<ul>
+<li>[ ] <strong>Step 5: Mark the OpenSpec tasks that are now complete and commit</strong></li>
+</ul>
+<div class="codehilite"><pre><span></span><code>git<span class="w"> </span>add<span class="w"> </span>aworld-cli/src/aworld_cli/memory/metrics.py<span class="w"> </span>aworld-cli/src/aworld_cli/memory/relevance.py<span class="w"> </span>tests/cli_memory/test_metrics.py<span class="w"> </span>tests/cli_memory/test_memory_acceptance.py<span class="w"> </span>openspec/changes/2026-05-07-governed-session-log-promotion/tasks.md
+git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;test: add governed promotion metrics and regression coverage&quot;</span>
+</code></pre></div>
+
+<h2 id="self-review">Self-Review</h2>
+<h3 id="spec-coverage">Spec coverage</h3>
+<ul>
+<li>Source identity, mode control, and explainable decisions are covered by Task 1 and Task 2.</li>
+<li>Review / correction surfaces are covered by Task 3.</li>
+<li>Quality metrics, rollout thresholds, and runtime regression coverage are covered by Task 4.</li>
+<li>The allowed / discouraged / forbidden boundary is preserved because no task changes <code>aworld/core/memory.py</code>, <code>AworldMemory</code>, or amni prompt assembly internals.</li>
+</ul>
+<h3 id="placeholder-scan">Placeholder scan</h3>
+<ul>
+<li>No <code>TODO</code>, <code>TBD</code>, or “implement later” placeholders remain.</li>
+<li>Every task includes exact files, test commands, expected failures, and commit messages.</li>
+</ul>
+<h3 id="type-consistency">Type consistency</h3>
+<ul>
+<li>The plan uses one governed API vocabulary consistently:</li>
+<li><code>governance_mode</code></li>
+<li><code>GovernedDecision</code></li>
+<li><code>append_governed_decision</code></li>
+<li><code>append_governed_review</code></li>
+<li><code>list_governed_decisions</code></li>
+<li><code>record_governed_review</code></li>
+<li><code>get_active_durable_memory_records</code></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © Copyright 2025 inclusionAI AWorld Team.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "toc.follow", "content.code.copy", "content.action.edit", "header.autohide"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../../js/hide-home-edit.js"></script>
+      
+        <script src="../../../js/aworld-enhancements.js"></script>
+      
+        <script src="../../../js/github-stars.js"></script>
+      
+        <script src="../../../js/github-stats-fallback.js"></script>
+      
+    
+  </body>
+</html>
