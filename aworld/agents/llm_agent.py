@@ -1478,30 +1478,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         missing_in_source = [anchor for anchor in anchors if not anchor_matches_text(anchor, source_text)]
         if missing_in_source:
-            missing_preview = ", ".join(missing_in_source[:4])
-            artifact_hint = ""
-            artifact_text = (artifact_evidence_text or "").strip()
-            if artifact_text and any(anchor_matches_text(anchor, artifact_text) for anchor in missing_in_source):
-                artifact_hint = (
-                    " Some missing anchors appear only in generated artifacts or final wording, which does not count "
-                    "as verified source evidence."
-                )
-            return (
-                "Result validation mismatch: the authoritative request still requires these anchors to be present in "
-                f"source evidence from this run, but they are still missing: {missing_preview}.{artifact_hint} "
-                "Do not declare success yet. Continue investigating the exact target or explain the mismatch explicitly."
+            logger.debug(
+                "result validation skipped soft missing anchors: %s",
+                ", ".join(missing_in_source[:4]),
             )
+            return None
 
         artifact_text = (artifact_evidence_text or "").strip()
         if artifact_text:
             missing_in_artifact = [anchor for anchor in anchors if not anchor_matches_text(anchor, artifact_text)]
             if missing_in_artifact:
-                missing_preview = ", ".join(missing_in_artifact[:4])
-                return (
-                    "Result validation mismatch: source evidence matches the target, but the generated artifact still "
-                    f"does not preserve these required anchors: {missing_preview}. "
-                    "Do not declare success yet. Keep fixing the saved result or explain the mismatch explicitly."
+                logger.debug(
+                    "result validation skipped soft artifact missing anchors: %s",
+                    ", ".join(missing_in_artifact[:4]),
                 )
+                return None
 
         return None
 
@@ -1544,18 +1535,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         source_excerpt = self._truncate_result_validation_text(source_evidence_text, limit=1600) or "(none)"
         artifact_excerpt = self._truncate_result_validation_text(artifact_evidence_text, limit=1200) or "(none)"
         return (
-            "Result validation blocked finalization. Treat this as unfinished.\n\n"
+            "Result validation detected a likely goal conflict. Treat this as unfinished.\n\n"
             f"Original request:\n{authoritative_request}\n\n"
             f"Validation feedback:\n{validation_feedback}\n\n"
-            f"Target anchors to preserve:\n{anchor_lines}\n\n"
-            f"Verified source evidence from this run:\n{source_excerpt}\n\n"
+            f"High-confidence target anchors:\n{anchor_lines}\n\n"
+            f"Source evidence from this run:\n{source_excerpt}\n\n"
             f"Generated artifact evidence from this run:\n{artifact_excerpt}\n\n"
             "Recovery requirements:\n"
-            "1. Re-identify the exact target using the original request and verified source evidence from this run.\n"
-            "2. If the current evidence is adjacent but wrong, discard it and search again with narrower anchors.\n"
-            "3. Prefer the most specific missing anchors before broad summaries or paraphrases.\n"
-            "4. Only claim success after source evidence confirms the exact target and the saved artifact preserves the same anchors.\n"
-            "5. If you still cannot verify the target, explain the exact mismatch and what evidence is still missing.\n"
+            "1. Re-identify the requested goal and expected automation outcome from the original request.\n"
+            "2. If current evidence clearly points to a different target or scope, discard it and search again.\n"
+            "3. Do not require every anchor string to appear verbatim; use anchors only to orient the target.\n"
+            "4. Only continue blocking when the requested outcome was not produced or evidence conflicts with the goal.\n"
+            "5. If you still cannot verify the outcome, explain the practical mismatch and the next evidence needed.\n"
         )
 
     @staticmethod

@@ -2,8 +2,9 @@ import re
 from typing import Any, Iterable
 
 _HANDLE_RE = re.compile(r"(?<!\w)@?[A-Za-z0-9_]{3,32}")
-_URL_RE = re.compile(r"https?://[^\s)>\]\"'，。！？；：、”’》」】]+")
-_PATH_RE = re.compile(r"(?:~/|/|\.?/)[^\s`\"'>)]+")
+_URL_RE = re.compile(r"https?://[A-Za-z0-9\[][A-Za-z0-9._~:/?#@!$&()*+,;=%\-\[\]]*")
+_PATH_RE = re.compile(r"(?:~/|/|\.?/)[^\s`\"'>)，,，。！？；：、”’》」】]+")
+_FENCED_CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 _QUOTED_PATTERNS = (
     re.compile(r"[\"“”'`《》「」](.{4,120}?)[\"“”'`《》「」]"),
 )
@@ -34,6 +35,59 @@ def _canonical_match_text(value: str) -> str:
     return re.sub(r"[\s\-_.,，。:：;；!！?？'\"“”`《》「」（）()\[\]{}]+", "", lowered)
 
 
+def _strip_fenced_code_blocks(value: str) -> str:
+    return _FENCED_CODE_BLOCK_RE.sub(" ", value or "")
+
+
+def _natural_language_lines(value: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in (value or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        looks_like_command = (
+            lower.startswith(("bash:", "bash ", "python ", "python3 ", "node ", "npm ", "npx ", "curl ", "cd "))
+            or bool(re.search(r"(^|\s)-{1,2}[A-Za-z][\w-]*(?:\s|=)", line))
+        )
+        if looks_like_command:
+            continue
+        lines.append(line)
+    return lines
+
+
+def _looks_like_implementation_path(path: str) -> bool:
+    if not path:
+        return True
+
+    # Globs and templates are implementation patterns, not concrete task targets.
+    if any(marker in path for marker in ("*", "?", "[", "]", "{", "}")):
+        return True
+
+    # Bare root-relative fragments usually come from glob expressions such as
+    # f"{day_dir}/HealthAutoExport-*.csv", not from a user-selected target.
+    if path.startswith("/") and path.count("/") == 1 and "." in path:
+        return True
+
+    # A single root-relative word is usually a slash-separated label such as
+    # Google/Gemini or a command fragment, not a concrete local artifact.
+    if path.startswith("/") and path.count("/") == 1:
+        return True
+
+    return False
+
+
+def _line_declares_path_as_target(line: str, path: str) -> bool:
+    if not path or _looks_like_implementation_path(path):
+        return False
+    if path.startswith(("http://", "https://")):
+        return True
+    if not path.startswith(("/", "./", "../", "~/")):
+        return False
+    window = line[max(line.find(path) - 16, 0):line.find(path) + len(path) + 16]
+    return bool(re.search(r"(?:目标|文件|目录|路径|保存到|写入|读取|打开|导出到|输出到|本地)", window))
+
+
 def _clean_anchor(value: str) -> str | None:
     if not value:
         return None
@@ -45,6 +99,8 @@ def _clean_anchor(value: str) -> str | None:
     if cleaned.startswith("@"):
         return cleaned
     if cleaned.startswith(("http://", "https://", "/", "./", "../", "~/")):
+        if _looks_like_implementation_path(cleaned):
+            return None
         return cleaned
     if len(cleaned) < 4:
         return None
@@ -112,33 +168,41 @@ def extract_required_anchors(request: str | None, *, max_anchors: int = 8) -> li
     if not request:
         return []
 
-    request = _normalize_whitespace(request)
+    request_without_code = _strip_fenced_code_blocks(request)
+    natural_lines = _natural_language_lines(request_without_code)
+    normalized_request = _normalize_whitespace("\n".join(natural_lines))
     anchors: list[str] = []
 
-    url_spans = _url_spans(request)
+    url_spans = _url_spans(normalized_request)
 
-    for match in _URL_RE.finditer(request):
+    for match in _URL_RE.finditer(normalized_request):
         anchors.append(match.group(0))
 
-    for match in _PATH_RE.finditer(request):
-        if any(_spans_overlap(match.span(), span) for span in url_spans):
-            continue
-        path = match.group(0)
-        if "/" in path and not path.startswith("//"):
-            anchors.append(path)
+    for line in natural_lines:
+        line_url_spans = _url_spans(line)
+        for match in _PATH_RE.finditer(line):
+            if any(_spans_overlap(match.span(), span) for span in line_url_spans):
+                continue
+            path = match.group(0)
+            if "/" in path and not path.startswith("//") and _line_declares_path_as_target(line, path):
+                anchors.append(path)
 
-    for match in _HANDLE_RE.finditer(request):
+    for match in _HANDLE_RE.finditer(normalized_request):
         token = match.group(0)
         if token.startswith("@"):
             anchors.append(token)
-        elif re.search(r"(账号|用户|作者|from:|@)", request[max(match.start() - 8, 0):match.end() + 8], re.IGNORECASE):
+        elif re.search(
+            r"(账号|用户|作者|from:|@)",
+            normalized_request[max(match.start() - 8, 0):match.end() + 8],
+            re.IGNORECASE,
+        ):
             anchors.append(token)
 
     for pattern in _QUOTED_PATTERNS:
-        anchors.extend(group for group in pattern.findall(request) if isinstance(group, str))
+        anchors.extend(group for group in pattern.findall(request_without_code) if isinstance(group, str))
 
     for pattern in _TOPIC_PATTERNS:
-        for match in pattern.finditer(request):
+        for match in pattern.finditer(request_without_code):
             candidate = match.group(1) if match.groups() else match.group(0)
             anchors.append(candidate)
 
