@@ -1,8 +1,17 @@
+from types import SimpleNamespace
+
 import pytest
 
 from aworld.agents.llm_agent import Agent
+from aworld.utils.task_grounding import extract_required_anchors
+from aworld.config.conf import AgentMemoryConfig
 from aworld.config.conf import AgentConfig
-from aworld.core.common import ActionResult
+from aworld.core.common import ActionModel, ActionResult
+from aworld.core.exceptions import AWorldRuntimeException
+from aworld.core.memory import MemoryConfig
+from aworld.memory.db.filesystem import FileSystemMemoryStore
+from aworld.memory.main import MemoryFactory
+from aworld.memory.models import MemoryAIMessage, MemoryHumanMessage, MemoryToolMessage, MessageMetadata
 
 
 @pytest.mark.asyncio
@@ -61,3 +70,490 @@ async def test_failed_cron_tool_results_block_false_success_claims():
     policy_info = aggregated[0].policy_info
     assert "Cron returned an error" in policy_info
     assert "Do not claim the reminder or scheduled task was created" in policy_info
+
+def test_aworld_result_validation_does_not_block_on_soft_missing_source_anchor():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    feedback = agent._build_result_validation_feedback(
+        authoritative_request="看看我的x账号关注的elliotchen100用户发布的帖子，将其中AI 编程的下一个瓶颈，不是代码，是理解主题的文章添加到我的本地知识库Obsidian中管理起来",
+        final_response_text="我已经成功保存了 elliotchen100 那篇关于 AI 工具的下一个瓶颈在交互界面的帖子，并整理了 pneuma-skills 项目内容。",
+        source_evidence_text="source: https://x.com/elliotchen100/status/2041300212875243752\n标题: AI 工具的下一个瓶颈 - 交互界面而非模型能力",
+    )
+
+    assert feedback is None
+
+
+def test_aworld_result_validation_does_not_block_when_anchor_only_appears_in_artifact():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    feedback = agent._build_result_validation_feedback(
+        authoritative_request="看看我的x账号关注的elliotchen100用户发布的帖子，将其中AI 编程的下一个瓶颈，不是代码，是理解主题的文章添加到我的本地知识库Obsidian中管理起来",
+        final_response_text="我已经成功保存了《AI 编程的下一个瓶颈，不是代码，是理解》这篇文章。",
+        source_evidence_text="source: https://x.com/elliotchen100/status/2041300212875243752\n核心观点: AI工具的下一个瓶颈不在模型能力，在交互界面。",
+        artifact_evidence_text="[artifact:/tmp/wrong.md]\ntitle: AI 编程的下一个瓶颈，不是代码，是理解\nsource: https://x.com/elliotchen100/status/2041300212875243752",
+    )
+
+    assert feedback is None
+
+
+def test_aworld_result_validation_accepts_clean_url_anchor_from_steering_request():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    feedback = agent._build_result_validation_feedback(
+        authoritative_request=(
+            "Continue the current task with this additional operator steering:\n\n"
+            "1. https://x.com/elliotchen100/status/2052409024138850486，这个页面我都打开了，"
+            "这个就是目标文档，直接去CDP中看这个内容吧"
+        ),
+        final_response_text="我已经查看了目标页面。",
+        source_evidence_text=(
+            "source: https://x.com/elliotchen100/status/2052409024138850486\n"
+            "title: target post"
+        ),
+    )
+
+    assert feedback is None
+
+
+def test_required_anchors_split_url_from_adjacent_cjk_description():
+    anchors = extract_required_anchors("https://wuman1.top:8443无法才happy，帮我看一下")
+
+    assert "https://wuman1.top:8443" in anchors
+    assert "https://wuman1.top:8443无法才happy" not in anchors
+
+
+def test_aworld_result_validation_accepts_url_when_request_has_adjacent_cjk_description():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    feedback = agent._build_result_validation_feedback(
+        authoritative_request="https://wuman1.top:8443无法才happy，帮我检查服务",
+        final_response_text="我已经检查了服务。",
+        source_evidence_text="curl https://wuman1.top:8443 returned HTTP 200 from happy service.",
+    )
+
+    assert feedback is None
+
+
+def test_required_anchors_ignore_fenced_code_implementation_paths_and_globs():
+    anchors = extract_required_anchors(
+        """执行每日健康分析：
+
+```bash
+for zf in glob.glob(f"{day_dir}/*.zip"):
+    for f in glob.glob(f"{day_dir}/HealthAutoExport-*.csv"):
+        all_csv.append(f)
+for he_dir in glob.glob(os.path.expanduser("~/Documents/health/HealthAutoExport_*/")):
+    pass
+```
+
+最终读取训记数据并生成健康报告。
+"""
+    )
+
+    assert "~/Documents/health/{d}/" not in anchors
+    assert "/*.zip" not in anchors
+    assert "/HealthAutoExport-*.csv" not in anchors
+    assert "~/Documents/health/HealthAutoExport_*/" not in anchors
+
+
+def test_required_anchors_ignore_markdown_structure_and_operator_steps():
+    anchors = extract_required_anchors(
+        """请整理训练模板：
+
+--- ### 🏋️ 模板2：背 + 二头（Pull Day）
+动作安排略。
+
+--- ### 🏋️ 模板3：肩 + 后束 + 核心（Shoulder Day）
+动作安排略。
+
+用 Peekaboo 自动： 1. 打开训记app 2. 导航到训练页 3. 填写内容
+"""
+    )
+
+    assert " --- ### 🏋️ 模板2：背 + 二头（Pull Day）" not in anchors
+    assert " --- ### 🏋️ 模板3：肩 + 后束 + 核心（Shoulder Day）" not in anchors
+    assert "用 Peekaboo 自动： 1. 打开训记app 2. 导航到" not in anchors
+
+
+def test_aworld_result_validation_does_not_require_markdown_structure_or_operator_steps():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    feedback = agent._build_result_validation_feedback(
+        authoritative_request=(
+            "请整理训练模板：\n"
+            "--- ### 🏋️ 模板2：背 + 二头（Pull Day）\n"
+            "--- ### 🏋️ 模板3：肩 + 后束 + 核心（Shoulder Day）\n"
+            "用 Peekaboo 自动： 1. 打开训记app 2. 导航到训练页"
+        ),
+        final_response_text="已完成模板整理。",
+        source_evidence_text="已创建胸背肩训练模板，并完成训记自动化录入检查。",
+    )
+
+    assert feedback is None
+
+
+def test_required_anchors_ignore_command_lines_and_slash_labels():
+    anchors = extract_required_anchors(
+        """请帮我完成以下任务，生成每日 X AI 资讯摘要并通知我：
+
+运行命令抓取 X 首页推荐流：
+bash: /Users/manwu/Documents/workspace/aworld/examples/skill_agent/skills/x-scraper/scrape_x_home.sh -p 'http://[::1]:9222' -t foryou -n 5 -f json -o /Users/manwu/Documents/workspace/aworld/x_ai_daily_raw.json
+
+判断标准包括但不限于：OpenAI、Anthropic、Google/Gemini、Claude、GPT、模型训练、AI 应用。
+"""
+    )
+
+    assert "http://[::1" not in anchors
+    assert "http://[::1]:9222" not in anchors
+    assert "/Users/manwu/Documents/workspace/aworld/examples/skill_agent/skills/x-scraper/scrape_x_home.sh" not in anchors
+    assert "/Users/manwu/Documents/workspace/aworld/x_ai_daily_raw.json" not in anchors
+    assert "/Gemini、Claude、GPT、模型训练、AI" not in anchors
+
+
+def test_required_anchors_keep_explicit_natural_language_file_targets():
+    anchors = extract_required_anchors(
+        "请读取目标文件 /Users/manwu/Documents/workspace/aworld/x_ai_daily_raw.json，"
+        "并把总结保存到 ~/Documents/wuman_knowlage/AI资讯/report.md"
+    )
+
+    assert "/Users/manwu/Documents/workspace/aworld/x_ai_daily_raw.json" in anchors
+    assert "~/Documents/wuman_knowlage/AI资讯/report.md" in anchors
+
+
+def test_aworld_result_validation_does_not_require_command_implementation_details():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    feedback = agent._build_result_validation_feedback(
+        authoritative_request=(
+            "生成每日 X AI 资讯摘要：\n"
+            "bash: /Users/manwu/Documents/workspace/aworld/examples/skill_agent/skills/x-scraper/scrape_x_home.sh "
+            "-p 'http://[::1]:9222' -t foryou -n 5 -f json "
+            "-o /Users/manwu/Documents/workspace/aworld/x_ai_daily_raw.json\n"
+            "判断标准包括 OpenAI、Anthropic、Google/Gemini、Claude、GPT、模型训练、AI 应用。"
+        ),
+        final_response_text="已生成每日 X AI 资讯摘要。",
+        source_evidence_text="抓取 X For You 后筛选出 OpenAI、Claude、模型训练相关内容，并生成中文日报。",
+    )
+
+    assert feedback is None
+
+
+def test_aworld_result_validation_does_not_require_cron_script_implementation_patterns():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    authoritative_request = """执行以下步骤生成每日健康分析报告：
+
+```bash
+python3 << 'PYEOF'
+for i in range(7):
+    d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+    day_dir = os.path.expanduser(f"~/Documents/health/{d}/")
+    for zf in glob.glob(f"{day_dir}/*.zip"):
+        pass
+    for f in glob.glob(f"{day_dir}/HealthAutoExport-*.csv"):
+        pass
+for he_dir in glob.glob(os.path.expanduser("~/Documents/health/HealthAutoExport_*/")):
+    pass
+PYEOF
+```
+"""
+
+    feedback = agent._build_result_validation_feedback(
+        authoritative_request=authoritative_request,
+        final_response_text="每日健康分析报告已生成。",
+        source_evidence_text=(
+            "✅ 解压: HealthAutoExport_20260511212436.zip\n"
+            "📊 【今日恢复状态】2026-05-15\n"
+            "使用文件: HealthAutoExport-20260511-20260511.csv\n"
+            "🏋️ 最近训练回顾"
+        ),
+    )
+
+    assert feedback is None
+
+
+def test_aworld_result_validation_recovery_brief_uses_goal_conflict_language():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    brief = agent._build_result_validation_recovery_brief(
+        authoritative_request="看看我的x账号关注的elliotchen100用户发布的帖子，将其中AI 编程的下一个瓶颈，不是代码，是理解主题的文章添加到我的本地知识库Obsidian中管理起来",
+        validation_feedback="Result validation mismatch: source evidence appears to point to a different target.",
+        source_evidence_text="source: https://x.com/elliotchen100/status/2041300212875243752\n核心观点：AI工具的下一个瓶颈不在模型能力，在交互界面。",
+        artifact_evidence_text="[artifact:/tmp/wrong.md]\ntitle: AI 工具的下一个瓶颈 - 交互界面",
+    )
+
+    assert "Original request" in brief
+    assert "Source evidence from this run" in brief
+    assert "Treat this as unfinished" in brief
+    assert "Do not require every anchor string to appear verbatim" in brief
+    assert "AI 编程的下一个瓶颈，不是代码，是理解" in brief
+    assert "different target or scope" in brief
+
+
+@pytest.mark.asyncio
+async def test_aworld_result_validation_does_not_use_human_request_as_evidence(tmp_path):
+    import aworld.memory.main as memory_main
+
+    class DummyContext:
+        def __init__(self, authoritative_request: str):
+            self.origin_user_input = authoritative_request
+            self.task_input = authoritative_request
+
+        def get_agent_memory_config(self, namespace: str):
+            return AgentMemoryConfig()
+
+        def get_task(self):
+            return SimpleNamespace(id="test_task", session_id="test_session", user_id="user")
+
+    authoritative_request = '请找到标题为“只应存在于人类请求里的目标短语”的帖子，并保存到 Obsidian。'
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    context = DummyContext(authoritative_request)
+
+    memory_main.MEMORY_HOLDER.clear()
+    try:
+        MemoryFactory.init(
+            custom_memory_store=FileSystemMemoryStore(memory_root=str(tmp_path)),
+            config=MemoryConfig(provider="aworld"),
+        )
+        await MemoryFactory.instance().add(
+            MemoryHumanMessage(
+                content=authoritative_request,
+                metadata=MessageMetadata(
+                    agent_id=agent.id(),
+                    agent_name="Aworld",
+                    session_id="test_session",
+                    task_id="test_task",
+                    user_id="user",
+                ),
+            ),
+            agent_memory_config=context.get_agent_memory_config(agent.id()),
+        )
+
+        evidence = agent._collect_result_validation_evidence(context)
+        feedback = agent._build_result_validation_feedback_from_context(
+            context=context,
+            final_response_text="我已经保存了另一篇不相关的文章。",
+        )
+
+        assert evidence == {"source": "", "artifact": ""}
+        assert feedback is None
+    finally:
+        memory_main.MEMORY_HOLDER.clear()
+
+
+@pytest.mark.asyncio
+async def test_aworld_result_validation_ignores_ai_rephrasing_and_uses_tool_output_only(tmp_path):
+    import aworld.memory.main as memory_main
+
+    class DummyContext:
+        def __init__(self, authoritative_request: str):
+            self.origin_user_input = authoritative_request
+            self.task_input = authoritative_request
+
+        def get_agent_memory_config(self, namespace: str):
+            return AgentMemoryConfig()
+
+        def get_task(self):
+            return SimpleNamespace(id="test_task", session_id="test_session", user_id="user")
+
+    authoritative_request = "查找标题为“AI 编程的下一个瓶颈，不是代码，是理解”的帖子并保存。"
+    tool_wrapper = {
+        "success": True,
+        "message": (
+            "# Terminal Command Execution ✅\n"
+            "**Command:** `echo target`\n"
+            "## Output\n"
+            "```\n"
+            "source: https://x.com/elliotchen100/status/2041300212875243752\n"
+            "核心观点：AI工具的下一个瓶颈不在模型能力，在交互界面。\n"
+            "```"
+        ),
+    }
+
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    context = DummyContext(authoritative_request)
+    metadata = MessageMetadata(
+        agent_id=agent.id(),
+        agent_name="Aworld",
+        session_id="test_session",
+        task_id="test_task",
+        user_id="user",
+    )
+
+    memory_main.MEMORY_HOLDER.clear()
+    try:
+        MemoryFactory.init(
+            custom_memory_store=FileSystemMemoryStore(memory_root=str(tmp_path)),
+            config=MemoryConfig(provider="aworld"),
+        )
+        await MemoryFactory.instance().add(
+            MemoryAIMessage(
+                content="我已经找到“AI 编程的下一个瓶颈，不是代码，是理解”这篇帖子了。",
+                metadata=metadata,
+            ),
+            agent_memory_config=context.get_agent_memory_config(agent.id()),
+        )
+        await MemoryFactory.instance().add(
+            MemoryToolMessage(
+                tool_call_id="call-1",
+                content=tool_wrapper,
+                metadata=metadata,
+            ),
+            agent_memory_config=context.get_agent_memory_config(agent.id()),
+        )
+
+        evidence = agent._collect_result_validation_evidence(context)
+
+        assert "不是代码，是理解" not in evidence["source"]
+        assert "交互界面" in evidence["source"]
+        assert evidence["artifact"] == ""
+    finally:
+        memory_main.MEMORY_HOLDER.clear()
+
+
+@pytest.mark.asyncio
+async def test_aworld_result_validation_retry_degrades_empty_llm_response():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    context = SimpleNamespace(context_info={})
+    message = SimpleNamespace(context=context)
+    observation = SimpleNamespace(from_agent_name=None)
+
+    async def _raise_empty_response(*args, **kwargs):
+        raise AWorldRuntimeException("LLM returned empty or invalid response: {}")
+
+    agent.async_policy = _raise_empty_response
+
+    result = await agent._retry_for_result_validation(
+        validation_feedback="Result validation mismatch: target evidence is still missing.",
+        observation=observation,
+        info={},
+        message=message,
+        kwargs={},
+    )
+
+    assert len(result) == 1
+    assert "not claiming success" in result[0].policy_info
+    assert "follow-up validation round failed" in result[0].policy_info
+    assert context.context_info == {}
+    assert agent._finished is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_result_validation_retry_uses_recovery_brief():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    context = SimpleNamespace(
+        context_info={},
+        origin_user_input="查找标题为“AI 编程的下一个瓶颈，不是代码，是理解”的帖子并保存到 Obsidian。",
+        task_input="查找标题为“AI 编程的下一个瓶颈，不是代码，是理解”的帖子并保存到 Obsidian。",
+    )
+    message = SimpleNamespace(context=context)
+    observation = SimpleNamespace(from_agent_name=None)
+    captured = {}
+
+    agent._collect_result_validation_evidence = lambda ctx: {
+        "source": "source: https://x.com/elliotchen100/status/2041300212875243752\n核心观点：AI工具的下一个瓶颈不在模型能力，在交互界面。",
+        "artifact": "[artifact:/tmp/wrong.md]\ntitle: AI 工具的下一个瓶颈 - 交互界面",
+    }
+
+    async def _capture_followup(observation_arg, **kwargs):
+        captured["content"] = observation_arg.content
+        return [ActionModel(agent_name=agent.id(), policy_info="继续调查")]
+
+    agent.async_policy = _capture_followup
+
+    result = await agent._retry_for_result_validation(
+        validation_feedback="Result validation mismatch: target evidence is still missing.",
+        observation=observation,
+        info={},
+        message=message,
+        kwargs={},
+    )
+
+    assert len(result) == 1
+    assert "Original request" in captured["content"]
+    assert "Source evidence from this run" in captured["content"]
+    assert "Treat this as unfinished" in captured["content"]
