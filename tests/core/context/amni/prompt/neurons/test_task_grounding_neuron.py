@@ -50,7 +50,8 @@ async def test_task_grounding_neuron_uses_origin_user_input_as_authoritative_req
     assert "Authoritative user request" in formatted
     assert "Current task view" in formatted
     assert "Do not silently change named entities, handles, URLs, file paths, dates, time windows, topic filters, or requested deliverables." in formatted
-    assert "Before claiming success, verify the final result matches the authoritative request using evidence from this run." in formatted
+    assert "make a practical end-to-end check" in formatted
+    assert "Missing anchor text in tool output is not itself a failure" in formatted
 
 
 @pytest.mark.asyncio
@@ -76,7 +77,7 @@ async def test_task_grounding_neuron_desc():
 
 
 @pytest.mark.asyncio
-async def test_task_grounding_neuron_surfaces_required_anchors():
+async def test_task_grounding_neuron_surfaces_high_confidence_target_anchors():
     context = create_test_context(
         task_content="查找帖子并保存结果",
         origin_user_input="看看我的x账号关注的elliotchen100用户发布的帖子，将其中AI 编程的下一个瓶颈，不是代码，是理解主题的文章添加到我的本地知识库Obsidian中管理起来",
@@ -85,6 +86,7 @@ async def test_task_grounding_neuron_surfaces_required_anchors():
 
     formatted = await neuron.format(context)
 
-    assert "Required anchors to preserve" in formatted
+    assert "High-confidence target anchors" in formatted
+    assert "not as a literal checklist" in formatted
     assert "@elliotchen100" in formatted or "elliotchen100" in formatted
     assert "AI 编程的下一个瓶颈，不是代码，是理解" in formatted
