@@ -5,6 +5,7 @@ import time
 import asyncio
 import json
 import os
+import re
 import traceback
 import uuid
 from collections import OrderedDict
@@ -41,6 +42,7 @@ from aworld.runners.hook.utils import run_hooks
 from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
+from aworld.utils.task_grounding import anchor_matches_text, extract_required_anchors, extract_path_candidates
 import aworld.runners.hook.agent_hooks
 
 
@@ -892,6 +894,382 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 policy_result = await self.execution_tools(agent_result.actions, message)
         await self.send_agent_response_output(self, llm_response, message.context, kwargs.get("outputs"))
         return policy_result
+
+    def _authoritative_request_from_context(self, context: Context) -> str:
+        return str(getattr(context, "origin_user_input", None) or getattr(context, "task_input", None) or "").strip()
+
+    @staticmethod
+    def _stringify_result_validation_content(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (dict, list)):
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except Exception:
+                return str(content)
+        return str(content)
+
+    def _extract_tool_observation_text(self, content: Any) -> str:
+        text = self._stringify_result_validation_content(content).strip()
+        if not text:
+            return ""
+
+        try:
+            parsed = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            message = parsed.get("message")
+            if isinstance(message, str):
+                output_match = re.search(r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", message, re.DOTALL)
+                if output_match:
+                    return output_match.group(1).strip()
+                return message.strip()
+            if "output" in parsed:
+                return self._stringify_result_validation_content(parsed.get("output")).strip()
+
+        output_match = re.search(r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", text, re.DOTALL)
+        if output_match:
+            return output_match.group(1).strip()
+        return text
+
+    def _classify_result_validation_observation(self, observation_text: str) -> str:
+        stripped = observation_text.strip()
+        if not stripped:
+            return "ignore"
+
+        if len(stripped) < 80 and "http://" not in stripped and "https://" not in stripped and "\n" not in stripped:
+            return "ignore"
+
+        local_paths = [
+            path for path in extract_path_candidates(stripped, max_paths=8)
+            if self._is_validation_local_path(path)
+        ]
+        preview_markers = (
+            "--- 文件前",
+            "--- File Preview",
+            "title:",
+            "source:",
+            "# ",
+            "## ",
+        )
+        if local_paths and any(marker in stripped for marker in preview_markers):
+            return "artifact"
+
+        return "source"
+
+    @staticmethod
+    def _is_validation_local_path(path: str) -> bool:
+        if not path or path.startswith(("http://", "https://")):
+            return False
+        if path.startswith(("~/", "./", "../")):
+            return True
+        if not path.startswith("/"):
+            return False
+
+        normalized = os.path.normpath(path)
+        common_roots = ("/Users/", "/tmp/", "/var/", "/private/", "/home/")
+        if normalized.startswith(common_roots):
+            return True
+
+        basename = os.path.basename(normalized)
+        return "." in basename
+
+    def _extract_validation_candidate_paths(self, value: Any) -> list[str]:
+        if hasattr(value, "to_dict") and callable(getattr(value, "to_dict")):
+            try:
+                value = value.to_dict()
+            except Exception:
+                pass
+        elif hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+            try:
+                value = value.model_dump()
+            except Exception:
+                pass
+        return [
+            path for path in extract_path_candidates(value, max_paths=24)
+            if self._is_validation_local_path(path)
+        ]
+
+    def _collect_validation_artifact_previews(
+        self,
+        *,
+        context: Context,
+        candidate_paths: list[str],
+        preview_chars: int = 1600,
+    ) -> list[str]:
+        task_start_time = getattr(context, "start_time", None)
+        text_file_exts = {
+            ".md", ".txt", ".json", ".yaml", ".yml", ".html", ".xml", ".csv",
+            ".py", ".js", ".ts", ".tsx", ".jsx", ".sh",
+        }
+        previews: list[str] = []
+        seen: set[str] = set()
+
+        for raw_path in candidate_paths:
+            expanded = os.path.expanduser(str(raw_path))
+            normalized = os.path.abspath(expanded)
+            if normalized in seen or not os.path.isfile(normalized):
+                continue
+            seen.add(normalized)
+
+            _, ext = os.path.splitext(normalized)
+            if ext.lower() not in text_file_exts:
+                continue
+
+            try:
+                stat = os.stat(normalized)
+            except OSError:
+                continue
+
+            if stat.st_size <= 0 or stat.st_size > 256 * 1024:
+                continue
+            if task_start_time and stat.st_mtime + 2 < float(task_start_time):
+                continue
+
+            try:
+                with open(normalized, "r", encoding="utf-8") as handle:
+                    content = handle.read(preview_chars).strip()
+            except Exception:
+                continue
+
+            if not content:
+                continue
+            previews.append(f"[artifact:{normalized}]\n{content}")
+
+        return previews
+
+    def _collect_result_validation_evidence(self, context: Context, *, limit: int = 8) -> dict[str, str]:
+        try:
+            memory = MemoryFactory.instance()
+            agent_memory_config = context.get_agent_memory_config(self.id())
+            filters = self._build_memory_filters(context, additional_filters={"memory_type": "message"})
+            histories = memory.get_last_n(limit, filters=filters, agent_memory_config=agent_memory_config)
+        except Exception:
+            logger.debug("failed to collect result validation evidence: %s", traceback.format_exc())
+            return {"source": "", "artifact": ""}
+
+        source_parts: list[str] = []
+        artifact_parts: list[str] = []
+        artifact_candidate_paths: list[str] = []
+        tool_call_map: dict[str, Any] = {}
+        for history in histories or []:
+            if isinstance(history, MemoryAIMessage):
+                for tool_call in history.tool_calls or []:
+                    tool_call_map[tool_call.id] = tool_call
+                continue
+            if not isinstance(history, MemoryToolMessage):
+                continue
+
+            observation_text = self._extract_tool_observation_text(getattr(history, "content", None))
+            tool_call = tool_call_map.get(history.tool_call_id)
+            tool_name = str(getattr(getattr(tool_call, "function", None), "name", "") or "").lower()
+            if "spawn_subagent" in tool_name:
+                continue
+            evidence_kind = self._classify_result_validation_observation(observation_text)
+            if evidence_kind == "source":
+                source_parts.append(observation_text)
+            elif evidence_kind == "artifact":
+                artifact_parts.append(observation_text)
+                artifact_candidate_paths.extend(self._extract_validation_candidate_paths(getattr(history, "content", None)))
+                artifact_candidate_paths.extend(self._extract_validation_candidate_paths(tool_call))
+
+        artifact_parts.extend(
+            self._collect_validation_artifact_previews(context=context, candidate_paths=artifact_candidate_paths)
+        )
+
+        return {
+            "source": "\n".join(source_parts[-limit:]),
+            "artifact": "\n".join(artifact_parts[-limit:]),
+        }
+
+    def _build_result_validation_feedback(
+        self,
+        *,
+        authoritative_request: str,
+        final_response_text: str,
+        source_evidence_text: str,
+        artifact_evidence_text: str = "",
+    ) -> str | None:
+        anchors = extract_required_anchors(authoritative_request)
+        if not anchors:
+            return None
+
+        source_text = (source_evidence_text or "").strip()
+        if not source_text:
+            return None
+
+        missing_in_source = [anchor for anchor in anchors if not anchor_matches_text(anchor, source_text)]
+        if missing_in_source:
+            logger.debug(
+                "result validation skipped soft missing anchors: %s",
+                ", ".join(missing_in_source[:4]),
+            )
+            return None
+
+        artifact_text = (artifact_evidence_text or "").strip()
+        if artifact_text:
+            missing_in_artifact = [anchor for anchor in anchors if not anchor_matches_text(anchor, artifact_text)]
+            if missing_in_artifact:
+                logger.debug(
+                    "result validation skipped soft artifact missing anchors: %s",
+                    ", ".join(missing_in_artifact[:4]),
+                )
+                return None
+
+        return None
+
+    def _build_result_validation_feedback_from_context(
+        self,
+        *,
+        context: Context,
+        final_response_text: str,
+    ) -> str | None:
+        if self.name() != "Aworld":
+            return None
+        authoritative_request = self._authoritative_request_from_context(context)
+        if not authoritative_request:
+            return None
+        evidence = self._collect_result_validation_evidence(context)
+        return self._build_result_validation_feedback(
+            authoritative_request=authoritative_request,
+            final_response_text=final_response_text,
+            source_evidence_text=evidence.get("source", ""),
+            artifact_evidence_text=evidence.get("artifact", ""),
+        )
+
+    @staticmethod
+    def _truncate_result_validation_text(value: str, *, limit: int = 1200) -> str:
+        text = (value or "").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit].rstrip()} ...(truncated)"
+
+    def _build_result_validation_recovery_brief(
+        self,
+        *,
+        authoritative_request: str,
+        validation_feedback: str,
+        source_evidence_text: str = "",
+        artifact_evidence_text: str = "",
+    ) -> str:
+        anchors = extract_required_anchors(authoritative_request)
+        anchor_lines = "\n".join(f"- {anchor}" for anchor in anchors[:6]) or "- (none extracted)"
+        source_excerpt = self._truncate_result_validation_text(source_evidence_text, limit=1600) or "(none)"
+        artifact_excerpt = self._truncate_result_validation_text(artifact_evidence_text, limit=1200) or "(none)"
+        return (
+            "Result validation detected a likely goal conflict. Treat this as unfinished.\n\n"
+            f"Original request:\n{authoritative_request}\n\n"
+            f"Validation feedback:\n{validation_feedback}\n\n"
+            f"High-confidence target anchors:\n{anchor_lines}\n\n"
+            f"Source evidence from this run:\n{source_excerpt}\n\n"
+            f"Generated artifact evidence from this run:\n{artifact_excerpt}\n\n"
+            "Recovery requirements:\n"
+            "1. Re-identify the requested goal and expected automation outcome from the original request.\n"
+            "2. If current evidence clearly points to a different target or scope, discard it and search again.\n"
+            "3. Do not require every anchor string to appear verbatim; use anchors only to orient the target.\n"
+            "4. Only continue blocking when the requested outcome was not produced or evidence conflicts with the goal.\n"
+            "5. If you still cannot verify the outcome, explain the practical mismatch and the next evidence needed.\n"
+        )
+
+    @staticmethod
+    def _result_validation_retry_key(agent_id: str) -> str:
+        return f"result_validation_retry_count:{agent_id}"
+
+    @staticmethod
+    def _should_degrade_result_validation_retry_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "empty or invalid response" in message
+            or "failed to get llm response" in message
+        )
+
+    async def _retry_for_result_validation(
+        self,
+        *,
+        validation_feedback: str,
+        observation: Observation,
+        info: Dict[str, Any],
+        message: Message,
+        kwargs: Dict[str, Any],
+    ) -> List[ActionModel]:
+        retry_key = self._result_validation_retry_key(self.id())
+        retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
+        recovery_brief = validation_feedback
+        authoritative_request = self._authoritative_request_from_context(message.context)
+        if authoritative_request:
+            evidence = self._collect_result_validation_evidence(message.context)
+            recovery_brief = self._build_result_validation_recovery_brief(
+                authoritative_request=authoritative_request,
+                validation_feedback=validation_feedback,
+                source_evidence_text=evidence.get("source", ""),
+                artifact_evidence_text=evidence.get("artifact", ""),
+            )
+
+        if retry_count >= 1:
+            self._finished = True
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info=(
+                        f"{validation_feedback}\n"
+                        "I cannot confirm the task is complete with the current evidence, so I am not claiming success."
+                    ),
+                )
+            ]
+
+        message.context.context_info[retry_key] = retry_count + 1
+        followup_observation = Observation(
+            observer=self.id(),
+            from_agent_name=observation.from_agent_name or self.id(),
+            to_agent_name=self.id(),
+            content=recovery_brief,
+            action_result=[
+                ActionResult(
+                    content=recovery_brief,
+                    success=False,
+                    tool_name="result_validation",
+                    action_name="recovery",
+                )
+            ],
+        )
+        recursive_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in {"response_parse_args", "prepared_tools", "prompt_assembly_plan", "provider_native_prompt_cache"}
+        }
+        try:
+            return await self.async_policy(
+                followup_observation,
+                info=info,
+                message=message,
+                **recursive_kwargs,
+            )
+        except Exception as exc:
+            if not self._should_degrade_result_validation_retry_error(exc):
+                raise
+
+            logger.warning(
+                "Result validation follow-up degraded for agent %s after LLM retry failure: %s",
+                self.id(),
+                exc,
+            )
+            message.context.context_info.pop(retry_key, None)
+            self._finished = True
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info=(
+                        f"{validation_feedback}\n"
+                        "The follow-up validation round failed because the model returned an empty or invalid "
+                        "response. I cannot confirm the task is complete with the current evidence, so I am not "
+                        "claiming success."
+                    ),
+                )
+            ]
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
         """Tool execution operations.
