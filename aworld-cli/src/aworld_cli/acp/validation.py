@@ -7,9 +7,6 @@ from typing import Any, Protocol
 
 from .errors import AWORLD_ACP_SESSION_BUSY
 from .stdio_harness import AcpStdioHarness
-from ..steering import STEERING_CAPTURED_ACK
-
-
 REQUIRED_PHASE1_CASE_IDS = (
     "initialize_handshake",
     "new_session_usable",
@@ -465,24 +462,36 @@ async def run_phase1_validation_cases(
             }
         )
         seen_by_id = await harness.read_responses({7, 8, 9})
-        busy_session_update = await harness.read_notification("sessionUpdate")
-
-        cases.append(
-            {
-                "id": "prompt_busy_queued",
-                "ok": (
-                    seen_by_id[8].get("result", {}).get("status") == "queued"
-                    and busy_session_update.get("params", {}).get("update", {}).get("sessionUpdate")
-                    == "agent_message_chunk"
-                    and busy_session_update.get("params", {}).get("update", {}).get("content", {}).get("text")
-                    == STEERING_CAPTURED_ACK
-                ),
-                "detail": {
-                    "response": seen_by_id[8],
-                    "update": busy_session_update,
-                },
-            }
-        )
+        try:
+            busy_session_update = await harness.read_notification(
+                "sessionUpdate",
+                timeout_seconds=0.1,
+            )
+        except RuntimeError as exc:
+            cases.append(
+                {
+                    "id": "prompt_busy_queued",
+                    "ok": (
+                        seen_by_id[8].get("result", {}).get("status") == "queued"
+                        and "timed out waiting for a JSON line" in str(exc)
+                    ),
+                    "detail": {
+                        "response": seen_by_id[8],
+                        "update": None,
+                    },
+                }
+            )
+        else:
+            cases.append(
+                {
+                    "id": "prompt_busy_queued",
+                    "ok": False,
+                    "detail": {
+                        "response": seen_by_id[8],
+                        "unexpected_update": busy_session_update,
+                    },
+                }
+            )
         cases.append(
             {
                 "id": "cancel_active_terminal",

@@ -38,8 +38,20 @@ class FakeExecutor:
         self.pause_checks: list[dict[str, object]] = []
         type(self).instances.append(self)
 
-    async def _build_task(self, text: object, *, session_id: str):
-        self.build_calls.append((text, session_id))
+    async def _build_task(
+        self,
+        text: object,
+        *,
+        session_id: str,
+        origin_user_input: object | None = None,
+    ):
+        self.build_calls.append(
+            {
+                "text": text,
+                "session_id": session_id,
+                "origin_user_input": origin_user_input,
+            }
+        )
         build_index = len(self.build_calls)
         return SimpleNamespace(
             id=f"task-{build_index}",
@@ -111,7 +123,13 @@ def test_bridge_streams_chunks_and_returns_aggregated_text(monkeypatch) -> None:
 
     assert result == DingdingBridgeResult(text="hello world")
     assert seen_chunks == ["hello", " ", "world"]
-    assert FakeExecutor.instances[0].build_calls == [("hi", "dingding_conv")]
+    assert FakeExecutor.instances[0].build_calls == [
+        {
+            "text": "hi",
+            "session_id": "dingding_conv",
+            "origin_user_input": None,
+        }
+    ]
     assert FakeExecutor.instances[0].cleanup_called is True
 
 
@@ -382,10 +400,46 @@ def test_bridge_queues_same_session_input_as_steering(monkeypatch) -> None:
     assert steering_ack == DingdingBridgeResult(text=bridge_module.STEERING_CAPTURED_ACK)
     assert first_result == DingdingBridgeResult(text="handled beta")
     assert len(FakeExecutor.instances) == 1
-    assert FakeExecutor.instances[0].build_calls[0] == ("alpha", "dingding_conv")
+    assert FakeExecutor.instances[0].build_calls[0] == {
+        "text": "alpha",
+        "session_id": "dingding_conv",
+        "origin_user_input": None,
+    }
     assert "Continue the current task with this additional operator steering:" in follow_up_prompts[0]
     assert "beta" in follow_up_prompts[0]
     assert FakeExecutor.instances[0].cleanup_called is True
+
+
+def test_bridge_forwards_raw_origin_user_input_to_executor(monkeypatch) -> None:
+    class FakeOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    async def events_factory(task):
+        assert task.text == "整理结果\n会话附加信息:\n - conversationId: conv-1"
+        yield FakeOutput("ok")
+
+    FakeExecutor.instances = []
+    _install_streamed_run_task(monkeypatch, events_factory)
+    bridge = AworldDingdingBridge(registry_cls=FakeRegistry, executor_cls=FakeExecutor)
+
+    result = asyncio.run(
+        bridge.run(
+            agent_id="aworld",
+            session_id="dingding_conv",
+            text="整理结果\n会话附加信息:\n - conversationId: conv-1",
+            origin_user_input="整理结果",
+        )
+    )
+
+    assert result == DingdingBridgeResult(text="ok")
+    assert FakeExecutor.instances[0].build_calls == [
+        {
+            "text": "整理结果\n会话附加信息:\n - conversationId: conv-1",
+            "session_id": "dingding_conv",
+            "origin_user_input": "整理结果",
+        }
+    ]
 
 
 def test_bridge_falls_back_to_temp_context_when_agent_requires_it(monkeypatch) -> None:

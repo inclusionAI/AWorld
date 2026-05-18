@@ -46,6 +46,8 @@ class AworldDingdingBridge:
         agent_id: str,
         session_id: str,
         text: Any,
+        steering_text: str | None = None,
+        origin_user_input: Any = None,
         on_text_chunk: Callable[[str], Any] | None = None,
         on_output: Callable[[Any], Any] | None = None,
         allowed_tools: list[str] | None = None,
@@ -62,7 +64,7 @@ class AworldDingdingBridge:
                     text=self._queue_session_steering(
                         runtime=runtime,
                         session_id=session_id,
-                        text=text,
+                        text=steering_text if steering_text is not None else text,
                     )
                 )
             if active_task is None:
@@ -88,6 +90,7 @@ class AworldDingdingBridge:
                 result_text = await self._run_with_session_steering(
                     executor=executor,
                     text=text,
+                    origin_user_input=origin_user_input,
                     session_id=session_id,
                     on_text_chunk=on_text_chunk,
                     on_output=on_output,
@@ -143,17 +146,20 @@ class AworldDingdingBridge:
         *,
         executor: Any,
         text: Any,
+        origin_user_input: Any = None,
         session_id: str,
         on_text_chunk: Callable[[str], Any] | None = None,
         on_output: Callable[[Any], Any] | None = None,
     ) -> str:
         current_text = text
+        current_origin_user_input = origin_user_input
         result_text = ""
         runtime = getattr(executor, "_base_runtime", None)
         while True:
             result_text = await self._run_single_round(
                 executor=executor,
                 text=current_text,
+                origin_user_input=current_origin_user_input,
                 session_id=session_id,
                 on_text_chunk=on_text_chunk,
                 on_output=on_output,
@@ -174,19 +180,25 @@ class AworldDingdingBridge:
                 checkpoint="dingtalk_follow_up",
             )
             current_text = follow_up_prompt
+            current_origin_user_input = None
 
     async def _run_single_round(
         self,
         *,
         executor: Any,
         text: Any,
+        origin_user_input: Any = None,
         session_id: str,
         on_text_chunk: Callable[[str], Any] | None = None,
         on_output: Callable[[Any], Any] | None = None,
     ) -> str:
         chunks: list[str] = []
         saw_chunk_output = False
-        task = await executor._build_task(text, session_id=session_id)
+        task = await executor._build_task(
+            text,
+            session_id=session_id,
+            origin_user_input=origin_user_input,
+        )
         task_id = self._task_id(task, fallback=f"dingtalk-{session_id}")
         executor.context = getattr(task, "context", None)
         runtime = getattr(executor, "_base_runtime", None)

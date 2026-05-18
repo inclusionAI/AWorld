@@ -691,6 +691,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         task_id: str = None,
         image_urls: Optional[List[str]] = None,
         requested_skill_names: Optional[List[str]] = None,
+        origin_user_input: Any = None,
     ) -> Task:
         """
         Build task from task content.
@@ -718,7 +719,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         
         # 🔥 Hook: PRE_INPUT_PARSE
-        original_task_content = task_content
+        original_task_content = task_content if origin_user_input is None else origin_user_input
         hook_kwargs = {
             'user_message': task_content,
             'task_content': task_content,
