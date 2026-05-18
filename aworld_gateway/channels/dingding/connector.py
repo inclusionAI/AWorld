@@ -480,6 +480,8 @@ class DingTalkConnector:
             raw_steering_text = request_text.strip()
             if raw_steering_text and "steering_text" in signature(self._bridge.run).parameters:
                 bridge_run_kwargs["steering_text"] = raw_steering_text
+            if raw_steering_text and "origin_user_input" in signature(self._bridge.run).parameters:
+                bridge_run_kwargs["origin_user_input"] = raw_steering_text
             if allowed_tools is not None:
                 bridge_run_kwargs["allowed_tools"] = allowed_tools
             result = await self._bridge.run(

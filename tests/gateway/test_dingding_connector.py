@@ -53,6 +53,7 @@ class _FakeBridge:
         agent_id: str,
         session_id: str,
         text,
+        origin_user_input=None,
         on_text_chunk=None,
         on_output=None,
         allowed_tools=None,
@@ -62,6 +63,7 @@ class _FakeBridge:
                 "agent_id": agent_id,
                 "session_id": session_id,
                 "text": text,
+                "origin_user_input": origin_user_input,
             }
         )
         if allowed_tools is not None:
@@ -1551,6 +1553,7 @@ def test_connector_appends_user_context_before_bridge_call() -> None:
     assert bridge.calls
     assert bridge.calls[0]["agent_id"] == "agent-1"
     assert bridge.calls[0]["session_id"] == connector._session_ids["conv-1"]
+    assert bridge.calls[0]["origin_user_input"] == "帮我总结一下"
     assert bridge.calls[0]["text"] == (
         "帮我总结一下\n"
         "会话附加信息:\n"
