@@ -44,6 +44,7 @@ class WechatChannelConfig(BaseChannelConfig):
     allow_from: list[str] = Field(default_factory=list)
     group_allow_from: list[str] = Field(default_factory=list)
     split_multiline_messages: bool = False
+    auto_steer_while_running: bool = True
 
 
 class WecomChannelConfig(BaseChannelConfig):

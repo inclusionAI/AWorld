@@ -90,6 +90,72 @@ async def test_prompt_streams_executor_outputs_through_adapter_and_mapper() -> N
 
 
 @pytest.mark.asyncio
+async def test_running_prompt_queues_steering_without_visible_ack_update() -> None:
+    class SlowQueueBridge:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.queued: list[str] = []
+
+        def queue_steering(self, *, record, text: str) -> str:
+            del record
+            self.queued.append(text)
+            return "Steering captured. Applying at next checkpoint."
+
+        async def stream_outputs(self, *, record, prompt_text):
+            del record, prompt_text
+            self.started.set()
+            await self.release.wait()
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="done"),
+            )
+
+    bridge = SlowQueueBridge()
+    server = AcpStdioServer(output_bridge=bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    first_task = asyncio.create_task(
+        server._handle_prompt(
+            21,
+            {
+                "sessionId": session["sessionId"],
+                "prompt": {"content": [{"type": "text", "text": "slow"}]},
+            },
+        )
+    )
+    await asyncio.wait_for(bridge.started.wait(), timeout=1.0)
+
+    second = await server._handle_prompt(
+        22,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "follow-up"}]},
+        },
+    )
+
+    bridge.release.set()
+    first = await first_task
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert first["result"]["status"] == "completed"
+    assert second["result"]["status"] == "queued"
+    assert bridge.queued == ["follow-up"]
+    assert all(
+        item["params"]["update"].get("content", {}).get("text")
+        != "Steering captured. Applying at next checkpoint."
+        for item in notifications
+        if item["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+    )
+
+
+@pytest.mark.asyncio
 async def test_current_acp_protocol_emits_step_lifecycle_updates() -> None:
     class FakeOutputBridge:
         async def stream_outputs(self, *, record, prompt_text):
