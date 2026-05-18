@@ -58,7 +58,7 @@ class TaskGroundingNeuron(Neuron):
         anchor_block = ""
         if anchors:
             anchor_lines = "\n".join(f"- {anchor}" for anchor in anchors)
-            anchor_block = f"\nRequired anchors to preserve:\n{anchor_lines}\n"
+            anchor_block = f"\nHigh-confidence target anchors:\n{anchor_lines}\n"
 
         return f"""
 ## Task Grounding
@@ -70,10 +70,10 @@ Authoritative user request:
 Grounding rules:
 - Treat the authoritative user request as the fixed source of truth for the goal, target, scope, output, and success bar.
 - Do not silently change named entities, handles, URLs, file paths, dates, time windows, topic filters, or requested deliverables.
-- Preserve the required anchors above unless the user explicitly changes them.
-- If current evidence points to a different target or scope, do not reinterpret the task to fit that evidence.
-- Before claiming success, verify the final result matches the authoritative request using evidence from this run.
-- If evidence is missing or conflicts with the authoritative request, keep working or report the mismatch instead of declaring success.
+- Use high-confidence anchors as orientation for the target, not as a literal checklist that every tool output must repeat.
+- If current evidence clearly points to a different target or scope, do not reinterpret the task to fit that evidence.
+- Before claiming success, make a practical end-to-end check that the requested automation ran and produced the requested outcome.
+- Missing anchor text in tool output is not itself a failure; only continue investigating when the evidence conflicts with the user's goal or the requested outcome is not produced.
 
 ---
 """
