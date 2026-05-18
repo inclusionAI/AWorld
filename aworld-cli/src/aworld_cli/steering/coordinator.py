@@ -25,6 +25,7 @@ class SteeringSessionState:
     steerable: bool = False
     interrupt_requested: bool = False
     next_sequence: int = 1
+    applied_inputs: list[SteeringInput] = field(default_factory=list)
     pending_inputs: list[SteeringInput] = field(default_factory=list)
 
 
@@ -36,6 +37,8 @@ class SteeringCoordinator:
     def begin_task(self, session_id: str, task_id: str, *, steerable: bool = True) -> None:
         with self._lock:
             state = self._sessions.setdefault(session_id, SteeringSessionState())
+            if state.active_task_id is None:
+                state.applied_inputs.clear()
             state.active_task_id = task_id
             state.steerable = steerable
             state.interrupt_requested = False
@@ -74,6 +77,7 @@ class SteeringCoordinator:
             state.steerable = False
             state.interrupt_requested = False
             if clear_pending:
+                state.applied_inputs.clear()
                 state.pending_inputs.clear()
 
     def snapshot(self, session_id: str) -> dict[str, object]:
@@ -106,6 +110,9 @@ class SteeringCoordinator:
 
             drained = list(state.pending_inputs)
             state.pending_inputs.clear()
+            if drained:
+                state.applied_inputs.extend(drained)
+            applied = list(state.applied_inputs)
             interrupt_requested = state.interrupt_requested
             state.interrupt_requested = False
 
@@ -123,10 +130,10 @@ class SteeringCoordinator:
             if drained:
                 lines.append("")
 
-        for index, item in enumerate(drained, start=1):
+        for index, item in enumerate(applied, start=1):
             lines.append(f"{index}. {item.text}")
 
-        return "\n".join(lines).strip(), drained, interrupt_requested
+        return "\n".join(lines).strip(), applied, interrupt_requested
 
     def consume_terminal_fallback_prompt(self, session_id: str) -> str | None:
         prompt, _drained, _interrupt_requested = self.consume_terminal_fallback(session_id)

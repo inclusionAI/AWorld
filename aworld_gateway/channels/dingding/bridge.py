@@ -46,6 +46,7 @@ class AworldDingdingBridge:
         agent_id: str,
         session_id: str,
         text: Any,
+        steering_text: str | None = None,
         on_text_chunk: Callable[[str], Any] | None = None,
         on_output: Callable[[Any], Any] | None = None,
         allowed_tools: list[str] | None = None,
@@ -62,7 +63,7 @@ class AworldDingdingBridge:
                     text=self._queue_session_steering(
                         runtime=runtime,
                         session_id=session_id,
-                        text=text,
+                        text=steering_text if steering_text is not None else text,
                     )
                 )
             if active_task is None:
