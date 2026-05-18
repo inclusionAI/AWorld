@@ -912,6 +912,96 @@ def test_connector_with_real_bridge_applies_same_conversation_follow_up_as_steer
     assert _SteeringExecutor.instances[0].cleanup_called is True
 
 
+def test_connector_with_real_bridge_queues_raw_follow_up_text_without_dingtalk_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_chunk_seen = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class _FakeChunkOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "chunk"
+
+    class _FakeMessageOutput:
+        def __init__(self, response: str) -> None:
+            self.response = response
+
+        def output_type(self) -> str:
+            return "message"
+
+    async def events_factory(task):
+        text = str(task.text)
+        if "今天google股价怎么样" in text:
+            yield _FakeChunkOutput("draft")
+            first_chunk_seen.set()
+            await release_first.wait()
+            yield _FakeMessageOutput("draft")
+            return
+
+        assert "Continue the current task with this additional operator steering:" in text
+        assert "要不还是看看amd的股价吧" in text
+        assert "会话附加信息" not in text
+        assert "执行要求" not in text
+        yield _FakeMessageOutput("handled steering")
+
+    _install_dingding_bridge_streamed_run_task(monkeypatch, events_factory)
+    _SteeringExecutor.instances = []
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=AworldDingdingBridge(
+            registry_cls=_SteeringRegistry,
+            executor_cls=_SteeringExecutor,
+        ),
+        stream_module=object(),
+        command_bridge=_FakeCommandBridge(handled=False),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        assert session_webhook == "https://callback"
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    async def run_scenario() -> None:
+        first_task = asyncio.create_task(
+            connector.handle_callback(
+                {
+                    "sessionWebhook": "https://callback",
+                    "conversationId": "conv-raw-steering",
+                    "senderId": "user-1",
+                    "text": {"content": "今天google股价怎么样"},
+                }
+            )
+        )
+        await first_chunk_seen.wait()
+
+        second_task = asyncio.create_task(
+            connector.handle_callback(
+                {
+                    "sessionWebhook": "https://callback",
+                    "conversationId": "conv-raw-steering",
+                    "senderId": "user-1",
+                    "text": {"content": "要不还是看看amd的股价吧"},
+                }
+            )
+        )
+        await second_task
+        release_first.set()
+        await first_task
+
+    asyncio.run(run_scenario())
+
+    assert sent == [
+        "Steering captured. Applying at next checkpoint.",
+        "handled steering",
+    ]
+
+
 def test_connector_sends_processing_ack_for_complex_request() -> None:
     bridge = _FakeBridge()
     connector = DingTalkConnector(
