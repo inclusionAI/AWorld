@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import copy
+import inspect
 import json
 import time
 import traceback
@@ -592,7 +593,14 @@ class TaskEventRunner(TaskRunner):
                 if await self.should_stop_task(result):
                     await self.stop()
                     return
-                async for event in handler.handle(result):
+                handler_result = handler.handle(result)
+                if inspect.isasyncgen(handler_result):
+                    async for event in handler_result:
+                        yield event
+                    continue
+
+                event = await handler_result
+                if event:
                     yield event
 
     async def _update_trajectory(self, message: Message):

@@ -45,6 +45,15 @@ class DummyTaskRunner(TaskRunner):
             yield None
 
 
+class CoroutineOnlyInnerHandler:
+    def __init__(self):
+        self.messages = []
+
+    async def handle(self, message):
+        self.messages.append(message)
+        return None
+
+
 @pytest.mark.asyncio
 async def test_default_tool_handler_accepts_sync_reset_for_async_tool():
     runner = MagicMock()
@@ -125,6 +134,34 @@ async def test_task_event_runner_wires_tool_callback_handler():
     await runner.pre_run()
 
     assert any(handler.__class__.__name__ == "ToolCallbackHandler" for handler in runner.handlers)
+
+
+@pytest.mark.asyncio
+async def test_task_event_runner_inner_handlers_accept_coroutine_only_handlers():
+    task = Task(
+        id="task-inner-handler",
+        name="task-inner-handler",
+        input="hello",
+        observation=Observation(content=[]),
+        context=Context(),
+        conf=ConfigDict(),
+    )
+
+    runner = TaskEventRunner(task, agent_oriented=False)
+    await runner.pre_run()
+
+    handler = CoroutineOnlyInnerHandler()
+    message = Message(
+        category=Constants.OUTPUT,
+        payload=SimpleNamespace(output_type=lambda: "default"),
+        session_id="session-1",
+        headers={"context": runner.context},
+    )
+
+    outputs = [event async for event in runner._inner_handler_process([message], [handler])]
+
+    assert outputs == []
+    assert handler.messages == [message]
 
 
 @pytest.mark.asyncio

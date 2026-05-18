@@ -13,8 +13,6 @@ class ToolCallbackHandler(DefaultHandler):
         self.runner = runner
 
     async def handle(self, message):
-        if False:
-            yield None
         if message.category != Constants.TOOL_CALLBACK:
             return
         logger.info(f"-------ToolCallbackHandler start handle message----: {message}")
@@ -32,7 +30,7 @@ class ToolCallbackHandler(DefaultHandler):
             if isinstance(payload, CallbackItem):
                 observation = payload.data[0] if isinstance(payload.data, Tuple) else payload.data
             elif isinstance(payload, Tuple) and isinstance(payload[0], Observation):
-                observation=payload[0]
+                observation = payload[0]
             if not isinstance(observation, Observation):
                 state_mng.run_failed(message.id, "callback failed", [])
                 return
@@ -42,7 +40,6 @@ class ToolCallbackHandler(DefaultHandler):
 
             results = []
             for res in observation.action_result:
-                success = False
                 result = HandleResult(
                     result=Message(payload=None,
                                    category=Constants.TOOL_CALLBACK,
@@ -74,4 +71,3 @@ class ToolCallbackHandler(DefaultHandler):
             state_mng.run_failed(message.id, "callback failed", [])
 
         return
-
