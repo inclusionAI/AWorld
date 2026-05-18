@@ -991,7 +991,7 @@ async def test_acp_server_can_cancel_active_prompt_with_self_test_bridge() -> No
 
 
 @pytest.mark.asyncio
-async def test_acp_server_queues_busy_prompt_with_self_test_bridge() -> None:
+async def test_acp_server_silently_queues_busy_prompt_with_self_test_bridge() -> None:
     proc = await _spawn_async_acp_server({"AWORLD_ACP_SELF_TEST_BRIDGE": "1"})
     try:
         assert proc.stdin is not None
@@ -1054,8 +1054,8 @@ async def test_acp_server_queues_busy_prompt_with_self_test_bridge() -> None:
         assert seen_by_id[4]["result"]["status"] == "queued"
         assert seen_by_id[5]["result"]["status"] == "cancelled"
         assert seen_by_id[3]["result"]["status"] == "cancelled"
-        assert any(
-            item["params"]["update"]["content"]["text"] == "Steering captured. Applying at next checkpoint."
+        assert all(
+            item["params"]["update"]["content"]["text"] != "Steering captured. Applying at next checkpoint."
             for item in session_updates
             if item.get("params", {}).get("update", {}).get("sessionUpdate") == "agent_message_chunk"
         )

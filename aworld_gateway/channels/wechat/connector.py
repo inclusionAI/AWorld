@@ -43,6 +43,7 @@ from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
 from aworld_gateway.logging import get_gateway_logger
 from aworld_gateway.router import SESSION_BINDING_CONVERSATION_ID_METADATA_KEY
 from aworld_gateway.types import InboundEnvelope
+from aworld_cli.steering import STEERING_CAPTURED_ACK
 from aworld_cli.core.command_bridge import CommandBridge
 
 try:
@@ -823,6 +824,15 @@ class WechatConnector:
             channel_default_agent_id=self.config.default_agent_id,
             on_output=on_output,
         )
+        if self._should_suppress_auto_steer_reply(
+            conversation_type=conversation_type,
+            text=outbound.text,
+        ):
+            logger.info(
+                "WeChat steering reply suppressed "
+                f"chat_id={conversation_id} reply_to={outbound.reply_to_message_id or message_id}"
+            )
+            return
         logger.info(
             "WeChat outbound reply "
             f"chat_id={outbound.conversation_id} reply_to={outbound.reply_to_message_id or message_id} "
@@ -1208,15 +1218,26 @@ class WechatConnector:
     def _poll_retry_delay_seconds() -> float:
         return POLL_RETRY_DELAY_SECONDS
 
-    @staticmethod
-    def _conversation_key_for_message(message: dict[str, Any]) -> str | None:
+    def _conversation_key_for_message(self, message: dict[str, Any]) -> str | None:
         room_id = str(message.get("roomid") or "").strip()
         if room_id:
             return f"group:{room_id}"
         sender_id = str(message.get("from_user_id") or "").strip()
-        if sender_id:
+        if sender_id and not self.config.auto_steer_while_running:
             return f"dm:{sender_id}"
         return None
+
+    def _should_suppress_auto_steer_reply(
+        self,
+        *,
+        conversation_type: str,
+        text: str,
+    ) -> bool:
+        return (
+            conversation_type == "dm"
+            and self.config.auto_steer_while_running
+            and text == STEERING_CAPTURED_ACK
+        )
 
     @staticmethod
     def _truncate_log_text(value: object, *, limit: int = LOG_TEXT_TRUNCATE_LIMIT) -> str:
