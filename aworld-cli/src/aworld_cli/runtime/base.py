@@ -9,6 +9,7 @@ from aworld.logs.util import logger
 from ..console import AWorldCLI
 from ..models import AgentInfo
 from ..executors import AgentExecutor
+from ..steering.coordinator import SteeringCoordinator
 
 
 class BaseCliRuntime:
@@ -59,6 +60,7 @@ class BaseCliRuntime:
         from .hud_snapshot import HudSnapshotStore
 
         self._hud_snapshot_store = HudSnapshotStore()
+        self._steering = SteeringCoordinator()
         self._current_root_agent_name: Optional[str] = None
     
     async def start(self) -> None:
@@ -310,6 +312,10 @@ class BaseCliRuntime:
             context.setdefault(bucket, {})
             context[bucket].update(payload)
 
+        session_id = context.get("session", {}).get("session_id")
+        if session_id:
+            context["steering"] = self.steering_snapshot(session_id)
+
         return context
 
     def update_hud_snapshot(self, **sections: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -323,6 +329,12 @@ class BaseCliRuntime:
 
     def reset_hud_session(self, session_id: str | None = None) -> dict[str, dict[str, Any]]:
         return self._hud_snapshot_store.reset_for_session(session_id=session_id)
+
+    def steering_snapshot(self, session_id: str | None) -> dict[str, Any]:
+        return self._steering.snapshot(session_id) if session_id else {}
+
+    def request_session_interrupt(self, session_id: str | None) -> bool:
+        return bool(session_id) and self._steering.request_interrupt(session_id)
 
     def get_hud_lines(self, context: dict[str, Any]) -> list[Any]:
         from ..plugin_capabilities.hud import collect_hud_lines

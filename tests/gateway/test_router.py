@@ -117,6 +117,44 @@ def test_handle_inbound_resolves_agent_builds_session_and_routes_execution():
     assert outbound.text == "backend reply"
 
 
+def test_handle_inbound_uses_session_binding_conversation_override_from_metadata():
+    backend = FakeAgentBackend()
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
+    inbound = InboundEnvelope(
+        channel="wechat",
+        account_id="acct-override",
+        conversation_id="conv-visible",
+        conversation_type="dm",
+        sender_id="sender-override",
+        sender_name="Sender",
+        message_id="msg-override",
+        text="hello after reset",
+        metadata={"session_binding_conversation_id": "conv-reset-2"},
+    )
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert backend.calls == [
+        {
+            "agent_id": "channel-agent",
+            "session_id": "gw:channel-agent:wechat:acct-override:dm:conv-reset-2",
+            "text": "hello after reset",
+        }
+    ]
+    assert outbound.conversation_id == "conv-visible"
+    assert outbound.reply_to_message_id == "msg-override"
+    assert outbound.metadata == {}
+
+
 def test_handle_inbound_prefers_explicit_agent_id_over_other_sources():
     backend = FakeAgentBackend()
     router = GatewayRouter(
@@ -418,6 +456,55 @@ def test_local_cli_backend_cleans_up_executor_when_chat_raises():
 
     assert len(_FailingExecutor.instances) == 1
     assert _FailingExecutor.instances[0].cleanup_called is True
+
+
+def test_local_cli_backend_queues_same_session_input_as_steering():
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class QueuedSteeringExecutor(_SuccessExecutor):
+        instances = []
+
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.chat_calls: list[str] = []
+
+        async def chat(self, text: str) -> str:
+            self.chat_calls.append(text)
+            if text == "alpha":
+                first_started.set()
+                await release_first.wait()
+            return f"ok:{text}"
+
+    backend = LocalCliAgentBackend(
+        registry_cls=_SimpleRegistry,
+        executor_cls=QueuedSteeringExecutor,
+    )
+
+    async def run_scenario() -> tuple[str, str]:
+        first_task = asyncio.create_task(
+            backend.run(agent_id="aworld", session_id="s-steer", text="alpha")
+        )
+        await first_started.wait()
+        steering_ack = await backend.run(
+            agent_id="aworld",
+            session_id="s-steer",
+            text="beta",
+        )
+        release_first.set()
+        return await first_task, steering_ack
+
+    first_result, steering_ack = asyncio.run(run_scenario())
+
+    assert steering_ack == router_module.STEERING_CAPTURED_ACK
+    assert len(QueuedSteeringExecutor.instances) == 1
+    assert QueuedSteeringExecutor.instances[0].chat_calls[0] == "alpha"
+    assert "Continue the current task with this additional operator steering:" in (
+        QueuedSteeringExecutor.instances[0].chat_calls[1]
+    )
+    assert "beta" in QueuedSteeringExecutor.instances[0].chat_calls[1]
+    assert "beta" in first_result
+    assert QueuedSteeringExecutor.instances[0].cleanup_called is True
 
 
 def test_local_cli_backend_on_output_streams_visible_text_and_cleans_up(monkeypatch):

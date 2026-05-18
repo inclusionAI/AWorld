@@ -1,4 +1,7 @@
-from aworld_cli.builtin_agents.smllc.agents.aworld_agent import load_aworld_system_prompt
+from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
+    build_context_config,
+    load_aworld_system_prompt,
+)
 
 
 def test_aworld_prompt_routes_reminders_to_cron():
@@ -89,3 +92,19 @@ def test_aworld_prompt_requires_bounded_in_app_exploration_before_shell_fallback
     assert "If the requested content is not yet visible but the current surface still appears relevant" in prompt
     assert "use bounded in-app exploration first" in prompt
     assert "Do not fall back to shell scripts, screenshots, or OCR until the current surface has been explored" in prompt
+
+
+def test_aworld_context_config_enables_task_grounding_neuron():
+    config = build_context_config(debug_mode=True)
+
+    assert "task_grounding" in config.agent_config.neuron_names
+
+
+def test_aworld_prompt_requires_grounding_authoritative_request_and_finish_validation():
+    prompt = load_aworld_system_prompt()
+
+    assert "Before taking action, derive a short internal checklist of the task's fixed constraints" in prompt
+    assert "Treat the original user request as the authoritative source of truth for the task goal" in prompt
+    assert "Do not silently replace the requested target, entity, date, time window, topic filter, output location, or deliverable" in prompt
+    assert "Before declaring success, verify that the result is supported by evidence gathered in the current run" in prompt
+    assert "If the evidence conflicts with the user's constraints, treat the task as incomplete" in prompt

@@ -26,6 +26,13 @@ def _get_builtin_ralph_plugin_root() -> Path:
     raise AssertionError("built-in ralph_session_loop plugin root not found")
 
 
+def _get_builtin_steering_plugin_root() -> Path:
+    for root in get_builtin_plugin_roots():
+        if root.name == "steering_cli":
+            return root
+    raise AssertionError("built-in steering_cli plugin root not found")
+
+
 def test_collect_hud_lines_orders_by_section_and_priority():
     plugin_root = _get_builtin_aworld_hud_root()
     plugin = discover_plugins([plugin_root])[0]
@@ -672,3 +679,70 @@ def test_ralph_hud_renders_active_loop_state():
         "Iter: 2/5",
         "Promise: COMPLETE",
     )
+
+
+def test_steering_hud_renders_pending_count():
+    plugin_root = _get_builtin_steering_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    lines = collect_hud_lines(
+        plugins=[plugin],
+        context={
+            "workspace": {"name": "aworld"},
+            "session": {"agent": "Aworld", "mode": "Chat", "session_id": "session-1"},
+            "steering": {
+                "active": True,
+                "pending_count": 2,
+                "interrupt_requested": False,
+            },
+        },
+    )
+
+    assert [line.section for line in lines] == ["session"]
+    assert lines[0].segments == (
+        "Steering: active",
+        "Pending: 2",
+        "Interrupt: no",
+    )
+
+
+def test_status_bar_text_prioritizes_activity_line_over_secondary_session_plugin():
+    aworld_plugin = discover_plugins([_get_builtin_aworld_hud_root()])[0]
+    ralph_plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
+
+    class FakeRuntime:
+        def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
+            return {
+                "workspace": {"name": workspace_name},
+                "session": {"agent": agent_name, "mode": mode, "model": "claude-sonnet-4-5"},
+                "task": {"current_task_id": "task_20260512112856", "status": "idle"},
+                "activity": {"current_tool": None, "recent_tools": ["bash"], "tool_calls_count": 1},
+                "usage": {
+                    "input_tokens": 6500,
+                    "output_tokens": 122,
+                    "context_used": 60000,
+                    "context_max": 200000,
+                    "context_percent": 30,
+                },
+                "notifications": {"cron_unread": 0},
+                "vcs": {"branch": git_branch},
+            }
+
+        def get_hud_lines(self, context):
+            return collect_hud_lines(
+                [aworld_plugin, ralph_plugin],
+                context,
+                plugin_state_provider=lambda plugin_id, scope, context: {"active": False}
+                if plugin_id == "ralph_session_loop"
+                else {},
+            )
+
+    cli = AWorldCLI()
+    text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat", max_width=160)
+
+    lines = text.splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith("Agent: Aworld")
+    assert "Tokens: in 6.5k out 122" in lines[1]
+    assert "Ctx:" in lines[1]
+    assert "Ralph: inactive" not in lines[1]

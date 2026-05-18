@@ -16,7 +16,8 @@ import aworld.trace as trace
 from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
-from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
+from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem, TaskStatusValue
+from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
@@ -30,19 +31,28 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color, digest_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools, filter_mcp_tools_by_servers
 from aworld.memory.main import MemoryFactory
+from aworld.memory.tool_call_compaction import collect_replay_message_metrics
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template, \
     ModelResponseParser
 from aworld.models.model_response import ModelResponse
+from aworld.models.prompt_cache import (
+    resolve_provider_prompt_cache_key,
+    supports_provider_native_prompt_cache,
+    should_request_provider_native_cache,
+)
+from aworld.models.usage import normalize_usage
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process, ModelUtils
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
+from aworld.runners.post_tool_progress import mark_post_tool_progress_llm_started
 from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
 from aworld.utils.task_grounding import anchor_matches_text, extract_required_anchors, extract_path_candidates
+from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
 
 
@@ -324,6 +334,281 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Disable subagent on initialization failure
             self.enable_subagent = False
             self.subagent_manager = None
+
+    def _record_llm_call_request(
+        self,
+        message: Message,
+        messages: List[Dict[str, Any]],
+        *,
+        started_at: str | None = None,
+    ) -> str:
+        """Persist one request snapshot without overwriting prior LLM call state."""
+        started_at = started_at or datetime.now().isoformat()
+        call_id = uuid.uuid4().hex
+        serializable_messages = to_serializable(messages)
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        llm_calls.append(
+            {
+                "call_id": call_id,
+                "step_id": message.context.current_step_id() if message.context else None,
+                "agent_id": self.id(),
+                "started_at": started_at,
+                "request": {
+                    "messages": serializable_messages,
+                },
+                "request_metrics": collect_replay_message_metrics(serializable_messages),
+            }
+        )
+        context_info["llm_calls"] = llm_calls
+        # Backward-compatible aliases for current readers.
+        context_info["llm_input"] = serializable_messages
+        context_info["llm_call_start_time"] = started_at
+        return call_id
+
+    def _record_llm_call_response(
+        self,
+        message: Message,
+        call_id: str,
+        llm_response: ModelResponse | None,
+    ) -> None:
+        """Attach response/usage to the matching call record and preserve legacy aliases."""
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        serialized_response = None
+        serialized_usage = None
+        if llm_response is not None:
+            serialized_response = (
+                llm_response.to_dict()
+                if hasattr(llm_response, "to_dict")
+                else to_serializable(llm_response)
+            )
+            serialized_usage = to_serializable(getattr(llm_response, "usage", None))
+
+        for index in range(len(llm_calls) - 1, -1, -1):
+            record = llm_calls[index]
+            if isinstance(record, dict) and record.get("call_id") == call_id:
+                updated_record = dict(record)
+                if serialized_response is not None:
+                    updated_record["response"] = serialized_response
+                if serialized_usage is not None:
+                    updated_record["usage"] = serialized_usage
+                metadata = updated_record.get("assembly_observability")
+                if isinstance(metadata, dict) and self._usage_has_cache_tokens(serialized_usage):
+                    metadata = dict(metadata)
+                    metadata["provider_native_cache"] = True
+                    updated_record["assembly_observability"] = metadata
+                llm_calls[index] = updated_record
+                context_info["llm_calls"] = llm_calls
+                break
+
+        context_info["llm_output"] = llm_response
+
+    def _update_llm_call_observability(
+        self,
+        message: Message,
+        call_id: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Attach prompt-assembly metadata to the matching call record."""
+        if not isinstance(metadata, dict):
+            return
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        for index in range(len(llm_calls) - 1, -1, -1):
+            record = llm_calls[index]
+            if isinstance(record, dict) and record.get("call_id") == call_id:
+                updated_record = dict(record)
+                updated_record["assembly_observability"] = dict(metadata)
+                llm_calls[index] = updated_record
+                context_info["llm_calls"] = llm_calls
+                break
+
+    def _current_provider_name(self) -> str:
+        provider_name = getattr(getattr(self, "_llm", None), "provider_name", None)
+        if provider_name:
+            return provider_name
+        llm_config = getattr(self.conf, "llm_config", None)
+        if llm_config and getattr(llm_config, "llm_provider", None):
+            return llm_config.llm_provider
+        if getattr(self.conf, "llm_provider", None):
+            return self.conf.llm_provider
+        return "openai"
+
+    def _get_agent_context_cache_config(self, context: Any):
+        if context is None or not hasattr(context, "get_agent_context_config"):
+            return None
+        namespaces = [self.id(), self.name(), "default"]
+        for namespace in namespaces:
+            try:
+                config = context.get_agent_context_config(namespace)
+            except Exception:
+                continue
+            if config is not None and hasattr(config, "context_cache"):
+                return config.context_cache
+        return None
+
+    def _get_model_context_cache_config(self):
+        llm_config = getattr(self.conf, "llm_config", None)
+        if llm_config is not None and hasattr(llm_config, "context_cache"):
+            return llm_config.context_cache
+        return None
+
+    def _is_context_cache_enabled(self, context: Any) -> bool:
+        agent_config = self._get_agent_context_cache_config(context)
+        model_config = self._get_model_context_cache_config()
+        agent_enabled = True if agent_config is None else bool(getattr(agent_config, "enabled", True))
+        model_enabled = True if model_config is None else bool(getattr(model_config, "enabled", True))
+        return agent_enabled and model_enabled
+
+    def _allow_provider_native_cache(self, context: Any) -> bool:
+        if not self._is_context_cache_enabled(context):
+            return False
+        agent_config = self._get_agent_context_cache_config(context)
+        model_config = self._get_model_context_cache_config()
+        agent_enabled = True if agent_config is None else bool(
+            getattr(agent_config, "allow_provider_native_cache", True)
+        )
+        model_enabled = True if model_config is None else bool(
+            getattr(model_config, "allow_provider_native_cache", True)
+        )
+        return agent_enabled and model_enabled
+
+    def _usage_has_cache_tokens(self, usage: Dict[str, Any] | None) -> bool:
+        if not isinstance(usage, dict):
+            return False
+        normalized_usage = normalize_usage(usage)
+        return (
+            (normalized_usage.get("cache_hit_tokens", 0) or 0) > 0
+            or (normalized_usage.get("cache_write_tokens", 0) or 0) > 0
+        )
+
+    def _provider_native_cache_requested(
+        self,
+        context: Any,
+        provider_name: str,
+        request_kwargs: Dict[str, Any] | None,
+        *,
+        stable_prefix_hash: str | None = None,
+    ) -> bool:
+        if not self._allow_provider_native_cache(context):
+            return False
+        if not supports_provider_native_prompt_cache(provider_name):
+            return False
+        return should_request_provider_native_cache(
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_prefix_hash,
+        )
+
+    def _build_prompt_assembly_state(
+        self,
+        *,
+        context: Any = None,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ):
+        metadata = self._build_prompt_assembly_metadata(context=context, request_kwargs=request_kwargs)
+        provider = self._get_prompt_assembly_provider(context)
+        plan = provider.build_plan(messages=messages, tools=tools, metadata=metadata)
+        provider_name = metadata.get("provider_name") or self._current_provider_name()
+        stable_hash = getattr(plan, "stable_hash", None)
+        provider_native_cache = self._provider_native_cache_requested(
+            context,
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_hash,
+        )
+        metadata["provider_native_cache"] = provider_native_cache
+        prompt_cache_key = resolve_provider_prompt_cache_key(
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_hash,
+        )
+        if prompt_cache_key:
+            metadata["prompt_cache_key"] = prompt_cache_key
+
+        assembled_messages = (
+            plan.to_model_messages()
+            if hasattr(plan, "to_model_messages")
+            else to_serializable(getattr(plan, "messages", messages))
+        )
+        observability = dict(metadata)
+        plan_observability = getattr(plan, "observability", None)
+        if isinstance(plan_observability, dict):
+            observability.update(plan_observability)
+        observability["provider_native_cache"] = provider_native_cache
+        if prompt_cache_key:
+            observability["prompt_cache_key"] = prompt_cache_key
+        observability.setdefault("assembly_provider", provider.__class__.__name__)
+        if stable_hash:
+            observability.setdefault("stable_prefix_hash", stable_hash)
+        return plan, to_serializable(assembled_messages), observability
+
+    def _get_prompt_assembly_provider(self, context: Any = None):
+        provider = None
+        if context is not None:
+            provider_getter = getattr(context, "get_prompt_assembly_provider", None)
+            if callable(provider_getter):
+                try:
+                    provider = provider_getter(agent=self)
+                except TypeError:
+                    provider = provider_getter()
+            if provider is None:
+                provider = getattr(context, "prompt_assembly_provider", None)
+        if provider is None:
+            provider = getattr(self, "prompt_assembly_provider", None)
+        if provider is None:
+            provider = DefaultPromptAssemblyProvider()
+            self.prompt_assembly_provider = provider
+        return provider
+
+    def _build_prompt_assembly_metadata(
+        self,
+        *,
+        context: Any = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        provider_name = self._current_provider_name()
+        return {
+            "provider_name": provider_name,
+            "cache_aware_assembly": False,
+            "provider_native_cache": self._provider_native_cache_requested(context, provider_name, request_kwargs),
+        }
+
+    def _build_prompt_assembly(
+        self,
+        *,
+        context: Any = None,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        _, assembled_messages, observability = self._build_prompt_assembly_state(
+            context=context,
+            messages=messages,
+            tools=tools,
+            request_kwargs=request_kwargs,
+        )
+        return assembled_messages, observability
+
+    def _build_prompt_assembly_observability(
+        self,
+        *,
+        context: Any = None,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Build request-side prompt assembly metadata from the active prompt assembly provider."""
+        _, observability = self._build_prompt_assembly(
+            context=context,
+            messages=messages,
+            tools=tools,
+            request_kwargs=request_kwargs,
+        )
+        return observability
 
     @property
     def llm(self):
@@ -778,6 +1063,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         return sync_exec(self.async_policy, observation, info, message, **kwargs)
 
+    @staticmethod
+    async def _current_task_status(context: Optional[Context]) -> Optional[str]:
+        if context is None or not hasattr(context, "get_task_status"):
+            return None
+        try:
+            return await context.get_task_status()
+        except Exception as exc:
+            logger.debug(f"Failed to inspect task status for interruption handling: {exc}")
+            return None
+
+    async def _raise_if_task_interrupted(
+        self,
+        context: Optional[Context],
+        *,
+        reason: str,
+        source_exception: Exception | None = None,
+    ) -> None:
+        current_task = asyncio.current_task()
+        if current_task and current_task.cancelling():
+            logger.info(f"{self.id()} treating LLM flow as cancelled: {reason}")
+            if source_exception is None:
+                raise asyncio.CancelledError(reason)
+            raise asyncio.CancelledError(reason) from source_exception
+
+        task_status = await self._current_task_status(context)
+        if task_status in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}:
+            cancel_reason = f"{reason} ({task_status})"
+            logger.info(f"{self.id()} treating LLM flow as task interruption: {cancel_reason}")
+            if source_exception is None:
+                raise asyncio.CancelledError(cancel_reason)
+            raise asyncio.CancelledError(cancel_reason) from source_exception
+
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
                            **kwargs) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
@@ -799,17 +1116,32 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
-        messages = await self.build_llm_input(observation, info, message=message, **kwargs)
+        raw_messages = await self.build_llm_input(observation, info, message=message, **kwargs)
+        tools = await self._filter_tools(message.context)
+        if not tools:
+            tools = None
+        prompt_assembly_plan, messages, prompt_assembly_observability = self._build_prompt_assembly_state(
+            context=message.context,
+            messages=raw_messages,
+            tools=tools,
+            request_kwargs=kwargs,
+        )
 
         serializable_messages = to_serializable(messages)
-        message.context.context_info["llm_input"] = serializable_messages
         llm_response = None
         agent_result = None
+        validation_feedback = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+        mark_post_tool_progress_llm_started(message.context, agent_id=self.id())
         # Record LLM call start time (used to set MemoryMessage's start_time)
         llm_call_start_time = datetime.now().isoformat()
-        message.context.context_info["llm_call_start_time"] = llm_call_start_time
+        llm_call_id = self._record_llm_call_request(
+            message,
+            serializable_messages,
+            started_at=llm_call_start_time,
+        )
+        self._update_llm_call_observability(message, llm_call_id, prompt_assembly_observability)
 
         try:
             events = []
@@ -825,11 +1157,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "agent_id": self.id()
             }
             kwargs["response_parse_args"] = response_parse_args
+            kwargs["prepared_tools"] = tools
+            provider_name = prompt_assembly_observability.get("provider_name") or self._current_provider_name()
+            if supports_provider_native_prompt_cache(provider_name):
+                kwargs["prompt_assembly_plan"] = prompt_assembly_plan
+                kwargs["provider_native_prompt_cache"] = bool(
+                    prompt_assembly_observability.get("provider_native_cache")
+                )
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
+        except asyncio.CancelledError:
+            logger.info(f"{self.id()} LLM flow interrupted during invoke_model")
+            raise
         except Exception as e:
+            await self._raise_if_task_interrupted(
+                message.context if message else None,
+                reason=f"{self.id()} interrupted while waiting for LLM response",
+                source_exception=e,
+            )
             logger.warn(f"{self.id()} result error: {e}")
             raise AWorldRuntimeException(str(e))
         finally:
+            self._record_llm_call_response(message, llm_call_id, llm_response)
             if llm_response:
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
@@ -859,11 +1207,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                                                          agent_id=self.id(),
                                                                          agent=self,
                                                                          use_tools_in_prompt=self.use_tools_in_prompt)
+                    candidate_finished = not agent_result.is_call_tool
+                    if candidate_finished:
+                        validation_feedback = self._build_result_validation_feedback_from_context(
+                            context=message.context,
+                            final_response_text=llm_response.content or "",
+                        )
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
                                                       message_type=MemoryType.AI,
                                                       context=message.context,
-                                                      skip_summary=self.is_agent_finished(llm_response, agent_result))
+                                                      skip_summary=candidate_finished and not validation_feedback)
 
                     try:
                         events = []
@@ -875,10 +1229,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             f"{self.id()} failed to run POST_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
                         raise AWorldRuntimeException(str(e))
             else:
+                await self._raise_if_task_interrupted(
+                    message.context if message else None,
+                    reason=f"{self.id()} interrupted before receiving a usable LLM response",
+                )
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise AWorldRuntimeException(f"{self.id()} failed to get LLM response")
 
         logger.info(f"agent_result: {agent_result}")
+
+        if validation_feedback:
+            logger.warning(
+                "Result validation asked agent %s to continue before finishing: %s",
+                self.id(),
+                validation_feedback,
+            )
+            return await self._retry_for_result_validation(
+                validation_feedback=validation_feedback,
+                observation=observation,
+                info=info,
+                message=message,
+                kwargs=kwargs,
+            )
+
+        message.context.context_info.pop(self._result_validation_retry_key(self.id()), None)
 
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
@@ -1348,7 +1722,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         content = result.content
         if result.tool_name != "cron" or not isinstance(content, dict):
-            return str(content)
+            compaction = compact_tool_result_for_memory(
+                content,
+                tool_name=result.tool_name,
+                action_name=result.action_name,
+                summary_content=(result.metadata or {}).get("tool_use_summary") if isinstance(result.metadata, dict) else None,
+                enabled=True,
+                preview_chars=2000,
+                force=bool(isinstance(result.metadata, dict) and result.metadata.get("offload") is True),
+            )
+            return str(compaction.content if compaction.applied else content)
 
         serialized = json.dumps(content, ensure_ascii=False)
         if not content.get("success"):
@@ -1418,10 +1801,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             LLM response
         """
         llm_response = None
+        context = message.context if message else None
+        failure_output_sent = False
 
         # Prepare parameters once before retry loop
         try:
-            tools = await self._filter_tools(message.context)
+            tools = kwargs.pop("prepared_tools", None)
+            if tools is None:
+                tools = await self._filter_tools(message.context)
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
@@ -1533,8 +1920,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 await task.outputs.add_output(ChunkOutput(data=chunk, metadata=meta))
 
                     else:
-                        # Remove 'stream' from kwargs to avoid conflict
-                        non_stream_kwargs = {k: v for k, v in kwargs.items() if k != 'stream'}
+                        # Remove stream-only kwargs to avoid leaking stale stream options into fallback calls.
+                        non_stream_kwargs = {
+                            k: v for k, v in kwargs.items() if k not in {"stream", "stream_options"}
+                        }
                         logger.info(f"🔀 Using non-stream mode (no timeout limit, relies on httpx client timeout)")
 
                         llm_response = await acall_llm_model(
@@ -1555,6 +1944,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             usage_process(llm_response.usage, message.context)
                         return llm_response
                     else:
+                        await self._raise_if_task_interrupted(
+                            context,
+                            reason="LLM stream interrupted before any final response was assembled",
+                        )
                         # Invalid response, treat as failure
                         error_msg = f"LLM returned empty or invalid response: {llm_response}"
                         logger.warning(f"⚠️[attempt {attempt}/{self.llm_max_attempts}] {error_msg}")
@@ -1566,6 +1959,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             raise AWorldRuntimeException(error_msg)
 
                 except Exception as e:
+                    await self._raise_if_task_interrupted(
+                        context,
+                        reason="LLM call interrupted during provider execution",
+                        source_exception=e,
+                    )
                     last_exception = e
                     logger.warn(f"❌[attempt {attempt}/{self.llm_max_attempts}] LLM call failed : {str(e)}")
 
@@ -1627,6 +2025,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             session_id=message.context.session_id if message.context else "",
                             headers={"context": message.context}
                         ))
+                        failure_output_sent = True
                         raise e
 
             # This should not be reached, but just in case
@@ -1635,16 +2034,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return llm_response
 
         except Exception as e:
+            await self._raise_if_task_interrupted(
+                context,
+                reason="LLM call interrupted while bubbling provider failure",
+                source_exception=e,
+            )
             logger.warn(f"Failed to call llm model: {e}")
-            await send_message(Message(
-                category=Constants.OUTPUT,
-                payload=Output(
-                    data=f"Failed to call llm model: {e}"
-                ),
-                sender=self.id(),
-                session_id=message.context.session_id if message.context else "",
-                headers={"context": message.context}
-            ))
+            if not failure_output_sent:
+                await send_message(Message(
+                    category=Constants.OUTPUT,
+                    payload=Output(
+                        data=f"Failed to call llm model: {e}"
+                    ),
+                    sender=self.id(),
+                    session_id=message.context.session_id if message.context else "",
+                    headers={"context": message.context}
+                ))
+                failure_output_sent = True
 
             if "Please reduce the length of the messages" in str(e):
                 # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.
@@ -1659,8 +2065,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 ))
                 return ModelResponse(id=uuid.uuid4().hex, model=self.model_name, content=to_serializable(messages))
             raise e
-        finally:
-            message.context.context_info["llm_output"] = llm_response
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")

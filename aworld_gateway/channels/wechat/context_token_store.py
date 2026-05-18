@@ -37,6 +37,11 @@ class ContextTokenStore:
         self._cache[self._key(account_id, peer_id)] = token
         self._persist(account_id)
 
+    def delete(self, account_id: str, peer_id: str) -> None:
+        removed = self._cache.pop(self._key(account_id, peer_id), None)
+        if removed is not None:
+            self._persist(account_id)
+
     def _persist(self, account_id: str) -> None:
         self._root.mkdir(parents=True, exist_ok=True)
         prefix = f"{account_id}:"
