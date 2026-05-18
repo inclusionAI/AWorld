@@ -594,14 +594,7 @@ class AcpStdioServer:
             and self._turns.has_active_turn(session_id)
             and hasattr(self._output_bridge, "queue_steering")
         ):
-            ack_text = self._output_bridge.queue_steering(record=record, text=prompt_text)
-            await self._write_session_update_for_session(
-                session_id,
-                {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"text": ack_text},
-                },
-            )
+            self._output_bridge.queue_steering(record=record, text=prompt_text)
             return self._response(request_id, {"status": "queued"})
 
         async def _run_streaming_prompt(
@@ -708,16 +701,9 @@ class AcpStdioServer:
                     task = await self._turns.start_turn(session_id, _run_turn())
             except AcpBusyError:
                 if hasattr(self._output_bridge, "queue_steering"):
-                    ack_text = self._output_bridge.queue_steering(
+                    self._output_bridge.queue_steering(
                         record=record,
                         text=executed_prompt_text,
-                    )
-                    await self._write_session_update_for_session(
-                        session_id,
-                        {
-                            "sessionUpdate": "agent_message_chunk",
-                            "content": {"text": ack_text},
-                        },
                     )
                     return self._response(request_id, {"status": "queued"})
                 return self._error(
