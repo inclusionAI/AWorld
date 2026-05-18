@@ -394,6 +394,12 @@ class TaskEventRunner(TaskRunner):
                 handler_instance = HandlerFactory(handler, runner=self)
                 self.handlers.append(handler_instance)
 
+        # Tool callbacks are resolved through the inner handler pipeline rather than
+        # event-bus topic subscriptions, so wire the callback handler explicitly.
+        from aworld.runners.callback.tool import ToolCallbackHandler
+        if not any(isinstance(handler, ToolCallbackHandler) for handler in self.handlers):
+            self.handlers.append(ToolCallbackHandler(self))
+
         self.task_flag = "sub" if self.task.is_sub_task else "main"
         self.inited = True
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")

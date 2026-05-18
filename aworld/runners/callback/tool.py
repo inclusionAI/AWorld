@@ -13,6 +13,8 @@ class ToolCallbackHandler(DefaultHandler):
         self.runner = runner
 
     async def handle(self, message):
+        if False:
+            yield None
         if message.category != Constants.TOOL_CALLBACK:
             return
         logger.info(f"-------ToolCallbackHandler start handle message----: {message}")
@@ -70,15 +72,6 @@ class ToolCallbackHandler(DefaultHandler):
             # todo
             logger.warning(f"ToolCallbackHandler Failed to parse payload: {e}")
             state_mng.run_failed(message.id, "callback failed", [])
-        finally:
-            yield Message(
-                category=Constants.OUTPUT,
-                payload=None,
-                sender=self.name(),
-                session_id=message.session_id,
-                headers={"context": self.context}
-            )
 
         return
-
 
