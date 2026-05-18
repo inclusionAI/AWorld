@@ -12,6 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from aworld_gateway.channels.dingding import bridge as dingding_bridge_module
+from aworld_gateway.channels.dingding.bridge import AworldDingdingBridge
 from aworld_gateway.channels.dingding.connector import (
     PROCESSING_ACK_TEXT,
     DingTalkConnector,
@@ -202,6 +204,71 @@ class _FakeHttpClient:
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class _SteeringRegistry:
+    @staticmethod
+    def get_agent(agent_id: str):
+        class _FakeAgent:
+            context_config = None
+            hooks = None
+
+            async def get_swarm(self, _context):
+                return "fake-swarm"
+
+        return _FakeAgent()
+
+
+class _SteeringExecutor:
+    instances: list["_SteeringExecutor"] = []
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.cleanup_called = False
+        self.build_calls: list[tuple[object, str]] = []
+        self.pause_checks: list[dict[str, object]] = []
+        type(self).instances.append(self)
+
+    async def _build_task(self, text: object, *, session_id: str):
+        self.build_calls.append((text, session_id))
+        build_index = len(self.build_calls)
+        return SimpleNamespace(
+            id=f"task-{build_index}",
+            context=SimpleNamespace(
+                task_id=f"task-{build_index}",
+                workspace_path="/tmp/dingding-test-workspace",
+            ),
+            text=text,
+            session_id=session_id,
+        )
+
+    async def _should_pause_for_queued_steering_checkpoint(self, **kwargs) -> bool:
+        self.pause_checks.append(kwargs)
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None:
+            return False
+        snapshot = runtime.steering_snapshot(self.kwargs["session_id"])
+        return bool(snapshot["interrupt_requested"]) and int(snapshot["pending_count"]) > 0
+
+    async def cleanup_resources(self) -> None:
+        self.cleanup_called = True
+
+
+class _SteeringStreamingOutputs:
+    def __init__(self, events_factory) -> None:
+        self._events_factory = events_factory
+
+    async def stream_events(self):
+        async for event in self._events_factory():
+            yield event
+
+
+def _install_dingding_bridge_streamed_run_task(monkeypatch, events_factory) -> None:
+    monkeypatch.setattr(
+        dingding_bridge_module.Runners,
+        "streamed_run_task",
+        lambda *, task: _SteeringStreamingOutputs(lambda: events_factory(task)),
+    )
 
 
 def test_connector_start_registers_stream_callback_handler(monkeypatch) -> None:
@@ -749,6 +816,100 @@ def test_connector_reuses_session_for_overlapping_callbacks() -> None:
     assert bridge.calls[0]["session_id"] == bridge.calls[1]["session_id"]
     assert connector._session_ids["conv-1"] == bridge.calls[0]["session_id"]
     assert sent == ["echo:beta", "echo:alpha"]
+
+
+def test_connector_with_real_bridge_applies_same_conversation_follow_up_as_steering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_chunk_seen = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class _FakeChunkOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "chunk"
+
+    class _FakeMessageOutput:
+        def __init__(self, response: str) -> None:
+            self.response = response
+
+        def output_type(self) -> str:
+            return "message"
+
+    async def events_factory(task):
+        text = _FakeBridge._display_input_text(task.text)
+        if text == "alpha":
+            yield _FakeChunkOutput("draft")
+            first_chunk_seen.set()
+            await release_first.wait()
+            yield _FakeMessageOutput("draft")
+            return
+
+        assert "Continue the current task with this additional operator steering:" in text
+        assert "beta" in text
+        yield _FakeMessageOutput("handled beta")
+
+    _install_dingding_bridge_streamed_run_task(monkeypatch, events_factory)
+    _SteeringExecutor.instances = []
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=AworldDingdingBridge(
+            registry_cls=_SteeringRegistry,
+            executor_cls=_SteeringExecutor,
+        ),
+        stream_module=object(),
+        command_bridge=_FakeCommandBridge(handled=False),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        assert session_webhook == "https://callback"
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    async def run_scenario() -> None:
+        first_task = asyncio.create_task(
+            connector.handle_callback(
+                {
+                    "sessionWebhook": "https://callback",
+                    "conversationId": "conv-1",
+                    "senderId": "user-1",
+                    "text": {"content": "alpha"},
+                }
+            )
+        )
+        await first_chunk_seen.wait()
+
+        second_task = asyncio.create_task(
+            connector.handle_callback(
+                {
+                    "sessionWebhook": "https://callback",
+                    "conversationId": "conv-1",
+                    "senderId": "user-1",
+                    "text": {"content": "beta"},
+                }
+            )
+        )
+        await second_task
+        assert sent == ["Steering captured. Applying at next checkpoint."]
+
+        release_first.set()
+        await first_task
+
+    asyncio.run(run_scenario())
+
+    assert sent == [
+        "Steering captured. Applying at next checkpoint.",
+        "handled beta",
+    ]
+    assert len(_SteeringExecutor.instances) == 1
+    assert _SteeringExecutor.instances[0].kwargs["session_id"] == connector._session_ids["conv-1"]
+    assert _SteeringExecutor.instances[0].build_calls[0][1] == connector._session_ids["conv-1"]
+    assert _SteeringExecutor.instances[0].cleanup_called is True
 
 
 def test_connector_sends_processing_ack_for_complex_request() -> None:
