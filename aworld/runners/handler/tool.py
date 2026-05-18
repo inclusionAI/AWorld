@@ -138,6 +138,10 @@ class DefaultToolHandler(ToolHandler):
                 sender=self.name(),
                 session_id=message.session_id,
                 topic=TopicType.SUBSCRIBE_TOOL,
+                # Dynamic registration must run before the first real tool invocation,
+                # otherwise the tool message can be consumed first and recurse back
+                # into DefaultToolHandler before the receiver is subscribed.
+                priority=message.priority - 1,
                 headers=headers
             )
 
@@ -154,6 +158,7 @@ class DefaultToolHandler(ToolHandler):
                 sender=actions[0].agent_name if actions else '',
                 session_id=message.session_id,
                 receiver=tool_name,
+                priority=message.priority,
                 headers=message.headers
             )
 

@@ -507,6 +507,67 @@ def test_local_cli_backend_queues_same_session_input_as_steering():
     assert QueuedSteeringExecutor.instances[0].cleanup_called is True
 
 
+def test_local_cli_backend_reapplies_previous_steering_when_newer_follow_up_arrives():
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+    release_first = asyncio.Event()
+    release_second = asyncio.Event()
+
+    class ReSteeringExecutor(_SuccessExecutor):
+        instances = []
+
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.chat_calls: list[str] = []
+
+        async def chat(self, text: str) -> str:
+            self.chat_calls.append(text)
+            if text == "alpha":
+                first_started.set()
+                await release_first.wait()
+            elif "1. beta" in text and "2. gamma" not in text:
+                second_started.set()
+                await release_second.wait()
+            return f"ok:{text}"
+
+    backend = LocalCliAgentBackend(
+        registry_cls=_SimpleRegistry,
+        executor_cls=ReSteeringExecutor,
+    )
+
+    async def run_scenario() -> tuple[str, str, str]:
+        first_task = asyncio.create_task(
+            backend.run(agent_id="aworld", session_id="s-steer", text="alpha")
+        )
+        await first_started.wait()
+        first_ack = await backend.run(
+            agent_id="aworld",
+            session_id="s-steer",
+            text="beta",
+        )
+        release_first.set()
+        await second_started.wait()
+        second_ack = await backend.run(
+            agent_id="aworld",
+            session_id="s-steer",
+            text="gamma",
+        )
+        release_second.set()
+        return await first_task, first_ack, second_ack
+
+    first_result, first_ack, second_ack = asyncio.run(run_scenario())
+
+    assert first_ack == router_module.STEERING_CAPTURED_ACK
+    assert second_ack == router_module.STEERING_CAPTURED_ACK
+    assert len(ReSteeringExecutor.instances) == 1
+    assert ReSteeringExecutor.instances[0].chat_calls[0] == "alpha"
+    assert "1. beta" in ReSteeringExecutor.instances[0].chat_calls[1]
+    assert "1. beta" in ReSteeringExecutor.instances[0].chat_calls[2]
+    assert "2. gamma" in ReSteeringExecutor.instances[0].chat_calls[2]
+    assert "gamma" in first_result
+    assert ReSteeringExecutor.instances[0].cleanup_called is True
+
+
 def test_local_cli_backend_on_output_streams_visible_text_and_cleans_up(monkeypatch):
     class FakeChunkOutput:
         def __init__(self, content: str) -> None:

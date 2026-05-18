@@ -23,6 +23,7 @@ def test_wechat_config_defaults_are_text_phase_one_safe() -> None:
     assert cfg.allow_from == []
     assert cfg.group_allow_from == []
     assert cfg.split_multiline_messages is False
+    assert cfg.auto_steer_while_running is True
 
 
 def test_loader_persists_wechat_defaults(tmp_path: Path) -> None:
@@ -37,3 +38,4 @@ def test_loader_persists_wechat_defaults(tmp_path: Path) -> None:
         raw = yaml.safe_load(fh)
 
     assert raw["channels"]["wechat"]["enabled"] is False
+    assert raw["channels"]["wechat"]["auto_steer_while_running"] is True
