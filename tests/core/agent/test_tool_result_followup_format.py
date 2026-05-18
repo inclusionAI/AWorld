@@ -8,16 +8,17 @@ from aworld.utils.task_grounding import extract_required_anchors
 from aworld.config.conf import AgentMemoryConfig
 from aworld.config.conf import AgentConfig
 from aworld.core.common import ActionModel, ActionResult
+from aworld.core.context.base import Context
+from aworld.core.context.session import Session
 from aworld.core.event.base import Constants, Message
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.context.session import Session
-from aworld.core.task import Task
 from aworld.core.memory import MemoryConfig
+from aworld.core.task import Task
 from aworld.memory.db.filesystem import FileSystemMemoryStore
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryAIMessage, MemoryHumanMessage, MemoryToolMessage, MessageMetadata
 from aworld.models.model_response import ModelResponse
-from aworld.core.context.base import Context
+from aworld.utils.task_grounding import extract_required_anchors
 
 
 @pytest.mark.asyncio

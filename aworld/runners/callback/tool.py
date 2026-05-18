@@ -30,7 +30,7 @@ class ToolCallbackHandler(DefaultHandler):
             if isinstance(payload, CallbackItem):
                 observation = payload.data[0] if isinstance(payload.data, Tuple) else payload.data
             elif isinstance(payload, Tuple) and isinstance(payload[0], Observation):
-                observation=payload[0]
+                observation = payload[0]
             if not isinstance(observation, Observation):
                 state_mng.run_failed(message.id, "callback failed", [])
                 return
@@ -40,7 +40,6 @@ class ToolCallbackHandler(DefaultHandler):
 
             results = []
             for res in observation.action_result:
-                success = False
                 result = HandleResult(
                     result=Message(payload=None,
                                    category=Constants.TOOL_CALLBACK,
@@ -70,15 +69,5 @@ class ToolCallbackHandler(DefaultHandler):
             # todo
             logger.warning(f"ToolCallbackHandler Failed to parse payload: {e}")
             state_mng.run_failed(message.id, "callback failed", [])
-        finally:
-            yield Message(
-                category=Constants.OUTPUT,
-                payload=None,
-                sender=self.name(),
-                session_id=message.session_id,
-                headers={"context": self.context}
-            )
 
         return
-
-

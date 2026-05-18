@@ -81,6 +81,40 @@ def test_consume_terminal_fallback_returns_prompt_and_drained_inputs():
     assert coordinator.snapshot("sess-1")["pending_count"] == 0
 
 
+def test_consume_terminal_fallback_reuses_previously_applied_steering_until_task_ends():
+    coordinator = SteeringCoordinator()
+    coordinator.begin_task(session_id="sess-1", task_id="task-1")
+    coordinator.enqueue_text("sess-1", "Focus on AMD first.")
+
+    prompt, applied, interrupt_requested = coordinator.consume_terminal_fallback("sess-1")
+
+    assert interrupt_requested is False
+    assert "1. Focus on AMD first." in prompt
+    assert [item.text for item in applied] == ["Focus on AMD first."]
+
+    coordinator.enqueue_text("sess-1", "Also include ETFs.")
+    coordinator.request_interrupt("sess-1")
+
+    prompt, applied, interrupt_requested = coordinator.consume_terminal_fallback("sess-1")
+
+    assert interrupt_requested is True
+    assert "1. Focus on AMD first." in prompt
+    assert "2. Also include ETFs." in prompt
+    assert [item.text for item in applied] == [
+        "Focus on AMD first.",
+        "Also include ETFs.",
+    ]
+
+    coordinator.end_task("sess-1", clear_pending=True)
+    coordinator.begin_task(session_id="sess-1", task_id="task-2")
+    coordinator.enqueue_text("sess-1", "Fresh task only.")
+
+    prompt = coordinator.consume_terminal_fallback_prompt("sess-1")
+
+    assert "Fresh task only." in prompt
+    assert "Focus on AMD first." not in prompt
+
+
 def test_interrupt_only_consumption_returns_prompt_and_clears_flag():
     coordinator = SteeringCoordinator()
     coordinator.begin_task(session_id="sess-1", task_id="task-1")

@@ -19,7 +19,7 @@ from aworld_cli.acp.server import AcpExecutorOutputBridge, AcpStdioServer
 from aworld_cli.acp.human_intercept import AcpRequiresHumanError
 from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED, AWORLD_ACP_REQUIRES_HUMAN
 from aworld_cli.acp.session_store import AcpSessionRecord
-from aworld_cli.steering import SessionSteeringRuntime
+from aworld_cli.steering import STEERING_CAPTURED_ACK, SessionSteeringRuntime, SteeringCoordinator
 
 
 @pytest.mark.asyncio
@@ -87,6 +87,169 @@ async def test_prompt_streams_executor_outputs_through_adapter_and_mapper() -> N
     assert notifications[1]["params"]["update"]["content"] == {"command": "pwd"}
     assert notifications[2]["params"]["update"]["status"] == "completed"
     assert notifications[2]["params"]["update"]["content"] == {"cwd": "/tmp"}
+
+
+@pytest.mark.asyncio
+async def test_running_prompt_queues_steering_without_visible_ack_update() -> None:
+    class SlowQueueBridge:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.queued: list[str] = []
+
+        def queue_steering(self, *, record, text: str) -> str:
+            del record
+            self.queued.append(text)
+            return "Steering captured. Applying at next checkpoint."
+
+        async def stream_outputs(self, *, record, prompt_text):
+            del record, prompt_text
+            self.started.set()
+            await self.release.wait()
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="done"),
+            )
+
+    bridge = SlowQueueBridge()
+    server = AcpStdioServer(output_bridge=bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    first_task = asyncio.create_task(
+        server._handle_prompt(
+            21,
+            {
+                "sessionId": session["sessionId"],
+                "prompt": {"content": [{"type": "text", "text": "slow"}]},
+            },
+        )
+    )
+    await asyncio.wait_for(bridge.started.wait(), timeout=1.0)
+
+    second = await server._handle_prompt(
+        22,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "follow-up"}]},
+        },
+    )
+
+    bridge.release.set()
+    first = await first_task
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert first["result"]["status"] == "completed"
+    assert second["result"]["status"] == "queued"
+    assert bridge.queued == ["follow-up"]
+    assert all(
+        item["params"]["update"].get("content", {}).get("text")
+        != "Steering captured. Applying at next checkpoint."
+        for item in notifications
+        if item["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+    )
+
+
+@pytest.mark.asyncio
+async def test_running_prompt_reapplies_previous_steering_when_newer_follow_up_arrives() -> None:
+    class ReSteerBridge:
+        def __init__(self) -> None:
+            self._steering = SteeringCoordinator()
+            self.calls: list[str] = []
+            self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+            self.release_second = asyncio.Event()
+
+        def queue_steering(self, *, record, text: str) -> str:
+            self._steering.begin_task(record.aworld_session_id, f"acp-{record.aworld_session_id}")
+            self._steering.enqueue_text(record.aworld_session_id, text)
+            self._steering.request_interrupt(record.aworld_session_id)
+            return STEERING_CAPTURED_ACK
+
+        async def stream_outputs(self, *, record, prompt_text):
+            current_prompt = prompt_text
+            while True:
+                self.calls.append(current_prompt)
+                self._steering.begin_task(record.aworld_session_id, f"task-{len(self.calls)}")
+                if current_prompt == "slow":
+                    self.first_started.set()
+                    await self.release_first.wait()
+                elif "1. follow-up" in current_prompt and "2. newer" not in current_prompt:
+                    self.second_started.set()
+                    await self.release_second.wait()
+
+                yield MessageOutput(
+                    source=ModelResponse(
+                        id=f"resp-{len(self.calls)}",
+                        model="demo",
+                        content=f"done:{len(self.calls)}",
+                    ),
+                )
+
+                follow_up_prompt, _applied_items, _interrupt_requested = self._steering.consume_terminal_fallback(
+                    record.aworld_session_id
+                )
+                if not follow_up_prompt:
+                    self._steering.end_task(record.aworld_session_id, clear_pending=True)
+                    return
+                current_prompt = follow_up_prompt
+
+    bridge = ReSteerBridge()
+    server = AcpStdioServer(output_bridge=bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    first_task = asyncio.create_task(
+        server._handle_prompt(
+            31,
+            {
+                "sessionId": session["sessionId"],
+                "prompt": {"content": [{"type": "text", "text": "slow"}]},
+            },
+        )
+    )
+    await asyncio.wait_for(bridge.first_started.wait(), timeout=1.0)
+
+    second = await server._handle_prompt(
+        32,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "follow-up"}]},
+        },
+    )
+
+    bridge.release_first.set()
+    await asyncio.wait_for(bridge.second_started.wait(), timeout=1.0)
+
+    third = await server._handle_prompt(
+        33,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "newer"}]},
+        },
+    )
+
+    bridge.release_second.set()
+    first = await first_task
+
+    assert first["result"]["status"] == "completed"
+    assert second["result"]["status"] == "queued"
+    assert third["result"]["status"] == "queued"
+    assert bridge.calls[1].startswith("Continue the current task with this additional operator steering:")
+    assert "1. follow-up" in bridge.calls[1]
+    assert "1. follow-up" in bridge.calls[2]
+    assert "2. newer" in bridge.calls[2]
 
 
 @pytest.mark.asyncio

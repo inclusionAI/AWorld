@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-from inspect import isawaitable
+from inspect import isawaitable, signature
 import json
 import logging
 import mimetypes
@@ -477,6 +477,11 @@ class DingTalkConnector:
                 "on_text_chunk": on_text_chunk,
                 "on_output": on_output,
             }
+            raw_steering_text = request_text.strip()
+            if raw_steering_text and "steering_text" in signature(self._bridge.run).parameters:
+                bridge_run_kwargs["steering_text"] = raw_steering_text
+            if raw_steering_text and "origin_user_input" in signature(self._bridge.run).parameters:
+                bridge_run_kwargs["origin_user_input"] = raw_steering_text
             if allowed_tools is not None:
                 bridge_run_kwargs["allowed_tools"] = allowed_tools
             result = await self._bridge.run(
