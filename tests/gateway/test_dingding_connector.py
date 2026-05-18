@@ -669,7 +669,7 @@ def test_connector_executes_prompt_command_via_agent_bridge() -> None:
     assert sent[0].startswith("echo:## Diff Summary Task")
 
 
-def test_connector_isolates_overlapping_callbacks_with_new_session() -> None:
+def test_connector_reuses_session_for_overlapping_callbacks() -> None:
     class _BlockingBridge(_FakeBridge):
         def __init__(self) -> None:
             super().__init__()
@@ -746,8 +746,8 @@ def test_connector_isolates_overlapping_callbacks_with_new_session() -> None:
     asyncio.run(run_scenario())
 
     assert len(bridge.calls) == 2
-    assert bridge.calls[0]["session_id"] != bridge.calls[1]["session_id"]
-    assert connector._session_ids["conv-1"] == bridge.calls[1]["session_id"]
+    assert bridge.calls[0]["session_id"] == bridge.calls[1]["session_id"]
+    assert connector._session_ids["conv-1"] == bridge.calls[0]["session_id"]
     assert sent == ["echo:beta", "echo:alpha"]
 
 

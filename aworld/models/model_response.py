@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 from aworld.logs.util import logger
+from aworld.models.usage import normalize_usage
+from aworld.utils.serialized_util import to_serializable
 
 
 class LLMResponseError(Exception):
@@ -227,12 +229,14 @@ class ModelResponse:
         self.model = model
         self.content = content
         self.tool_calls = tool_calls
-        self.usage = usage or {
+        if raw_usage is None and usage is not None:
+            raw_usage = to_serializable(usage)
+        self.usage = normalize_usage(usage) if usage is not None else {
             "completion_tokens": 0,
             "prompt_tokens": 0,
             "total_tokens": 0
         }
-        self.raw_usage = raw_usage or dict(self.usage)
+        self.raw_usage = to_serializable(raw_usage) if raw_usage is not None else None
         self.provider_request_id = provider_request_id
         self.error = error
         self.raw_response = raw_response
@@ -271,34 +275,57 @@ class ModelResponse:
         return default_value
 
     @classmethod
-    def _normalize_openai_usage(cls, usage: Any) -> Dict[str, int]:
-        return {
-            "completion_tokens": cls._get_item_from_openai_message(usage, 'completion_tokens', 0) or 0,
-            "prompt_tokens": cls._get_item_from_openai_message(usage, 'prompt_tokens', 0) or 0,
-            "total_tokens": cls._get_item_from_openai_message(usage, 'total_tokens', 0) or 0,
-        }
-
-    @classmethod
-    def _extract_openai_raw_usage(cls, usage: Any) -> Dict[str, Any]:
-        if not usage:
+    def _extract_usage_payload(cls, usage: Any) -> Dict[str, Any]:
+        if usage is None:
             return {}
         if isinstance(usage, dict):
-            return dict(usage)
-        if hasattr(usage, "model_dump"):
-            return usage.model_dump(exclude_none=True)
-        if hasattr(usage, "__dict__"):
-            return {
-                key: value
-                for key, value in usage.__dict__.items()
-                if not key.startswith("_") and value is not None
-            }
-        return cls._normalize_openai_usage(usage)
+            return to_serializable(usage)
+
+        serialized = to_serializable(usage)
+        return serialized if isinstance(serialized, dict) else {}
 
     @classmethod
-    def _extract_openai_provider_request_id(cls, response: Any) -> Optional[str]:
+    def _extract_provider_request_id(cls, response: Any) -> Optional[str]:
+        if response is None:
+            return None
+
+        direct_candidates = []
         if isinstance(response, dict):
-            return response.get("request_id") or response.get("_request_id")
-        return getattr(response, "request_id", None) or getattr(response, "_request_id", None)
+            direct_candidates.extend([
+                response.get("_request_id"),
+                response.get("request_id"),
+            ])
+        else:
+            direct_candidates.extend([
+                getattr(response, "_request_id", None),
+                getattr(response, "request_id", None),
+            ])
+
+        for candidate in direct_candidates:
+            if candidate:
+                return str(candidate)
+
+        metadata = None
+        if isinstance(response, dict):
+            metadata = response.get("response_metadata")
+        else:
+            metadata = getattr(response, "response_metadata", None)
+        if isinstance(metadata, dict):
+            for key in ("request_id", "_request_id", "x-request-id"):
+                if metadata.get(key):
+                    return str(metadata[key])
+
+        headers = None
+        if isinstance(response, dict):
+            headers = response.get("headers")
+        else:
+            headers = getattr(response, "headers", None)
+        if isinstance(headers, dict):
+            for key in ("x-request-id", "request-id", "request_id"):
+                if headers.get(key):
+                    return str(headers[key])
+
+        return None
 
     @classmethod
     def from_openai_response(cls, response: Any) -> 'ModelResponse':
@@ -341,10 +368,11 @@ class ModelResponse:
             )
 
         # Extract usage information
-        response_usage = response.usage if hasattr(response, 'usage') else response.get('usage') if isinstance(response, dict) else None
-        usage = cls._normalize_openai_usage(response_usage) if response_usage else {}
-        raw_usage = cls._extract_openai_raw_usage(response_usage)
-        provider_request_id = cls._extract_openai_provider_request_id(response)
+        raw_usage = {}
+        if hasattr(response, 'usage'):
+            raw_usage = cls._extract_usage_payload(response.usage)
+        elif isinstance(response, dict) and response.get('usage'):
+            raw_usage = cls._extract_usage_payload(response['usage'])
 
         # Build message object
         message_dict = {}
@@ -424,9 +452,9 @@ class ModelResponse:
             model=response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
             content=cls._get_item_from_openai_message(message, 'content', ""),
             tool_calls=processed_tool_calls or None,
-            usage=usage,
+            usage=raw_usage,
             raw_usage=raw_usage,
-            provider_request_id=provider_request_id,
+            provider_request_id=cls._extract_provider_request_id(response),
             raw_response=response,
             message=message_dict,
             reasoning_content=reasoning_content,
@@ -458,10 +486,11 @@ class ModelResponse:
             )
 
         # Extract usage information
-        chunk_usage = chunk.usage if hasattr(chunk, 'usage') else chunk.get('usage') if isinstance(chunk, dict) else None
-        usage = cls._normalize_openai_usage(chunk_usage) if chunk_usage else {}
-        raw_usage = cls._extract_openai_raw_usage(chunk_usage)
-        provider_request_id = cls._extract_openai_provider_request_id(chunk)
+        raw_usage = {}
+        if hasattr(chunk, 'usage') and chunk.usage:
+            raw_usage = cls._extract_usage_payload(chunk.usage)
+        elif isinstance(chunk, dict) and chunk.get('usage'):
+            raw_usage = cls._extract_usage_payload(chunk['usage'])
 
         # Handle finish reason chunk (end of stream)
         finish_reason = None
@@ -477,9 +506,9 @@ class ModelResponse:
                     id=chunk.get('id', 'unknown'),
                     model=chunk.get('model', 'unknown'),
                     content=delta.get('content'),
-                    usage=usage,
+                    usage=raw_usage,
                     raw_usage=raw_usage,
-                    provider_request_id=provider_request_id,
+                    provider_request_id=cls._extract_provider_request_id(chunk),
                     raw_response=chunk,
                     tool_calls=delta.get('tool_calls'),
                     message={"role": "assistant", "content": "", "finish_reason": finish_reason},
@@ -492,9 +521,9 @@ class ModelResponse:
                     id=chunk.id if hasattr(chunk, 'id') else 'unknown',
                     model=chunk.model if hasattr(chunk, 'model') else 'unknown',
                     content=delta.content if hasattr(delta, 'content') else None,
-                    usage=usage,
+                    usage=raw_usage,
                     raw_usage=raw_usage,
-                    provider_request_id=provider_request_id,
+                    provider_request_id=cls._extract_provider_request_id(chunk),
                     raw_response=chunk,
                     tool_calls=delta.tool_calls if hasattr(delta, 'tool_calls') else None,
                     message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason},
@@ -554,9 +583,9 @@ class ModelResponse:
             model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
             content=content or "",
             tool_calls=processed_tool_calls or None,
-            usage=usage,
+            usage=raw_usage,
             raw_usage=raw_usage,
-            provider_request_id=provider_request_id,
+            provider_request_id=cls._extract_provider_request_id(chunk),
             raw_response=chunk,
             message=message
         )
@@ -695,19 +724,20 @@ class ModelResponse:
                 message["tool_calls"] = [tool_call.to_dict() for tool_call in processed_tool_calls]
 
             # Extract usage information
-            usage = {
-                "completion_tokens": 0,
-                "prompt_tokens": 0,
-                "total_tokens": 0
-            }
-
-            if hasattr(response, 'usage'):
-                if hasattr(response.usage, 'output_tokens'):
-                    usage["completion_tokens"] = response.usage.output_tokens
-                if hasattr(response.usage, 'input_tokens'):
-                    usage["prompt_tokens"] = response.usage.input_tokens
-                if hasattr(response.usage, 'input_tokens') and hasattr(response.usage, 'output_tokens'):
-                    usage["total_tokens"] = response.usage.input_tokens + response.usage.output_tokens
+            raw_usage = cls._extract_usage_payload(getattr(response, "usage", None))
+            usage = dict(raw_usage)
+            if not usage:
+                usage = {
+                    "completion_tokens": 0,
+                    "prompt_tokens": 0,
+                    "total_tokens": 0
+                }
+            if "completion_tokens" not in usage and "output_tokens" in usage:
+                usage["completion_tokens"] = usage.get("output_tokens", 0)
+            if "prompt_tokens" not in usage and "input_tokens" in usage:
+                usage["prompt_tokens"] = usage.get("input_tokens", 0)
+            if "total_tokens" not in usage and "prompt_tokens" in usage and "completion_tokens" in usage:
+                usage["total_tokens"] = (usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0)
 
             # Create ModelResponse
             return cls(
@@ -717,6 +747,8 @@ class ModelResponse:
                 content=message["content"],
                 tool_calls=processed_tool_calls or None,
                 usage=usage,
+                raw_usage=raw_usage or usage,
+                provider_request_id=cls._extract_provider_request_id(response),
                 raw_response=response,
                 message=message
             )

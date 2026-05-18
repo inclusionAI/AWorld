@@ -41,6 +41,7 @@ from aworld_gateway.channels.wechat.media import (
 from aworld_gateway.config import WechatChannelConfig
 from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
 from aworld_gateway.logging import get_gateway_logger
+from aworld_gateway.router import SESSION_BINDING_CONVERSATION_ID_METADATA_KEY
 from aworld_gateway.types import InboundEnvelope
 from aworld_cli.core.command_bridge import CommandBridge
 
@@ -65,6 +66,8 @@ EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 DEDUP_MAX_SIZE = 1000
 LOG_TEXT_TRUNCATE_LIMIT = 300
 POLL_RETRY_DELAY_SECONDS = 2.0
+NEW_SESSION_COMMANDS = {"/new", "/summary", "新会话", "压缩上下文"}
+NEW_SESSION_CONFIRMATION_TEXT = "✨ 已开启新会话，之前的上下文已清空。"
 
 SendMessageFunc = Callable[..., Awaitable[dict[str, object]]]
 GetUpdatesFunc = Callable[..., Awaitable[dict[str, object]]]
@@ -361,6 +364,9 @@ class WechatConnector:
         self._poll_session: object | None = None
         self._send_session: object | None = None
         self._poll_task: asyncio.Task[None] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._conversation_tails: dict[str, asyncio.Future[None]] = {}
+        self._session_binding_conversation_ids: dict[str, str] = {}
         self._account_id = ""
         self._token = ""
         self._base_url = DEFAULT_BASE_URL
@@ -422,6 +428,11 @@ class WechatConnector:
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
         await _close_session(self._poll_session)
         await _close_session(self._send_session)
         self._poll_session = None
@@ -722,6 +733,20 @@ class WechatConnector:
 
         item_list = message.get("item_list") or []
         text = self._extract_text(item_list)
+        if text.lower() in {command.lower() for command in NEW_SESSION_COMMANDS}:
+            self._rotate_session_binding_conversation_id(
+                conversation_type=conversation_type,
+                conversation_id=conversation_id,
+            )
+            self._clear_context_tokens_for_reset(
+                conversation_id=conversation_id,
+                sender_id=sender_id,
+            )
+            await self.send_text(
+                chat_id=conversation_id,
+                text=NEW_SESSION_CONFIRMATION_TEXT,
+            )
+            return
 
         inbound_media = await self._collect_inbound_attachments(
             message_id=message_id or f"wx-{uuid.uuid4().hex}",
@@ -759,6 +784,16 @@ class WechatConnector:
             metadata["attachments"] = attachments
             metadata["wechat_media"] = inbound_media["wechat_media"]
             metadata["multimodal_parts"] = inbound_media["multimodal_parts"]
+        session_binding_conversation_id = self._session_binding_conversation_ids.get(
+            self._session_binding_key(
+                conversation_type=conversation_type,
+                conversation_id=conversation_id,
+            )
+        )
+        if session_binding_conversation_id:
+            metadata[SESSION_BINDING_CONVERSATION_ID_METADATA_KEY] = (
+                session_binding_conversation_id
+            )
 
         async def on_output(output) -> None:
             self._cron_push_bridge.bind_output(
@@ -970,6 +1005,41 @@ class WechatConnector:
         return "\n".join(texts)
 
     @staticmethod
+    def _session_binding_key(*, conversation_type: str, conversation_id: str) -> str:
+        return f"{conversation_type}:{conversation_id}"
+
+    def _rotate_session_binding_conversation_id(
+        self,
+        *,
+        conversation_type: str,
+        conversation_id: str,
+    ) -> str:
+        session_binding_conversation_id = (
+            f"{conversation_id}:session:{uuid.uuid4().hex}"
+        )
+        self._session_binding_conversation_ids[
+            self._session_binding_key(
+                conversation_type=conversation_type,
+                conversation_id=conversation_id,
+            )
+        ] = session_binding_conversation_id
+        logger.info(
+            "WeChat session reset requested "
+            f"conversation={conversation_id} session_binding={session_binding_conversation_id}"
+        )
+        return session_binding_conversation_id
+
+    def _clear_context_tokens_for_reset(
+        self,
+        *,
+        conversation_id: str,
+        sender_id: str,
+    ) -> None:
+        self._token_store.delete(self._account_id, sender_id)
+        if conversation_id != sender_id:
+            self._token_store.delete(self._account_id, conversation_id)
+
+    @staticmethod
     def _optional_env(name: str | None) -> str:
         if not name:
             return ""
@@ -1082,20 +1152,71 @@ class WechatConnector:
                     f"account={self._account_id} message_count={len(messages)}"
                 )
             for message in messages:
-                try:
-                    await self._process_message(message)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception(
-                        "WeChat poll loop failed to process message "
-                        f"message_id={str(message.get('message_id') or '').strip()}"
-                    )
+                self._schedule_message(message)
         logger.info(f"WeChat poll loop stopped account={self._account_id}")
+
+    def _schedule_message(self, message: dict[str, Any]) -> None:
+        conversation_key = self._conversation_key_for_message(message)
+        task = asyncio.create_task(
+            self._process_message_serialized(conversation_key, message)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._finalize_background_task)
+
+    async def _process_message_serialized(
+        self,
+        conversation_key: str | None,
+        message: dict[str, Any],
+    ) -> None:
+        previous: asyncio.Future[None] | None = None
+        current: asyncio.Future[None] | None = None
+        if conversation_key:
+            loop = asyncio.get_running_loop()
+            previous = self._conversation_tails.get(conversation_key)
+            current = loop.create_future()
+            self._conversation_tails[conversation_key] = current
+
+        try:
+            if previous is not None:
+                try:
+                    await previous
+                except Exception:
+                    pass
+            await self._process_message_with_logging(message)
+        finally:
+            if current is not None:
+                if self._conversation_tails.get(conversation_key or "") is current:
+                    self._conversation_tails.pop(conversation_key or "", None)
+                if not current.done():
+                    current.set_result(None)
+
+    async def _process_message_with_logging(self, message: dict[str, Any]) -> None:
+        try:
+            await self._process_message(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "WeChat poll loop failed to process message "
+                f"message_id={str(message.get('message_id') or '').strip()}"
+            )
+
+    def _finalize_background_task(self, task: asyncio.Task[None]) -> None:
+        self._background_tasks.discard(task)
 
     @staticmethod
     def _poll_retry_delay_seconds() -> float:
         return POLL_RETRY_DELAY_SECONDS
+
+    @staticmethod
+    def _conversation_key_for_message(message: dict[str, Any]) -> str | None:
+        room_id = str(message.get("roomid") or "").strip()
+        if room_id:
+            return f"group:{room_id}"
+        sender_id = str(message.get("from_user_id") or "").strip()
+        if sender_id:
+            return f"dm:{sender_id}"
+        return None
 
     @staticmethod
     def _truncate_log_text(value: object, *, limit: int = LOG_TEXT_TRUNCATE_LIMIT) -> str:

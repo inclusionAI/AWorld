@@ -2,16 +2,22 @@ from types import SimpleNamespace
 
 import pytest
 
+import aworld.agents.llm_agent as llm_agent_module
 from aworld.agents.llm_agent import Agent
-from aworld.utils.task_grounding import extract_required_anchors
 from aworld.config.conf import AgentMemoryConfig
 from aworld.config.conf import AgentConfig
 from aworld.core.common import ActionModel, ActionResult
+from aworld.core.context.base import Context
+from aworld.core.context.session import Session
+from aworld.core.event.base import Constants, Message
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.memory import MemoryConfig
+from aworld.core.task import Task
 from aworld.memory.db.filesystem import FileSystemMemoryStore
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryAIMessage, MemoryHumanMessage, MemoryToolMessage, MessageMetadata
+from aworld.models.model_response import ModelResponse
+from aworld.utils.task_grounding import extract_required_anchors
 
 
 @pytest.mark.asyncio
@@ -70,6 +76,33 @@ async def test_failed_cron_tool_results_block_false_success_claims():
     policy_info = aggregated[0].policy_info
     assert "Cron returned an error" in policy_info
     assert "Do not claim the reminder or scheduled task was created" in policy_info
+
+
+@pytest.mark.asyncio
+async def test_large_tool_results_are_compacted_for_followup():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    aggregated = await agent._tools_aggregate_func([
+        ActionResult(
+            tool_name="terminal",
+            action_name="exec",
+            content="HEADER\n" + ("A" * 9000) + "\nFOOTER",
+        )
+    ])
+
+    policy_info = aggregated[0].policy_info
+    assert "Tool output compacted for context reuse." in policy_info
+    assert "HEADER" in policy_info
+    assert "FOOTER" in policy_info
+    assert "Original size:" in policy_info
+
 
 def test_aworld_result_validation_does_not_block_on_soft_missing_source_anchor():
     agent = Agent(
@@ -557,3 +590,61 @@ async def test_aworld_result_validation_retry_uses_recovery_brief():
     assert "Original request" in captured["content"]
     assert "Source evidence from this run" in captured["content"]
     assert "Treat this as unfinished" in captured["content"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_reports_empty_response_failure_only_once(monkeypatch: pytest.MonkeyPatch):
+    class MinimalAgent(Agent):
+        async def _filter_tools(self, context=None):
+            return None
+
+    agent = MinimalAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent.llm_max_attempts = 1
+    agent.llm_retry_delay = 0
+
+    async def fake_acall_llm_model(*args, **kwargs):
+        return ModelResponse(id="resp-1", model="fake-model", content="")
+
+    sent_payloads: list[str] = []
+
+    async def fake_send_message(msg):
+        payload = getattr(msg, "payload", None)
+        data = getattr(payload, "data", payload)
+        sent_payloads.append(str(data))
+
+    async def noop_save_failed_request_context(**kwargs):
+        return None
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", fake_acall_llm_model)
+    monkeypatch.setattr(llm_agent_module, "send_message", fake_send_message)
+    monkeypatch.setattr(agent, "_save_failed_request_context", noop_save_failed_request_context)
+
+    context = Context(task_id="task-1", session=Session(session_id="sess-1"))
+    context.set_task(Task(id="task-1", name="test-task"))
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    with pytest.raises(AWorldRuntimeException, match="empty or invalid response"):
+        await agent.invoke_model(
+            messages=[{"role": "user", "content": "hello"}],
+            message=message,
+            stream=False,
+        )
+
+    failure_payloads = [
+        payload for payload in sent_payloads
+        if payload.startswith("Failed to call llm model")
+    ]
+    assert len(failure_payloads) == 1
+    assert failure_payloads[0].startswith("Failed to call llm model after 1 attempts:")

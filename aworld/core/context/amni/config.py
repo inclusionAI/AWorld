@@ -6,7 +6,7 @@ from typing import Optional, List, Union, Dict
 
 from pydantic import BaseModel, Field
 
-from aworld.config import ModelConfig
+from aworld.config import ModelConfig, ContextCacheConfig
 from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
 from aworld.core.memory import MemoryConfig, MemoryStore
 from aworld.memory.db.sqlite import SQLiteMemoryStore
@@ -82,6 +82,7 @@ class HumanNeuronStrategyConfig(NeuronStrategyConfig):
 
 
 class AgentContextConfig(BaseConfig):
+    context_cache: ContextCacheConfig = Field(default_factory=ContextCacheConfig)
     # System Prompt Augment
     enable_system_prompt_augment: bool = Field(default=False, description="enable_system_prompt_augment")
     neuron_names: Optional[list[str]] = Field(default_factory=list)
@@ -114,6 +115,7 @@ class AgentContextConfig(BaseConfig):
     tool_result_offload: bool = Field(default=False, description="tool result offload")
     tool_action_white_list: Optional[list[str]] = Field(default_factory=list, description="tool white list")
     tool_result_length_threshold: Optional[int] = Field(default=30000, description=" when the content length is greater than the tool_result_length_threshold, the tool result will be offloaded")
+    tool_result_preview_chars: Optional[int] = Field(default=2000, description="preview characters kept in prompt after tool result offload/compaction")
 
     # Context Retrival
     enable_chunk: bool = Field(default=False, description="enable_chunk")
@@ -147,7 +149,11 @@ class AgentContextConfig(BaseConfig):
             summary_context_length=self.summary_context_length,
             summary_prompts=self.summary_prompts,
             summary_summaried=self.summary_summaried,
-            summary_role=self.summary_role
+            summary_role=self.summary_role,
+            tool_result_offload=self.tool_result_offload,
+            tool_action_white_list=self.tool_action_white_list,
+            tool_result_length_threshold=self.tool_result_length_threshold,
+            tool_result_preview_chars=self.tool_result_preview_chars,
         )
 
 

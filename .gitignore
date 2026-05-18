@@ -168,3 +168,13 @@ survey/
 
 # OpenSpec design docs (not runtime)
 openspec/
+
+# X AI Scraper - Browser Data (contains login credentials)
+.browser-data/
+
+# Temporary files
+*.log
+*.tmp
+__pycache__/
+*.pyc
+

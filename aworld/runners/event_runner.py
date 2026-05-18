@@ -10,7 +10,7 @@ from typing import List, Callable, Any, AsyncGenerator
 
 import aworld.trace as trace
 from aworld.core.agent.base import BaseAgent, is_agent_by_name, AgentFactory
-from aworld.core.common import TaskItem, ActionModel
+from aworld.core.common import TaskItem, ActionModel, Observation
 from aworld.core.context.amni import AmniContext, ApplicationContext
 from aworld.core.context.base import Context
 from aworld.dataset.trajectory_storage import get_storage_instance
@@ -22,10 +22,12 @@ from aworld.events.manager import EventManager
 from aworld.logs.util import logger, trajectory_logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
+from aworld.runners.post_tool_progress import WATCHDOG_STATE_KEY, increment_watchdog_metric
 from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
 from aworld.trace.instrumentation import semconv
+from aworld.models.usage import normalize_usage, summarize_prompt_cache_usage
 from aworld.utils.common import override_in_subclass, new_instance
 from aworld.utils.serialized_util import to_serializable
 
@@ -42,6 +44,102 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
         self.inited = False
+
+    @staticmethod
+    def _normalize_token_usage(token_usage: dict | None) -> dict:
+        return normalize_usage(token_usage)
+
+    @staticmethod
+    def _format_task_finished_message(
+        *,
+        task_id: str,
+        is_sub_task: bool,
+        time_cost: float,
+        token_usage: dict | None,
+    ) -> str:
+        task_scope = "sub" if is_sub_task else "main"
+        normalized_usage = TaskEventRunner._normalize_token_usage(token_usage)
+        message = (
+            f"{task_scope} task {task_id} finished, time cost: {time_cost}s, "
+            f"token cost: {normalized_usage}."
+        )
+        cache_summary = summarize_prompt_cache_usage(token_usage)
+        if cache_summary:
+            message += f" prompt cache: {cache_summary}."
+        return message
+
+    def _current_token_usage(self) -> dict:
+        return self._normalize_token_usage(self.context.token_usage if self.context else {})
+
+    def _post_tool_watchdog_timeout_seconds(self) -> float:
+        return float(self.task.conf.get("post_tool_progress_watchdog_timeout_seconds", 15) or 15)
+
+    def _post_tool_watchdog_poll_seconds(self) -> float:
+        timeout_seconds = self._post_tool_watchdog_timeout_seconds()
+        poll_seconds = float(self.task.conf.get("post_tool_progress_watchdog_poll_seconds", 1) or 1)
+        return min(max(poll_seconds, 0.1), max(timeout_seconds, 0.1))
+
+    async def _check_post_tool_progress_watchdog(self) -> bool:
+        state = self.context.context_info.get(WATCHDOG_STATE_KEY)
+        if not isinstance(state, dict):
+            return False
+
+        armed_at = float(state.get("armed_at") or 0.0)
+        timeout_seconds = self._post_tool_watchdog_timeout_seconds()
+        if armed_at <= 0 or (time.time() - armed_at) < timeout_seconds:
+            return False
+
+        increment_watchdog_metric(self.context, "watchdog_trigger_count")
+
+        retry_count = int(state.get("retry_count", 0) or 0)
+        if retry_count == 0:
+            observation_payload = state.get("followup_observation") or {}
+            observation = Observation(**observation_payload)
+            retry_context = self.context.deep_copy()
+            retry_context._task = self.context.get_task()
+            retry_message = AgentMessage(
+                payload=observation,
+                sender=state.get("followup_sender") or state.get("tool_name") or "tool",
+                receiver=state.get("agent_id"),
+                session_id=self.context.session_id,
+                headers={
+                    "context": retry_context,
+                    "history_sanitized_retry": True,
+                    "post_tool_watchdog_retry": True,
+                },
+            )
+            next_state = dict(state)
+            next_state["retry_count"] = 1
+            next_state["armed_at"] = time.time()
+            next_state["retry_message_id"] = retry_message.id
+            self.context.context_info[WATCHDOG_STATE_KEY] = next_state
+            increment_watchdog_metric(self.context, "sanitized_history_retry_count")
+            await self.event_mng.emit_message(retry_message)
+            logger.warning(
+                "post-tool progress watchdog retried agent %s after %.2fs without a new LLM round",
+                state.get("agent_id"),
+                timeout_seconds,
+            )
+            return True
+
+        reason = (
+            "post-tool progress watchdog: tool succeeded but the agent neither started the next LLM round "
+            f"nor finished after retry. agent={state.get('agent_id')}, tool={state.get('tool_name')}, "
+            f"tool_call_ids={state.get('tool_call_ids')}"
+        )
+        self.context.context_info.pop(WATCHDOG_STATE_KEY, None)
+        await self.event_mng.emit_message(
+            Message(
+                category=Constants.TASK,
+                payload=TaskItem(msg=reason, data=state, stop=True),
+                sender=self.__class__.__name__,
+                session_id=self.context.session_id,
+                topic=TopicType.ERROR,
+                headers={"context": self.context},
+            )
+        )
+        logger.error(reason)
+        return True
 
 
     async def do_run(self, context: Context = None):
@@ -60,8 +158,16 @@ class TaskEventRunner(TaskRunner):
                 await self._do_run()
                 await self._save_trajectories()
                 resp = self._response()
-                logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished'
-                            f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
+                time_cost = time.time() - self.start_time
+                token_usage = self._current_token_usage()
+                logger.info(
+                    self._format_task_finished_message(
+                        task_id=self.task.id,
+                        is_sub_task=self.task.is_sub_task,
+                        time_cost=time_cost,
+                        token_usage=token_usage,
+                    )
+                )
 
                 # Hooks V2: 触发 TASK_COMPLETED hook（所有任务，包括子任务）
                 try:
@@ -74,8 +180,8 @@ class TaskEventRunner(TaskRunner):
                         'task_name': self.task.name,
                         'session_id': self.context.session_id,
                         'is_sub_task': self.task.is_sub_task,
-                        'time_cost': time.time() - self.start_time,
-                        'token_usage': self.context.token_usage,
+                        'time_cost': time_cost,
+                        'token_usage': token_usage,
                         'status': 'success',
                         'timestamp': time.time()
                     }
@@ -103,8 +209,8 @@ class TaskEventRunner(TaskRunner):
                                 'event': 'session_finished',
                                 'session_id': self.context.session_id,
                                 'task_id': self.task.id,
-                                'time_cost': time.time() - self.start_time,
-                                'token_usage': self.context.token_usage,
+                                'time_cost': time_cost,
+                                'token_usage': token_usage,
                                 'status': 'success'
                             },
                             session_id=self.context.session_id,
@@ -534,12 +640,19 @@ class TaskEventRunner(TaskRunner):
                                                            id=self.task.id,
                                                            time_cost=(
                                                                time.time() - start),
-                                                           usage=self.context.token_usage,
+                                                           usage=self._current_token_usage(),
                                                            status=TaskStatusValue.SUCCESS if not msg else TaskStatusValue.FAILED)
                     break
                 logger.debug(f"{task_flag} task {self.task.id} next message snap")
                 # consume message
-                message: Message = await self.event_mng.consume()
+                try:
+                    message = await asyncio.wait_for(
+                        self.event_mng.consume(),
+                        timeout=self._post_tool_watchdog_poll_seconds(),
+                    )
+                except asyncio.TimeoutError:
+                    await self._check_post_tool_progress_watchdog()
+                    continue
                 logger.debug(
                     f"consume message {message} of {task_flag} task: {self.task.id}, {self.event_mng.event_bus}")
                 # use registered handler to process message
@@ -652,7 +765,7 @@ class TaskEventRunner(TaskRunner):
                 context=message.context if message else self.context,
                 id=self.task.id,
                 time_cost=(time.time() - self.start_time),
-                usage=self.context.token_usage,
+                usage=self._current_token_usage(),
                 msg=f'Task timeout after {time_cost} seconds.',
                 status=TaskStatusValue.TIMEOUT
             )
@@ -669,7 +782,7 @@ class TaskEventRunner(TaskRunner):
                 context=message.context if message else self.context,
                 id=self.task.id,
                 time_cost=time_cost,
-                usage=self.context.token_usage,
+                usage=self._current_token_usage(),
                 msg=f'Task is {task_status}.',
                 status=task_status
             )

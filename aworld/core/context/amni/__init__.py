@@ -19,6 +19,7 @@ from aworld.output import Artifact, WorkSpace, StreamingOutputs
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
+from .prompt.assembly import DefaultPromptAssemblyProvider, CacheAwarePromptAssemblyProvider
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .retrieval.artifacts import SearchArtifact
 from .retrieval.artifacts.file import DirArtifact
@@ -492,6 +493,8 @@ class ApplicationContext(AmniContext):
         self._prompt_service = None
         self._freedom_space_service = None
         self._traj_service = None
+        self._default_prompt_assembly_provider = None
+        self._cache_aware_prompt_assembly_provider = None
 
     def get_config(self) -> AmniContextConfig:
         return self._config
@@ -501,6 +504,32 @@ class ApplicationContext(AmniContext):
 
     def get_agent_memory_config(self, namespace: str) -> AgentMemoryConfig:
         return self.get_config().get_agent_memory_config(namespace=namespace)
+
+    def get_prompt_assembly_provider(self, agent: Any = None):
+        provider = getattr(self, "prompt_assembly_provider", None)
+        if provider is not None:
+            return provider
+
+        if agent is not None:
+            provider = getattr(agent, "prompt_assembly_provider", None)
+            if provider is not None:
+                return provider
+
+        context_cache_enabled = False
+        if agent is not None and hasattr(agent, "_is_context_cache_enabled"):
+            try:
+                context_cache_enabled = bool(agent._is_context_cache_enabled(self))
+            except Exception:
+                context_cache_enabled = False
+
+        if context_cache_enabled:
+            if self._cache_aware_prompt_assembly_provider is None:
+                self._cache_aware_prompt_assembly_provider = CacheAwarePromptAssemblyProvider()
+            return self._cache_aware_prompt_assembly_provider
+
+        if self._default_prompt_assembly_provider is None:
+            self._default_prompt_assembly_provider = DefaultPromptAssemblyProvider()
+        return self._default_prompt_assembly_provider
 
     @property
     def knowledge_service(self):
@@ -1635,9 +1664,13 @@ class ApplicationContext(AmniContext):
     def _is_default_namespace(self, namespace):
         return namespace == "default"
 
-    def deep_copy(self) -> 'ApplicationContext':
+    def deep_copy(self, preserve_merge_baseline: bool = False) -> 'ApplicationContext':
         new_context = object.__new__(ApplicationContext)
-        Context._deep_copy(self, new_context)
+        Context._deep_copy(
+            self,
+            new_context,
+            preserve_merge_baseline=preserve_merge_baseline,
+        )
 
         try:
             new_context.task_state = copy.deepcopy(self.task_state)
@@ -1660,6 +1693,8 @@ class ApplicationContext(AmniContext):
         new_context._prompt_service = None
         new_context._freedom_space_service = None
         new_context._traj_service = None
+        new_context._default_prompt_assembly_provider = None
+        new_context._cache_aware_prompt_assembly_provider = None
 
         return new_context
 
