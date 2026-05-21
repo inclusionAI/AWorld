@@ -179,7 +179,7 @@ The `StateManager` tracks and manages all runtime state—including execution st
 ### Event-Driven Agent Runtime
 AWorld implements a complete **event-driven runtime** specifically for agents. 
 
-![](../imgs/runtime.png)
+![](../../imgs/runtime.png)
 
 This runtime fully integrates all behaviors, modules, and capabilities—including **context updates**, **trajectory construction**, and **human-in-the-loop interactions**—into a single, coherent execution flow.
 
@@ -198,4 +198,3 @@ Runners.streaming_run(...)
 # streaming response of running a Task
 Runners.streaming_run_task(...)
 ```
-

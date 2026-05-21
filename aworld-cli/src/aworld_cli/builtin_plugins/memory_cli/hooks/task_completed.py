@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+
 from aworld_cli.builtin_plugins.memory_cli.common import append_workspace_session_log
+from aworld_cli.memory.governance import append_governed_decision, evaluate_governed_candidate
 from aworld_cli.memory.metrics import append_promotion_metric
 from aworld_cli.memory.promotion import (
     candidate_payload,
     evaluate_turn_end_candidate,
-    mark_auto_promoted,
-    should_auto_promote,
 )
 from aworld_cli.memory.provider import CliDurableMemoryProvider
 
@@ -18,39 +20,138 @@ def handle_event(event, state):
         return {"action": "allow"}
 
     final_answer = event.get("final_answer") or ""
-    candidates = []
+    usage = event.get("usage")
+    llm_calls = event.get("llm_calls")
+    if not isinstance(llm_calls, list):
+        llm_calls = []
+    provider = CliDurableMemoryProvider()
     if final_answer:
         decision = evaluate_turn_end_candidate(final_answer)
-        auto_promoted = False
-        if should_auto_promote(decision):
-            CliDurableMemoryProvider().append_durable_memory_record(
-                workspace_path=workspace_path,
-                text=decision.content,
-                memory_type=decision.memory_type,
-                source="auto_promotion",
-            )
-            decision = mark_auto_promoted(decision)
-            auto_promoted = True
+        candidate_id = f"{session_id}:{event.get('task_id') or 'task'}:0"
+        initial_candidate = candidate_payload(decision, auto_promoted=False) | {
+            "candidate_id": candidate_id,
+        }
+        session_log_path = append_workspace_session_log(
+            workspace_path=workspace_path,
+            session_id=session_id,
+            payload={
+                "event": "task_completed",
+                "session_id": session_id,
+                "task_id": event.get("task_id"),
+                "task_status": event.get("task_status") or "idle",
+                "workspace_path": workspace_path,
+                "final_answer": final_answer,
+                "usage": usage if isinstance(usage, dict) else {},
+                "llm_calls": llm_calls,
+                "candidates": [initial_candidate],
+            },
+        )
+        persisted_entry, persisted_candidate = _read_persisted_candidate_entry(
+            session_log_path=session_log_path,
+            session_id=session_id,
+            task_id=str(event.get("task_id") or ""),
+            candidate_id=candidate_id,
+        )
+        governed_source_ref = {
+            "session_id": session_id,
+            "task_id": str(event.get("task_id") or ""),
+            "candidate_id": candidate_id,
+            "session_log_path": str(session_log_path),
+            "session_log_recorded_at": str(persisted_entry.get("recorded_at") or ""),
+        }
+        governed = evaluate_governed_candidate(
+            workspace_path=workspace_path,
+            candidate={
+                "candidate_id": candidate_id,
+                "content": str(persisted_candidate.get("content") or ""),
+                "memory_type": str(persisted_candidate.get("memory_type") or decision.memory_type),
+                "memory_kind": persisted_candidate.get("memory_kind") or decision.memory_kind,
+                "confidence": str(persisted_candidate.get("confidence") or ""),
+                "eligible_for_auto_promotion": persisted_candidate.get(
+                    "eligible_for_auto_promotion"
+                ),
+                "source_ref": governed_source_ref,
+            },
+        )
+        append_governed_decision(workspace_path, governed.to_payload())
 
-        candidates.append(candidate_payload(decision, auto_promoted=auto_promoted))
+        auto_promoted = governed.decision == "durable_memory"
+        promotion_decision = replace(
+            decision,
+            promotion="durable_memory" if auto_promoted else "session_log_only",
+        )
+        if auto_promoted:
+            provider.append_durable_memory_record(
+                workspace_path=workspace_path,
+                text=governed.content,
+                memory_type=governed.memory_type,
+                memory_kind=governed.memory_kind,
+                source="governed_auto_promotion",
+                decision_id=governed.decision_id,
+                source_ref=governed.source_ref,
+            )
         append_promotion_metric(
             workspace_path=workspace_path,
             session_id=session_id,
             task_id=event.get("task_id"),
-            decision=decision,
+            decision=promotion_decision,
         )
-
-    append_workspace_session_log(
-        workspace_path=workspace_path,
-        session_id=session_id,
-        payload={
-            "event": "task_completed",
-            "session_id": session_id,
-            "task_id": event.get("task_id"),
-            "task_status": event.get("task_status") or "idle",
-            "workspace_path": workspace_path,
-            "final_answer": final_answer,
-            "candidates": candidates,
-        },
-    )
+    else:
+        append_workspace_session_log(
+            workspace_path=workspace_path,
+            session_id=session_id,
+            payload={
+                "event": "task_completed",
+                "session_id": session_id,
+                "task_id": event.get("task_id"),
+                "task_status": event.get("task_status") or "idle",
+                "workspace_path": workspace_path,
+                "final_answer": final_answer,
+                "usage": usage if isinstance(usage, dict) else {},
+                "llm_calls": llm_calls,
+                "candidates": [],
+            },
+        )
     return {"action": "allow"}
+
+
+def _read_persisted_candidate_entry(
+    session_log_path,
+    *,
+    session_id: str,
+    task_id: str,
+    candidate_id: str,
+):
+    try:
+        lines = session_log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}, {}
+
+    for line in reversed(lines):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if session_id and str(payload.get("session_id") or "") != session_id:
+            continue
+        if task_id and str(payload.get("task_id") or "") != task_id:
+            continue
+        candidate = _find_persisted_candidate(payload, candidate_id)
+        if candidate:
+            return payload, candidate
+
+    return {}, {}
+
+
+def _find_persisted_candidate(payload, candidate_id: str):
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("candidate_id") == candidate_id:
+            return candidate
+    return {}

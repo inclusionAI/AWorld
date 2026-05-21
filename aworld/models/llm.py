@@ -2,6 +2,7 @@ import re
 import time
 import uuid
 import traceback
+import copy
 from typing import (
     List,
     Dict,
@@ -419,6 +420,183 @@ class LLMModel:
         """
         return self.provider.supported_models() if self.provider else []
 
+    @staticmethod
+    def _safe_copy(value: Any) -> Any:
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+
+    @staticmethod
+    def _has_meaningful_value(value: Any) -> bool:
+        if value is None or value == "" or value is False:
+            return False
+        if isinstance(value, (list, tuple, set, dict)):
+            return bool(value)
+        if isinstance(value, (int, float)):
+            return value != 0
+        return True
+
+    @classmethod
+    def _usage_has_meaningful_value(cls, usage: Any) -> bool:
+        if not isinstance(usage, dict) or not usage:
+            return False
+        for value in usage.values():
+            if isinstance(value, dict):
+                if cls._usage_has_meaningful_value(value):
+                    return True
+                continue
+            if isinstance(value, (list, tuple, set)):
+                if any(cls._has_meaningful_value(item) for item in value):
+                    return True
+                continue
+            if cls._has_meaningful_value(value):
+                return True
+        return False
+
+    @classmethod
+    def _message_has_meaningful_value(cls, message: Any) -> bool:
+        if not isinstance(message, dict) or not message:
+            return False
+        return any(
+            cls._has_meaningful_value(value) and key != "role"
+            for key, value in message.items()
+        )
+
+    @classmethod
+    def _is_meaningful_stream_response(cls, response: Optional[ModelResponse]) -> bool:
+        if response is None:
+            return False
+        return any([
+            cls._has_meaningful_value(getattr(response, "provider_request_id", None)),
+            cls._has_meaningful_value(getattr(response, "content", None)),
+            cls._has_meaningful_value(getattr(response, "tool_calls", None)),
+            cls._has_meaningful_value(getattr(response, "finish_reason", None)),
+            cls._usage_has_meaningful_value(getattr(response, "usage", None)),
+            cls._usage_has_meaningful_value(getattr(response, "raw_usage", None)),
+            cls._message_has_meaningful_value(getattr(response, "message", None)),
+        ])
+
+    def _merge_stream_response_record(
+        self,
+        base_response: Optional[ModelResponse],
+        next_response: Optional[ModelResponse],
+    ) -> Optional[ModelResponse]:
+        if base_response is None:
+            return self._safe_copy(next_response)
+        if next_response is None:
+            return self._safe_copy(base_response)
+
+        merged = self._safe_copy(base_response)
+        message = self._safe_copy(getattr(base_response, "message", None))
+        next_message = getattr(next_response, "message", None)
+        if isinstance(message, dict) and isinstance(next_message, dict):
+            for key, value in next_message.items():
+                if key == "role":
+                    continue
+                if self._has_meaningful_value(value):
+                    message[key] = self._safe_copy(value)
+        elif self._message_has_meaningful_value(next_message):
+            message = self._safe_copy(next_message)
+
+        for attr in ("id", "model", "provider_request_id", "finish_reason", "content", "tool_calls"):
+            value = getattr(next_response, attr, None)
+            if self._has_meaningful_value(value):
+                setattr(merged, attr, self._safe_copy(value))
+
+        if self._usage_has_meaningful_value(getattr(next_response, "usage", None)):
+            merged.usage = self._safe_copy(next_response.usage)
+        if self._usage_has_meaningful_value(getattr(next_response, "raw_usage", None)):
+            merged.raw_usage = self._safe_copy(next_response.raw_usage)
+        if message is not None:
+            merged.message = message
+        return merged
+
+    def _resolve_request_model_name(self, **kwargs) -> Optional[str]:
+        return kwargs.get("model_name") or getattr(self.provider, "model_name", None)
+
+    def _append_llm_call_record(
+        self,
+        *,
+        context: Context,
+        request_id: str,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        stop: List[str],
+        response: ModelResponse,
+        started_at: float,
+        finished_at: float,
+        **kwargs,
+    ) -> None:
+        if context is None or response is None:
+            return
+
+        usage_normalized = self._safe_copy(getattr(response, "usage", None) or {})
+        usage_raw = self._safe_copy(getattr(response, "raw_usage", None) or usage_normalized)
+        agent_id = getattr(context.agent_info, "current_agent_id", None) if context.agent_info else None
+
+        llm_call = {
+            "request_id": request_id,
+            "provider_request_id": getattr(response, "provider_request_id", None),
+            "task_id": context.task_id,
+            "agent_id": agent_id,
+            "model": self._resolve_request_model_name(**kwargs),
+            "provider_name": self.provider_name,
+            "status": "success",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "request": {
+                "messages": self._safe_copy(messages),
+                "tools": self._safe_copy(kwargs.get("tools")),
+                "params": {
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stop": self._safe_copy(stop),
+                },
+            },
+            "response": {
+                "id": getattr(response, "id", None),
+                "message": self._safe_copy(getattr(response, "message", None)),
+                "finish_reason": getattr(response, "finish_reason", None),
+            },
+            "usage_normalized": usage_normalized,
+            "usage_raw": usage_raw,
+        }
+        context.append_llm_call(llm_call)
+
+    def _apply_updated_output(self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False) -> ModelResponse:
+        if updated_output is None:
+            return response
+
+        if hasattr(updated_output, "content") and not isinstance(updated_output, dict):
+            logger.info(f"AFTER_LLM_CALL hook replaced response object{' (sync)' if sync_mode else ''}")
+            return updated_output
+
+        if not isinstance(updated_output, dict):
+            return response
+
+        if 'content' in updated_output:
+            response.content = updated_output['content']
+            if isinstance(getattr(response, "message", None), dict):
+                response.message["content"] = updated_output["content"]
+
+        if 'token_usage' in updated_output:
+            response.usage = updated_output['token_usage']
+        if 'usage' in updated_output:
+            response.usage = updated_output['usage']
+        if 'raw_usage' in updated_output:
+            response.raw_usage = updated_output['raw_usage']
+
+        for key, value in updated_output.items():
+            if key == 'token_usage':
+                continue
+            if hasattr(response, key):
+                setattr(response, key, value)
+
+        logger.info(f"AFTER_LLM_CALL hook modified response fields{' (sync)' if sync_mode else ''}")
+        return response
+
     async def acompletion(self,
                           messages: List[Dict[str, str]],
                           temperature: float = 0.0,
@@ -548,21 +726,23 @@ class LLMModel:
                             if updated_output:
                                 # Update resp with modified output
                                 # Accept either complete response object or dict with specific fields
-                                if hasattr(updated_output, 'content'):
-                                    # Direct response object replacement
-                                    resp = updated_output
-                                    logger.info(f"AFTER_LLM_CALL hook replaced response object")
-                                elif isinstance(updated_output, dict):
-                                    # Partial update of response fields
-                                    if 'content' in updated_output:
-                                        resp.content = updated_output['content']
-                                    if 'token_usage' in updated_output:
-                                        resp.token_usage = updated_output['token_usage']
-                                    logger.info(f"AFTER_LLM_CALL hook modified response fields")
+                                resp = self._apply_updated_output(resp, updated_output)
                                 # Continue to next hook to allow chaining
                 except Exception as e:
                     logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
 
+            self._append_llm_call_record(
+                context=context,
+                request_id=request_id,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                response=resp,
+                started_at=start_ms,
+                finished_at=time.time(),
+                **kwargs,
+            )
             return resp
         except AttributeError as e:
             logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
@@ -705,24 +885,24 @@ class LLMModel:
                         if hook_event and hasattr(hook_event, 'headers'):
                             updated_output = hook_event.headers.get('updated_output')
                             if updated_output:
-                                # Update resp with modified output
-                                if isinstance(updated_output, dict):
-                                    if 'content' in updated_output:
-                                        resp.content = updated_output['content']
-                                        logger.info(f"AFTER_LLM_CALL hook modified response content (sync)")
-                                    # Allow other fields to be updated as well
-                                    for key, value in updated_output.items():
-                                        if hasattr(resp, key):
-                                            setattr(resp, key, value)
-                                elif hasattr(updated_output, '__dict__'):
-                                    # If it's an object, replace resp entirely
-                                    resp = updated_output
-                                    logger.info(f"AFTER_LLM_CALL hook replaced response object (sync)")
+                                resp = self._apply_updated_output(resp, updated_output, sync_mode=True)
 
                 sync_exec(_run_after_hooks)
             except Exception as e:
                 logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
 
+        self._append_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            response=resp,
+            started_at=start_ms,
+            finished_at=time.time(),
+            **kwargs,
+        )
         return resp
 
     def stream_completion(self,
@@ -744,14 +924,52 @@ class LLMModel:
         Returns:
             Generator yielding ModelResponse chunks.
         """
-        # Call provider's stream_completion method directly
-        return self.provider.stream_completion(
+        start_ms = time.time()
+        request_id = LLMModel._generate_llm_request_id()
+        context_task_id = context.task_id if context else None
+        context_trace_id = context.trace_id if context else None
+        log_params = {
+            "task_id": context_task_id,
+            "request_id": request_id,
+        }
+        kwargs["llm_request_id"] = request_id
+        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+        stream_started_at = start_ms
+
+        final_chunk = None
+        record_chunk = None
+        for chunk in self.provider.stream_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
             context=context,
             **kwargs
+        ):
+            if self.llm_response_parser:
+                response_parse_args = kwargs.get("response_parse_args") or {}
+                chunk = sync_exec(self.llm_response_parser.parse_chunk, chunk, **response_parse_args)
+            log_params["time_cost"] = round(time.time() - start_ms, 3)
+            log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context_trace_id)
+            start_ms = time.time()
+            final_chunk = chunk
+            if record_chunk is None or self._is_meaningful_stream_response(chunk):
+                record_chunk = self._merge_stream_response_record(record_chunk, chunk)
+            yield chunk
+
+        persisted_chunk = self._merge_stream_response_record(record_chunk, final_chunk)
+
+        self._append_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            response=persisted_chunk,
+            started_at=stream_started_at,
+            finished_at=time.time(),
+            **kwargs,
         )
 
     async def astream_completion(self,
@@ -787,6 +1005,9 @@ class LLMModel:
         }
         kwargs["llm_request_id"] = request_id
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+        stream_started_at = start_ms
+        final_chunk = None
+        record_chunk = None
         async for chunk in self.provider.astream_completion(
                 messages=messages,
                 temperature=temperature,
@@ -801,7 +1022,25 @@ class LLMModel:
             log_params["time_cost"] = round(time.time() - start_ms, 3)
             log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context_trace_id)
             start_ms = time.time()
+            final_chunk = chunk
+            if record_chunk is None or self._is_meaningful_stream_response(chunk):
+                record_chunk = self._merge_stream_response_record(record_chunk, chunk)
             yield chunk
+
+        persisted_chunk = self._merge_stream_response_record(record_chunk, final_chunk)
+
+        self._append_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            response=persisted_chunk,
+            started_at=stream_started_at,
+            finished_at=time.time(),
+            **kwargs,
+        )
 
     def speech_to_text(self,
                        audio_file: str,

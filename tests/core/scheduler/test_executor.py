@@ -71,6 +71,27 @@ async def test_resolve_swarm_success(executor):
 
 
 @pytest.mark.asyncio
+async def test_resolve_swarm_aworld_bypasses_cache():
+    """Aworld cron jobs should rebuild swarm each run to refresh dynamic prompt state."""
+    resolve_swarm = AsyncMock(
+        side_effect=[
+            MockSwarm("AworldSwarm-1"),
+            MockSwarm("AworldSwarm-2"),
+        ]
+    )
+    executor = CronExecutor(swarm_resolver=resolve_swarm)
+
+    swarm1 = await executor._resolve_swarm("Aworld")
+    swarm2 = await executor._resolve_swarm("Aworld")
+
+    assert swarm1 is not swarm2
+    assert swarm1.name == "AworldSwarm-1"
+    assert swarm2.name == "AworldSwarm-2"
+    assert "Aworld" not in executor._agent_cache
+    assert resolve_swarm.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_resolve_swarm_agent_not_found(executor):
     """Test that _resolve_swarm returns None for missing agent."""
     resolve_swarm = AsyncMock(return_value=None)

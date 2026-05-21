@@ -9,9 +9,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli.executors.local import LocalAgentExecutor
-from aworld_cli.executors.stats import StreamTokenStats
+from aworld_cli.executors.stats import StreamTokenStats, build_llm_usage_observability
 from aworld_cli.executors.base_executor import BaseAgentExecutor
 from aworld_cli.runtime.base import BaseCliRuntime
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.core.plugin_manager import get_builtin_plugin_roots
+from aworld_cli.plugin_capabilities.hud import collect_hud_lines
 
 
 class DummyRuntime(BaseCliRuntime):
@@ -30,6 +33,13 @@ class DummyRuntime(BaseCliRuntime):
 
     def _get_source_location(self):
         return "test://runtime"
+
+
+def _get_builtin_steering_plugin_root() -> Path:
+    for root in get_builtin_plugin_roots():
+        if root.name == "steering_cli":
+            return root
+    raise AssertionError("built-in steering_cli plugin root not found")
 
 
 def test_build_hud_context_merges_live_snapshot():
@@ -55,6 +65,31 @@ def test_build_hud_context_merges_live_snapshot():
     assert context["task"]["current_task_id"] == "task_001"
     assert context["activity"]["recent_tools"] == ["bash"]
     assert context["usage"]["context_percent"] == 34
+
+
+def test_build_hud_context_exposes_steering_snapshot_to_hud_provider():
+    runtime = DummyRuntime()
+    runtime.update_hud_snapshot(session={"session_id": "session-1"})
+    runtime._steering.begin_task("session-1", "task-1")
+    runtime._steering.enqueue_text("session-1", "Focus on failing tests first.")
+
+    context = runtime.build_hud_context(
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="feat/steering",
+    )
+    plugin = discover_plugins([_get_builtin_steering_plugin_root()])[0]
+    lines = collect_hud_lines([plugin], context)
+
+    assert context["steering"]["active"] is True
+    assert context["steering"]["pending_count"] == 1
+    assert [line.section for line in lines] == ["session"]
+    assert lines[0].segments == (
+        "Steering: active",
+        "Pending: 1",
+        "Interrupt: no",
+    )
 
 
 def test_settle_hud_snapshot_keeps_last_useful_state():
@@ -138,6 +173,319 @@ def test_local_executor_publishes_stream_updates_to_runtime():
     assert context["activity"]["tool_calls_count"] == 2
     assert context["usage"]["total_tokens"] == 1500
     assert context["session"]["elapsed_seconds"] == 12.5
+
+
+def test_build_llm_usage_observability_preserves_request_linked_cache_usage():
+    usage = build_llm_usage_observability(
+        [
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_123",
+                "provider_request_id": "req_provider_123",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                    "cache_hit_tokens": 80,
+                    "cache_write_tokens": 20,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                },
+            }
+        ],
+        task_id="task_001",
+    )
+
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 25
+    assert usage["total_tokens"] == 125
+    assert usage["request_id"] == "llm_req_123"
+    assert usage["provider_request_id"] == "req_provider_123"
+    assert usage["raw_usage"]["cache_hit_tokens"] == 80
+    assert usage["cache_usage"] == {
+        "cache_hit_tokens": 80,
+        "cache_write_tokens": 20,
+        "prompt_tokens_details": {"cached_tokens": 80},
+    }
+
+
+def test_build_llm_usage_observability_aggregates_matching_task_calls():
+    usage = build_llm_usage_observability(
+        [
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_older",
+                "provider_request_id": "req_provider_older",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                    "cache_hit_tokens": 80,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                },
+            },
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_latest",
+                "provider_request_id": "req_provider_latest",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                    "cache_write_tokens": 20,
+                    "input_tokens_details": {"cache_read_input_tokens": 5},
+                },
+            },
+            {
+                "task_id": "child-task",
+                "request_id": "llm_req_child",
+                "provider_request_id": "req_provider_child",
+                "model": "gpt-4.1-mini",
+                "usage_normalized": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+                "usage_raw": {"cache_hit_tokens": 1},
+            },
+        ],
+        task_id="task_001",
+    )
+
+    assert usage["input_tokens"] == 140
+    assert usage["output_tokens"] == 35
+    assert usage["total_tokens"] == 175
+    assert usage["request_id"] == "llm_req_latest"
+    assert usage["provider_request_id"] == "req_provider_latest"
+    assert usage["raw_usage"]["cache_hit_tokens"] == 80
+    assert usage["raw_usage"]["cache_write_tokens"] == 20
+    assert usage["raw_usage"]["prompt_tokens"] == 140
+    assert usage["raw_usage"]["completion_tokens"] == 35
+    assert usage["cache_usage"] == {
+        "cache_hit_tokens": 80,
+        "cache_write_tokens": 20,
+        "prompt_tokens_details": {"cached_tokens": 80},
+        "input_tokens_details": {"cache_read_input_tokens": 5},
+    }
+
+
+def test_local_executor_publishes_final_llm_usage_snapshot_to_runtime():
+    runtime = DummyRuntime()
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = runtime
+    executor.session_id = "session-1"
+
+    executor._publish_hud_llm_observability(
+        task_id="task_001",
+        llm_calls=[
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_123",
+                "provider_request_id": "req_provider_123",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                    "cache_hit_tokens": 80,
+                },
+            }
+        ],
+    )
+
+    context = runtime.build_hud_context(
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="main",
+    )
+
+    assert context["task"]["current_task_id"] == "task_001"
+    assert context["usage"]["request_id"] == "llm_req_123"
+    assert context["usage"]["provider_request_id"] == "req_provider_123"
+    assert context["usage"]["cache_usage"]["cache_hit_tokens"] == 80
+    assert context["session"]["model"] == "gpt-4.1"
+
+
+def test_local_executor_publishes_aggregated_final_llm_usage_to_runtime():
+    runtime = DummyRuntime()
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = runtime
+    executor.session_id = "session-1"
+
+    executor._publish_hud_llm_observability(
+        task_id="task_001",
+        llm_calls=[
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_older",
+                "provider_request_id": "req_provider_older",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                    "cache_hit_tokens": 80,
+                },
+            },
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_latest",
+                "provider_request_id": "req_provider_latest",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
+                "usage_raw": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                    "cache_write_tokens": 20,
+                },
+            },
+            {
+                "task_id": "child-task",
+                "request_id": "llm_req_child",
+                "provider_request_id": "req_provider_child",
+                "model": "gpt-4.1-mini",
+                "usage_normalized": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+                "usage_raw": {"cache_hit_tokens": 1},
+            },
+        ],
+    )
+
+    context = runtime.build_hud_context(
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="main",
+    )
+
+    assert context["usage"]["request_id"] == "llm_req_latest"
+    assert context["usage"]["provider_request_id"] == "req_provider_latest"
+    assert context["usage"]["input_tokens"] == 140
+    assert context["usage"]["output_tokens"] == 35
+    assert context["usage"]["total_tokens"] == 175
+    assert context["usage"]["cache_usage"]["cache_hit_tokens"] == 80
+    assert context["usage"]["cache_usage"]["cache_write_tokens"] == 20
+    assert context["session"]["model"] == "gpt-4.1"
+
+
+def test_build_llm_usage_observability_ignores_other_task_calls():
+    usage = build_llm_usage_observability(
+        [
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_parent",
+                "provider_request_id": "req_parent",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {"cache_hit_tokens": 80},
+            },
+            {
+                "task_id": "child-task",
+                "request_id": "llm_req_child",
+                "provider_request_id": "req_child",
+                "model": "gpt-4.1-mini",
+                "usage_normalized": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+                "usage_raw": {"cache_hit_tokens": 1},
+            },
+        ],
+        task_id="task_001",
+    )
+
+    assert usage["request_id"] == "llm_req_parent"
+    assert usage["provider_request_id"] == "req_parent"
+    assert usage["model"] == "gpt-4.1"
+
+
+def test_local_executor_final_usage_ignores_merged_child_task_calls():
+    runtime = DummyRuntime()
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = runtime
+    executor.session_id = "session-1"
+
+    executor._publish_hud_llm_observability(
+        task_id="task_001",
+        llm_calls=[
+            {
+                "task_id": "task_001",
+                "request_id": "llm_req_parent",
+                "provider_request_id": "req_parent",
+                "model": "gpt-4.1",
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "usage_raw": {"cache_hit_tokens": 80},
+            },
+            {
+                "task_id": "child-task",
+                "request_id": "llm_req_child",
+                "provider_request_id": "req_child",
+                "model": "gpt-4.1-mini",
+                "usage_normalized": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+                "usage_raw": {"cache_hit_tokens": 1},
+            },
+        ],
+    )
+
+    context = runtime.build_hud_context(
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="main",
+    )
+
+    assert context["usage"]["request_id"] == "llm_req_parent"
+    assert context["usage"]["provider_request_id"] == "req_parent"
+    assert context["session"]["model"] == "gpt-4.1"
 
 
 class BrokenRuntime(BaseCliRuntime):

@@ -50,7 +50,14 @@ async def test_acp_local_executor_build_task_sets_context_working_dir_base_path(
 ) -> None:
     seen: dict[str, str] = {}
 
-    async def fake_parent_build_task(self, task_content: str, session_id=None, task_id=None, image_urls=None):
+    async def fake_parent_build_task(
+        self,
+        task_content: str,
+        session_id=None,
+        task_id=None,
+        image_urls=None,
+        origin_user_input=None,
+    ):
         seen["task_content"] = task_content
         seen["working_dir_base_path"] = self.context_config.env_config.working_dir_base_path
         return {"task_content": task_content, "session_id": session_id}

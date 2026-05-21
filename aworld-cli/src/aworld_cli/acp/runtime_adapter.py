@@ -14,6 +14,11 @@ def next_tool_id(state: dict[str, Any]) -> str:
     return f"acp_tool_{state['tool_seq']}"
 
 
+def next_step_id(state: dict[str, Any]) -> str:
+    state["step_seq"] = int(state.get("step_seq", 0)) + 1
+    return f"acp_step_{state['step_seq']}"
+
+
 def normalize_text_delta(state: dict[str, Any], text: str) -> dict[str, Any]:
     return {
         "event_type": "text_delta",
@@ -87,6 +92,72 @@ def normalize_tool_end(
     }
 
 
+def normalize_step_start(
+    state: dict[str, Any],
+    *,
+    step_id: str | None,
+    parent_step_id: str | None,
+    name: str,
+    display_name: str,
+    step_num: int | None,
+    status: str,
+    payload: Any,
+) -> dict[str, Any]:
+    resolved_step_id = step_id or next_step_id(state)
+    open_steps = state.setdefault("open_steps", [])
+    if isinstance(open_steps, list):
+        open_steps.append(
+            {
+                "step_id": resolved_step_id,
+                "name": name,
+                "display_name": display_name,
+                "step_num": step_num,
+            }
+        )
+    return {
+        "event_type": "step_start",
+        "seq": next_sequence(state),
+        "step_id": resolved_step_id,
+        "parent_step_id": parent_step_id,
+        "name": name,
+        "display_name": display_name,
+        "step_num": step_num,
+        "status": status,
+        "payload": payload,
+    }
+
+
+def normalize_step_end(
+    state: dict[str, Any],
+    *,
+    step_id: str | None,
+    parent_step_id: str | None,
+    name: str,
+    display_name: str,
+    step_num: int | None,
+    status: str,
+    payload: Any,
+) -> dict[str, Any]:
+    resolved_step_id = _resolve_open_step_id(
+        state,
+        step_id=step_id,
+        name=name,
+        display_name=display_name,
+        step_num=step_num,
+    ) or step_id or next_step_id(state)
+    return {
+        "event_type": "step_end",
+        "seq": next_sequence(state),
+        "step_id": resolved_step_id,
+        "parent_step_id": parent_step_id,
+        "name": name,
+        "display_name": display_name,
+        "step_num": step_num,
+        "status": status,
+        "payload": payload,
+    }
+
+
 def adapt_output_to_runtime_events(
     state: dict[str, Any],
     output: Any,
@@ -95,6 +166,7 @@ def adapt_output_to_runtime_events(
     events: list[dict[str, Any]] = []
 
     if output_type == "chunk":
+        _append_tool_start_events(state, events, _extract_tool_calls(output))
         reasoning = _extract_reasoning(output)
         if reasoning:
             events.append(normalize_thought_delta(state, reasoning))
@@ -105,15 +177,7 @@ def adapt_output_to_runtime_events(
         return events
 
     if output_type == "message":
-        for tool_call in _extract_tool_calls(output):
-            events.append(
-                normalize_tool_start(
-                    state,
-                    native_id=getattr(tool_call, "id", None),
-                    tool_name=_tool_name(tool_call),
-                    payload=_tool_arguments(tool_call),
-                )
-            )
+        _append_tool_start_events(state, events, _extract_tool_calls(output))
 
         reasoning = _extract_reasoning(output)
         if reasoning:
@@ -124,12 +188,17 @@ def adapt_output_to_runtime_events(
             events.append(normalize_final_text(state, text))
         return events
 
+    if output_type == "tool_call":
+        tool_call = _extract_tool_call_from_output(output)
+        _append_tool_start_events(state, events, [tool_call] if tool_call is not None else [])
+        return events
+
     if output_type == "tool_call_result":
         origin_tool_call = getattr(output, "origin_tool_call", None)
         events.append(
             normalize_tool_end(
                 state,
-                native_id=getattr(origin_tool_call, "id", None),
+                native_id=_tool_result_native_id(output, origin_tool_call),
                 tool_name=getattr(output, "tool_name", None)
                 or _tool_name(origin_tool_call)
                 or "unknown",
@@ -139,7 +208,75 @@ def adapt_output_to_runtime_events(
         )
         return events
 
+    if output_type == "step":
+        name = _extract_step_name(output)
+        display_name = _extract_step_display_name(output)
+        step_num = _extract_step_num(output)
+        status = _extract_step_status(output)
+        step_id = _extract_step_id(output)
+        parent_step_id = _extract_parent_step_id(output)
+        payload = getattr(output, "data", None)
+
+        if status == "START":
+            events.append(
+                normalize_step_start(
+                    state,
+                    step_id=step_id,
+                    parent_step_id=parent_step_id,
+                    name=name,
+                    display_name=display_name,
+                    step_num=step_num,
+                    status=status,
+                    payload=payload,
+                )
+            )
+        else:
+            events.append(
+                normalize_step_end(
+                    state,
+                    step_id=step_id,
+                    parent_step_id=parent_step_id,
+                    name=name,
+                    display_name=display_name,
+                    step_num=step_num,
+                    status=status,
+                    payload=payload,
+                )
+            )
+        return events
+
     return events
+
+
+def _append_tool_start_events(
+    state: dict[str, Any],
+    events: list[dict[str, Any]],
+    tool_calls: list[Any],
+) -> None:
+    for tool_call in tool_calls:
+        native_id = _tool_call_id(tool_call)
+        if native_id and _has_started_tool_call(state, native_id):
+            continue
+        event = normalize_tool_start(
+            state,
+            native_id=native_id,
+            tool_name=_tool_name(tool_call),
+            payload=_tool_arguments(tool_call),
+        )
+        if native_id:
+            _mark_tool_call_started(state, native_id)
+        events.append(event)
+
+
+def _has_started_tool_call(state: dict[str, Any], tool_call_id: str) -> bool:
+    started = state.setdefault("started_tool_call_ids", set())
+    return isinstance(started, set) and tool_call_id in started
+
+
+def _mark_tool_call_started(state: dict[str, Any], tool_call_id: str) -> None:
+    started = state.setdefault("started_tool_call_ids", set())
+    if isinstance(started, set):
+        started.add(tool_call_id)
 
 
 def _output_type(output: Any) -> str:
@@ -187,6 +324,74 @@ def _extract_reasoning(output: Any) -> str:
     return ""
 
 
+def _extract_step_name(output: Any) -> str:
+    name = getattr(output, "name", None)
+    return name if isinstance(name, str) and name else "step"
+
+
+def _extract_step_display_name(output: Any) -> str:
+    display_name = getattr(output, "show_name", None)
+    if isinstance(display_name, str) and display_name:
+        return display_name
+
+    alias_name = getattr(output, "alias_name", None)
+    if isinstance(alias_name, str) and alias_name:
+        return alias_name
+
+    return _extract_step_name(output)
+
+
+def _extract_step_num(output: Any) -> int | None:
+    step_num = getattr(output, "step_num", None)
+    return step_num if isinstance(step_num, int) else None
+
+
+def _extract_step_status(output: Any) -> str:
+    status = getattr(output, "status", None)
+    return status.upper() if isinstance(status, str) and status else "UNKNOWN"
+
+
+def _resolve_open_step_id(
+    state: dict[str, Any],
+    *,
+    step_id: str | None,
+    name: str,
+    display_name: str,
+    step_num: int | None,
+) -> str | None:
+    open_steps = state.get("open_steps")
+    if not isinstance(open_steps, list):
+        return None
+
+    for index in range(len(open_steps) - 1, -1, -1):
+        item = open_steps[index]
+        if not isinstance(item, dict):
+            continue
+        if isinstance(step_id, str) and item.get("step_id") == step_id:
+            open_steps.pop(index)
+            return step_id
+        if item.get("name") != name:
+            continue
+        if item.get("display_name") != display_name:
+            continue
+        if item.get("step_num") != step_num:
+            continue
+        open_steps.pop(index)
+        step_id = item.get("step_id")
+        return step_id if isinstance(step_id, str) else None
+    return None
+
+
+def _extract_step_id(output: Any) -> str | None:
+    step_id = getattr(output, "step_id", None)
+    return step_id if isinstance(step_id, str) and step_id else None
+
+
+def _extract_parent_step_id(output: Any) -> str | None:
+    parent_step_id = getattr(output, "parent_step_id", None)
+    return parent_step_id if isinstance(parent_step_id, str) and parent_step_id else None
+
+
 def _should_emit_message_text(output: Any) -> bool:
     metadata = getattr(output, "metadata", None)
     if not isinstance(metadata, dict):
@@ -213,13 +418,43 @@ def _extract_tool_calls(output: Any) -> list[Any]:
     if raw_tool_calls:
         return [_unwrap_tool_call(tool_call) for tool_call in raw_tool_calls]
 
+    data = getattr(output, "data", None)
+    data_tool_calls = getattr(data, "tool_calls", None) or []
+    if data_tool_calls:
+        return [_unwrap_tool_call(tool_call) for tool_call in data_tool_calls]
+
     source = getattr(output, "source", None)
     source_tool_calls = getattr(source, "tool_calls", None) or []
     return [_unwrap_tool_call(tool_call) for tool_call in source_tool_calls]
 
 
+def _extract_tool_call_from_output(output: Any) -> Any | None:
+    data = getattr(output, "data", None)
+    if data is not None:
+        return _unwrap_tool_call(data)
+    return _unwrap_tool_call(output)
+
+
 def _unwrap_tool_call(tool_call: Any) -> Any:
     return getattr(tool_call, "data", tool_call)
+
+
+def _tool_call_id(tool_call: Any) -> str | None:
+    tool_call_id = getattr(tool_call, "id", None)
+    return tool_call_id if isinstance(tool_call_id, str) and tool_call_id else None
+
+
+def _tool_result_native_id(output: Any, origin_tool_call: Any) -> str | None:
+    origin_id = _tool_call_id(origin_tool_call)
+    if origin_id:
+        return origin_id
+
+    metadata = getattr(output, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata_id = metadata.get("tool_call_id")
+        if isinstance(metadata_id, str) and metadata_id:
+            return metadata_id
+    return None
 
 
 def _tool_name(tool_call: Any) -> str:
