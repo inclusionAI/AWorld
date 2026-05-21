@@ -2,10 +2,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from aworld.config import AgentMemoryConfig
-from aworld.core.common import ActionResult
+from aworld.agents.llm_agent import LLMAgent
+from aworld.config import AgentConfig, AgentMemoryConfig
+from aworld.core.common import ActionResult, Observation
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message
 from aworld.core.task import Task
+from aworld.memory.models import MemoryAIMessage, MemoryToolMessage, MessageMetadata
+from aworld.models.model_response import ToolCall
 from aworld.runners.handler.memory import DefaultMemoryHandler
 
 
@@ -15,6 +19,28 @@ class _FakeMemory:
 
     async def add(self, item, agent_memory_config=None):
         self.items.append((item, agent_memory_config))
+
+    def get_all(self, filters=None):
+        if not filters:
+            return [item for item, _ in self.items]
+
+        matched = []
+        for item, _ in self.items:
+            if filters.get("agent_id") is not None and item.metadata.get("agent_id") != filters["agent_id"]:
+                continue
+            if filters.get("session_id") is not None and item.metadata.get("session_id") != filters["session_id"]:
+                continue
+            if filters.get("task_id") is not None and item.metadata.get("task_id") != filters["task_id"]:
+                continue
+            if filters.get("tool_call_id") is not None and item.metadata.get("tool_call_id") != filters["tool_call_id"]:
+                continue
+            if filters.get("memory_type") is not None and item.memory_type != filters["memory_type"]:
+                continue
+            matched.append(item)
+        return matched
+
+    def get_last_n(self, *args, **kwargs):
+        return [item for item, _ in self.items]
 
 
 class _FakeAgent:
@@ -171,6 +197,111 @@ async def test_default_memory_handler_keeps_small_tool_results_unchanged(monkeyp
 
     assert stored_item.content == "short output"
     assert "tool_result_compaction" not in stored_item.metadata["ext_info"]
+
+
+@pytest.mark.asyncio
+async def test_default_memory_handler_skips_duplicate_tool_call_id(monkeypatch):
+    fake_memory = _FakeMemory()
+    monkeypatch.setattr(
+        "aworld.runners.handler.memory.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+
+    handler = _build_handler()
+    agent = _FakeAgent()
+    context = _build_context()
+
+    await handler._do_add_tool_result_to_memory(
+        agent,
+        "call-duplicate",
+        ActionResult(
+            content="first output",
+            tool_call_id="call-duplicate",
+            tool_name="cron",
+            action_name="add",
+            success=True,
+            metadata={},
+        ),
+        context,
+    )
+    await handler._do_add_tool_result_to_memory(
+        agent,
+        "call-duplicate",
+        ActionResult(
+            content="second output",
+            tool_call_id="call-duplicate",
+            tool_name="cron",
+            action_name="add",
+            success=True,
+            metadata={},
+        ),
+        context,
+    )
+
+    assert len(fake_memory.items) == 1
+    stored_item, _ = fake_memory.items[0]
+    assert stored_item.content == "first output"
+    assert stored_item.tool_call_id == "call-duplicate"
+
+
+@pytest.mark.asyncio
+async def test_llm_message_replay_skips_duplicate_tool_result(monkeypatch):
+    meta = MessageMetadata(
+        session_id="session-1",
+        user_id="user-1",
+        task_id="task-1",
+        agent_id="agent-1",
+        agent_name="Aworld",
+    )
+    ai_message = MemoryAIMessage(
+        content="",
+        tool_calls=[
+            ToolCall.from_dict({
+                "id": "cron__cron_tool:2",
+                "function": {"name": "cron__cron_tool", "arguments": "{}"},
+            })
+        ],
+        metadata=meta,
+    )
+    first_tool = MemoryToolMessage(
+        content="first cron result",
+        tool_call_id="cron__cron_tool:2",
+        metadata=meta,
+    )
+    duplicate_tool = MemoryToolMessage(
+        content="duplicate cron result",
+        tool_call_id="cron__cron_tool:2",
+        metadata=meta,
+    )
+    fake_memory = _FakeMemory()
+    fake_memory.items = [(ai_message, None), (first_tool, None), (duplicate_tool, None)]
+    monkeypatch.setattr(
+        "aworld.agents.llm_agent.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+
+    context = _build_context()
+    agent = LLMAgent(
+        name="Aworld",
+        agent_id="agent-1",
+        conf=AgentConfig(
+            llm_model_name="test-model",
+            llm_api_key="test-key",
+            memory_config=AgentMemoryConfig(history_rounds=10),
+        ),
+    )
+    message = Message(headers={"context": context})
+
+    messages = await agent.async_messages_transform(
+        image_urls=[],
+        observation=Observation(action_result=[ActionResult(content="tool result already recorded")]),
+        message=message,
+    )
+
+    tool_messages = [message for message in messages if message.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "cron__cron_tool:2"
+    assert tool_messages[0]["content"] == [{"type": "text", "text": "first cron result"}]
 
 
 @pytest.mark.asyncio
