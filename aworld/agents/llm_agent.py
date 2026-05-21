@@ -864,6 +864,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if histories:
             tool_calls_map = {}
             last_tool_calls = []
+            matched_tool_call_ids = set()
             for history in histories:
                 if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
                     # Maintain the order of tool calls
@@ -872,6 +873,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             raise AWorldRuntimeException(
                                 f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
                         messages.append(tool_calls_map.get(tool_call_id))
+                        matched_tool_call_ids.add(tool_call_id)
                     tool_calls_map = {}
                     last_tool_calls = []
 
@@ -879,6 +881,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     if isinstance(history, MemoryToolMessage):
                         if last_tool_calls and history.tool_call_id in last_tool_calls:
                             tool_calls_map[history.tool_call_id] = history.to_openai_message()
+                        elif history.tool_call_id in matched_tool_call_ids:
+                            logger.warning(
+                                f"Skip duplicate tool result in memory replay: "
+                                f"tool_call_id={history.tool_call_id}, agent={self.id()}"
+                            )
                         else:
                             raise AWorldRuntimeException(
                                 f"tool_calls mismatch! {history.tool_call_id} not found in {last_tool_calls}, "
@@ -895,6 +902,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             msg = {'role': history.metadata['role'], 'content': history.content,
                                    'tool_call_id': tool_call_id}
                             tool_calls_map[tool_call_id] = msg
+                        elif tool_call_id in matched_tool_call_ids:
+                            logger.warning(
+                                f"Skip duplicate tool result in memory replay: "
+                                f"tool_call_id={tool_call_id}, agent={self.id()}"
+                            )
                         else:
                             raise AWorldRuntimeException(
                                 f"tool_calls mismatch! {tool_call_id} not found in {last_tool_calls}, "
@@ -915,6 +927,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             raise AWorldRuntimeException(
                                 f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
                         messages.append(tool_calls_map.get(tool_call_id))
+                        matched_tool_call_ids.add(tool_call_id)
                     tool_calls_map = {}
                     last_tool_calls = []
                 elif len(tool_calls_map) > len(last_tool_calls):
@@ -927,6 +940,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         raise AWorldRuntimeException(
                             f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
                     messages.append(tool_calls_map.get(tool_call_id))
+                    matched_tool_call_ids.add(tool_call_id)
                 tool_calls_map = {}
                 last_tool_calls = []
             else:

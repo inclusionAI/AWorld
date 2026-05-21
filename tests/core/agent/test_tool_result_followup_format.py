@@ -4,6 +4,7 @@ import pytest
 
 import aworld.agents.llm_agent as llm_agent_module
 from aworld.agents.llm_agent import Agent
+from aworld.utils.task_grounding import extract_required_anchors
 from aworld.config.conf import AgentMemoryConfig
 from aworld.config.conf import AgentConfig
 from aworld.core.common import ActionModel, ActionResult

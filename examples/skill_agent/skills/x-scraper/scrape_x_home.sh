@@ -3,11 +3,11 @@
 # scrape_x_home.sh — 通过 agent-browser (CDP) 抓取 X 首页推荐流
 #
 # 用法:
-#   ./scrape_x_home.sh [-t <tab>] [-p <cdp_port>] [-n <max_scrolls>] [-o <output_file>] [-f <format>]
+#   ./scrape_x_home.sh [-t <tab>] [-p <cdp_port_or_url>] [-n <max_scrolls>] [-o <output_file>] [-f <format>]
 #
 # 参数:
 #   -t  推荐 Tab: foryou (默认) | following
-#   -p  CDP 端口号，默认 9222
+#   -p  CDP 端口号或 URL，默认 9222
 #   -n  最大滚动次数，默认 5
 #   -o  输出文件路径，默认 stdout
 #   -f  输出格式: md (Markdown, 默认) | rss (RSS XML) | json (原始 JSON)
@@ -26,7 +26,7 @@
 set -euo pipefail
 
 # ---------- 默认参数 ----------
-CDP_PORT=9222
+CDP_TARGET="${X_SCRAPER_CDP_TARGET:-9222}"
 MAX_SCROLLS=5
 OUTPUT_FILE=""
 TAB="foryou"
@@ -36,7 +36,7 @@ FORMAT="md"
 while getopts "t:p:n:o:f:h" opt; do
   case $opt in
     t) TAB="$OPTARG" ;;
-    p) CDP_PORT="$OPTARG" ;;
+    p) CDP_TARGET="$OPTARG" ;;
     n) MAX_SCROLLS="$OPTARG" ;;
     o) OUTPUT_FILE="$OPTARG" ;;
     f) FORMAT="$OPTARG" ;;
@@ -45,7 +45,7 @@ while getopts "t:p:n:o:f:h" opt; do
       exit 0
       ;;
     *)
-      echo "用法: $0 [-t foryou|following] [-p <cdp_port>] [-n <max_scrolls>] [-o <output_file>] [-f md|rss|json]" >&2
+      echo "用法: $0 [-t foryou|following] [-p <cdp_port_or_url>] [-n <max_scrolls>] [-o <output_file>] [-f md|rss|json]" >&2
       exit 1
       ;;
   esac
@@ -62,7 +62,13 @@ if [[ "$FORMAT" != "md" && "$FORMAT" != "rss" && "$FORMAT" != "json" ]]; then
 fi
 
 # ---------- 工具函数 ----------
-AB="agent-browser --cdp $CDP_PORT"
+if [[ "$CDP_TARGET" == *"://"* ]]; then
+  AB_SESSION="${X_SCRAPER_AGENT_BROWSER_SESSION:-x-scraper-cdp}"
+  agent-browser --session "$AB_SESSION" connect "$CDP_TARGET" >/dev/null
+  AB=(agent-browser --session "$AB_SESSION")
+else
+  AB=(agent-browser --cdp "$CDP_TARGET")
+fi
 TMPDIR_SCRAPER=$(mktemp -d)
 TWEETS_JSON="$TMPDIR_SCRAPER/tweets.json"
 
@@ -79,12 +85,12 @@ log() {
 
 # 1. 导航到 X 首页
 log "正在导航到 X 首页..."
-$AB open "https://x.com/home" >/dev/null 2>&1
+"${AB[@]}" open "https://x.com/home" >/dev/null 2>&1
 sleep 3
 
 # 2. 等待页面加载
 log "等待页面加载..."
-$AB wait --load networkidle >/dev/null 2>&1 || true
+"${AB[@]}" wait --load networkidle >/dev/null 2>&1 || true
 sleep 2
 
 # 3. 切换到目标 Tab
@@ -95,7 +101,7 @@ else
 fi
 
 log "切换到 Tab: ${TAB_LABEL}..."
-$AB eval "
+"${AB[@]}" eval "
   (() => {
     const tabs = document.querySelectorAll('[role=\"tab\"]');
     for (const tab of tabs) {
@@ -119,7 +125,7 @@ for ((i = 1; i <= MAX_SCROLLS; i++)); do
 
   # 提取帖子，过滤广告（placementTracking）
   EVAL_TMPFILE="$TMPDIR_SCRAPER/eval_${i}.json"
-  $AB eval "
+  "${AB[@]}" eval "
     JSON.stringify(
       Array.from(document.querySelectorAll('article[data-testid=\"tweet\"]'))
         .filter(el => !el.querySelector('[data-testid=\"placementTracking\"]'))
@@ -196,7 +202,7 @@ PYEOF
   fi
   PREV_COUNT=$CURRENT_COUNT
 
-  $AB scroll down 1500 >/dev/null 2>&1
+  "${AB[@]}" scroll down 1500 >/dev/null 2>&1
   sleep 3
 done
 
