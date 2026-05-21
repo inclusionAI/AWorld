@@ -60,12 +60,17 @@ def _looks_like_implementation_path(path: str) -> bool:
     if not path:
         return True
 
+    # Globs and templates are implementation patterns, not concrete task targets.
     if any(marker in path for marker in ("*", "?", "[", "]", "{", "}")):
         return True
 
+    # Bare root-relative fragments usually come from glob expressions such as
+    # f"{day_dir}/HealthAutoExport-*.csv", not from a user-selected target.
     if path.startswith("/") and path.count("/") == 1 and "." in path:
         return True
 
+    # A single root-relative word is usually a slash-separated label such as
+    # Google/Gemini or a command fragment, not a concrete local artifact.
     if path.startswith("/") and path.count("/") == 1:
         return True
 

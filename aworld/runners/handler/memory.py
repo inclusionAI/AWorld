@@ -23,6 +23,8 @@ from aworld.runners.hook.hook_factory import HookFactory
 
 @HandlerFactory.register(name=f'__{Constants.MEMORY}__')
 class DefaultMemoryHandler(DefaultHandler):
+    _tool_result_write_keys = set()
+
     def __init__(self, runner):
         super().__init__(runner)
         self.runner = runner
@@ -184,7 +186,7 @@ class DefaultMemoryHandler(DefaultHandler):
         """Add LLM response to memory"""
         # Get start time from context (if exists)
         start_time = context.context_info.get("llm_call_start_time")
-        
+
         ai_message = MemoryAIMessage(
             content=llm_response.content,
             tool_calls=llm_response.tool_calls,
@@ -201,13 +203,13 @@ class DefaultMemoryHandler(DefaultHandler):
                 }
             )
         )
-        
+
         # If start time exists in context, update it
         if start_time:
             ai_message.start_time = start_time
         # Record message end time
         ai_message.end_time = None
-        
+
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
             agent_memory_config = context.get_config().get_agent_memory_config(agent.id())
@@ -284,54 +286,89 @@ class DefaultMemoryHandler(DefaultHandler):
     async def _do_add_tool_result_to_memory(self, agent: 'Agent', tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
         memory = MemoryFactory.instance()
+        write_key = (
+            agent.id(),
+            context.get_task().session_id,
+            context.get_task().id,
+            tool_call_id,
+        )
+        if write_key in self._tool_result_write_keys:
+            logger.warning(
+                f"Skip duplicate in-flight tool result memory for agent={agent.id()} "
+                f"session={context.get_task().session_id} task={context.get_task().id} "
+                f"tool_call_id={tool_call_id}"
+            )
+            return
+
+        filters = {
+            "agent_id": agent.id(),
+            "session_id": context.get_task().session_id,
+            "task_id": context.get_task().id,
+            "tool_call_id": tool_call_id,
+            "memory_type": "message",
+        }
+        existing_tool_results = memory.get_all(filters=filters)
+        if existing_tool_results:
+            logger.warning(
+                f"Skip duplicate tool result memory for agent={agent.id()} "
+                f"session={context.get_task().session_id} task={context.get_task().id} "
+                f"tool_call_id={tool_call_id}"
+            )
+            return
+
+        self._tool_result_write_keys.add(write_key)
         tool_result_metadata = tool_result.metadata if isinstance(tool_result, ActionResult) and isinstance(tool_result.metadata, dict) else {}
         tool_use_summary = None
-        if isinstance(tool_result, ActionResult):
-            tool_use_summary = tool_result_metadata.get("tool_use_summary")
+        try:
+            if isinstance(tool_result, ActionResult):
+                tool_use_summary = tool_result_metadata.get("tool_use_summary")
 
-        tool_content = tool_result.content if hasattr(tool_result, 'content') else tool_result
-        ext_info = {"tool_name": tool_result.tool_name, "action_name": tool_result.action_name}
-        compaction = compact_tool_result_for_memory(
-            tool_content,
-            tool_name=tool_result.tool_name,
-            action_name=tool_result.action_name,
-            summary_content=tool_use_summary,
-            enabled=getattr(agent.memory_config, "tool_result_offload", True),
-            tool_action_white_list=getattr(agent.memory_config, "tool_action_white_list", []),
-            token_threshold=getattr(agent.memory_config, "tool_result_length_threshold", 30000),
-            preview_chars=getattr(agent.memory_config, "tool_result_preview_chars", 2000),
-            force=bool(tool_result_metadata.get("offload") is True),
-        )
-        if compaction.applied:
-            tool_content = compaction.content
-            ext_info["tool_result_compaction"] = compaction.metadata
-        
-        # Get start time from context (if exists)
-        start_time = context.context_info.get(f"tool_call_start_time_{tool_call_id}")
-        
-        tool_message = MemoryToolMessage(
-            content=tool_content,
-            tool_call_id=tool_call_id,
-            status="success",
-            metadata=MessageMetadata(
-                session_id=context.get_task().session_id,
-                user_id=context.get_task().user_id,
-                task_id=context.get_task().id,
-                agent_id=agent.id(),
-                agent_name=agent.name(),
+            tool_content = tool_result.content if hasattr(tool_result, 'content') else tool_result
+            ext_info = {"tool_name": tool_result.tool_name, "action_name": tool_result.action_name}
+            compaction = compact_tool_result_for_memory(
+                tool_content,
+                tool_name=tool_result.tool_name,
+                action_name=tool_result.action_name,
                 summary_content=tool_use_summary,
-                ext_info=ext_info
+                enabled=getattr(agent.memory_config, "tool_result_offload", True),
+                tool_action_white_list=getattr(agent.memory_config, "tool_action_white_list", []),
+                token_threshold=getattr(agent.memory_config, "tool_result_length_threshold", 30000),
+                preview_chars=getattr(agent.memory_config, "tool_result_preview_chars", 2000),
+                force=bool(tool_result_metadata.get("offload") is True),
             )
-        )
-        
-        # If start time exists in context, update it
-        if start_time:
-            tool_message.start_time = start_time
-        
-        # Record message end time
-        tool_message.end_time = None
-        
-        await memory.add(tool_message, agent_memory_config=agent.memory_config)
+            if compaction.applied:
+                tool_content = compaction.content
+                ext_info["tool_result_compaction"] = compaction.metadata
+
+            # Get start time from context (if exists)
+            start_time = context.context_info.get(f"tool_call_start_time_{tool_call_id}")
+
+            tool_message = MemoryToolMessage(
+                content=tool_content,
+                tool_call_id=tool_call_id,
+                status="success",
+                metadata=MessageMetadata(
+                    session_id=context.get_task().session_id,
+                    user_id=context.get_task().user_id,
+                    task_id=context.get_task().id,
+                    agent_id=agent.id(),
+                    agent_name=agent.name(),
+                    summary_content=tool_use_summary,
+                    ext_info=ext_info
+                )
+            )
+
+            # If start time exists in context, update it
+            if start_time:
+                tool_message.start_time = start_time
+
+            # Record message end time
+            tool_message.end_time = None
+
+            await memory.add(tool_message, agent_memory_config=agent.memory_config)
+        except Exception:
+            self._tool_result_write_keys.discard(write_key)
+            raise
 
     def _is_amni_context(self, context: Context):
         from aworld.core.context.amni import AmniContext
@@ -340,7 +377,7 @@ class DefaultMemoryHandler(DefaultHandler):
     @staticmethod
     async def handle_memory_message_directly(memory_msg: MemoryEventMessage, context: Context):
         """Handle memory message directly without going through message system
-        
+
         Args:
             memory_msg: Memory event message
             context: Context object
@@ -351,7 +388,7 @@ class DefaultMemoryHandler(DefaultHandler):
                 def __init__(self, task):
                     self.task = task
                     self.start_time = 0
-            
+
             task = context.get_task()
             simple_runner = SimpleRunner(task)
             handler = DefaultMemoryHandler(simple_runner)
