@@ -35,6 +35,8 @@ class TaskProgressHookEvent(BaseHookEvent, total=False):
 class TaskCompletedHookEvent(BaseHookEvent, total=False):
     task_status: str
     final_answer: str
+    usage: dict[str, Any]
+    llm_calls: list[dict[str, Any]]
 
 
 class TaskErrorHookEvent(BaseHookEvent, total=False):
@@ -48,6 +50,14 @@ class TaskInterruptedHookEvent(BaseHookEvent, total=False):
     partial_answer: str
 
 
+class SteeringCheckpointHookEvent(BaseHookEvent, total=False):
+    checkpoint: str
+    current_tool: str | None
+    pending_count: int
+    interrupt_requested: bool
+    partial_answer: str
+
+
 HookEventPayload: TypeAlias = (
     StopHookEvent
     | TaskStartedHookEvent
@@ -55,6 +65,7 @@ HookEventPayload: TypeAlias = (
     | TaskCompletedHookEvent
     | TaskErrorHookEvent
     | TaskInterruptedHookEvent
+    | SteeringCheckpointHookEvent
 )
 
 

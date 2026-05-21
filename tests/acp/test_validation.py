@@ -33,15 +33,20 @@ async def test_run_phase1_validation_cases_matches_required_case_contract() -> N
 
     assert [case["id"] for case in cases] == list(REQUIRED_PHASE1_CASE_IDS)
     assert build_summary(cases)["ok"] is True
-    turn_error_case = next(case for case in cases if case["id"] == "turn_error_terminal")
-    assert turn_error_case["detail"]["result"]["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
+    turn_error_case = next(case for case in cases if case["id"] == "turn_error_pauses_for_steering")
+    assert turn_error_case["detail"]["result"]["result"]["status"] == "completed"
     assert turn_error_case["detail"]["end"]["params"]["update"]["status"] == "failed"
-    assert turn_error_case["detail"]["result"]["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert "Execution paused." in turn_error_case["detail"]["pause"]["params"]["update"]["content"]["text"]
     suppression_case = next(case for case in cases if case["id"] == "turn_error_suppresses_followup_events")
     assert suppression_case["detail"]["reason"] == "timed_out_waiting_for_followup_event"
     continuity_case = next(case for case in cases if case["id"] == "post_turn_error_session_continues")
-    assert continuity_case["detail"]["notification"]["params"]["update"]["content"]["text"] == "self-test"
+    assert "__acp_self_test_text__" in continuity_case["detail"]["notification"]["params"]["update"]["content"]["text"]
     assert continuity_case["detail"]["result"]["result"]["status"] == "completed"
+    cancel_paused_case = next(case for case in cases if case["id"] == "cancel_paused_turn")
+    assert cancel_paused_case["detail"]["cancel_result"]["result"]["status"] == "cancelled"
+    fresh_after_cancel_case = next(case for case in cases if case["id"] == "post_cancel_paused_turn_starts_fresh")
+    assert fresh_after_cancel_case["detail"]["notification"]["params"]["update"]["content"]["text"] == "self-test"
+    assert fresh_after_cancel_case["detail"]["result"]["result"]["status"] == "completed"
 
 
 @pytest.mark.asyncio

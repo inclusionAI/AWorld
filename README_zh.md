@@ -73,63 +73,63 @@ Python 代码导入名保持 **`aworld_gateway`**，因为 Python 的包导入�
   <td>创建应用</td>
   <td>• 由基座模型自动创建<br>• 由 <a href="aworld-skills/app_evaluator/SKILL.md">UI Evaluation Skill</a> 自动评估</td>
   <td style="width:22%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="270"></td>
-  <td><a href="docs/Recipe/miniapp_build_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Mini App Build.md">查看配方</a></td>
 </tr>
 
 <tr>
   <td>深度搜索</td>
   <td>• 由 <a href="./aworld-skills/agent-browser/SKILL.md">Agent Browser Skill</a> 自动搜索</td>
   <td style="width:22%"><img src="readme_assets/aworld_cli_intro_ds.gif" alt="Deep search demo" width="270"></td>
-  <td><a href="docs/Recipe/deep_search_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Deep Search.md">查看配方</a></td>
 </tr>
 <!-- 
 <tr>
   <td>创建视频：自我介绍</td>
   <td>• 由 <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a> 自动创建<br>• 人工评估</td>
   <td style="width:22%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video (self-intro) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">查看配方</a></td>
 </tr> -->
 
 <!-- <tr>
   <td>创建视频：微积分</td>
   <td>• 由 <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a> 自动创建<br>• 完整视频见 <a href="https://youtu.be/98rrFKJBr-w">Youtube </td>
   <td style="width:22%"><img src="readme_assets/edu_equation.gif" alt="Video (calculus) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">查看配方</a></td>
 </tr> -->
 
 <tr>
   <td>一句话做视频：三角恒等式</td>
   <td>• 由 <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a> 自动创建<br>• 完整视频见 <a href="https://www.youtube.com/watch?v=qmPruOMsAKU">Youtube </td>
   <td style="width:22%"><img src="readme_assets/edu_trig.gif" alt="Video (trig) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">查看配方</a></td>
 </tr>
 
 <tr>
   <td>一句话做视频：企业培训</td>
   <td>• 由 <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a> 自动创建<br>• 完整视频见 <a href="https://youtu.be/-QuzXw4MrHQ">Youtube </td>
   <td style="width:22%"><img src="readme_assets/corporate training.gif" alt="Video (corporate training) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">查看配方</a></td>
 </tr>
 
 <tr>
   <td>一句话做视频：品牌营销</td>
   <td>• 由 Video Diffusion 与 <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md">Audios Insert Skill</a> 自动创建<br>• 完整视频见 <a href="https://youtu.be/dIDjABTFppg">Youtube</td>
   <td style="width:22%"><img src="readme_assets/brand_marketing.gif" alt="Video (brand marketing) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">查看配方</a></td>
 </tr>
 
 <tr>
   <td>一句话做视频：社交媒体</td>
   <td>• 由 Video Diffusion 与 <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md">Audios Insert Skill</a> 自动创建<br>• 完整视频见 <a href="https://youtu.be/L6hIwpqLy5w">Youtube</td>
   <td style="width:22%"><img src="readme_assets/social media.gif" alt="Video (social media) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">查看配方</a></td>
 </tr>
 
 <tr>
   <td>一句话做视频：Vtuber</td>
   <td>• 由 Video Diffusion + Audio Generator + <a href="aworld-skills/embedded_video/SKILL.md">Video Embedded Skill</a> 自动创建<br>• 完整视频见 <a href="https://youtu.be/THKfbjYolqs">Youtube</td>
   <td style="width:22%"><img src="readme_assets/vtuber.gif" alt="Video (vtuber) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">查看配方</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">查看配方</a></td>
 </tr>
 
 </tbody>
@@ -164,7 +164,7 @@ aworld-cli --config
 
 配置完成后，只需在终端输入 `aworld-cli`，即可开始你的旅程。
 
-或者，你也可以在`工作目录`中创建 `.env` 文件来配置模型与 API。详见 [环境配置](./README_env_config.md)。
+或者，你也可以在`工作目录`中创建 `.env` 文件来配置模型与 API。核心配置项可参考 [AWorld CLI Configuration](docs/AWorld%20CLI/Configuration.md)。
 
 
 ## 用 AWorld-CLI 自动化创建
@@ -479,7 +479,7 @@ result = info['result']
 
 **性能收益**：编排器工作与子智能体执行可重叠，整体耗时从 `T_orchestrator + T_subagent` 降为 `max(T_orchestrator, T_subagent)`。基准测试显示在典型负载下可实现约 3 倍加速。
 
-**文档**：详见 [docs/features/parallel-subagent-spawning.md](docs/features/parallel-subagent-spawning.md) 与 [docs/design/subagent-architecture.md](docs/design/subagent-architecture.md)
+**文档**：详见 [docs/Agents/Parallel Subagents.md](docs/Agents/Parallel%20Subagents.md)
 
 ---
 

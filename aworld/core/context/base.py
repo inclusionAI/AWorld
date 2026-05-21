@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import copy
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -12,7 +13,7 @@ from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
-from aworld.utils.common import nest_dict_counter
+from aworld.utils.common import nest_dict_counter, nest_dict_diff
 
 if TYPE_CHECKING:
     from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
@@ -69,6 +70,19 @@ class AgentTokenIdTrajectory:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert the AgentTokenIdTrajectory to a dictionary."""
+        return asdict(self)
+
+
+@dataclass
+class StepLifecycleRecord:
+    step_id: str
+    name: str
+    step_num: int
+    alias_name: Optional[str] = None
+    namespace: str = "default"
+    parent_step_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
@@ -300,24 +314,38 @@ class Context:
     def set_state(self, key: str, value: Any):
         self.context_info[key] = value
 
+    def get_llm_calls(self) -> List[Dict[str, Any]]:
+        llm_calls = self.context_info.get("llm_calls")
+        if not isinstance(llm_calls, list):
+            llm_calls = []
+            self.context_info["llm_calls"] = llm_calls
+        return llm_calls
+
+    def append_llm_call(self, llm_call: Dict[str, Any]) -> None:
+        self.get_llm_calls().append(llm_call)
+
     async def build_sub_context(self, sub_task_content: Any, sub_task_id: str = None, **kwargs):
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
         self._deep_copy(new_context)
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
+        new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
         self.add_task_node(sub_task_id, self.task_id, caller_agent_info=self.agent_info, **kwargs)
         return new_context
 
     def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
         self.merge_context(sub_task_context)
 
-    def deep_copy(self) -> 'Context':
+    def deep_copy(self, preserve_merge_baseline: bool = False) -> 'Context':
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
-        return self._deep_copy(new_context)
+        return self._deep_copy(
+            new_context,
+            preserve_merge_baseline=preserve_merge_baseline,
+        )
 
-    def _deep_copy(self, new_context) -> 'Context':
+    def _deep_copy(self, new_context, preserve_merge_baseline: bool = False) -> 'Context':
         """Create a deep copy of this Context instance with all attributes copied.
 
         Returns:
@@ -376,9 +404,19 @@ class Context:
         except Exception:
             new_context._token_usage = copy.copy(self._token_usage)
         try:
-            new_context._merge_token_baseline = copy.deepcopy(new_context._token_usage)
+            baseline_source = (
+                getattr(self, '_merge_token_baseline', new_context._token_usage)
+                if preserve_merge_baseline
+                else new_context._token_usage
+            )
+            new_context._merge_token_baseline = copy.deepcopy(baseline_source)
         except Exception:
-            new_context._merge_token_baseline = copy.copy(new_context._token_usage)
+            baseline_source = (
+                getattr(self, '_merge_token_baseline', new_context._token_usage)
+                if preserve_merge_baseline
+                else new_context._token_usage
+            )
+            new_context._merge_token_baseline = copy.copy(baseline_source)
 
         # Copy other attributes if they exist
         if hasattr(self, '_event_manager'):
@@ -389,6 +427,8 @@ class Context:
                 new_context._agent_token_id_traj = copy.deepcopy(self._agent_token_id_traj)
             except Exception:
                 new_context._agent_token_id_traj = copy.copy(self._agent_token_id_traj)
+
+        new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
 
         return new_context
 
@@ -403,10 +443,21 @@ class Context:
                 if hasattr(other_context.context_info, 'local_dict'):
                     local_state = other_context.context_info.local_dict()
                     if local_state:
+                        child_llm_calls = local_state.pop("llm_calls", None)
                         self.context_info.update(local_state)
+                        if isinstance(child_llm_calls, list):
+                            baseline = max(0, min(getattr(other_context, "_merge_llm_calls_baseline", 0), len(child_llm_calls)))
+                            for llm_call in child_llm_calls[baseline:]:
+                                self.append_llm_call(copy.deepcopy(llm_call))
                 else:
                     # If no local_dict method, directly update all states
-                    self.context_info.update(other_context.context_info)
+                    merged_state = other_context.context_info.to_dict()
+                    child_llm_calls = merged_state.pop("llm_calls", None)
+                    self.context_info.update(merged_state)
+                    if isinstance(child_llm_calls, list):
+                        baseline = max(0, min(getattr(other_context, "_merge_llm_calls_baseline", 0), len(child_llm_calls)))
+                        for llm_call in child_llm_calls[baseline:]:
+                            self.append_llm_call(copy.deepcopy(llm_call))
             except Exception as e:
                 logger.warning(f"Failed to merge context_info: {e}")
 
@@ -435,13 +486,7 @@ class Context:
                 # This supports both:
                 # 1. deep-copied child contexts that inherit parent token totals
                 # 2. freshly created child contexts that start from zero
-                net_tokens = {}
-                for key in child_tokens:
-                    child_value = child_tokens.get(key, 0)
-                    baseline_value = baseline_tokens.get(key, 0)
-                    net_value = child_value - baseline_value
-                    if net_value > 0:  # Only merge net increment
-                        net_tokens[key] = net_value
+                net_tokens = nest_dict_diff(child_tokens, baseline_tokens)
 
                 # Add net increment to parent context
                 if net_tokens:
@@ -553,6 +598,138 @@ class Context:
         if not agent_id or not agent_info.get(agent_id, {}).get(task_id):
             return 0
         return agent_info[agent_id][task_id].get('step', 0)
+
+    def open_step(
+        self,
+        *,
+        name: str,
+        step_num: int,
+        alias_name: str | None = None,
+        namespace: str | None = None,
+        parent_step_id: str | None = None,
+        step_id: str | None = None,
+    ) -> Dict[str, Any]:
+        resolved_namespace = self._resolve_step_namespace(namespace)
+        active_steps = self._get_active_steps_map()
+        stack = active_steps.setdefault(resolved_namespace, [])
+        if parent_step_id is None and stack:
+            parent_step_id = stack[-1].step_id
+        if parent_step_id is None:
+            parent_step_id = self._current_step_lineage_id() or self._get_inherited_step_id()
+        record = StepLifecycleRecord(
+            step_id=step_id or uuid.uuid4().hex,
+            name=name,
+            step_num=step_num,
+            alias_name=alias_name,
+            namespace=resolved_namespace,
+            parent_step_id=parent_step_id,
+        )
+        stack.append(record)
+        self.context_info["active_steps"] = active_steps
+        self._push_step_lineage(record)
+        return record.to_dict()
+
+    def close_step(
+        self,
+        *,
+        namespace: str | None = None,
+        step_id: str | None = None,
+        expected_name: str | None = None,
+        expected_step_num: int | None = None,
+    ) -> Dict[str, Any] | None:
+        resolved_namespace = self._resolve_step_namespace(namespace)
+        active_steps = self._get_active_steps_map()
+        stack = active_steps.get(resolved_namespace)
+        if not stack:
+            return None
+
+        if step_id is not None:
+            for index in range(len(stack) - 1, -1, -1):
+                record = stack[index]
+                if record.step_id == step_id:
+                    stack.pop(index)
+                    self.context_info["active_steps"] = active_steps
+                    self._remove_step_lineage(record.step_id)
+                    return record.to_dict()
+            return None
+
+        for index in range(len(stack) - 1, -1, -1):
+            record = stack[index]
+            if expected_name is not None and record.name != expected_name:
+                continue
+            if expected_step_num is not None and record.step_num != expected_step_num:
+                continue
+            stack.pop(index)
+            self.context_info["active_steps"] = active_steps
+            self._remove_step_lineage(record.step_id)
+            return record.to_dict()
+
+        return None
+
+    def current_step_id(self, namespace: str | None = None) -> str | None:
+        resolved_namespace = self._resolve_step_namespace(namespace)
+        active_steps = self._get_active_steps_map()
+        stack = active_steps.get(resolved_namespace) or []
+        if not stack:
+            if namespace is not None:
+                return None
+            return self._current_step_lineage_id() or self._get_inherited_step_id()
+        return stack[-1].step_id
+
+    def inherit_step_parent(self, parent_step_id: str | None) -> None:
+        if isinstance(parent_step_id, str) and parent_step_id:
+            self.context_info["inherited_step_id"] = parent_step_id
+        else:
+            self.context_info.pop("inherited_step_id", None)
+
+    def _resolve_step_namespace(self, namespace: str | None = None) -> str:
+        if namespace:
+            return namespace
+        current_agent_id = getattr(self.agent_info, "current_agent_id", None) if self.agent_info else None
+        if isinstance(current_agent_id, str) and current_agent_id:
+            return current_agent_id
+        return "default"
+
+    def _get_active_steps_map(self) -> Dict[str, List[StepLifecycleRecord]]:
+        active_steps = self.context_info.get("active_steps", {})
+        if not isinstance(active_steps, dict):
+            return {}
+        return active_steps
+
+    def _get_step_lineage(self) -> List[Dict[str, str]]:
+        lineage = self.context_info.get("step_lineage", [])
+        if not isinstance(lineage, list):
+            return []
+        return lineage
+
+    def _push_step_lineage(self, record: StepLifecycleRecord) -> None:
+        lineage = self._get_step_lineage()
+        lineage.append({"step_id": record.step_id, "namespace": record.namespace})
+        self.context_info["step_lineage"] = lineage
+
+    def _remove_step_lineage(self, step_id: str) -> None:
+        lineage = self._get_step_lineage()
+        for index in range(len(lineage) - 1, -1, -1):
+            item = lineage[index]
+            if isinstance(item, dict) and item.get("step_id") == step_id:
+                lineage.pop(index)
+                break
+        self.context_info["step_lineage"] = lineage
+
+    def _current_step_lineage_id(self) -> str | None:
+        lineage = self._get_step_lineage()
+        for item in reversed(lineage):
+            if isinstance(item, dict):
+                step_id = item.get("step_id")
+                if isinstance(step_id, str) and step_id:
+                    return step_id
+        return None
+
+    def _get_inherited_step_id(self) -> str | None:
+        inherited_step_id = self.context_info.get("inherited_step_id")
+        if isinstance(inherited_step_id, str) and inherited_step_id:
+            return inherited_step_id
+        return None
 
     """
     Agent Skills Support

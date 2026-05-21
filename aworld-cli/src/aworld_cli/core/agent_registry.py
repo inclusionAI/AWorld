@@ -144,7 +144,13 @@ class LocalAgent(BaseModel):
         ... )
     """
 
-    async def get_swarm(self, context: Context = None) -> Swarm:
+    _swarm_factory: Optional[Union[Callable[..., Swarm], Callable[..., Awaitable[Swarm]]]] = PrivateAttr(default=None)
+
+    def model_post_init(self, __context) -> None:
+        if callable(self.swarm):
+            self._swarm_factory = self.swarm
+
+    async def get_swarm(self, context: Context = None, refresh: bool = False) -> Swarm:
         """Get the Swarm instance, initializing if necessary.
         
         Supports multiple swarm initialization patterns:
@@ -158,7 +164,7 @@ class LocalAgent(BaseModel):
         - If context is None and function requires it, it will still be passed (may cause error)
         
         The created Swarm instance is cached in self.swarm after first initialization,
-        so subsequent calls will return the cached instance directly.
+        so subsequent calls will return the cached instance directly unless refresh=True.
         
         Returns:
             The Swarm instance for this agent.
@@ -167,18 +173,21 @@ class LocalAgent(BaseModel):
             >>> agent = LocalAgent(swarm=lambda: Swarm(agent1, agent2))
             >>> swarm = await agent.get_swarm()  # Swarm is created here and cached
             >>> swarm2 = await agent.get_swarm()  # Returns cached swarm
+            >>> swarm3 = await agent.get_swarm(refresh=True)  # Rebuilds the swarm
             
             >>> async def build_swarm(ctx: Context) -> Swarm:
             ...     return Swarm(agent1, agent2)
             >>> agent = LocalAgent(swarm=build_swarm)
             >>> swarm = await agent.get_swarm(context)  # Created and cached
         """
-        if isinstance(self.swarm, Swarm):
+        if isinstance(self.swarm, Swarm) and not refresh:
             logger.info(f"Using existing swarm for agent {self.name}")
             return self.swarm
-        if callable(self.swarm):
-            logger.info(f"Initializing swarm for agent {self.name}")
-            swarm_func = self.swarm
+        swarm_func = self._swarm_factory if callable(self._swarm_factory) else self.swarm
+        if callable(swarm_func):
+            logger.info(
+                f"{'Refreshing' if refresh else 'Initializing'} swarm for agent {self.name}"
+            )
             swarm_instance = None
             
             if inspect.iscoroutinefunction(swarm_func):
@@ -242,10 +251,12 @@ class LocalAgent(BaseModel):
             
             # Cache the created swarm instance
             if swarm_instance is not None:
+                if self._swarm_factory is None and callable(swarm_func):
+                    self._swarm_factory = swarm_func
                 self.swarm = swarm_instance
                 logger.info(f"Cached swarm instance for agent {self.name}")
                 return swarm_instance
-        
+
         return self.swarm
 
     model_config = {"arbitrary_types_allowed": True}
@@ -784,4 +795,3 @@ def agent(
 
 
 __all__ = ["LocalAgent", "LocalAgentRegistry", "agent"]
-

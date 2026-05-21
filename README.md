@@ -67,63 +67,63 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
   <td>Create App</td>
   <td>• Auto-creation by base model<br>• Auto-evaluation by <a href="aworld-skills/app_evaluator/SKILL.md">UI Evaluation Skill</a></td>
   <td style="width:22%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="270"></td>
-  <td><a href="docs/Recipe/miniapp_build_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Mini App Build.md">View Recipe</a></td>
 </tr>
 
 <tr>
   <td>Deep Search</td>
   <td>• Auto-search by <a href="./aworld-skills/agent-browser/SKILL.md">Agent Browser Skill</a> </td>
   <td style="width:22%"><img src="readme_assets/aworld_cli_intro_ds.gif" alt="Deep search demo" width="270"></td>
-  <td><a href="docs/Recipe/deep_search_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Deep Search.md">View Recipe</a></td>
 </tr>
 <!-- 
 <tr>
   <td>Create Video: Self-Intro</td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation</td>
   <td style="width:22%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video (self-intro) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">View Recipe</a></td>
 </tr> -->
 
 <!-- <tr>
   <td>Create Video: Calculus</td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://youtu.be/98rrFKJBr-w">Youtube </td>
   <td style="width:22%"><img src="readme_assets/edu_equation.gif" alt="Video (calculus) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">View Recipe</a></td>
 </tr> -->
 
 <tr>
   <td>One-Prompt Video: Trig-Identity</td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://www.youtube.com/watch?v=qmPruOMsAKU">Youtube </td>
   <td style="width:22%"><img src="readme_assets/edu_trig.gif" alt="Video (trig) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">View Recipe</a></td>
 </tr>
 
 <tr>
   <td>One-Prompt Video: Corporate Training </td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://youtu.be/-QuzXw4MrHQ">Youtube </td>
   <td style="width:22%"><img src="readme_assets/corporate_training_en.gif" alt="Video (corporate training) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">View Recipe</a></td>
 </tr>
 
 <tr>
   <td>One-Prompt Video: Brand Marketing</td>
   <td>• Auto-creation by Video Diffusion & <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md"> Audios Insert Skill</a> <br>• See full video on  <a href="https://youtu.be/dIDjABTFppg">Youtube</td>
   <td style="width:22%"><img src="readme_assets/brand_marketing.gif" alt="Video (brand marketing) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">View Recipe</a></td>
 </tr>
 
 <tr>
   <td>One-Prompt Video: Social Media</td>
   <td>• Auto-creation by Video Diffusion & <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md"> Audios Insert Skill</a> <br>• See full video on  <a href="https://youtu.be/L6hIwpqLy5w">Youtube</td>
   <td style="width:22%"><img src="readme_assets/social media.gif" alt="Video (social media) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">View Recipe</a></td>
 </tr>
 
 <tr>
   <td>One-Prompt Video: Vtuber</td>
   <td>• Auto-creation by Video Diffusion & Audio Generator & <a href="aworld-skills/embedded_video/SKILL.md"> Video Embedded Skill</a> <br>• See full video on  <a href="https://youtu.be/THKfbjYolqs">Youtube</td>
   <td style="width:22%"><img src="readme_assets/vtuber.gif" alt="Video (vtuber) demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+  <td><a href="docs/AWorld CLI/Recipes/Video Creation.md">View Recipe</a></td>
 </tr>
 
 </tbody>
@@ -158,7 +158,7 @@ aworld-cli --config
 
 Once configured, simply type aworld-cli in your terminal to start your journey.
 
-Alternatively, you can configure by creating a `.env` file in your `working directory` with your model and API settings. See [Environment configuration](./README_env_config.md) for details.
+Alternatively, you can configure by creating a `.env` file in your `working directory` with your model and API settings. See [AWorld CLI Configuration](docs/AWorld%20CLI/Configuration.md) for the core variables.
 
 
 ## Automate Creation with AWorld-CLI
@@ -477,7 +477,7 @@ result = info['result']
 
 **Performance Benefit**: Orchestrator work and subagent execution overlap, achieving `max(T_orchestrator, T_subagent)` instead of `T_orchestrator + T_subagent`. Benchmark shows 3x faster execution for typical workloads.
 
-**Documentation**: See [docs/features/parallel-subagent-spawning.md](docs/features/parallel-subagent-spawning.md) and [docs/design/subagent-architecture.md](docs/design/subagent-architecture.md)
+**Documentation**: See [docs/Agents/Parallel Subagents.md](docs/Agents/Parallel%20Subagents.md)
 
 ---
 
@@ -491,7 +491,7 @@ Repository behavior changes are now managed through OpenSpec:
 
 - Stable capability contracts live in `openspec/specs/`
 - Proposed or in-flight changes live in `openspec/changes/`
-- Historical `docs/superpowers/` files remain for reference only and are no longer the active change-management workflow
+- Historical superpowers notes now live under `aworld-cli/internal/docs/superpowers/` and are no longer the active change-management workflow
 
 For academic citations or wish to contact us, please use the following BibTeX entry:
 </p>

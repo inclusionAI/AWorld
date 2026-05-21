@@ -133,7 +133,7 @@ hooks:
       command: "{before_llm_call_script}"
       shell: "/bin/bash"
       enabled: true
-      timeout: 2000
+      timeout: 5000
 
   after_llm_call:
     - name: "after-llm-call-logger"
@@ -141,7 +141,7 @@ hooks:
       command: "{after_llm_call_script}"
       shell: "/bin/bash"
       enabled: true
-      timeout: 2000
+      timeout: 5000
 ''')
         return yaml_path
 
@@ -171,6 +171,11 @@ hooks:
             # 调用 LLM
             messages = [{"role": "user", "content": "Hello"}]
             response = await llm_model.acompletion(messages, context=context)
+
+            llm_calls = context.context_info.get("llm_calls")
+            assert isinstance(llm_calls, list)
+            assert len(llm_calls) == 1
+            assert llm_calls[0]["request"]["messages"] == messages
 
             # 等待日志文件包含 before_llm_call 事件
             log_file = os.path.join(hook_config_dir, '.aworld', 'llm_events.log')
@@ -223,6 +228,11 @@ hooks:
             # 调用 LLM
             messages = [{"role": "user", "content": "Hello"}]
             response = await llm_model.acompletion(messages, context=context)
+
+            llm_calls = context.context_info.get("llm_calls")
+            assert isinstance(llm_calls, list)
+            assert len(llm_calls) == 1
+            assert llm_calls[0]["request"]["messages"] == messages
 
             # 等待日志文件包含 after_llm_call 事件
             log_file = os.path.join(hook_config_dir, '.aworld', 'llm_events.log')

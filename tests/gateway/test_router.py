@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,7 @@ from aworld_gateway import router as router_module
 from aworld_gateway.router import GatewayRouter, LocalCliAgentBackend
 from aworld_gateway.session_binding import SessionBinding
 from aworld_gateway.types import InboundEnvelope
+from aworld.core.task import TaskResponse
 from aworld.output.base import ToolResultOutput
 
 
@@ -28,6 +30,7 @@ class FakeAgentBackend:
         session_id: str,
         text: str,
         on_output=None,
+        allowed_tools=None,
     ) -> str:
         call = {
             "agent_id": agent_id,
@@ -36,8 +39,42 @@ class FakeAgentBackend:
         }
         if on_output is not None:
             call["on_output"] = on_output
+        if allowed_tools is not None:
+            call["allowed_tools"] = allowed_tools
         self.calls.append(call)
         return "backend reply"
+
+
+class FakeCommandBridge:
+    def __init__(self, *, handled: bool = True, text: str = "bridge reply") -> None:
+        self.handled = handled
+        self.text = text
+        self.calls: list[dict[str, object]] = []
+
+    async def execute(
+        self,
+        *,
+        text: str,
+        cwd: str,
+        session_id: str,
+        runtime=None,
+        prompt_executor=None,
+        on_output=None,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "cwd": cwd,
+                "session_id": session_id,
+                "runtime": runtime,
+            }
+        )
+        return SimpleNamespace(
+            handled=self.handled,
+            command_name="memory",
+            status="completed" if self.handled else "unknown",
+            text=self.text,
+        )
 
 
 def test_handle_inbound_resolves_agent_builds_session_and_routes_execution():
@@ -78,6 +115,44 @@ def test_handle_inbound_resolves_agent_builds_session_and_routes_execution():
     assert outbound.conversation_id == "conv-1"
     assert outbound.reply_to_message_id == "msg-9"
     assert outbound.text == "backend reply"
+
+
+def test_handle_inbound_uses_session_binding_conversation_override_from_metadata():
+    backend = FakeAgentBackend()
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
+    inbound = InboundEnvelope(
+        channel="wechat",
+        account_id="acct-override",
+        conversation_id="conv-visible",
+        conversation_type="dm",
+        sender_id="sender-override",
+        sender_name="Sender",
+        message_id="msg-override",
+        text="hello after reset",
+        metadata={"session_binding_conversation_id": "conv-reset-2"},
+    )
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert backend.calls == [
+        {
+            "agent_id": "channel-agent",
+            "session_id": "gw:channel-agent:wechat:acct-override:dm:conv-reset-2",
+            "text": "hello after reset",
+        }
+    ]
+    assert outbound.conversation_id == "conv-visible"
+    assert outbound.reply_to_message_id == "msg-override"
+    assert outbound.metadata == {}
 
 
 def test_handle_inbound_prefers_explicit_agent_id_over_other_sources():
@@ -149,6 +224,80 @@ def test_handle_inbound_forwards_on_output_callback_to_backend():
             "on_output": on_output,
         }
     ]
+
+
+def test_handle_inbound_executes_slash_command_before_backend():
+    backend = FakeAgentBackend()
+    command_bridge = FakeCommandBridge(text="Memory instruction status")
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+        command_bridge=command_bridge,
+    )
+    inbound = InboundEnvelope(
+        channel="wecom",
+        account_id="acct-4",
+        conversation_id="conv-4",
+        conversation_type="dm",
+        sender_id="acct-4",
+        sender_name=None,
+        message_id="msg-4",
+        text="/memory status",
+    )
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert backend.calls == []
+    assert command_bridge.calls == [
+        {
+            "text": "/memory status",
+            "cwd": str(Path.cwd()),
+            "session_id": "gw:channel-agent:wecom:acct-4:dm:conv-4",
+            "runtime": None,
+        }
+    ]
+    assert outbound.text == "Memory instruction status"
+    assert outbound.reply_to_message_id == "msg-4"
+
+
+def test_handle_inbound_executes_prompt_command_via_backend():
+    backend = FakeAgentBackend()
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
+    inbound = InboundEnvelope(
+        channel="wecom",
+        account_id="acct-5",
+        conversation_id="conv-5",
+        conversation_type="dm",
+        sender_id="acct-5",
+        sender_name=None,
+        message_id="msg-5",
+        text="/diff main",
+    )
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert len(backend.calls) == 1
+    assert backend.calls[0]["agent_id"] == "channel-agent"
+    assert backend.calls[0]["session_id"] == "gw:channel-agent:wecom:acct-5:dm:conv-5"
+    assert "Diff Summary Task" in backend.calls[0]["text"]
+    assert "main" in backend.calls[0]["text"]
+    assert "git_diff" in backend.calls[0]["allowed_tools"]
+    assert outbound.text == "backend reply"
 
 
 def test_handle_inbound_logs_routing_flow(caplog: pytest.LogCaptureFixture):
@@ -309,6 +458,116 @@ def test_local_cli_backend_cleans_up_executor_when_chat_raises():
     assert _FailingExecutor.instances[0].cleanup_called is True
 
 
+def test_local_cli_backend_queues_same_session_input_as_steering():
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class QueuedSteeringExecutor(_SuccessExecutor):
+        instances = []
+
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.chat_calls: list[str] = []
+
+        async def chat(self, text: str) -> str:
+            self.chat_calls.append(text)
+            if text == "alpha":
+                first_started.set()
+                await release_first.wait()
+            return f"ok:{text}"
+
+    backend = LocalCliAgentBackend(
+        registry_cls=_SimpleRegistry,
+        executor_cls=QueuedSteeringExecutor,
+    )
+
+    async def run_scenario() -> tuple[str, str]:
+        first_task = asyncio.create_task(
+            backend.run(agent_id="aworld", session_id="s-steer", text="alpha")
+        )
+        await first_started.wait()
+        steering_ack = await backend.run(
+            agent_id="aworld",
+            session_id="s-steer",
+            text="beta",
+        )
+        release_first.set()
+        return await first_task, steering_ack
+
+    first_result, steering_ack = asyncio.run(run_scenario())
+
+    assert steering_ack == router_module.STEERING_CAPTURED_ACK
+    assert len(QueuedSteeringExecutor.instances) == 1
+    assert QueuedSteeringExecutor.instances[0].chat_calls[0] == "alpha"
+    assert "Continue the current task with this additional operator steering:" in (
+        QueuedSteeringExecutor.instances[0].chat_calls[1]
+    )
+    assert "beta" in QueuedSteeringExecutor.instances[0].chat_calls[1]
+    assert "beta" in first_result
+    assert QueuedSteeringExecutor.instances[0].cleanup_called is True
+
+
+def test_local_cli_backend_reapplies_previous_steering_when_newer_follow_up_arrives():
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+    release_first = asyncio.Event()
+    release_second = asyncio.Event()
+
+    class ReSteeringExecutor(_SuccessExecutor):
+        instances = []
+
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.chat_calls: list[str] = []
+
+        async def chat(self, text: str) -> str:
+            self.chat_calls.append(text)
+            if text == "alpha":
+                first_started.set()
+                await release_first.wait()
+            elif "1. beta" in text and "2. gamma" not in text:
+                second_started.set()
+                await release_second.wait()
+            return f"ok:{text}"
+
+    backend = LocalCliAgentBackend(
+        registry_cls=_SimpleRegistry,
+        executor_cls=ReSteeringExecutor,
+    )
+
+    async def run_scenario() -> tuple[str, str, str]:
+        first_task = asyncio.create_task(
+            backend.run(agent_id="aworld", session_id="s-steer", text="alpha")
+        )
+        await first_started.wait()
+        first_ack = await backend.run(
+            agent_id="aworld",
+            session_id="s-steer",
+            text="beta",
+        )
+        release_first.set()
+        await second_started.wait()
+        second_ack = await backend.run(
+            agent_id="aworld",
+            session_id="s-steer",
+            text="gamma",
+        )
+        release_second.set()
+        return await first_task, first_ack, second_ack
+
+    first_result, first_ack, second_ack = asyncio.run(run_scenario())
+
+    assert first_ack == router_module.STEERING_CAPTURED_ACK
+    assert second_ack == router_module.STEERING_CAPTURED_ACK
+    assert len(ReSteeringExecutor.instances) == 1
+    assert ReSteeringExecutor.instances[0].chat_calls[0] == "alpha"
+    assert "1. beta" in ReSteeringExecutor.instances[0].chat_calls[1]
+    assert "1. beta" in ReSteeringExecutor.instances[0].chat_calls[2]
+    assert "2. gamma" in ReSteeringExecutor.instances[0].chat_calls[2]
+    assert "gamma" in first_result
+    assert ReSteeringExecutor.instances[0].cleanup_called is True
+
+
 def test_local_cli_backend_on_output_streams_visible_text_and_cleans_up(monkeypatch):
     class FakeChunkOutput:
         def __init__(self, content: str) -> None:
@@ -375,6 +634,85 @@ def test_local_cli_backend_on_output_streams_visible_text_and_cleans_up(monkeypa
     assert seen_output_types == ["chunk", "chunk", "tool_call_result", "message", "step"]
     assert len(_StreamingExecutor.instances) == 1
     assert _StreamingExecutor.instances[0].build_calls == [("hi", "stream-session")]
+    assert _StreamingExecutor.instances[0].cleanup_called is True
+
+
+def test_local_cli_backend_on_output_prefers_final_task_answer_over_accumulated_progress(
+    monkeypatch,
+):
+    class FakeChunkOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "chunk"
+
+    class FakeMessageOutput:
+        def __init__(self, response: str) -> None:
+            self.response = response
+
+        def output_type(self) -> str:
+            return "message"
+
+    class FakeStreamingOutputs:
+        def __init__(self) -> None:
+            self._task_response = TaskResponse(
+                success=True,
+                answer="最终抓取完成。",
+                msg="ok",
+            )
+
+        async def stream_events(self):
+            yield FakeChunkOutput("先打开 X。")
+            yield FakeMessageOutput("先打开 X。")
+            yield ToolResultOutput(tool_name="bash", action_name="bash", data="opened")
+            yield FakeChunkOutput("确认已登录。")
+            yield FakeMessageOutput("确认已登录。")
+            yield FakeChunkOutput("最终抓取完成。")
+            yield FakeMessageOutput("最终抓取完成。")
+
+        def response(self):
+            return self._task_response
+
+    seen_output_types = []
+
+    async def on_output(output) -> None:
+        output_type_getter = getattr(output, "output_type", None)
+        seen_output_types.append(
+            output_type_getter() if callable(output_type_getter) else type(output).__name__
+        )
+
+    _StreamingExecutor.instances = []
+    monkeypatch.setattr(
+        router_module.Runners,
+        "streamed_run_task",
+        lambda *, task: FakeStreamingOutputs(),
+    )
+    backend = LocalCliAgentBackend(
+        registry_cls=_SimpleRegistry,
+        executor_cls=_StreamingExecutor,
+    )
+
+    result = asyncio.run(
+        backend.run(
+            agent_id="aworld",
+            session_id="stream-session",
+            text="hi",
+            on_output=on_output,
+        )
+    )
+
+    assert result == "最终抓取完成。"
+    assert seen_output_types == [
+        "chunk",
+        "message",
+        "tool_call_result",
+        "chunk",
+        "message",
+        "chunk",
+        "message",
+    ]
+    assert len(_StreamingExecutor.instances) == 1
     assert _StreamingExecutor.instances[0].cleanup_called is True
 
 

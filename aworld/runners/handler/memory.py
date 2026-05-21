@@ -12,6 +12,7 @@ from aworld.core.context.base import Context
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryToolMessage, MessageMetadata, MemoryHumanMessage, MemorySystemMessage, \
     MemoryAIMessage
+from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.core.common import TaskItem, ActionResult
@@ -283,15 +284,33 @@ class DefaultMemoryHandler(DefaultHandler):
     async def _do_add_tool_result_to_memory(self, agent: 'Agent', tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
         memory = MemoryFactory.instance()
+        tool_result_metadata = tool_result.metadata if isinstance(tool_result, ActionResult) and isinstance(tool_result.metadata, dict) else {}
         tool_use_summary = None
         if isinstance(tool_result, ActionResult):
-            tool_use_summary = tool_result.metadata.get("tool_use_summary")
+            tool_use_summary = tool_result_metadata.get("tool_use_summary")
+
+        tool_content = tool_result.content if hasattr(tool_result, 'content') else tool_result
+        ext_info = {"tool_name": tool_result.tool_name, "action_name": tool_result.action_name}
+        compaction = compact_tool_result_for_memory(
+            tool_content,
+            tool_name=tool_result.tool_name,
+            action_name=tool_result.action_name,
+            summary_content=tool_use_summary,
+            enabled=getattr(agent.memory_config, "tool_result_offload", True),
+            tool_action_white_list=getattr(agent.memory_config, "tool_action_white_list", []),
+            token_threshold=getattr(agent.memory_config, "tool_result_length_threshold", 30000),
+            preview_chars=getattr(agent.memory_config, "tool_result_preview_chars", 2000),
+            force=bool(tool_result_metadata.get("offload") is True),
+        )
+        if compaction.applied:
+            tool_content = compaction.content
+            ext_info["tool_result_compaction"] = compaction.metadata
         
         # Get start time from context (if exists)
         start_time = context.context_info.get(f"tool_call_start_time_{tool_call_id}")
         
         tool_message = MemoryToolMessage(
-            content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
+            content=tool_content,
             tool_call_id=tool_call_id,
             status="success",
             metadata=MessageMetadata(
@@ -301,7 +320,7 @@ class DefaultMemoryHandler(DefaultHandler):
                 agent_id=agent.id(),
                 agent_name=agent.name(),
                 summary_content=tool_use_summary,
-                ext_info={"tool_name": tool_result.tool_name, "action_name": tool_result.action_name}
+                ext_info=ext_info
             )
         )
         

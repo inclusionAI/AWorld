@@ -44,6 +44,11 @@ class CronExecutor:
         """Return the CLI-selected default agent name for newly created cron jobs."""
         return self.default_agent_name
 
+    @staticmethod
+    def _should_cache_swarm(agent_name: Optional[str]) -> bool:
+        """Dynamic root agents like Aworld must rebuild per run to refresh prompt state."""
+        return (agent_name or "").strip() != "Aworld"
+
     def _resolve_effective_tool_names(self, job: CronJob) -> list[str]:
         """Resolve the effective tool allowlist for execution."""
         return resolve_effective_tool_names(job.payload.agent_name, job.payload.tool_names)
@@ -371,7 +376,7 @@ class CronExecutor:
         Returns:
             Swarm instance or None
         """
-        if agent_name in self._agent_cache:
+        if self._should_cache_swarm(agent_name) and agent_name in self._agent_cache:
             return self._agent_cache.get(agent_name)
 
         if not self.swarm_resolver:
@@ -387,13 +392,15 @@ class CronExecutor:
                 logger.error(f"Agent not found via configured swarm resolver: {agent_name}")
                 return None
 
-            # Cache the entire swarm (preserves TeamSwarm/sub-agents)
-            self._agent_cache[agent_name] = swarm
-            logger.debug(f"Cached swarm from configured resolver: {agent_name}")
+            if self._should_cache_swarm(agent_name):
+                # Cache the entire swarm (preserves TeamSwarm/sub-agents)
+                self._agent_cache[agent_name] = swarm
+                logger.debug(f"Cached swarm from configured resolver: {agent_name}")
+                return self._agent_cache.get(agent_name)
         except Exception as e:
             logger.error(
                 f"Failed to resolve swarm for {agent_name}\n{traceback.format_exc()}"
             )
             return None
 
-        return self._agent_cache.get(agent_name)
+        return swarm

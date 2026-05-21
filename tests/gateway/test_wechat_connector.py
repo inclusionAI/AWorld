@@ -5,6 +5,7 @@ import base64
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,11 +16,68 @@ from aworld_gateway.types import OutboundEnvelope
 
 
 class _FakeRouter:
-    def __init__(self) -> None:
+    def __init__(self, *, response_text: str | None = None) -> None:
         self.calls: list[tuple[object, str | None, object | None]] = []
+        self.response_text = response_text
 
     async def handle_inbound(self, inbound, *, channel_default_agent_id, on_output=None):
         self.calls.append((inbound, channel_default_agent_id, on_output))
+        return OutboundEnvelope(
+            channel="wechat",
+            account_id=inbound.account_id,
+            conversation_id=inbound.conversation_id,
+            reply_to_message_id=inbound.message_id,
+            text=self.response_text if self.response_text is not None else f"echo:{inbound.text}",
+        )
+
+
+class _FakeCommandBridge:
+    def __init__(self, *, handled: bool = True, text: str = "bridge:ok") -> None:
+        self.handled = handled
+        self.text = text
+        self.calls: list[dict[str, object]] = []
+
+    async def execute(
+        self,
+        *,
+        text: str,
+        cwd: str,
+        session_id: str,
+        runtime=None,
+        prompt_executor=None,
+        on_output=None,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "cwd": cwd,
+                "session_id": session_id,
+                "runtime": runtime,
+            }
+        )
+        return SimpleNamespace(
+            handled=self.handled,
+            command_name="memory",
+            status="completed" if self.handled else "unknown",
+            text=self.text,
+        )
+
+
+class _BlockingWechatRouter:
+    def __init__(self) -> None:
+        self.started_texts: list[str] = []
+        self.first_started = asyncio.Event()
+        self.second_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def handle_inbound(self, inbound, *, channel_default_agent_id, on_output=None):
+        del channel_default_agent_id, on_output
+        self.started_texts.append(inbound.text)
+        if len(self.started_texts) == 1:
+            self.first_started.set()
+            await self.release_first.wait()
+        elif len(self.started_texts) == 2:
+            self.second_started.set()
         return OutboundEnvelope(
             channel="wechat",
             account_id=inbound.account_id,
@@ -72,6 +130,375 @@ async def test_connector_process_message_caches_context_token_and_routes_text(
     assert connector._token_store.get("wx-account", "user-1") == "ctx-1"
     assert sent == [("user-1", "echo:ping", {})]
     await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_routes_slash_command_through_router(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter(response_text="Memory instruction status")
+    bridge = _FakeCommandBridge(text="Memory instruction status")
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        command_bridge=bridge,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-cmd-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "/memory status"}}],
+        }
+    )
+
+    assert len(router.calls) == 1
+    inbound, channel_default_agent_id, on_output = router.calls[0]
+    assert inbound.text == "/memory status"
+    assert inbound.conversation_id == "user-1"
+    assert channel_default_agent_id == "aworld"
+    assert callable(on_output)
+    assert bridge.calls == []
+    assert sent == [("user-1", "Memory instruction status", {})]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_reset_command_rotates_session_and_sends_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    connector._token_store.set("wx-account", "user-1", "ctx-old")
+
+    await connector._process_message(
+        {
+            "message_id": "m-new-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-new",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+    )
+    first_session_binding = connector._session_binding_conversation_ids["dm:user-1"]
+
+    await connector._process_message(
+        {
+            "message_id": "m-new-2",
+            "from_user_id": "user-1",
+            "context_token": "ctx-newer",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+    )
+    second_session_binding = connector._session_binding_conversation_ids["dm:user-1"]
+
+    await connector._process_message(
+        {
+            "message_id": "m-after-new",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "hello again"}}],
+        }
+    )
+
+    inbound, channel_default_agent_id, on_output = router.calls[0]
+    assert sent == [
+        ("user-1", "✨ 已开启新会话，之前的上下文已清空。", None),
+        ("user-1", "✨ 已开启新会话，之前的上下文已清空。", None),
+        ("user-1", "echo:hello again", {}),
+    ]
+    assert first_session_binding != second_session_binding
+    assert connector._token_store.get("wx-account", "user-1") is None
+    assert len(router.calls) == 1
+    assert inbound.text == "hello again"
+    assert inbound.metadata["session_binding_conversation_id"] == second_session_binding
+    assert channel_default_agent_id == "aworld"
+    assert callable(on_output)
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_does_not_serialize_dm_messages_when_auto_steer_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _BlockingWechatRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "first"}}],
+        }
+    )
+    connector._schedule_message(
+        {
+            "message_id": "m-2",
+            "from_user_id": "user-1",
+            "context_token": "ctx-2",
+            "item_list": [{"type": 1, "text_item": {"text": "second"}}],
+        }
+    )
+
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+    await asyncio.wait_for(router.second_started.wait(), timeout=1.0)
+
+    router.release_first.set()
+    await connector.stop()
+
+    assert router.started_texts == ["first", "second"]
+    assert len(sent) == 2
+    assert all(chat_id == "user-1" and metadata == {} for chat_id, _text, metadata in sent)
+    assert sorted(text for _chat_id, text, _metadata in sent) == ["echo:first", "echo:second"]
+
+
+@pytest.mark.asyncio
+async def test_connector_serializes_dm_messages_when_auto_steer_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _BlockingWechatRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=False)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(config=cfg, router=router, storage_root=tmp_path)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "first"}}],
+        }
+    )
+    connector._schedule_message(
+        {
+            "message_id": "m-2",
+            "from_user_id": "user-1",
+            "context_token": "ctx-2",
+            "item_list": [{"type": 1, "text_item": {"text": "second"}}],
+        }
+    )
+
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+    assert router.second_started.is_set() is False
+
+    router.release_first.set()
+    await asyncio.wait_for(router.second_started.wait(), timeout=1.0)
+    await connector.stop()
+
+    assert sent == [
+        ("user-1", "echo:first", {}),
+        ("user-1", "echo:second", {}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connector_keeps_group_messages_serialized_when_auto_steer_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _BlockingWechatRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(config=cfg, router=router, storage_root=tmp_path)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "roomid": "group-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "first"}}],
+        }
+    )
+    connector._schedule_message(
+        {
+            "message_id": "m-2",
+            "from_user_id": "user-1",
+            "roomid": "group-1",
+            "context_token": "ctx-2",
+            "item_list": [{"type": 1, "text_item": {"text": "second"}}],
+        }
+    )
+
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+    assert router.second_started.is_set() is False
+
+    router.release_first.set()
+    await asyncio.wait_for(router.second_started.wait(), timeout=1.0)
+    await connector.stop()
+
+    assert sent == [
+        ("user-1", "echo:first", {}),
+        ("user-1", "echo:second", {}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connector_suppresses_steering_ack_for_dm_auto_steer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_cli.steering import STEERING_CAPTURED_ACK
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter(response_text=STEERING_CAPTURED_ACK)
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(config=cfg, router=router, storage_root=tmp_path)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-ack-1",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "follow-up"}}],
+        }
+    )
+
+    assert len(router.calls) == 1
+    assert sent == []
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_reset_command_bypasses_auto_steer_while_running(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _BlockingWechatRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(config=cfg, router=router, storage_root=tmp_path)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_message(
+        {
+            "message_id": "m-running",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "first"}}],
+        }
+    )
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+
+    await connector._process_message(
+        {
+            "message_id": "m-reset",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+    )
+
+    router.release_first.set()
+    await connector.stop()
+
+    assert len(router.started_texts) == 1
+    assert sent[0] == ("user-1", "✨ 已开启新会话，之前的上下文已清空。", None)
 
 
 @pytest.mark.asyncio

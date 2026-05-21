@@ -34,13 +34,21 @@ class AcpLocalExecutor(LocalAgentExecutor):
         if env_config is not None:
             env_config.working_dir_base_path = str(self._workspace_base_dir())
 
-    async def _build_task(self, task_content: str, session_id: str = None, task_id: str = None, image_urls=None):
+    async def _build_task(
+        self,
+        task_content: str,
+        session_id: str = None,
+        task_id: str = None,
+        image_urls=None,
+        origin_user_input=None,
+    ):
         self._ensure_context_working_dir_config()
         return await super()._build_task(
             task_content,
             session_id=session_id,
             task_id=task_id,
             image_urls=image_urls,
+            origin_user_input=origin_user_input,
         )
 
     async def _create_workspace(self, session_id: str):

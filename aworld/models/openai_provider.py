@@ -26,7 +26,9 @@ from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.logs.util import logger, log_llm_record
 from aworld.models.llm_http_handler import LLMHTTPHandler
+from aworld.models.openai_message_sanitizer import sanitize_openai_messages
 from aworld.models.model_response import ModelResponse, LLMResponseError
+from aworld.models.prompt_cache import OpenAIPromptAssemblyLowerer
 
 
 class OpenAIProvider(LLMProviderBase):
@@ -143,7 +145,7 @@ class OpenAIProvider(LLMProviderBase):
         return ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner",
                 r"qwq-.*", r"qwen-.*"]
 
-    def preprocess_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def preprocess_messages(self, messages: List[Dict[str, str]], **kwargs) -> List[Dict[str, str]]:
         """Preprocess messages, use OpenAI format directly.
 
         Args:
@@ -152,14 +154,7 @@ class OpenAIProvider(LLMProviderBase):
         Returns:
             Processed message list.
         """
-        for message in messages:
-            if message["role"] == "assistant" and "tool_calls" in message and message["tool_calls"]:
-                if message["content"] is None: message["content"] = ""
-                for tool_call in message["tool_calls"]:
-                    if "function" not in tool_call and "name" in tool_call and "arguments" in tool_call:
-                        tool_call["function"] = {"name": tool_call["name"], "arguments": tool_call["arguments"]}
-
-        return messages
+        return sanitize_openai_messages(messages)
 
     def postprocess_response(self, response: Any) -> ModelResponse:
         """Process OpenAI response.
@@ -224,6 +219,11 @@ class OpenAIProvider(LLMProviderBase):
         elif isinstance(chunk, dict) and chunk.get("choices") and chunk["choices"]:
             chunk_choice = chunk["choices"][0]
         if not chunk_choice:
+            resp = ModelResponse.from_openai_stream_chunk(chunk)
+            has_usage = bool(resp and any(int(resp.usage.get(key, 0) or 0) > 0 for key in ("prompt_tokens", "completion_tokens", "total_tokens")))
+            if has_usage or (resp and resp.raw_usage) or (resp and resp.provider_request_id):
+                logger.debug("[stream] usage-only or metadata-only chunk received")
+                return resp, None
             logger.debug("[stream] skip chunk: choices is empty")
             return None, None
 
@@ -270,6 +270,9 @@ class OpenAIProvider(LLMProviderBase):
                     return None, None
             if finish_reason:
                 if self.stream_tool_buffer:
+                    raw_usage = ModelResponse._extract_usage_payload(
+                        chunk.usage if hasattr(chunk, "usage") else chunk.get("usage") if isinstance(chunk, dict) else None
+                    )
                     # Extract content based on chunk type (dict vs object)
                     if isinstance(chunk, dict):
                         content = chunk['choices'][0].get('delta', {}).get('content')
@@ -281,6 +284,9 @@ class OpenAIProvider(LLMProviderBase):
                         "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
                         "model": chunk.model if hasattr(chunk, 'model') else chunk.get("model"),
                         "object": chunk.object if hasattr(chunk, 'object') else chunk.get("object"),
+                        "usage": chunk.usage if hasattr(chunk, 'usage') else chunk.get("usage"),
+                        "request_id": getattr(chunk, "request_id", None) if not isinstance(chunk, dict) else chunk.get("request_id"),
+                        "_request_id": getattr(chunk, "_request_id", None) if not isinstance(chunk, dict) else chunk.get("_request_id"),
                         "choices": [
                             {
                                 "delta": {
@@ -289,7 +295,8 @@ class OpenAIProvider(LLMProviderBase):
                                     "tool_calls": self.stream_tool_buffer
                                 }
                             }
-                        ]
+                        ],
+                        "usage": raw_usage,
                     }
                     self.stream_tool_buffer = []
                     chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
@@ -331,7 +338,7 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_messages(messages, **kwargs)
 
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
@@ -383,7 +390,7 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_messages(messages, **kwargs)
         usage={
             "completion_tokens": 0,
             "prompt_tokens": 0,
@@ -391,7 +398,9 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            stream_kwargs = dict(kwargs)
+            stream_kwargs["stream"] = True
+            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **stream_kwargs)
             openai_params["stream"] = True
             if self.is_http_provider:
                 response_stream = self.http_provider.sync_stream_call(openai_params)
@@ -411,7 +420,9 @@ class OpenAIProvider(LLMProviderBase):
                             id = resp.id,
                             model = resp.model,
                             finish_reason=finish_reason,
-                            usage=usage)
+                            usage=usage,
+                            raw_usage=resp.raw_usage,
+                            provider_request_id=resp.provider_request_id)
 
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -444,7 +455,7 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_messages(messages, **kwargs)
         usage = {
             "completion_tokens": 0,
             "prompt_tokens": 0,
@@ -452,7 +463,9 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            stream_kwargs = dict(kwargs)
+            stream_kwargs["stream"] = True
+            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **stream_kwargs)
             openai_params["stream"] = True
             logger.debug(f"openai_params: {openai_params}")
 
@@ -465,12 +478,14 @@ class OpenAIProvider(LLMProviderBase):
                     if resp:
                         self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
-                        if finish_reason and resp.tool_calls:
+                        if finish_reason:
                             yield ModelResponse(
                                 id=resp.id,
                                 model=resp.model,
                                 finish_reason=finish_reason,
-                                usage=usage)
+                                usage=usage,
+                                raw_usage=resp.raw_usage,
+                                provider_request_id=resp.provider_request_id)
             else:
                 response_stream = await self.async_provider.chat.completions.create(**openai_params)
                 async for chunk in response_stream:
@@ -481,13 +496,15 @@ class OpenAIProvider(LLMProviderBase):
                     if resp:
                         self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
-                        if finish_reason and resp.tool_calls:
+                        if finish_reason:
                             yield ModelResponse(
                                 id=resp.id,
                                 model=resp.model,
                                 content="",
                                 finish_reason=finish_reason,
-                                usage=usage)
+                                usage=usage,
+                                raw_usage=resp.raw_usage,
+                                provider_request_id=resp.provider_request_id)
 
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -520,7 +537,7 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_messages(messages, **kwargs)
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
             logger.debug(f"openai_params: {json.dumps(openai_params)}")
@@ -553,6 +570,18 @@ class OpenAIProvider(LLMProviderBase):
                           max_tokens: int = None,
                           stop: List[str] = None,
                           **kwargs) -> Dict[str, Any]:
+        prompt_assembly_plan = kwargs.pop("prompt_assembly_plan", None)
+        provider_native_prompt_cache = bool(kwargs.pop("provider_native_prompt_cache", False))
+        lowered_request_kwargs = {}
+        if prompt_assembly_plan is not None:
+            lowered = OpenAIPromptAssemblyLowerer().lower(
+                plan=prompt_assembly_plan,
+                request_kwargs={},
+                enable_native_cache=provider_native_prompt_cache,
+            )
+            messages = sanitize_openai_messages(lowered.messages)
+            lowered_request_kwargs = lowered.request_kwargs
+
         model_name = kwargs.get("model_name", self.model_name or "")
         openai_params = {
             "model": model_name,
@@ -569,8 +598,9 @@ class OpenAIProvider(LLMProviderBase):
             "prompt_cache_key", "safety_identifier", "store", "verbosity", "extra_body", "model"
         ]
 
-        llm_params = self.kwargs.get("params", {})
+        llm_params = dict(self.kwargs.get("params", {}))
         llm_params.update(kwargs)
+        llm_params.update(lowered_request_kwargs)
         llm_params.pop("response_parse_args", None)
         llm_params.pop("context", None)
         llm_params.update({
@@ -578,6 +608,16 @@ class OpenAIProvider(LLMProviderBase):
             "max_tokens": max_tokens,
             "stop": stop
         })
+        if llm_params.get("stream"):
+            stream_options = llm_params.get("stream_options")
+            if stream_options is None:
+                llm_params["stream_options"] = {"include_usage": True}
+            elif isinstance(stream_options, dict):
+                merged_stream_options = dict(stream_options)
+                merged_stream_options.setdefault("include_usage", True)
+                llm_params["stream_options"] = merged_stream_options
+        else:
+            llm_params.pop("stream_options", None)
         log_llm_record("OPENAI_PARAMS", model_name, llm_params, {"request_id": llm_params.pop("llm_request_id", None)})
 
         for param in llm_params:

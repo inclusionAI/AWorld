@@ -4,19 +4,22 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from aworld.models.model_response import Function, ModelResponse, ToolCall
-from aworld.output.base import ChunkOutput, MessageOutput, ToolResultOutput
+from aworld.output.base import ChunkOutput, MessageOutput, StepOutput, ToolResultOutput
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from aworld_cli.acp import server as acp_server_module
 from aworld_cli.acp.server import AcpExecutorOutputBridge, AcpStdioServer, _bootstrap_acp_memory
 from aworld_cli.acp.human_intercept import AcpRequiresHumanError
-from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED
+from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED, AWORLD_ACP_REQUIRES_HUMAN
 from aworld_cli.acp.session_store import AcpSessionRecord
+from aworld_cli.steering import STEERING_CAPTURED_ACK, SessionSteeringRuntime, SteeringCoordinator
 
 
 def test_acp_bootstrap_initializes_cli_hybrid_memory(monkeypatch, tmp_path: Path) -> None:
@@ -105,6 +108,356 @@ async def test_prompt_streams_executor_outputs_through_adapter_and_mapper() -> N
     assert notifications[1]["params"]["update"]["content"] == {"command": "pwd"}
     assert notifications[2]["params"]["update"]["status"] == "completed"
     assert notifications[2]["params"]["update"]["content"] == {"cwd": "/tmp"}
+
+
+@pytest.mark.asyncio
+async def test_running_prompt_queues_steering_without_visible_ack_update() -> None:
+    class SlowQueueBridge:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.queued: list[str] = []
+
+        def queue_steering(self, *, record, text: str) -> str:
+            del record
+            self.queued.append(text)
+            return "Steering captured. Applying at next checkpoint."
+
+        async def stream_outputs(self, *, record, prompt_text):
+            del record, prompt_text
+            self.started.set()
+            await self.release.wait()
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="done"),
+            )
+
+    bridge = SlowQueueBridge()
+    server = AcpStdioServer(output_bridge=bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    first_task = asyncio.create_task(
+        server._handle_prompt(
+            21,
+            {
+                "sessionId": session["sessionId"],
+                "prompt": {"content": [{"type": "text", "text": "slow"}]},
+            },
+        )
+    )
+    await asyncio.wait_for(bridge.started.wait(), timeout=1.0)
+
+    second = await server._handle_prompt(
+        22,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "follow-up"}]},
+        },
+    )
+
+    bridge.release.set()
+    first = await first_task
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert first["result"]["status"] == "completed"
+    assert second["result"]["status"] == "queued"
+    assert bridge.queued == ["follow-up"]
+    assert all(
+        item["params"]["update"].get("content", {}).get("text")
+        != "Steering captured. Applying at next checkpoint."
+        for item in notifications
+        if item["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+    )
+
+
+@pytest.mark.asyncio
+async def test_running_prompt_reapplies_previous_steering_when_newer_follow_up_arrives() -> None:
+    class ReSteerBridge:
+        def __init__(self) -> None:
+            self._steering = SteeringCoordinator()
+            self.calls: list[str] = []
+            self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+            self.release_second = asyncio.Event()
+
+        def queue_steering(self, *, record, text: str) -> str:
+            self._steering.begin_task(record.aworld_session_id, f"acp-{record.aworld_session_id}")
+            self._steering.enqueue_text(record.aworld_session_id, text)
+            self._steering.request_interrupt(record.aworld_session_id)
+            return STEERING_CAPTURED_ACK
+
+        async def stream_outputs(self, *, record, prompt_text):
+            current_prompt = prompt_text
+            while True:
+                self.calls.append(current_prompt)
+                self._steering.begin_task(record.aworld_session_id, f"task-{len(self.calls)}")
+                if current_prompt == "slow":
+                    self.first_started.set()
+                    await self.release_first.wait()
+                elif "1. follow-up" in current_prompt and "2. newer" not in current_prompt:
+                    self.second_started.set()
+                    await self.release_second.wait()
+
+                yield MessageOutput(
+                    source=ModelResponse(
+                        id=f"resp-{len(self.calls)}",
+                        model="demo",
+                        content=f"done:{len(self.calls)}",
+                    ),
+                )
+
+                follow_up_prompt, _applied_items, _interrupt_requested = self._steering.consume_terminal_fallback(
+                    record.aworld_session_id
+                )
+                if not follow_up_prompt:
+                    self._steering.end_task(record.aworld_session_id, clear_pending=True)
+                    return
+                current_prompt = follow_up_prompt
+
+    bridge = ReSteerBridge()
+    server = AcpStdioServer(output_bridge=bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    first_task = asyncio.create_task(
+        server._handle_prompt(
+            31,
+            {
+                "sessionId": session["sessionId"],
+                "prompt": {"content": [{"type": "text", "text": "slow"}]},
+            },
+        )
+    )
+    await asyncio.wait_for(bridge.first_started.wait(), timeout=1.0)
+
+    second = await server._handle_prompt(
+        32,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "follow-up"}]},
+        },
+    )
+
+    bridge.release_first.set()
+    await asyncio.wait_for(bridge.second_started.wait(), timeout=1.0)
+
+    third = await server._handle_prompt(
+        33,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "newer"}]},
+        },
+    )
+
+    bridge.release_second.set()
+    first = await first_task
+
+    assert first["result"]["status"] == "completed"
+    assert second["result"]["status"] == "queued"
+    assert third["result"]["status"] == "queued"
+    assert bridge.calls[1].startswith("Continue the current task with this additional operator steering:")
+    assert "1. follow-up" in bridge.calls[1]
+    assert "1. follow-up" in bridge.calls[2]
+    assert "2. newer" in bridge.calls[2]
+
+
+@pytest.mark.asyncio
+async def test_current_acp_protocol_emits_step_lifecycle_updates() -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            yield StepOutput.build_start_output(
+                name="planner.agent",
+                alias_name="Planner",
+                step_num=0,
+                step_id="native-step-1",
+            )
+            yield StepOutput.build_finished_output(
+                name="planner.agent",
+                alias_name="Planner",
+                step_num=0,
+                data={"summary": "done"},
+                step_id="native-step-1",
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-2",
+                    model="demo",
+                    content="final",
+                ),
+                metadata={"sender": "Aworld", "is_finished": True},
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    server._session_update_method = "session/update"
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        6,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "hello"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "session/update"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "tool_call",
+        "tool_call_update",
+        "agent_message_chunk",
+    ]
+    assert notifications[0]["params"]["update"]["toolCallId"] == "native-step-1"
+    assert notifications[0]["params"]["update"]["title"] == "Planner"
+    assert notifications[1]["params"]["update"]["status"] == "completed"
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+
+
+@pytest.mark.asyncio
+async def test_prompt_executes_slash_command_without_invoking_output_bridge(tmp_path: Path) -> None:
+    class FakeOutputBridge:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_outputs(self, *, record, prompt_text):
+            self.calls += 1
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="should-not-run"),
+            )
+
+    class FakeCommandBridge:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def execute(
+            self,
+            *,
+            text: str,
+            cwd: str,
+            session_id: str,
+            runtime=None,
+            prompt_executor=None,
+            on_output=None,
+        ):
+            self.calls.append(
+                {
+                    "text": text,
+                    "cwd": cwd,
+                    "session_id": session_id,
+                    "runtime": runtime,
+                }
+            )
+            return SimpleNamespace(
+                handled=True,
+                command_name="memory",
+                status="completed",
+                text="Workspace memory instructions are read from disk on demand.",
+            )
+
+    output_bridge = FakeOutputBridge()
+    command_bridge = FakeCommandBridge()
+    server = AcpStdioServer(output_bridge=output_bridge, command_bridge=command_bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": str(tmp_path), "mcpServers": []})
+
+    response = await server._handle_prompt(
+        3,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "/memory reload"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert output_bridge.calls == 0
+    assert command_bridge.calls == [
+        {
+            "text": "/memory reload",
+            "cwd": str(tmp_path.resolve()),
+            "session_id": session["sessionId"],
+            "runtime": server,
+        }
+    ]
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk"
+    ]
+    assert notifications[0]["params"]["update"]["content"]["text"] == (
+        "Workspace memory instructions are read from disk on demand."
+    )
+
+
+@pytest.mark.asyncio
+async def test_prompt_executes_prompt_command_via_streaming_output_bridge() -> None:
+    class FakeOutputBridge:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def stream_outputs(self, *, record, prompt_text, allowed_tools=None):
+            self.calls.append(
+                {
+                    "record": record,
+                    "prompt_text": prompt_text,
+                    "allowed_tools": allowed_tools,
+                }
+            )
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="diff-summary"),
+            )
+
+    output_bridge = FakeOutputBridge()
+    server = AcpStdioServer(output_bridge=output_bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        4,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "/diff main"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert len(output_bridge.calls) == 1
+    assert "Diff Summary Task" in str(output_bridge.calls[0]["prompt_text"])
+    assert "main" in str(output_bridge.calls[0]["prompt_text"])
+    assert "git_diff" in list(output_bridge.calls[0]["allowed_tools"])
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk"
+    ]
+    assert notifications[0]["params"]["update"]["content"]["text"] == "diff-summary"
 
 
 @pytest.mark.asyncio
@@ -707,7 +1060,7 @@ async def test_prompt_resets_turn_local_runtime_state_between_prompts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_current_acp_protocol_suppresses_shell_tool_notifications() -> None:
+async def test_current_acp_protocol_emits_shell_tool_notifications() -> None:
     class FakeOutputBridge:
         async def stream_outputs(self, *, record, prompt_text):
             tool_call = ToolCall(
@@ -752,15 +1105,29 @@ async def test_current_acp_protocol_suppresses_shell_tool_notifications() -> Non
 
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "tool_call",
         "agent_thought_chunk",
         "agent_message_chunk",
+        "tool_call_update",
     ]
-    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "searching sources"}
-    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[0]["params"]["update"]["kind"] == "execute"
+    assert notifications[0]["params"]["update"]["title"] == "pwd"
+    assert notifications[0]["params"]["update"]["rawInput"] == {"command": "pwd"}
+    assert notifications[0]["params"]["update"]["content"] == [
+        {"type": "content", "content": {"type": "text", "text": "pwd"}}
+    ]
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "searching sources"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["rawOutput"] == {"cwd": "/tmp"}
+    assert notifications[3]["params"]["update"]["content"] == [
+        {"type": "content", "content": {"type": "text", "text": '{"cwd": "/tmp"}'}}
+    ]
 
 
 @pytest.mark.asyncio
-async def test_current_acp_protocol_suppresses_other_tool_notifications() -> None:
+async def test_current_acp_protocol_emits_other_tool_notifications() -> None:
     class FakeOutputBridge:
         async def stream_outputs(self, *, record, prompt_text):
             tool_call = ToolCall(
@@ -808,15 +1175,46 @@ async def test_current_acp_protocol_suppresses_other_tool_notifications() -> Non
 
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "tool_call",
         "agent_thought_chunk",
         "agent_message_chunk",
+        "tool_call_update",
     ]
-    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "我先尝试搜索一下最新信息"}
-    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[0]["params"]["update"]["kind"] == "Agent"
+    assert notifications[0]["params"]["update"]["rawInput"] == {
+        "items": [
+            {
+                "type": "content",
+                "content": {"type": "text", "text": "search deepseek v4"},
+            },
+            {"type": "text", "text": "web_searcher"},
+        ]
+    }
+    assert notifications[0]["params"]["update"]["content"] == [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": '{"items": [{"type": "content", "content": {"type": "text", "text": "search deepseek v4"}}, {"type": "text", "text": "web_searcher"}]}',
+            },
+        }
+    ]
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "我先尝试搜索一下最新信息"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["kind"] == "Agent"
+    assert notifications[3]["params"]["update"]["rawOutput"] == {"error": "subagent unavailable"}
+    assert notifications[3]["params"]["update"]["content"] == [
+        {
+            "type": "content",
+            "content": {"type": "text", "text": '{"error": "subagent unavailable"}'},
+        }
+    ]
 
 
 @pytest.mark.asyncio
-async def test_current_acp_protocol_suppresses_execute_tool_notifications() -> None:
+async def test_current_acp_protocol_emits_execute_tool_notifications() -> None:
     class FakeOutputBridge:
         async def stream_outputs(self, *, record, prompt_text):
             tool_call = ToolCall(
@@ -861,11 +1259,150 @@ async def test_current_acp_protocol_suppresses_execute_tool_notifications() -> N
 
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "tool_call",
         "agent_thought_chunk",
         "agent_message_chunk",
+        "tool_call_update",
     ]
-    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "我先检查一下页面"}
-    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[0]["params"]["update"]["kind"] == "execute"
+    assert notifications[0]["params"]["update"]["title"] == "curl https://x.com"
+    assert notifications[0]["params"]["update"]["rawInput"] == {"command": "curl https://x.com"}
+    assert notifications[0]["params"]["update"]["content"] == [
+        {"type": "content", "content": {"type": "text", "text": "curl https://x.com"}}
+    ]
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "我先检查一下页面"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
+    assert notifications[3]["params"]["update"]["kind"] == "execute"
+    assert notifications[3]["params"]["update"]["rawOutput"] == {"stdout": "ok"}
+    assert notifications[3]["params"]["update"]["content"] == [
+        {"type": "content", "content": {"type": "text", "text": '{"stdout": "ok"}'}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_current_acp_protocol_logs_session_update_summary(monkeypatch) -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-1",
+                function=Function(name="shell", arguments='{"command":"pwd"}'),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-2",
+                    model="demo",
+                    content="final",
+                    reasoning_content="searching sources",
+                    tool_calls=[tool_call],
+                ),
+                metadata={"sender": "Aworld", "is_finished": True},
+            )
+            yield ToolResultOutput(
+                tool_name="shell",
+                data={"cwd": "/tmp"},
+                origin_tool_call=tool_call,
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    server._session_update_method = "session/update"
+    writes: list[dict] = []
+    logged_messages: list[str] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    monkeypatch.setattr(
+        acp_server_module.logger,
+        "info",
+        lambda message, color=None, highlight_key=None: logged_messages.append(str(message)),
+    )
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        6,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "hello"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "session/update"]
+
+    assert response["result"]["status"] == "completed"
+    assert notifications
+    assert any(
+        "ACP session update method=session/update" in message
+        and "type=tool_call" in message
+        and "kind=execute" in message
+        and "title=pwd" in message
+        for message in logged_messages
+    )
+
+
+def test_current_acp_protocol_maps_internal_and_unknown_tools_to_happy_friendly_kinds() -> None:
+    assert AcpStdioServer._current_tool_kind("async_spawn_subagent__spawn") == "Agent"
+    assert AcpStdioServer._current_tool_kind("cron") == "think"
+    assert AcpStdioServer._current_tool_kind("totally_custom_tool") == "think"
+
+
+def test_current_acp_protocol_converts_tool_call_content_to_sdk_shape() -> None:
+    converted = AcpStdioServer._to_current_session_update(
+        {
+            "sessionId": "session-1",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "bash:1",
+                "kind": "bash",
+                "content": {"command": "pwd"},
+            },
+        }
+    )
+
+    update = converted["update"]
+    assert update["kind"] == "execute"
+    assert update["title"] == "pwd"
+    assert update["rawInput"] == {"command": "pwd"}
+    assert update["content"] == [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": "pwd",
+            },
+        }
+    ]
+
+
+def test_current_acp_protocol_converts_tool_update_content_and_status_to_sdk_shape() -> None:
+    converted = AcpStdioServer._to_current_session_update(
+        {
+            "sessionId": "session-1",
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "bash:1",
+                "kind": "bash",
+                "status": "cancelled",
+                "content": {"stdout": "done"},
+            },
+        }
+    )
+
+    update = converted["update"]
+    assert update["kind"] == "execute"
+    assert update["status"] == "failed"
+    assert update["rawOutput"] == {"stdout": "done"}
+    assert update["content"] == [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": '{"stdout": "done"}',
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -898,13 +1435,19 @@ def test_new_session_rejects_unsupported_mcp_servers_with_structured_error() -> 
 
 
 @pytest.mark.asyncio
-async def test_prompt_translates_human_intercept_error_to_retryable_structured_error() -> None:
+async def test_prompt_emits_pause_notice_for_human_intercept_in_default_mode() -> None:
     class HumanBridge:
         async def stream_outputs(self, *, record, prompt_text):
             raise AcpRequiresHumanError("Human approval/input flow is not bridged in ACP mode.")
             yield  # pragma: no cover
 
     server = AcpStdioServer(output_bridge=HumanBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
     session = server._handle_new_session({"cwd": ".", "mcpServers": []})
 
     response = await server._handle_prompt(
@@ -915,14 +1458,17 @@ async def test_prompt_translates_human_intercept_error_to_retryable_structured_e
         },
     )
 
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
-    assert response["error"]["data"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["retryable"] is True
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk",
+    ]
+    assert "Execution paused" in notifications[-1]["params"]["update"]["content"]["text"]
 
 
 @pytest.mark.asyncio
-async def test_prompt_closes_open_tool_lifecycle_before_requires_human_failure() -> None:
+async def test_prompt_closes_open_tool_lifecycle_before_requires_human_pause_notice() -> None:
     class HumanBridge:
         async def stream_outputs(self, *, record, prompt_text):
             yield MessageOutput(
@@ -962,22 +1508,29 @@ async def test_prompt_closes_open_tool_lifecycle_before_requires_human_failure()
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
         "tool_call_update",
+        "agent_message_chunk",
     ]
     assert notifications[1]["params"]["update"]["toolCallId"] == "call-1"
     assert notifications[1]["params"]["update"]["status"] == "failed"
-    assert notifications[1]["params"]["update"]["content"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert notifications[1]["params"]["update"]["content"]["code"] == AWORLD_ACP_REQUIRES_HUMAN
+    assert "Execution paused." in notifications[2]["params"]["update"]["content"]["text"]
+    assert response["result"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_prompt_translates_approval_unsupported_to_retryable_structured_error() -> None:
+async def test_prompt_emits_pause_notice_for_approval_boundary_in_default_mode() -> None:
     class ApprovalBridge:
         async def stream_outputs(self, *, record, prompt_text):
             raise ValueError(AWORLD_ACP_APPROVAL_UNSUPPORTED)
             yield  # pragma: no cover
 
     server = AcpStdioServer(output_bridge=ApprovalBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
     session = server._handle_new_session({"cwd": ".", "mcpServers": []})
 
     response = await server._handle_prompt(
@@ -988,14 +1541,17 @@ async def test_prompt_translates_approval_unsupported_to_retryable_structured_er
         },
     )
 
-    assert response["error"]["message"] == AWORLD_ACP_APPROVAL_UNSUPPORTED
-    assert response["error"]["data"]["message"] == "Approval flow is not bridged in phase 1."
-    assert response["error"]["data"]["code"] == AWORLD_ACP_APPROVAL_UNSUPPORTED
-    assert response["error"]["data"]["retryable"] is True
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk",
+    ]
+    assert "Execution paused" in notifications[-1]["params"]["update"]["content"]["text"]
 
 
 @pytest.mark.asyncio
-async def test_prompt_treats_runtime_turn_error_as_terminal_structured_failure() -> None:
+async def test_prompt_treats_runtime_turn_error_as_pause_notice_by_default() -> None:
     class TurnErrorBridge:
         async def stream_outputs(self, *, record, prompt_text):
             yield {
@@ -1008,6 +1564,12 @@ async def test_prompt_treats_runtime_turn_error_as_terminal_structured_failure()
             }
 
     server = AcpStdioServer(output_bridge=TurnErrorBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
     session = server._handle_new_session({"cwd": ".", "mcpServers": []})
 
     response = await server._handle_prompt(
@@ -1018,14 +1580,17 @@ async def test_prompt_treats_runtime_turn_error_as_terminal_structured_failure()
         },
     )
 
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
-    assert response["error"]["data"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["retryable"] is True
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk",
+    ]
+    assert "Execution paused." in notifications[-1]["params"]["update"]["content"]["text"]
 
 
 @pytest.mark.asyncio
-async def test_prompt_closes_open_tool_lifecycle_before_runtime_turn_error_failure() -> None:
+async def test_prompt_closes_open_tool_lifecycle_before_runtime_turn_error_pause_notice() -> None:
     class TurnErrorBridge:
         async def stream_outputs(self, *, record, prompt_text):
             yield MessageOutput(
@@ -1072,15 +1637,16 @@ async def test_prompt_closes_open_tool_lifecycle_before_runtime_turn_error_failu
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
         "tool_call_update",
+        "agent_message_chunk",
     ]
     assert notifications[1]["params"]["update"]["status"] == "failed"
-    assert notifications[1]["params"]["update"]["content"]["code"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert notifications[1]["params"]["update"]["content"]["code"] == AWORLD_ACP_REQUIRES_HUMAN
+    assert "Execution paused." in notifications[2]["params"]["update"]["content"]["text"]
+    assert response["result"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_prompt_closes_all_open_same_name_tool_lifecycles_before_runtime_turn_error_failure() -> None:
+async def test_prompt_closes_all_open_same_name_tool_lifecycles_before_runtime_turn_error_pause_notice() -> None:
     class TurnErrorBridge:
         async def stream_outputs(self, *, record, prompt_text):
             yield MessageOutput(
@@ -1142,37 +1708,38 @@ async def test_prompt_closes_all_open_same_name_tool_lifecycles_before_runtime_t
         "tool_call",
         "tool_call_update",
         "tool_call_update",
+        "agent_message_chunk",
     ]
-    assert [item["params"]["update"]["toolCallId"] for item in notifications[2:]] == ["call-1", "call-2"]
-    assert all(item["params"]["update"]["status"] == "failed" for item in notifications[2:])
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert [item["params"]["update"]["toolCallId"] for item in notifications[2:4]] == ["call-1", "call-2"]
+    assert all(item["params"]["update"]["status"] == "failed" for item in notifications[2:4])
+    assert "Execution paused." in notifications[4]["params"]["update"]["content"]["text"]
+    assert response["result"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_session_continues_after_runtime_turn_error_failure() -> None:
-    class TurnErrorThenSuccessBridge:
+async def test_next_prompt_after_pause_resumes_through_steering_follow_up() -> None:
+    class ResumeBridge:
         def __init__(self) -> None:
-            self.calls = 0
+            self.calls: list[str] = []
+
+        def prepare_paused_resume_prompt(self, *, record, text: str) -> tuple[str, list[object]]:
+            return (
+                "Continue the current task with this additional operator steering:\n\n1. "
+                + text,
+                [],
+            )
 
         async def stream_outputs(self, *, record, prompt_text):
-            self.calls += 1
-            if self.calls == 1:
-                yield {
-                    "event_type": "turn_error",
-                    "seq": 1,
-                    "code": "AWORLD_ACP_REQUIRES_HUMAN",
-                    "message": "Human approval/input flow is not bridged in phase 1.",
-                    "retryable": True,
-                    "origin": "runtime",
-                }
-                return
+            self.calls.append(prompt_text)
+            if len(self.calls) == 1:
+                raise AcpRequiresHumanError("Human approval/input flow is not bridged in ACP mode.")
 
             yield MessageOutput(
                 source=ModelResponse(id="resp-2", model="demo", content="recovered"),
             )
 
-    server = AcpStdioServer(output_bridge=TurnErrorThenSuccessBridge())
+    bridge = ResumeBridge()
+    server = AcpStdioServer(output_bridge=bridge)
     writes: list[dict] = []
 
     async def capture(message: dict) -> None:
@@ -1198,10 +1765,73 @@ async def test_session_continues_after_runtime_turn_error_failure() -> None:
 
     notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
 
-    assert first["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
-    assert first["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert first["result"]["status"] == "completed"
     assert second["result"]["status"] == "completed"
+    assert bridge.calls[1].startswith("Continue the current task with this additional operator steering:")
+    assert "follow-up" in bridge.calls[1]
     assert notifications[-1]["params"]["update"]["content"]["text"] == "recovered"
+
+
+@pytest.mark.asyncio
+async def test_cancel_clears_paused_state_so_next_prompt_starts_fresh() -> None:
+    class PauseThenFreshBridge:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.resume_prompts: list[str] = []
+
+        def prepare_paused_resume_prompt(self, *, record, text: str) -> tuple[str, list[object]]:
+            prompt = "Continue the current task with this additional operator steering:\n\n1. " + text
+            self.resume_prompts.append(prompt)
+            return (prompt, [])
+
+        async def stream_outputs(self, *, record, prompt_text):
+            self.calls.append(prompt_text)
+            if len(self.calls) == 1:
+                raise AcpRequiresHumanError("Human approval/input flow is not bridged in ACP mode.")
+
+            yield MessageOutput(
+                source=ModelResponse(id="resp-fresh", model="demo", content=prompt_text),
+            )
+
+    bridge = PauseThenFreshBridge()
+    server = AcpStdioServer(output_bridge=bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    first = await server._handle_prompt(
+        19,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "needs approval"}]},
+        },
+    )
+    cancelled = await server._handle_cancel(
+        20,
+        {
+            "sessionId": session["sessionId"],
+        },
+    )
+    fresh = await server._handle_prompt(
+        21,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "fresh-start"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert first["result"]["status"] == "completed"
+    assert cancelled["result"]["status"] == "cancelled"
+    assert fresh["result"]["status"] == "completed"
+    assert bridge.resume_prompts == []
+    assert bridge.calls == ["needs approval", "fresh-start"]
+    assert notifications[-1]["params"]["update"]["content"]["text"] == "fresh-start"
 
 
 @pytest.mark.asyncio
@@ -1268,8 +1898,61 @@ async def test_prompt_suppresses_events_emitted_after_runtime_turn_error() -> No
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
         "tool_call",
         "tool_call_update",
+        "agent_message_chunk",
     ]
-    assert response["error"]["message"] == "AWORLD_ACP_REQUIRES_HUMAN"
+    assert response["result"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_legacy_mode_preserves_requires_human_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWORLD_ACP_LEGACY_HUMAN_ERROR_MODE", "1")
+
+    class HumanBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            raise AcpRequiresHumanError("Human approval/input flow is not bridged in ACP mode.")
+            yield  # pragma: no cover
+
+    server = AcpStdioServer(output_bridge=HumanBridge())
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        17,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "needs approval"}]},
+        },
+    )
+
+    assert response["error"]["message"] == AWORLD_ACP_REQUIRES_HUMAN
+    assert response["error"]["data"]["message"] == "Human approval/input flow is not bridged in phase 1."
+    assert response["error"]["data"]["code"] == AWORLD_ACP_REQUIRES_HUMAN
+    assert response["error"]["data"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_mode_preserves_approval_boundary_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWORLD_ACP_LEGACY_HUMAN_ERROR_MODE", "1")
+
+    class ApprovalBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            raise ValueError(AWORLD_ACP_APPROVAL_UNSUPPORTED)
+            yield  # pragma: no cover
+
+    server = AcpStdioServer(output_bridge=ApprovalBridge())
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        18,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "approval path"}]},
+        },
+    )
+
+    assert response["error"]["message"] == AWORLD_ACP_APPROVAL_UNSUPPORTED
+    assert response["error"]["data"]["message"] == "Approval flow is not bridged in phase 1."
+    assert response["error"]["data"]["code"] == AWORLD_ACP_APPROVAL_UNSUPPORTED
+    assert response["error"]["data"]["retryable"] is True
 
 
 @pytest.mark.asyncio
@@ -1724,7 +2407,8 @@ async def test_executor_output_bridge_attaches_bootstrap_runtime_to_executor(
         )
     ]
 
-    assert isinstance(FakeExecutor.instances[0]._base_runtime, FakeRuntime)
+    assert isinstance(FakeExecutor.instances[0]._base_runtime, SessionSteeringRuntime)
+    assert isinstance(FakeExecutor.instances[0]._base_runtime._base_runtime, FakeRuntime)
     assert FakeRuntime.instances[0].workspace_path == str(tmp_path)
     assert FakeRuntime.instances[0].plugin_roots == [plugin_root]
 

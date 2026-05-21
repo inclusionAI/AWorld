@@ -5,6 +5,7 @@ from aworld.utils import import_package
 from aworld.logs.util import logger
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.model_response import ModelResponse, LLMResponseError
+from aworld.models.prompt_cache import AnthropicPromptAssemblyLowerer
 
 
 class AnthropicProvider(LLMProviderBase):
@@ -294,6 +295,20 @@ class AnthropicProvider(LLMProviderBase):
                              max_tokens: int = None,
                              stop: List[str] = None,
                              **kwargs) -> Dict[str, Any]:
+        prompt_assembly_plan = kwargs.pop("prompt_assembly_plan", None)
+        provider_native_prompt_cache = bool(kwargs.pop("provider_native_prompt_cache", False))
+        lowered_request_kwargs = {}
+        if prompt_assembly_plan is not None:
+            lowered = AnthropicPromptAssemblyLowerer().lower(
+                plan=prompt_assembly_plan,
+                request_kwargs={},
+                enable_native_cache=provider_native_prompt_cache,
+            )
+            lowered_messages = self.preprocess_messages(lowered.messages)
+            messages = lowered_messages["messages"]
+            system = lowered_messages["system"]
+            lowered_request_kwargs = lowered.request_kwargs
+
         if "tools" in kwargs:
             openai_tools = kwargs["tools"]
             claude_tools = []
@@ -326,6 +341,7 @@ class AnthropicProvider(LLMProviderBase):
             anthropic_params["tools"] = kwargs["tools"]
             anthropic_params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
+        anthropic_params.update(lowered_request_kwargs)
         for param in ["top_p", "top_k", "metadata", "stream"]:
             if param in kwargs:
                 anthropic_params[param] = kwargs[param]
