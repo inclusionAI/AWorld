@@ -783,6 +783,66 @@ async def test_connector_logs_inbound_media_download_failure_and_continues(
 
 
 @pytest.mark.asyncio
+async def test_download_bytes_retries_transient_network_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import _download_bytes
+
+    attempts: list[str] = []
+    sleep_delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    class FailingResponse:
+        async def __aenter__(self):
+            raise OSError("dns temporarily unavailable")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class SuccessfulResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def read(self) -> bytes:
+            return b"image-bytes"
+
+    class FakeSession:
+        def get(self, url: str, *, timeout):
+            del timeout
+            attempts.append(url)
+            if len(attempts) < 3:
+                return FailingResponse()
+            return SuccessfulResponse()
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    caplog.set_level(logging.WARNING, logger="aworld.gateway.wechat.connector")
+
+    payload = await _download_bytes(
+        session=FakeSession(),
+        url="https://file.ilinkai.weixin.qq.com/download?encrypted_query_param=secret",
+        timeout_seconds=30.0,
+    )
+
+    assert payload == b"image-bytes"
+    assert len(attempts) == 3
+    assert sleep_delays == [0.5, 1.0]
+    assert caplog.text.count("WeChat media download retrying") == 2
+    assert "target=file.ilinkai.weixin.qq.com" in caplog.text
+    assert "encrypted_query_param=secret" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_connector_skips_group_message_when_group_policy_disabled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1533,6 +1593,14 @@ def test_assert_wechat_cdn_url_rejects_untrusted_host() -> None:
 
     with pytest.raises(ValueError, match="allowlist"):
         assert_wechat_cdn_url("https://evil.example.test/file.bin")
+
+
+def test_assert_wechat_cdn_url_accepts_ilink_file_host() -> None:
+    from aworld_gateway.channels.wechat.media import assert_wechat_cdn_url
+
+    assert_wechat_cdn_url(
+        "https://file.ilinkai.weixin.qq.com/download?encrypted_query_param=x"
+    )
 
 
 @pytest.mark.asyncio
