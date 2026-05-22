@@ -39,6 +39,7 @@ PLAIN_MEDIA_REF_RE = re.compile(r"((?:attachment://|file://|MEDIA:)[^\s<>)]+)")
 _WECHAT_CDN_ALLOWLIST: frozenset[str] = frozenset(
     {
         "novac2c.cdn.weixin.qq.com",
+        "file.ilinkai.weixin.qq.com",
         "ilinkai.weixin.qq.com",
         "wx.qlogo.cn",
         "thirdwx.qlogo.cn",
