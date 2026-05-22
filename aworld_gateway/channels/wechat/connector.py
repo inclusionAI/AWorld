@@ -1351,7 +1351,7 @@ class WechatConnector:
     def _build_session(self) -> object:
         if aiohttp is None:
             return _NoopSession()
-        return aiohttp.ClientSession(trust_env=False)
+        return aiohttp.ClientSession(trust_env=True)
 
 
 class _NoopSession:
