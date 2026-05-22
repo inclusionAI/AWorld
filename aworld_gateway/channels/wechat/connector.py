@@ -67,6 +67,9 @@ EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 DEDUP_MAX_SIZE = 1000
 LOG_TEXT_TRUNCATE_LIMIT = 300
 POLL_RETRY_DELAY_SECONDS = 2.0
+MEDIA_DOWNLOAD_RETRY_ATTEMPTS = 3
+MEDIA_DOWNLOAD_RETRY_BASE_DELAY_SECONDS = 0.5
+MEDIA_DOWNLOAD_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 NEW_SESSION_COMMANDS = {"/new", "/summary", "新会话", "压缩上下文"}
 NEW_SESSION_CONFIRMATION_TEXT = "✨ 已开启新会话，之前的上下文已清空。"
 
@@ -77,6 +80,37 @@ GetUploadUrlFunc = Callable[..., Awaitable[dict[str, object]]]
 UploadCiphertextFunc = Callable[..., Awaitable[str]]
 SendMediaMessageFunc = Callable[..., Awaitable[dict[str, object]]]
 logger = get_gateway_logger("wechat.connector")
+
+
+class _RetryableDownloadStatusError(RuntimeError):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"media download HTTP {status}")
+        self.status = status
+
+
+def _download_log_target(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed.netloc or parsed.path or "unknown"
+
+
+def _is_retryable_download_error(exc: BaseException) -> bool:
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+    if isinstance(exc, _RetryableDownloadStatusError):
+        return True
+    if aiohttp is not None:
+        if isinstance(exc, aiohttp.ClientResponseError):
+            return exc.status in MEDIA_DOWNLOAD_RETRYABLE_HTTP_STATUSES
+        if isinstance(
+            exc,
+            (
+                aiohttp.ClientConnectionError,
+                aiohttp.ServerDisconnectedError,
+                aiohttp.ClientPayloadError,
+            ),
+        ):
+            return True
+    return isinstance(exc, (ConnectionError, OSError))
 
 
 def _base_info() -> dict[str, str]:
@@ -302,9 +336,33 @@ async def _download_bytes(
     url: str,
     timeout_seconds: float,
 ) -> bytes:
-    async with session.get(url, timeout=_build_timeout_seconds(timeout_seconds)) as response:
-        response.raise_for_status()
-        return await response.read()
+    delay_seconds = MEDIA_DOWNLOAD_RETRY_BASE_DELAY_SECONDS
+    for attempt in range(1, MEDIA_DOWNLOAD_RETRY_ATTEMPTS + 1):
+        try:
+            async with session.get(
+                url,
+                timeout=_build_timeout_seconds(timeout_seconds),
+            ) as response:
+                if response.status in MEDIA_DOWNLOAD_RETRYABLE_HTTP_STATUSES:
+                    await response.read()
+                    raise _RetryableDownloadStatusError(response.status)
+                response.raise_for_status()
+                return await response.read()
+        except Exception as exc:
+            if (
+                attempt >= MEDIA_DOWNLOAD_RETRY_ATTEMPTS
+                or not _is_retryable_download_error(exc)
+            ):
+                raise
+            logger.warning(
+                "WeChat media download retrying "
+                f"target={_download_log_target(url)} "
+                f"attempt={attempt}/{MEDIA_DOWNLOAD_RETRY_ATTEMPTS} "
+                f"error_type={type(exc).__name__} error={exc}"
+            )
+            await asyncio.sleep(delay_seconds)
+            delay_seconds *= 2
+    raise RuntimeError("media download retry loop exhausted")
 
 
 async def _default_download_media(
