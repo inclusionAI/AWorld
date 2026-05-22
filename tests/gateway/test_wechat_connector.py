@@ -87,7 +87,7 @@ class _BlockingWechatRouter:
         )
 
 
-def test_connector_build_session_disables_env_proxy(
+def test_connector_build_session_enables_env_proxy(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -114,7 +114,7 @@ def test_connector_build_session_disables_env_proxy(
     session = connector._build_session()
 
     assert isinstance(session, _FakeClientSession)
-    assert seen["trust_env"] is False
+    assert seen["trust_env"] is True
 
 
 @pytest.mark.asyncio
