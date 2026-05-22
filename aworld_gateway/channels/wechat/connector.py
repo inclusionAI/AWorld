@@ -755,11 +755,16 @@ class WechatConnector:
         )
         attachments = inbound_media["attachments"]
         attachment_prompt = build_attachment_prompt(attachments)
-        if attachment_prompt:
+        attachment_failure_prompt = self._build_attachment_failure_prompt(
+            inbound_media["attachment_failures"]
+        )
+        prompt_parts = [part for part in (attachment_prompt, attachment_failure_prompt) if part]
+        combined_attachment_prompt = "\n".join(prompt_parts).strip()
+        if combined_attachment_prompt:
             if text and not CommandBridge.is_slash_command(text):
-                text = f"{text}\n\n{attachment_prompt}".strip()
+                text = f"{text}\n\n{combined_attachment_prompt}".strip()
             elif not text:
-                text = attachment_prompt
+                text = combined_attachment_prompt
         if not text:
             logger.info(
                 "WeChat inbound message skipped "
@@ -785,6 +790,8 @@ class WechatConnector:
             metadata["attachments"] = attachments
             metadata["wechat_media"] = inbound_media["wechat_media"]
             metadata["multimodal_parts"] = inbound_media["multimodal_parts"]
+        if inbound_media["attachment_failures"]:
+            metadata["attachment_failures"] = inbound_media["attachment_failures"]
         session_binding_conversation_id = self._session_binding_conversation_ids.get(
             self._session_binding_key(
                 conversation_type=conversation_type,
@@ -860,10 +867,16 @@ class WechatConnector:
         item_list: list[dict[str, Any]],
     ) -> dict[str, list[dict[str, Any]]]:
         if self._poll_session is None:
-            return {"attachments": [], "wechat_media": [], "multimodal_parts": []}
+            return {
+                "attachments": [],
+                "wechat_media": [],
+                "multimodal_parts": [],
+                "attachment_failures": [],
+            }
         attachments: list[dict[str, str]] = []
         wechat_media: list[dict[str, Any]] = []
         multimodal_parts: list[dict[str, Any]] = []
+        attachment_failures: list[dict[str, Any]] = []
         for index, item in enumerate(item_list):
             candidate = self._inbound_media_candidate(item)
             if candidate is None:
@@ -881,6 +894,15 @@ class WechatConnector:
                 logger.exception(
                     "WeChat inbound media download failed "
                     f"message_id={message_id} index={index}"
+                )
+                attachment_failures.append(
+                    {
+                        "type": candidate["type"],
+                        "file_name": candidate["file_name"],
+                        "mime_type": candidate["mime_type"],
+                        "item_index": index,
+                        "reason": "download failed",
+                    }
                 )
                 continue
             path = await asyncio.to_thread(
@@ -920,7 +942,21 @@ class WechatConnector:
             "attachments": attachments,
             "wechat_media": wechat_media,
             "multimodal_parts": multimodal_parts,
+            "attachment_failures": attachment_failures,
         }
+
+    @staticmethod
+    def _build_attachment_failure_prompt(
+        attachment_failures: list[dict[str, Any]],
+    ) -> str:
+        if not attachment_failures:
+            return ""
+        lines = ["Attachment issues:"]
+        for failure in attachment_failures:
+            kind = str(failure.get("type") or "file").strip() or "file"
+            reason = str(failure.get("reason") or "download failed").strip() or "download failed"
+            lines.append(f"- {kind}: unavailable ({reason})")
+        return "\n".join(lines)
 
     def _write_inbound_attachment(
         self,
@@ -1257,7 +1293,7 @@ class WechatConnector:
     def _build_session(self) -> object:
         if aiohttp is None:
             return _NoopSession()
-        return aiohttp.ClientSession(trust_env=True)
+        return aiohttp.ClientSession(trust_env=False)
 
 
 class _NoopSession:
