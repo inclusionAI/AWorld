@@ -87,6 +87,36 @@ class _BlockingWechatRouter:
         )
 
 
+def test_connector_build_session_disables_env_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat import connector as wechat_connector
+
+    seen: dict[str, object] = {}
+
+    class _FakeClientSession:
+        def __init__(self, *, trust_env: bool) -> None:
+            seen["trust_env"] = trust_env
+
+    monkeypatch.setattr(
+        wechat_connector,
+        "aiohttp",
+        SimpleNamespace(ClientSession=_FakeClientSession),
+    )
+
+    connector = wechat_connector.WechatConnector(
+        config=WechatChannelConfig(default_agent_id="aworld"),
+        router=None,
+        storage_root=tmp_path,
+    )
+
+    session = connector._build_session()
+
+    assert isinstance(session, _FakeClientSession)
+    assert seen["trust_env"] is False
+
+
 @pytest.mark.asyncio
 async def test_connector_process_message_caches_context_token_and_routes_text(
     monkeypatch: pytest.MonkeyPatch,
@@ -778,8 +808,100 @@ async def test_connector_logs_inbound_media_download_failure_and_continues(
     await connector.stop()
 
     assert "WeChat inbound media download failed message_id=m-1 index=1" in caplog.text
-    assert router.calls[0][0].text == "ping"
-    assert sent == [("user-1", "echo:ping", {})]
+    assert (
+        router.calls[0][0].text
+        == "ping\n\nAttachment issues:\n- image: unavailable (download failed)"
+    )
+    assert router.calls[0][0].metadata["attachment_failures"] == [
+        {
+            "type": "image",
+            "file_name": "image.jpg",
+            "mime_type": "image/jpeg",
+            "item_index": 1,
+            "reason": "download failed",
+        }
+    ]
+    assert sent == [
+        (
+            "user-1",
+            "echo:ping\n\nAttachment issues:\n- image: unavailable (download failed)",
+            {},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_routes_media_download_failure_without_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_download_media(
+        *,
+        session,
+        cdn_base_url: str,
+        encrypted_query_param: str | None,
+        aes_key_b64: str | None,
+        full_url: str | None,
+        timeout_seconds: float,
+    ) -> bytes:
+        raise RuntimeError("download failed")
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        download_media_func=fake_download_media,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-image-fail",
+            "from_user_id": "user-1",
+            "item_list": [
+                {
+                    "type": 2,
+                    "image_item": {
+                        "media": {"full_url": "mock-image-resource"}
+                    },
+                }
+            ],
+        }
+    )
+    await connector.stop()
+
+    assert len(router.calls) == 1
+    inbound, _channel_default_agent_id, _on_output = router.calls[0]
+    assert inbound.text == "Attachment issues:\n- image: unavailable (download failed)"
+    assert inbound.metadata["attachment_failures"] == [
+        {
+            "type": "image",
+            "file_name": "image.jpg",
+            "mime_type": "image/jpeg",
+            "item_index": 0,
+            "reason": "download failed",
+        }
+    ]
+    assert sent == [
+        (
+            "user-1",
+            "echo:Attachment issues:\n- image: unavailable (download failed)",
+            {},
+        )
+    ]
 
 
 @pytest.mark.asyncio
