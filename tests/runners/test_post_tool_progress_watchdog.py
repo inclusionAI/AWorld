@@ -2,10 +2,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.event.base import Constants, TopicType
 from aworld.core.task import Task
+from aworld.core.tool.base import ensure_action_results
 from aworld.runners.event_runner import TaskEventRunner
+from aworld.runners.post_tool_progress import arm_post_tool_progress_watchdog
 
 
 def _build_runner() -> TaskEventRunner:
@@ -77,3 +80,47 @@ async def test_post_tool_progress_watchdog_retries_once_then_fails(monkeypatch):
     assert emitted[1].topic == TopicType.ERROR
     assert "post-tool progress watchdog" in emitted[1].payload.msg
     assert "post_tool_progress_watchdog" not in runner.context.context_info
+
+
+@pytest.mark.asyncio
+async def test_post_tool_progress_watchdog_accepts_null_action_error(monkeypatch):
+    runner = _build_runner()
+    emitted = []
+
+    async def capture(message):
+        emitted.append(message)
+        return True
+
+    runner.event_mng.emit_message = capture
+    observation = Observation(
+        content="tool finished",
+        observer="developer",
+        from_agent_name="agent-1",
+    )
+    ensure_action_results(
+        observation,
+        [ActionModel(tool_name="developer")],
+        success=False,
+        default_content="ok",
+    )
+    arm_post_tool_progress_watchdog(
+        runner.context,
+        tool_name="developer",
+        agent_id="agent-1",
+        actions=[ActionModel(tool_name="developer")],
+        followup_observation=observation,
+        followup_sender="developer",
+    )
+    runner.context.context_info["post_tool_progress_watchdog"]["armed_at"] = 10.0
+
+    monkeypatch.setattr("aworld.runners.event_runner.time.time", lambda: 20.0)
+    handled = await runner._check_post_tool_progress_watchdog()
+
+    assert handled is True
+    assert len(emitted) == 1
+    assert emitted[0].category == Constants.AGENT
+    assert emitted[0].receiver == "agent-1"
+    assert emitted[0].payload.action_result[0].error is None
+    assert emitted[0].payload.action_result[0].tool_name is None
+    assert emitted[0].payload.action_result[0].action_name is None
+    assert emitted[0].payload.action_result[0].tool_call_id is None
