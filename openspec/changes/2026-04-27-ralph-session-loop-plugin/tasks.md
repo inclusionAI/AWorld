@@ -1,3 +1,5 @@
+> Implementation note: phase 1 now lands through the shared `goal-session` contract. Ralph commands remain compatibility entrypoints, but active-loop state, continuation, and exit gating are owned by the goal-session plugin.
+
 ## 1. Change Skeleton
 
 - [x] 1.1 Create a standalone Ralph plugin fixture or built-in plugin directory with manifest, commands, stop hook, and HUD provider.

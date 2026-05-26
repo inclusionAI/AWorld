@@ -1,5 +1,7 @@
 # Ralph Session Loop Plugin Implementation Plan
 
+> Historical note: this implementation plan predates the shared `goal-session` refactor. The shipped phase-1 behavior keeps `/ralph-loop` and `/cancel-ralph`, but uses the built-in `goal-session` plugin as the single persisted contract and loop-control surface.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a standalone phase-1 Ralph plugin for the interactive AWorld CLI that loops within the current session using plugin commands, plugin state, and stop hooks.

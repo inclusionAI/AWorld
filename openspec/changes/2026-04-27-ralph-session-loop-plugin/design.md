@@ -93,22 +93,22 @@ Why:
 - It avoids hidden coupling between session control and task execution.
 - It preserves two valid adoption paths: interactive CLI Ralph and framework/programmatic Ralph.
 
-### Decision: The stop hook is the only loop controller
+### Decision: Goal-session state is the only loop controller
 
 The phase-1 control path should be:
 
 1. `/ralph-loop` initializes loop state.
 2. The current session executes the task.
-3. When the operator attempts to exit, the `stop` hook evaluates whether the loop should continue.
-4. If unfinished, the hook returns `block_and_continue` with a follow-up prompt.
+3. The shared `goal-session` task lifecycle hooks update turn state and decide whether unfinished work should continue immediately.
+4. When the operator attempts to exit, the `goal-session` `stop` hook only decides whether exit is safe, paused, or should be denied.
 
-The stop hook should be the only component allowed to decide whether the loop continues or exits.
+The `goal-session` persisted state should be the only source of truth for whether the loop is active, complete, paused, or budget-limited.
 
 Why:
 
-- It keeps loop control in one place.
-- It aligns with the current plugin hook contract.
-- It avoids splitting continuation rules between command code, HUD code, and ad hoc session logic.
+- It keeps loop control in one place even when multiple user-facing commands share the same contract.
+- It allows Ralph compatibility commands and future goal-native commands to reuse the same persisted state.
+- It keeps stop-hook behavior small and focused on safe exit handling.
 
 ### Decision: Phase-1 state lives in plugin-scoped persisted state
 
@@ -119,16 +119,18 @@ Recommended minimum state shape:
 ```json
 {
   "active": true,
-  "prompt": "Implement feature X",
-  "iteration": 1,
-  "max_iterations": 20,
+  "status": "active",
+  "objective": "Implement feature X",
+  "turn_count": 1,
+  "max_turns": 20,
   "completion_promise": "COMPLETE",
-  "verify_commands": [
+  "verification_commands": [
     "pytest tests/api -q",
     "ruff check ."
   ],
+  "source": "ralph_compat",
   "started_at": "2026-04-27T10:00:00Z",
-  "last_stop_reason": null,
+  "last_task_status": "initialized",
   "last_final_answer_excerpt": null
 }
 ```
@@ -144,7 +146,7 @@ Why:
 - The plugin framework already exposes persisted state APIs.
 - It avoids introducing a second state persistence model just for Ralph.
 
-### Decision: `/ralph-loop` stores structured verify requirements, but the hook does not run them
+### Decision: `/ralph-loop` stores structured verify requirements in goal-session state, but hooks do not run them
 
 Phase-1 verification requirements should be declared structurally and then injected into the effective prompt.
 
@@ -158,19 +160,20 @@ Recommended user-facing contract:
   --max-iterations 20
 ```
 
-The plugin should persist these `verify_commands` in plugin state and normalize the working prompt into a task package similar to:
+The plugin should persist these `verification_commands` in goal-session state and normalize the working prompt into a goal contract similar to:
 
 ```text
-Task:
-Implement the todo API
-
-Verification requirements:
-1. Run: pytest tests/api -q
-2. Run: ruff check .
-
-Completion rule:
-Only output <promise>COMPLETE</promise> when every verification requirement passes.
-If verification fails, fix the issue and continue iterating.
+<goal_contract>
+Objective: Implement the todo API
+Status: active
+Turns: 1/20
+Source: ralph_compat
+Verification commands:
+1. pytest tests/api -q
+2. ruff check .
+Completion promise: COMPLETE
+Only emit <promise>COMPLETE</promise> when the objective is fully complete and every verification command passes.
+</goal_contract>
 ```
 
 Why:
@@ -184,16 +187,21 @@ Rejected alternative:
 - Have the stop hook execute verification commands itself.
   Rejected because it would blur the line between loop control and task execution orchestration.
 
-### Decision: Phase-1 stop conditions remain intentionally small
+### Decision: Phase-1 continuation and stop conditions remain intentionally small
 
-The stop hook should only enforce these phase-1 conditions:
+The task-completed hook should only enforce these phase-1 continuation conditions:
 
-1. no active loop -> allow exit
-2. `max_iterations` reached -> allow exit and clear state
-3. `<promise>...</promise>` matches `completion_promise` exactly -> allow exit and clear state
-4. otherwise -> `block_and_continue`
+1. no active goal -> allow
+2. `<promise>...</promise>` matches `completion_promise` exactly -> mark `complete` and stop continuing
+3. `max_turns` reached -> mark `budget_limited` and stop continuing
+4. otherwise -> increment `turn_count` and `block_and_continue`
 
-The hook may record diagnostic metadata such as the last final answer excerpt, but it should not accumulate richer policy in phase 1.
+The stop hook should only enforce these phase-1 exit conditions:
+
+1. no active goal -> allow exit
+2. active goal -> deny exit and direct the operator to `/goal pause` or `/goal clear`
+
+Hooks may record diagnostic metadata such as the last final answer excerpt, last error excerpt, or last partial answer excerpt, but they should not accumulate richer policy in phase 1.
 
 Why:
 
@@ -207,9 +215,9 @@ HUD should display status but never own control flow.
 
 Recommended fields:
 
-- `Ralph: active` or `inactive`
-- `Iter: 3/20` or `3/unbounded`
-- `Promise: COMPLETE` or `none`
+- `Goal: active`, `paused`, `budget_limited`, or `complete`
+- `Turns: 3/20` or `3/unbounded`
+- `Verify: 2`
 
 Why:
 
@@ -290,9 +298,11 @@ Phase-1 validation should cover:
 - command registration and manifest loading
 - `/ralph-loop` state initialization
 - `/cancel-ralph` state clearing
-- stop-hook `block_and_continue` behavior
+- `/goal` status, pause, and clear behavior
+- task-completed continuation behavior
 - exact completion-promise match behavior
-- max-iteration stop behavior
+- max-turn termination behavior
+- stop-hook deny behavior for active goals
 - HUD rendering from plugin state
 - verify requirement normalization into the effective follow-up prompt
 

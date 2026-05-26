@@ -21,10 +21,12 @@ For AWorld, phase 1 should optimize for the smallest clean integration boundary:
 
 ## What Changes
 
-- Introduce a standalone AWorld plugin that provides a Ralph-style in-session loop for the interactive CLI.
+- Introduce a standalone AWorld goal-session controller plugin that provides the shared in-session loop contract for the interactive CLI.
+- Keep `/ralph-loop` and `/cancel-ralph` as compatibility-facing Ralph commands layered on top of that shared goal-session state.
 - Define the phase-1 plugin shape around:
   - prompt commands
-  - `stop` hook continuation
+  - task lifecycle hooks that update and continue the active goal
+  - a `stop` hook that blocks accidental exit while a goal is still active
   - plugin-scoped persisted state
   - optional HUD status lines
 - Freeze the phase-1 boundary so the plugin does not depend on `RalphRunner`.
@@ -36,6 +38,7 @@ For AWorld, phase 1 should optimize for the smallest clean integration boundary:
 ### New Capabilities
 
 - `ralph-session-loop-plugin`: Adds a standalone plugin-hosted Ralph interaction model for the AWorld interactive CLI.
+- `goal-session-plugin`: Adds the shared persisted goal contract and exit-control surface used by Ralph compatibility commands.
 
 ### Modified Capabilities
 
@@ -44,7 +47,8 @@ For AWorld, phase 1 should optimize for the smallest clean integration boundary:
 ## Impact
 
 - Affects plugin manifests and plugin entrypoint usage under the AWorld CLI plugin framework.
-- Affects the interactive CLI experience by adding Ralph-specific slash commands and a stop-hook-controlled continuation path.
+- Affects the interactive CLI experience by adding Ralph-specific slash commands plus a shared goal-status surface (`/goal`) for pause, clear, and status inspection.
+- Moves continuation control to task lifecycle hooks while leaving stop-hook behavior focused on exit gating.
 - Does not require `aworld/core` changes for phase 1.
 - Does not require `RalphRunner` changes for phase 1.
 - Creates an explicit future seam for phase-2 fresh-run orchestration without prematurely hard-binding that work to the current runner implementation.

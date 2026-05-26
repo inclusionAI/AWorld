@@ -555,6 +555,72 @@ async def test_goal_task_completed_hook_marks_goal_complete_on_exact_completion_
 
 
 @pytest.mark.asyncio
+async def test_goal_task_error_hook_persists_last_error_excerpt(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("goal-session", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "status": "active",
+            "objective": "Build a REST API",
+            "turn_count": 2,
+            "max_turns": 5,
+            "verification_commands": [],
+            "source": "goal",
+        }
+    )
+
+    result = await hooks["task_error"][0].run(
+        event={"task_status": "error", "error": "pytest failed on tests/plugins/test_plugin_hooks.py"},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    assert result.action == "allow"
+    assert handle.read()["last_task_status"] == "error"
+    assert "pytest failed" in handle.read()["last_error"]
+    assert "pytest failed" in handle.read()["last_error_excerpt"]
+    assert handle.read()["last_final_answer_excerpt"] is None
+
+
+@pytest.mark.asyncio
+async def test_goal_task_interrupted_hook_persists_partial_answer_excerpt(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("goal-session", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "status": "active",
+            "objective": "Build a REST API",
+            "turn_count": 2,
+            "max_turns": 5,
+            "verification_commands": [],
+            "source": "goal",
+        }
+    )
+
+    result = await hooks["task_interrupted"][0].run(
+        event={"task_status": "interrupted", "partial_answer": "Applied half of the refactor before stopping."},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    assert result.action == "allow"
+    assert handle.read()["last_task_status"] == "interrupted"
+    assert "Applied half of the refactor" in handle.read()["last_partial_answer"]
+    assert "Applied half of the refactor" in handle.read()["last_partial_answer_excerpt"]
+    assert handle.read()["last_final_answer_excerpt"] is None
+
+
+@pytest.mark.asyncio
 async def test_ralph_stop_hook_allows_exit_without_driving_continuation(tmp_path):
     plugin_root = _get_builtin_ralph_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
