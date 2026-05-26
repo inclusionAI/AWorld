@@ -18,6 +18,8 @@ def handle_event(event, state):
     updated.update(
         {
             "last_task_status": event.get("task_status") or "interrupted",
+            "last_error": "",
+            "last_error_excerpt": None,
             "last_partial_answer": partial_answer,
             "last_partial_answer_excerpt": summarize_text(partial_answer),
             "last_final_answer": "",

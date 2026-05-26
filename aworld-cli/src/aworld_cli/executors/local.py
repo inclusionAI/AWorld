@@ -404,6 +404,18 @@ class LocalAgentExecutor(BaseAgentExecutor):
             logger.warning(f"Plugin task hook '{hook_point}' failed: {exc}")
             return []
 
+    @staticmethod
+    def _resolve_hook_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            content = value.get("content")
+            if isinstance(content, str):
+                return content
+        return str(value)
+
     async def _should_pause_for_queued_steering_checkpoint(
         self,
         *,
@@ -1772,7 +1784,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         logger.error(f"💾 Traceback: {traceback.format_exc()}")
                         # Don't fail the whole request if history save fails
 
-                await self._run_plugin_task_hook(
+                task_completed_results = await self._run_plugin_task_hook(
                     "task_completed",
                     {
                         "task_id": task.id,
@@ -1785,6 +1797,29 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 )
                 self._publish_hud_task_finished(task.id, task_status="idle")
                 self._reset_active_steering_buffer()
+                for _, result in task_completed_results:
+                    system_message = getattr(result, "system_message", None)
+                    if system_message:
+                        if self._active_steering_event_mode_enabled():
+                            self._emit_active_steering_event(
+                                "system_notice",
+                                text=str(system_message).strip(),
+                            )
+                        elif self.console:
+                            self.console.print(f"[dim]{system_message}[/dim]")
+
+                    action = str(getattr(result, "action", "allow") or "allow").strip().lower()
+                    if action != "block_and_continue":
+                        continue
+
+                    follow_up_prompt = self._resolve_hook_text(
+                        getattr(result, "follow_up_prompt", None) or getattr(result, "updated_input", None)
+                    )
+                    if follow_up_prompt:
+                        return await self.chat(
+                            follow_up_prompt,
+                            requested_skill_names=requested_skill_names,
+                        )
                 return answer
                 
             except Exception as err:
