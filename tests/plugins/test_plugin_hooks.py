@@ -26,6 +26,17 @@ def _get_builtin_ralph_plugin_root() -> Path:
     )
 
 
+def _get_builtin_goal_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "goal_session"
+    )
+
+
 def _get_builtin_memory_plugin_root() -> Path:
     return (
         Path(__file__).resolve().parents[2]
@@ -288,36 +299,38 @@ async def test_plugin_hook_adapter_caches_loaded_handler_module(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ralph_stop_hook_blocks_and_continues_when_active(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
+async def test_goal_task_completed_hook_blocks_and_continues_when_active(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
     hooks = load_plugin_hooks([plugin])
 
     store = PluginStateStore(tmp_path / "plugin-state")
-    state_path = store.session_state("ralph-session-loop", "session-1")
+    state_path = store.session_state("goal-session", "session-1")
     handle = store.handle(state_path)
     handle.write(
         {
             "active": True,
-            "prompt": "Build a REST API",
-            "iteration": 1,
-            "max_iterations": 5,
+            "status": "active",
+            "objective": "Build a REST API",
+            "turn_count": 1,
+            "max_turns": 5,
             "completion_promise": "COMPLETE",
-            "verify_commands": ["pytest tests/api -q"],
-            "last_final_answer": "not done yet",
+            "verification_commands": ["pytest tests/api -q"],
+            "source": "goal",
         }
     )
 
-    result = await hooks["stop"][0].run(
-        event={"session_id": "session-1"},
+    result = await hooks["task_completed"][0].run(
+        event={"task_status": "completed", "final_answer": "Implemented the first draft."},
         state={"__plugin_state__": handle, **handle.read()},
     )
 
     assert result.action == "block_and_continue"
-    assert "Task:" in result.follow_up_prompt
-    assert "Verification requirements:" in result.follow_up_prompt
+    assert "<goal_contract>" in result.follow_up_prompt
+    assert "Objective: Build a REST API" in result.follow_up_prompt
     assert "pytest tests/api -q" in result.follow_up_prompt
-    assert handle.read()["iteration"] == 2
+    assert handle.read()["turn_count"] == 2
+    assert handle.read()["status"] == "active"
 
 
 @pytest.mark.asyncio
@@ -463,111 +476,86 @@ def test_task_completed_resolves_persisted_candidate_by_identity_not_last_line(t
 
 
 @pytest.mark.asyncio
-async def test_ralph_stop_hook_denies_when_handle_is_missing_for_active_state(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
+async def test_goal_task_completed_hook_allows_when_no_active_goal(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
     hooks = load_plugin_hooks([plugin])
 
+    result = await hooks["task_completed"][0].run(
+        event={"task_status": "completed", "final_answer": "Done"},
+        state={},
+    )
+
+    assert result.action == "allow"
+
+
+@pytest.mark.asyncio
+async def test_goal_stop_hook_denies_exit_when_goal_is_active(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("goal-session", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "status": "active",
+            "objective": "Build a REST API",
+            "turn_count": 2,
+            "max_turns": 5,
+            "verification_commands": ["pytest tests/api -q"],
+            "source": "ralph_compat",
+        }
+    )
+
     result = await hooks["stop"][0].run(
         event={"session_id": "session-1"},
-        state={"active": True},
+        state={"__plugin_state__": handle, **handle.read()},
     )
 
     assert result.action == "deny"
-    assert "unavailable" in result.reason.lower()
+    assert "active goal" in result.reason.lower()
+    assert "/goal pause" in result.reason
+    assert "/goal clear" in result.reason
 
 
 @pytest.mark.asyncio
-async def test_ralph_stop_hook_handles_missing_prompt_field(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
+async def test_goal_task_completed_hook_marks_goal_complete_on_exact_completion_promise(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
     hooks = load_plugin_hooks([plugin])
 
     store = PluginStateStore(tmp_path / "plugin-state")
-    state_path = store.session_state("ralph-session-loop", "session-1")
+    state_path = store.session_state("goal-session", "session-1")
     handle = store.handle(state_path)
     handle.write(
         {
             "active": True,
-            "iteration": 1,
-            "max_iterations": 5,
-        }
-    )
-
-    result = await hooks["stop"][0].run(
-        event={"session_id": "session-1"},
-        state={"__plugin_state__": handle, **handle.read()},
-    )
-
-    assert result.action == "block_and_continue"
-    assert "Task:" in result.follow_up_prompt
-    assert handle.read()["iteration"] == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("iteration_value", [None, -3, "oops"])
-async def test_ralph_stop_hook_handles_invalid_iteration_value(tmp_path, iteration_value):
-    plugin_root = _get_builtin_ralph_plugin_root()
-    plugin = discover_plugins([plugin_root])[0]
-    hooks = load_plugin_hooks([plugin])
-
-    store = PluginStateStore(tmp_path / "plugin-state")
-    state_path = store.session_state("ralph-session-loop", "session-1")
-    handle = store.handle(state_path)
-    handle.write(
-        {
-            "active": True,
-            "prompt": "Build a REST API",
-            "iteration": iteration_value,
-            "max_iterations": 5,
-            "verify_commands": [],
-        }
-    )
-
-    result = await hooks["stop"][0].run(
-        event={"session_id": "session-1"},
-        state={"__plugin_state__": handle, **handle.read()},
-    )
-
-    assert result.action == "block_and_continue"
-    assert handle.read()["iteration"] == 2
-
-
-@pytest.mark.asyncio
-async def test_ralph_stop_hook_allows_exit_on_exact_completion_promise(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
-    plugin = discover_plugins([plugin_root])[0]
-    hooks = load_plugin_hooks([plugin])
-
-    store = PluginStateStore(tmp_path / "plugin-state")
-    state_path = store.session_state("ralph-session-loop", "session-1")
-    handle = store.handle(state_path)
-    handle.write(
-        {
-            "active": True,
-            "prompt": "Build a REST API",
-            "iteration": 1,
+            "status": "active",
+            "objective": "Build a REST API",
+            "turn_count": 1,
+            "max_turns": 5,
             "completion_promise": "COMPLETE",
-            "verify_commands": [],
+            "verification_commands": [],
+            "source": "ralph_compat",
         }
     )
 
-    await hooks["task_completed"][0].run(
+    result = await hooks["task_completed"][0].run(
         event={"final_answer": "All done.\n<promise>COMPLETE</promise>", "task_status": "completed"},
         state={"__plugin_state__": handle, **handle.read()},
     )
 
-    result = await hooks["stop"][0].run(
-        event={"session_id": "session-1"},
-        state={"__plugin_state__": handle, **handle.read()},
-    )
-
     assert result.action == "allow"
-    assert handle.read() == {}
+    assert handle.read()["status"] == "complete"
+    assert handle.read()["active"] is False
+    assert handle.read()["last_task_status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_ralph_stop_hook_allows_exit_when_max_iterations_reached(tmp_path):
+async def test_ralph_stop_hook_allows_exit_without_driving_continuation(tmp_path):
     plugin_root = _get_builtin_ralph_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
     hooks = load_plugin_hooks([plugin])
@@ -579,11 +567,10 @@ async def test_ralph_stop_hook_allows_exit_when_max_iterations_reached(tmp_path)
         {
             "active": True,
             "prompt": "Build a REST API",
-            "iteration": 5,
+            "iteration": 1,
             "max_iterations": 5,
             "completion_promise": "COMPLETE",
-            "verify_commands": [],
-            "last_final_answer": "still failing",
+            "verify_commands": ["pytest tests/api -q"],
         }
     )
 
@@ -593,7 +580,7 @@ async def test_ralph_stop_hook_allows_exit_when_max_iterations_reached(tmp_path)
     )
 
     assert result.action == "allow"
-    assert handle.read() == {}
+    assert handle.read()["iteration"] == 1
 
 
 @pytest.mark.asyncio

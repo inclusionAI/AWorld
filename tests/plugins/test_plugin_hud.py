@@ -26,6 +26,13 @@ def _get_builtin_ralph_plugin_root() -> Path:
     raise AssertionError("built-in ralph_session_loop plugin root not found")
 
 
+def _get_builtin_goal_plugin_root() -> Path:
+    for root in get_builtin_plugin_roots():
+        if root.name == "goal_session":
+            return root
+    raise AssertionError("built-in goal_session plugin root not found")
+
+
 def _get_builtin_steering_plugin_root() -> Path:
     for root in get_builtin_plugin_roots():
         if root.name == "steering_cli":
@@ -655,8 +662,8 @@ def test_status_bar_renders_multiline_html(monkeypatch):
     assert "Task: task_001" in rendered
 
 
-def test_ralph_hud_renders_active_loop_state():
-    plugin_root = _get_builtin_ralph_plugin_root()
+def test_goal_hud_renders_active_goal_state():
+    plugin_root = _get_builtin_goal_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
 
     lines = collect_hud_lines(
@@ -667,17 +674,18 @@ def test_ralph_hud_renders_active_loop_state():
         },
         plugin_state_provider=lambda plugin_id, scope, context: {
             "active": True,
-            "iteration": 2,
-            "max_iterations": 5,
-            "completion_promise": "COMPLETE",
+            "status": "active",
+            "turn_count": 2,
+            "max_turns": 5,
+            "verification_commands": ["pytest tests/api -q", "ruff check ."],
         },
     )
 
     assert [line.section for line in lines] == ["session"]
     assert lines[0].segments == (
-        "Ralph: active",
-        "Iter: 2/5",
-        "Promise: COMPLETE",
+        "Goal: active",
+        "Turns: 2/5",
+        "Verify: 2",
     )
 
 
@@ -708,7 +716,7 @@ def test_steering_hud_renders_pending_count():
 
 def test_status_bar_text_prioritizes_activity_line_over_secondary_session_plugin():
     aworld_plugin = discover_plugins([_get_builtin_aworld_hud_root()])[0]
-    ralph_plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
+    goal_plugin = discover_plugins([_get_builtin_goal_plugin_root()])[0]
 
     class FakeRuntime:
         def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
@@ -730,10 +738,10 @@ def test_status_bar_text_prioritizes_activity_line_over_secondary_session_plugin
 
         def get_hud_lines(self, context):
             return collect_hud_lines(
-                [aworld_plugin, ralph_plugin],
+                [aworld_plugin, goal_plugin],
                 context,
-                plugin_state_provider=lambda plugin_id, scope, context: {"active": False}
-                if plugin_id == "ralph_session_loop"
+                plugin_state_provider=lambda plugin_id, scope, context: {"status": "none"}
+                if plugin_id == "goal-session"
                 else {},
             )
 
@@ -745,4 +753,4 @@ def test_status_bar_text_prioritizes_activity_line_over_secondary_session_plugin
     assert lines[0].startswith("Agent: Aworld")
     assert "Tokens: in 6.5k out 122" in lines[1]
     assert "Ctx:" in lines[1]
-    assert "Ralph: inactive" not in lines[1]
+    assert "Goal:" not in text
