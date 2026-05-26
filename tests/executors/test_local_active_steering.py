@@ -14,6 +14,7 @@ from aworld.core.task import TaskResponse
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.output.base import ChunkOutput, ToolResultOutput
 from aworld_cli.executors.local import LocalAgentExecutor
+from aworld_cli.plugin_capabilities.hooks import PluginHookResult
 from aworld_cli.steering.coordinator import SteeringCoordinator
 
 
@@ -80,6 +81,65 @@ def _stub_chat_dependencies(
     monkeypatch.setattr(executor, "_run_plugin_task_hook", AsyncMock(return_value=[]))
     monkeypatch.setattr(executor, "_execute_hooks", AsyncMock(return_value=None))
     monkeypatch.setattr("aworld_cli.executors.local.Runners.streamed_run_task", lambda task: outputs)
+
+
+@pytest.mark.asyncio
+async def test_local_executor_task_completed_hook_can_continue_with_follow_up_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    executor, _output_buffer = _build_executor(session_id="sess-1")
+    first_task = SimpleNamespace(
+        id="task-1",
+        session_id="sess-1",
+        context=SimpleNamespace(get_llm_calls=lambda: []),
+    )
+    second_task = SimpleNamespace(
+        id="task-2",
+        session_id="sess-1",
+        context=SimpleNamespace(get_llm_calls=lambda: []),
+    )
+    follow_up_prompt = "<goal_contract>\nObjective: Finish the REST API\n</goal_contract>"
+    outputs_iter = iter(
+        [
+            _FakeStreamingOutputs(
+                response=TaskResponse(success=True, answer="first draft", msg="ok"),
+            ),
+            _FakeStreamingOutputs(
+                response=TaskResponse(success=True, answer="final answer", msg="ok"),
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(executor, "_update_session_last_used", lambda _session_id: None)
+    monkeypatch.setattr(executor, "_build_task", AsyncMock(side_effect=[first_task, second_task]))
+    monkeypatch.setattr(executor, "_publish_hud_task_started", lambda _task: None)
+    monkeypatch.setattr(executor, "_publish_hud_task_finished", lambda *args, **kwargs: None)
+    monkeypatch.setattr(executor, "_publish_hud_llm_observability", lambda *args, **kwargs: {})
+    monkeypatch.setattr(executor, "_hud_is_active", lambda: False)
+    monkeypatch.setattr(executor, "_execute_hooks", AsyncMock(return_value=None))
+    monkeypatch.setattr("aworld_cli.executors.local.Runners.streamed_run_task", lambda task: next(outputs_iter))
+
+    async def _hook_side_effect(hook_point, event):
+        if hook_point == "task_completed" and event["task_id"] == "task-1":
+            return [
+                (
+                    SimpleNamespace(plugin_id="goal-session", entrypoint_id="goal-task-completed"),
+                    PluginHookResult(action="block_and_continue", follow_up_prompt=follow_up_prompt),
+                )
+            ]
+        return []
+
+    executor._run_plugin_task_hook = AsyncMock(side_effect=_hook_side_effect)
+
+    result = await executor.chat("hello")
+
+    assert result == "final answer"
+    assert executor._build_task.await_count == 2
+    assert executor._build_task.await_args_list[1].args[0] == follow_up_prompt
+    task_completed_calls = [
+        call for call in executor._run_plugin_task_hook.await_args_list if call.args[0] == "task_completed"
+    ]
+    assert len(task_completed_calls) == 2
 
 
 @pytest.mark.asyncio

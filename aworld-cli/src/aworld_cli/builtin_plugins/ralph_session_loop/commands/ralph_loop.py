@@ -12,6 +12,21 @@ GOAL_SESSION_PLUGIN_ID = "goal-session"
 
 
 class RalphLoopCommand(PluginBoundCommand):
+    def _goal_session_plugin_is_loaded(self, context: CommandContext) -> bool:
+        runtime = getattr(context, "runtime", None)
+        plugins = getattr(runtime, "_plugins", ()) if runtime is not None else ()
+        for plugin in plugins or ():
+            manifest = getattr(plugin, "manifest", None)
+            if getattr(manifest, "plugin_id", None) == GOAL_SESSION_PLUGIN_ID:
+                return True
+        return False
+
+    def _require_goal_session_plugin(self, context: CommandContext) -> None:
+        if getattr(context, "runtime", None) is None:
+            return
+        if not self._goal_session_plugin_is_loaded(context):
+            raise ValueError("/ralph-loop requires the enabled goal-session plugin")
+
     def resolve_state_path(self, context: CommandContext):
         runtime = getattr(context, "runtime", None)
         if runtime is None or not hasattr(runtime, "_resolve_plugin_state_path"):
@@ -26,6 +41,7 @@ class RalphLoopCommand(PluginBoundCommand):
     async def pre_execute(self, context: CommandContext):
         try:
             parse_loop_args(context.user_args)
+            self._require_goal_session_plugin(context)
         except ValueError as exc:
             return f"/ralph-loop error: {exc}"
         if self.get_state_handle(context) is None:
@@ -34,6 +50,7 @@ class RalphLoopCommand(PluginBoundCommand):
 
     async def get_prompt(self, context: CommandContext) -> str:
         parsed = parse_loop_args(context.user_args)
+        self._require_goal_session_plugin(context)
         handle = self.get_state_handle(context)
         if handle is None:
             raise ValueError("/ralph-loop requires session-aware plugin state")

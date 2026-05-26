@@ -37,6 +37,10 @@ def _build_dummy_runtime(tmp_path):
     return runtime
 
 
+def _plugin_stub(plugin_id: str):
+    return SimpleNamespace(manifest=SimpleNamespace(plugin_id=plugin_id))
+
+
 def _get_builtin_ralph_plugin_root() -> Path:
     return (
         Path(__file__).resolve().parents[2]
@@ -1710,6 +1714,7 @@ async def test_ralph_loop_command_initializes_session_state(tmp_path):
         register_plugin_commands([plugin])
         command = CommandRegistry.get("ralph-loop")
         runtime = _build_dummy_runtime(tmp_path)
+        runtime._plugins = [_plugin_stub("ralph-session-loop"), _plugin_stub("goal-session")]
         workspace_path = str(tmp_path / "workspace")
 
         prompt = await command.get_prompt(
@@ -1770,6 +1775,32 @@ async def test_ralph_loop_command_rejects_missing_state_handle_at_prompt_time(tm
         CommandRegistry.restore(snapshot)
 
 
+@pytest.mark.asyncio
+async def test_ralph_loop_command_rejects_missing_goal_session_plugin(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        command = CommandRegistry.get("ralph-loop")
+        runtime = _build_dummy_runtime(tmp_path)
+        runtime._plugins = [_plugin_stub("ralph-session-loop")]
+
+        with pytest.raises(ValueError, match="goal-session plugin"):
+            await command.get_prompt(
+                CommandContext(
+                    cwd=str(tmp_path / "workspace"),
+                    user_args='"Build a REST API"',
+                    runtime=runtime,
+                    session_id="session-1",
+                )
+            )
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
 async def test_cancel_ralph_clears_session_state(tmp_path):
     plugin_root = _get_builtin_ralph_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
@@ -1779,6 +1810,7 @@ async def test_cancel_ralph_clears_session_state(tmp_path):
         CommandRegistry.clear()
         register_plugin_commands([plugin])
         runtime = _build_dummy_runtime(tmp_path)
+        runtime._plugins = [_plugin_stub("ralph-session-loop"), _plugin_stub("goal-session")]
         workspace_path = str(tmp_path / "workspace")
         state_path = runtime._resolve_plugin_state_path(
             plugin_id="goal-session",

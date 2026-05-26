@@ -621,6 +621,40 @@ async def test_goal_task_interrupted_hook_persists_partial_answer_excerpt(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_goal_task_interrupted_hook_clears_stale_error_excerpt(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("goal-session", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "status": "active",
+            "objective": "Build a REST API",
+            "turn_count": 2,
+            "max_turns": 5,
+            "verification_commands": [],
+            "source": "goal",
+            "last_error": "old error",
+            "last_error_excerpt": "old error excerpt",
+        }
+    )
+
+    result = await hooks["task_interrupted"][0].run(
+        event={"task_status": "interrupted", "partial_answer": "Paused after finishing the parser."},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    assert result.action == "allow"
+    assert handle.read()["last_error"] == ""
+    assert handle.read()["last_error_excerpt"] is None
+    assert "Paused after finishing the parser." in handle.read()["last_partial_answer_excerpt"]
+
+
+@pytest.mark.asyncio
 async def test_ralph_stop_hook_allows_exit_without_driving_continuation(tmp_path):
     plugin_root = _get_builtin_ralph_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
