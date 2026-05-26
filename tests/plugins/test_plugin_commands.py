@@ -48,6 +48,17 @@ def _get_builtin_ralph_plugin_root() -> Path:
     )
 
 
+def _get_builtin_goal_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "goal_session"
+    )
+
+
 def _get_builtin_memory_plugin_root() -> Path:
     return (
         Path(__file__).resolve().parents[2]
@@ -1711,7 +1722,7 @@ async def test_ralph_loop_command_initializes_session_state(tmp_path):
         )
 
         state_path = runtime._resolve_plugin_state_path(
-            plugin_id=plugin.manifest.plugin_id,
+            plugin_id="goal-session",
             scope="session",
             session_id="session-1",
             workspace_path=workspace_path,
@@ -1719,17 +1730,18 @@ async def test_ralph_loop_command_initializes_session_state(tmp_path):
         payload = runtime._plugin_state_store.handle(state_path).read()
 
         assert payload["active"] is True
-        assert payload["prompt"] == "Build a REST API"
-        assert payload["iteration"] == 1
-        assert payload["max_iterations"] == 5
+        assert payload["status"] == "active"
+        assert payload["objective"] == "Build a REST API"
+        assert payload["turn_count"] == 1
+        assert payload["max_turns"] == 5
         assert payload["completion_promise"] == "COMPLETE"
-        assert payload["verify_commands"] == ["pytest tests/api -q"]
-        assert "Task:" in prompt
-        assert "Build a REST API" in prompt
-        assert "Verification requirements:" in prompt
-        assert "1. Run: pytest tests/api -q" in prompt
-        assert "Completion rule:" in prompt
-        assert "Only output <promise>COMPLETE</promise>" in prompt
+        assert payload["verification_commands"] == ["pytest tests/api -q"]
+        assert payload["source"] == "ralph_compat"
+        assert "<goal_contract>" in prompt
+        assert "Objective: Build a REST API" in prompt
+        assert "1. pytest tests/api -q" in prompt
+        assert "Completion promise: COMPLETE" in prompt
+        assert "Only emit <promise>COMPLETE</promise>" in prompt
     finally:
         CommandRegistry.restore(snapshot)
 
@@ -1769,7 +1781,7 @@ async def test_cancel_ralph_clears_session_state(tmp_path):
         runtime = _build_dummy_runtime(tmp_path)
         workspace_path = str(tmp_path / "workspace")
         state_path = runtime._resolve_plugin_state_path(
-            plugin_id=plugin.manifest.plugin_id,
+            plugin_id="goal-session",
             scope="session",
             session_id="session-1",
             workspace_path=workspace_path,
@@ -1777,8 +1789,11 @@ async def test_cancel_ralph_clears_session_state(tmp_path):
         runtime._plugin_state_store.handle(state_path).write(
             {
                 "active": True,
-                "prompt": "Build a REST API",
-                "iteration": 2,
+                "status": "active",
+                "objective": "Build a REST API",
+                "turn_count": 2,
+                "max_turns": 5,
+                "source": "ralph_compat",
             }
         )
 
@@ -1794,5 +1809,108 @@ async def test_cancel_ralph_clears_session_state(tmp_path):
 
         assert "cancel" in result.lower()
         assert runtime._plugin_state_store.handle(state_path).read() == {}
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_goal_command_status_pause_and_clear(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        runtime = _build_dummy_runtime(tmp_path)
+        workspace_path = str(tmp_path / "workspace")
+        state_path = runtime._resolve_plugin_state_path(
+            plugin_id="goal-session",
+            scope="session",
+            session_id="session-1",
+            workspace_path=workspace_path,
+        )
+        handle = runtime._plugin_state_store.handle(state_path)
+        handle.write(
+            {
+                "active": True,
+                "status": "active",
+                "objective": "Stabilize the goal flow",
+                "turn_count": 2,
+                "max_turns": 5,
+                "verification_commands": ["pytest tests/plugins -q"],
+                "completion_promise": "COMPLETE",
+                "source": "goal",
+            }
+        )
+
+        command = CommandRegistry.get("goal")
+        status_result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="status",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+        pause_result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="pause",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+        clear_result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="clear",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+
+        assert "<goal_contract>" in status_result
+        assert "Objective: Stabilize the goal flow" in status_result
+        assert "Status: active" in status_result
+        assert "Status: paused" in pause_result
+        assert handle.read() == {}
+        assert clear_result == "Goal cleared."
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_goal_command_reports_no_active_goal_and_usage(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        runtime = _build_dummy_runtime(tmp_path)
+        workspace_path = str(tmp_path / "workspace")
+        command = CommandRegistry.get("goal")
+
+        empty_result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="status",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+        usage_result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="bogus",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+
+        assert empty_result == "No active goal."
+        assert usage_result == "Usage: /goal [status|pause|clear]"
     finally:
         CommandRegistry.restore(snapshot)

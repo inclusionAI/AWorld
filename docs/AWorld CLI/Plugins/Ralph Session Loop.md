@@ -1,39 +1,34 @@
 # Ralph Session Loop
 
-This document explains how to use the built-in Ralph session-loop plugin in AWorld CLI.
+This document explains how the built-in Ralph compatibility commands work in AWorld CLI.
 
 ## What It Does
 
-The Ralph plugin keeps a task running inside the **current interactive CLI session**.
+The Ralph surface remains:
 
-The flow is:
+- `/ralph-loop` to start work
+- `/cancel-ralph` to discard Ralph-owned loop state
 
-1. Start a loop with `/ralph-loop`
-2. Let the agent work on the task
-3. Type `exit`
-4. The plugin `stop` hook intercepts the exit
-5. If the loop is not finished, the same task is fed back as a follow-up prompt
-6. The loop continues until completion, cancellation, or iteration limit
+Under the hood, those commands now write into the shared `goal-session` contract. That shared contract owns:
 
-This is the phase-1 interactive Ralph model. It is **not** the fresh-process orchestration model.
+- persisted goal state
+- continuation prompts
+- completion and turn-budget status
+- exit protection while a goal is still active
 
-## Boundary With RalphRunner
+This is still the phase-1 interactive model. It is not fresh-process orchestration.
 
-The Ralph session-loop plugin and `RalphRunner` are intentionally different layers.
+## Control Flow
 
-- the Ralph plugin is an `aworld-cli` capability for continuing work across an interactive session
-- `RalphRunner` is an `aworld` framework capability for running Ralph-style convergence inside task execution
+The actual control flow is:
 
-The phase-1 plugin does **not** call `RalphRunner`, wrap `RalphRunner`, or depend on `RalphRunner`.
+1. `/ralph-loop` creates a goal-session record with source `ralph_compat`
+2. The agent completes a task pass
+3. The `goal-session` `task_completed` hook decides whether to continue immediately
+4. If the goal is still active, trying to `exit` is denied until you pause or clear it
+5. `/cancel-ralph` clears only Ralph-owned active goal state
 
-The intended boundary is:
-
-- outer plugin controls whether the current CLI session should continue into another round
-- inner runner controls whether a single task execution has converged
-
-That means Ralph support in AWorld is **not** limited to the CLI plugin. Framework users can still use Ralph through runner-level APIs, while CLI users can use the session-loop plugin as a separate interaction model.
-
-For the framework-side runtime, see [Ralph Runner](../../Agents/Runtime/Ralph%20Runner.md).
+The important change is that continuation no longer comes from the Ralph `stop` hook. Continuation comes from the shared goal-session lifecycle hooks, while the goal-session `stop` hook only protects against accidental exit.
 
 ## Commands
 
@@ -49,86 +44,58 @@ Start a Ralph loop with declarative verification:
 /ralph-loop "Create a CLI tool" --verify "pytest tests/cli -q" --completion-promise "COMPLETE"
 ```
 
-Cancel the active loop:
+Cancel the active Ralph-owned loop:
 
 ```text
 /cancel-ralph
 ```
 
-## Supported Arguments
-
-`/ralph-loop` supports:
-
-- prompt text
-- repeatable `--verify`
-- optional `--completion-promise`
-- optional `--max-iterations`
-
-Examples:
+Inspect or control the shared goal state:
 
 ```text
-/ralph-loop "Build a Python course"
+/goal status
+/goal pause
+/goal clear
 ```
+
+`/cancel-ralph` is intentionally narrower than `/goal clear`: it only clears active state that was created by `/ralph-loop`.
+
+## Goal Contract
+
+`/ralph-loop` now produces a persisted goal contract shaped like:
 
 ```text
-/ralph-loop "Build a REST API" --max-iterations 5
+<goal_contract>
+Objective: Build a REST API
+Status: active
+Turns: 1/5
+Source: ralph_compat
+Verification commands:
+1. pytest tests/api -q
+Completion promise: COMPLETE
+</goal_contract>
 ```
 
-```text
-/ralph-loop "Create a CLI tool" --verify "pytest tests/cli -q" --verify "ruff check ." --completion-promise "COMPLETE"
-```
+That prompt is what the agent sees when the shared goal-session hook decides another turn is needed.
 
-## How Verification Works
+## Verification
 
-Phase 1 uses **declarative verification**, not stop-hook-executed verification.
+Phase 1 still uses declarative verification:
 
-That means:
+- `--verify` values are stored structurally
+- they are injected into the goal contract
+- the agent is told to run them before claiming completion
+- the plugin does not execute those commands itself
 
-- `--verify` values are stored in plugin state
-- they are injected into the effective task prompt
-- the agent is instructed to run them before claiming completion
-- the plugin itself does not execute those commands inside the stop hook
-
-For example:
-
-```text
-/ralph-loop "Create a CLI tool" --verify "pytest tests/cli -q" --completion-promise "COMPLETE"
-```
-
-The follow-up prompt will include sections similar to:
-
-```text
-Task:
-Create a CLI tool
-
-Verification requirements:
-1. Run: pytest tests/cli -q
-
-Completion rule:
-Only output <promise>COMPLETE</promise> when every verification requirement passes.
-```
-
-## Completion Behavior
-
-If you set a completion promise, the loop stops only when the latest final answer contains the exact promise tag.
-
-Example:
-
-```text
-/ralph-loop "Create a CLI tool" --completion-promise "COMPLETE"
-```
-
-Required completion output:
+The completion promise remains exact and case-sensitive:
 
 ```text
 <promise>COMPLETE</promise>
 ```
 
-The match is exact and case-sensitive.
+## Turn Limits
 
-## Iteration Limit Behavior
-
-If you set `--max-iterations`, the loop stops once the recorded iteration reaches that value.
+`--max-iterations` on `/ralph-loop` maps to the shared goal-session turn budget.
 
 Example:
 
@@ -136,94 +103,34 @@ Example:
 /ralph-loop "Build a REST API" --max-iterations 5
 ```
 
-Expected behavior:
+Behavior:
 
-- first few `exit` attempts continue the loop
-- once iteration `5` is reached, `exit` is allowed
+- unfinished turns continue automatically through the task-completed hook
+- once turn `5` finishes without the promise, the goal becomes `budget_limited`
+- after that point, no further continuation is triggered
 
-Important:
+## Exit Behavior
 
-- plugin `--max-iterations` applies only to the outer session loop
-- it does not override or configure `RalphRunner` internal `max_iterations`
-- if a task is ever executed by a runner with its own internal iteration cap, that cap remains an inner execution concern
+If a goal is still active, `exit` is denied with guidance to either:
 
-## Typical Workflow
+- `/goal pause` to keep the goal for later
+- `/goal clear` to discard it
 
-1. Start `aworld-cli`
-2. Run a Ralph command
-3. Let the agent complete one pass
-4. Type `exit`
-5. If the task is incomplete, the loop continues
-6. Repeat until:
-   - the completion promise is satisfied
-   - the iteration limit is reached
-   - you run `/cancel-ralph`
+If the goal is already `complete`, `paused`, or `budget_limited`, normal exit is allowed.
 
 ## HUD
 
-When the loop is active, the HUD can show summary state such as:
+The shared HUD now reports goal-session state rather than Ralph-specific labels. Typical segments are:
 
-- `Ralph: active`
-- `Iter: 2/5`
-- `Promise: COMPLETE`
+- `Goal: active`
+- `Turns: 2/5`
+- `Verify: 1`
 
-If no loop is active, the HUD shows `Ralph: inactive`.
+## Boundary With RalphRunner
 
-## Current Limits
+The Ralph command surface and `RalphRunner` are still separate layers.
 
-The current phase-1 plugin does **not** support:
+- the CLI commands manage interactive session state
+- `RalphRunner` manages convergence inside task execution
 
-- fresh-process Ralph orchestration
-- `--model`
-- `--work-dir`
-- stop-hook-executed verification commands
-- advanced multi-branch planning artifacts like `prd.json` and `progress.txt`
-
-Those belong to a later phase.
-
-## Manual Smoke Check
-
-Try this:
-
-```text
-/ralph-loop "Build a REST API" --verify "pytest tests/cli -q" --completion-promise "COMPLETE" --max-iterations 3
-```
-
-Then:
-
-1. let the agent answer once
-2. type `exit`
-
-Expected:
-
-- the session does not exit immediately
-- a Ralph iteration message is shown
-- the task is continued with a follow-up prompt
-
-Then cancel:
-
-```text
-/cancel-ralph
-```
-
-Type `exit` again.
-
-Expected:
-
-- the session exits normally
-
-## Troubleshooting
-
-If `exit` does not continue the task:
-
-- confirm that `/ralph-loop` was started in the current session
-- confirm that the loop was not already cancelled
-- confirm that `--max-iterations` was not already reached
-- confirm that the completion promise was not already satisfied
-
-If the loop never completes:
-
-- use a smaller task
-- add one or more `--verify` commands
-- add an explicit `--completion-promise`
-- set a reasonable `--max-iterations`
+The phase-1 compatibility layer does not call `RalphRunner`, wrap it, or depend on it.
