@@ -1,12 +1,13 @@
 # Goal Session
 
-This document explains the shared goal-session plugin that now owns persisted loop state in AWorld CLI.
+This document explains the built-in goal-session plugin that owns persisted goal state in AWorld CLI.
 
 ## Commands
 
-The plugin exposes a single session-scoped command:
+The plugin exposes a single session-scoped command surface:
 
 ```text
+/goal "Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE" --max-turns 5
 /goal status
 /goal pause
 /goal clear
@@ -14,6 +15,7 @@ The plugin exposes a single session-scoped command:
 
 Behavior:
 
+- `/goal "..."` starts a new active goal contract and hands it to the current agent session
 - `status` prints the current goal contract
 - `pause` marks an active goal as paused so the session can exit cleanly
 - `clear` removes the stored goal state
@@ -41,7 +43,7 @@ Goal-session tracks a shared contract with fields such as:
 - `source`
 - last answer, error, or partial-answer excerpts
 
-The `source` field distinguishes native goals from compatibility layers such as `/ralph-loop`.
+The `source` field records where the goal was created. Native `/goal` sessions use `goal`.
 
 ## Hook Responsibilities
 

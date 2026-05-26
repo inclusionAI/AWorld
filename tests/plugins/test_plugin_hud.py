@@ -19,13 +19,6 @@ def _get_builtin_aworld_hud_root() -> Path:
     raise AssertionError("built-in aworld_hud plugin root not found")
 
 
-def _get_builtin_ralph_plugin_root() -> Path:
-    for root in get_builtin_plugin_roots():
-        if root.name == "ralph_session_loop":
-            return root
-    raise AssertionError("built-in ralph_session_loop plugin root not found")
-
-
 def _get_builtin_goal_plugin_root() -> Path:
     for root in get_builtin_plugin_roots():
         if root.name == "goal_session":

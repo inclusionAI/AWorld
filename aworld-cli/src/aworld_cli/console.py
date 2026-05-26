@@ -3487,13 +3487,15 @@ class AWorldCLI:
                                         self.console.print(f"[red]Error: {error}[/red]")
                                         continue
 
+                                    command_type = command.resolve_command_type(cmd_context)
+
                                     # Route by command type
-                                    if command.command_type == "tool":
+                                    if command_type == "tool":
                                         # Tool command: Direct execution
                                         result = await command.execute(cmd_context)
                                         self.console.print(result)
                                         continue
-                                    else:
+                                    elif command_type == "prompt":
                                         # Prompt command: Generate prompt for agent, then execute with tool filtering
                                         prompt = await command.get_prompt(cmd_context)
 
@@ -3532,6 +3534,12 @@ class AWorldCLI:
                                             logger.warning(f"Tool filtering not available for command /{cmd_name} (no swarm found)")
                                             user_input = prompt  # Replace input with generated prompt
                                             # Fall through to normal execution
+
+                                    else:
+                                        self.console.print(
+                                            f"[red]Error: Unsupported command type '{command_type}' for /{cmd_name}[/red]"
+                                        )
+                                        continue
 
                                 except Exception as e:
                                     import traceback
