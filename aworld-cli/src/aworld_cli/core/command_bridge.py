@@ -125,17 +125,6 @@ class CommandBridge:
                 text=f"Unknown command: /{command_name}\nType /help to see available commands",
             )
 
-        if command.command_type == "prompt" and prompt_executor is None:
-            return CommandBridgeResult(
-                handled=True,
-                command_name=command_name,
-                status="unsupported",
-                text=(
-                    f"Command '/{command_name}' is not yet supported in this bridge context. "
-                    "Prompt commands require a prompt executor."
-                ),
-            )
-
         resolved_cwd = str(Path(cwd).expanduser().resolve())
         effective_runtime = _CommandRuntimeAdapter(
             workspace_path=resolved_cwd,
@@ -149,6 +138,18 @@ class CommandBridge:
             session_id=session_id,
         )
         self._attach_runtime_capabilities(context, runtime)
+        command_type = command.resolve_command_type(context)
+
+        if command_type == "prompt" and prompt_executor is None:
+            return CommandBridgeResult(
+                handled=True,
+                command_name=command_name,
+                status="unsupported",
+                text=(
+                    f"Command '/{command_name}' is not yet supported in this bridge context. "
+                    "Prompt commands require a prompt executor."
+                ),
+            )
 
         try:
             error = await command.pre_execute(context)
@@ -160,9 +161,9 @@ class CommandBridge:
                     text=f"Error: {error}",
                 )
 
-            if command.command_type == "tool":
+            if command_type == "tool":
                 result = await command.execute(context)
-            elif command.command_type == "prompt":
+            elif command_type == "prompt":
                 prompt = await command.get_prompt(context)
                 result = await prompt_executor(
                     prompt=prompt,
@@ -174,7 +175,7 @@ class CommandBridge:
                     handled=True,
                     command_name=command_name,
                     status="unsupported",
-                    text=f"Command '/{command_name}' uses unsupported type '{command.command_type}'.",
+                    text=f"Command '/{command_name}' uses unsupported type '{command_type}'.",
                 )
 
             await command.post_execute(context, result)

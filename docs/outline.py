@@ -15,7 +15,7 @@ file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities", "
                  "AWorld CLI": ["Overview", "Installation", "Configuration", "Commands", "Hooks", "Plugins", "Recipes"],
                  "Commands": ["Overview", "Memory", "Cron", "Plugins", "Gateway", "Parallel Tasks"],
                  "Hooks": ["Overview", "Examples"],
-                 "Plugins": ["Overview", "Plugin Sdk", "Ralph Session Loop"],
+                 "Plugins": ["Overview", "Plugin Sdk", "Goal Session"],
                  "Recipes": ["Overview", "Deep Search", "Mini App Build", "Video Creation"],
                  "Environment": ["Overview", "Using Api", "Env Client", "Advanced Capabilities", "Oceanbase"],
                  "Training": ["Trainer", "Trajectory", "Evaluation"]}

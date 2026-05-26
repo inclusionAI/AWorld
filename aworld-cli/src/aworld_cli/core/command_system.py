@@ -97,6 +97,10 @@ class Command(ABC):
         """
         return "prompt"  # Default to prompt commands
 
+    def resolve_command_type(self, context: CommandContext) -> str:
+        """Return the effective command type for this invocation."""
+        return self.command_type
+
     @property
     def allowed_tools(self) -> List[str]:
         """

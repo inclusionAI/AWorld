@@ -6,9 +6,12 @@ from pathlib import Path
 import pytest
 
 from aworld_cli.core.command_system import CommandContext, CommandRegistry
-from aworld_cli.builtin_plugins.ralph_session_loop.common import (
-    extract_completion_promise,
-    parse_loop_args,
+from aworld_cli.builtin_plugins.goal_session.common import (
+    parse_goal_args,
+    resolve_goal_control_action,
+)
+from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
+    _extract_completion_promise as extract_completion_promise,
     summarize_text,
 )
 from aworld.plugins.discovery import discover_plugins
@@ -39,17 +42,6 @@ def _build_dummy_runtime(tmp_path):
 
 def _plugin_stub(plugin_id: str):
     return SimpleNamespace(manifest=SimpleNamespace(plugin_id=plugin_id))
-
-
-def _get_builtin_ralph_plugin_root() -> Path:
-    return (
-        Path(__file__).resolve().parents[2]
-        / "aworld-cli"
-        / "src"
-        / "aworld_cli"
-        / "builtin_plugins"
-        / "ralph_session_loop"
-    )
 
 
 def _get_builtin_goal_plugin_root() -> Path:
@@ -85,15 +77,24 @@ def _get_builtin_steering_plugin_root() -> Path:
     )
 
 
-@pytest.mark.parametrize("user_args", ['"Build API" --max-iterations 0', '"Build API" --max-iterations -5'])
-def test_parse_loop_args_rejects_non_positive_max_iterations(user_args):
-    with pytest.raises(ValueError, match="--max-iterations must be >= 1"):
-        parse_loop_args(user_args)
+@pytest.mark.parametrize("user_args", ['"Build API" --max-turns 0', '"Build API" --max-turns -5'])
+def test_parse_goal_args_rejects_non_positive_max_turns(user_args):
+    with pytest.raises(ValueError, match="--max-turns must be >= 1"):
+        parse_goal_args(user_args)
 
 
-def test_parse_loop_args_rejects_malformed_quotes():
+def test_parse_goal_args_rejects_malformed_quotes():
     with pytest.raises(ValueError, match="quotation"):
-        parse_loop_args('"Build API --verify unclosed')
+        parse_goal_args('"Build API --verify unclosed')
+
+
+def test_resolve_goal_control_action_requires_exact_subcommand():
+    assert resolve_goal_control_action("status") == "status"
+    assert resolve_goal_control_action("pause") == "pause"
+    assert resolve_goal_control_action("clear") == "clear"
+    assert resolve_goal_control_action("") is None
+    assert resolve_goal_control_action('"status page redesign" --max-turns 2') is None
+    assert resolve_goal_control_action("clear now") is None
 
 
 def test_extract_completion_promise_strips_multiline_content():
@@ -1704,23 +1705,22 @@ def test_plugin_command_workspace_state_is_shared_with_hook_runtime(tmp_path):
     assert hook_state["iteration"] == 2
 
 
-async def test_ralph_loop_command_initializes_session_state(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
+async def test_goal_command_initializes_session_state_from_direct_start(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
 
     snapshot = CommandRegistry.snapshot()
     try:
         CommandRegistry.clear()
         register_plugin_commands([plugin])
-        command = CommandRegistry.get("ralph-loop")
+        command = CommandRegistry.get("goal")
         runtime = _build_dummy_runtime(tmp_path)
-        runtime._plugins = [_plugin_stub("ralph-session-loop"), _plugin_stub("goal-session")]
         workspace_path = str(tmp_path / "workspace")
 
         prompt = await command.get_prompt(
             CommandContext(
                 cwd=workspace_path,
-                user_args='"Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE" --max-iterations 5',
+                user_args='"Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE" --max-turns 5',
                 runtime=runtime,
                 session_id="session-1",
             )
@@ -1741,7 +1741,7 @@ async def test_ralph_loop_command_initializes_session_state(tmp_path):
         assert payload["max_turns"] == 5
         assert payload["completion_promise"] == "COMPLETE"
         assert payload["verification_commands"] == ["pytest tests/api -q"]
-        assert payload["source"] == "ralph_compat"
+        assert payload["source"] == "goal"
         assert "<goal_contract>" in prompt
         assert "Objective: Build a REST API" in prompt
         assert "1. pytest tests/api -q" in prompt
@@ -1752,15 +1752,15 @@ async def test_ralph_loop_command_initializes_session_state(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ralph_loop_command_rejects_missing_state_handle_at_prompt_time(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
+async def test_goal_command_rejects_missing_state_handle_at_prompt_time(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
 
     snapshot = CommandRegistry.snapshot()
     try:
         CommandRegistry.clear()
         register_plugin_commands([plugin])
-        command = CommandRegistry.get("ralph-loop")
+        command = CommandRegistry.get("goal")
 
         with pytest.raises(ValueError, match="session-aware plugin state"):
             await command.get_prompt(
@@ -1776,71 +1776,37 @@ async def test_ralph_loop_command_rejects_missing_state_handle_at_prompt_time(tm
 
 
 @pytest.mark.asyncio
-async def test_ralph_loop_command_rejects_missing_goal_session_plugin(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
+async def test_goal_command_treats_non_exact_status_phrase_as_objective(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
 
     snapshot = CommandRegistry.snapshot()
     try:
         CommandRegistry.clear()
         register_plugin_commands([plugin])
-        command = CommandRegistry.get("ralph-loop")
+        command = CommandRegistry.get("goal")
         runtime = _build_dummy_runtime(tmp_path)
-        runtime._plugins = [_plugin_stub("ralph-session-loop")]
-
-        with pytest.raises(ValueError, match="goal-session plugin"):
-            await command.get_prompt(
-                CommandContext(
-                    cwd=str(tmp_path / "workspace"),
-                    user_args='"Build a REST API"',
-                    runtime=runtime,
-                    session_id="session-1",
-                )
-            )
-    finally:
-        CommandRegistry.restore(snapshot)
-
-
-async def test_cancel_ralph_clears_session_state(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
-    plugin = discover_plugins([plugin_root])[0]
-
-    snapshot = CommandRegistry.snapshot()
-    try:
-        CommandRegistry.clear()
-        register_plugin_commands([plugin])
-        runtime = _build_dummy_runtime(tmp_path)
-        runtime._plugins = [_plugin_stub("ralph-session-loop"), _plugin_stub("goal-session")]
         workspace_path = str(tmp_path / "workspace")
+
+        prompt = await command.get_prompt(
+            CommandContext(
+                cwd=workspace_path,
+                user_args='"status page redesign" --max-turns 2',
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
         state_path = runtime._resolve_plugin_state_path(
             plugin_id="goal-session",
             scope="session",
             session_id="session-1",
             workspace_path=workspace_path,
         )
-        runtime._plugin_state_store.handle(state_path).write(
-            {
-                "active": True,
-                "status": "active",
-                "objective": "Build a REST API",
-                "turn_count": 2,
-                "max_turns": 5,
-                "source": "ralph_compat",
-            }
-        )
+        payload = runtime._plugin_state_store.handle(state_path).read()
 
-        command = CommandRegistry.get("cancel-ralph")
-        result = await command.execute(
-            CommandContext(
-                cwd=workspace_path,
-                user_args="",
-                runtime=runtime,
-                session_id="session-1",
-            )
-        )
-
-        assert "cancel" in result.lower()
-        assert runtime._plugin_state_store.handle(state_path).read() == {}
+        assert payload["objective"] == "status page redesign"
+        assert payload["max_turns"] == 2
+        assert "Objective: status page redesign" in prompt
     finally:
         CommandRegistry.restore(snapshot)
 
@@ -1936,13 +1902,13 @@ async def test_goal_command_reports_no_active_goal_and_usage(tmp_path):
         usage_result = await command.execute(
             CommandContext(
                 cwd=workspace_path,
-                user_args="bogus",
+                user_args="",
                 runtime=runtime,
                 session_id="session-1",
             )
         )
 
         assert empty_result == "No active goal."
-        assert usage_result == "Usage: /goal [status|pause|clear]"
+        assert "missing task prompt" in usage_result
     finally:
         CommandRegistry.restore(snapshot)

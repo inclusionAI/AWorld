@@ -98,9 +98,9 @@ Minimal Python-backed manifest example:
   "entrypoints": {
     "commands": [
       {
-        "id": "ralph-loop",
-        "name": "ralph-loop",
-        "target": "commands/ralph_loop.py",
+        "id": "goal",
+        "name": "goal",
+        "target": "commands/goal.py",
         "scope": "session",
         "metadata": {
           "factory": "build_command"

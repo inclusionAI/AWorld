@@ -14,18 +14,6 @@ from aworld_cli.plugin_capabilities.hooks import PluginHookResult, load_plugin_h
 from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
 
-
-def _get_builtin_ralph_plugin_root() -> Path:
-    return (
-        Path(__file__).resolve().parents[2]
-        / "aworld-cli"
-        / "src"
-        / "aworld_cli"
-        / "builtin_plugins"
-        / "ralph_session_loop"
-    )
-
-
 def _get_builtin_goal_plugin_root() -> Path:
     return (
         Path(__file__).resolve().parents[2]
@@ -506,7 +494,7 @@ async def test_goal_stop_hook_denies_exit_when_goal_is_active(tmp_path):
             "turn_count": 2,
             "max_turns": 5,
             "verification_commands": ["pytest tests/api -q"],
-            "source": "ralph_compat",
+            "source": "goal",
         }
     )
 
@@ -539,7 +527,7 @@ async def test_goal_task_completed_hook_marks_goal_complete_on_exact_completion_
             "max_turns": 5,
             "completion_promise": "COMPLETE",
             "verification_commands": [],
-            "source": "ralph_compat",
+            "source": "goal",
         }
     )
 
@@ -655,22 +643,23 @@ async def test_goal_task_interrupted_hook_clears_stale_error_excerpt(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ralph_stop_hook_allows_exit_without_driving_continuation(tmp_path):
-    plugin_root = _get_builtin_ralph_plugin_root()
+async def test_goal_stop_hook_allows_exit_when_goal_is_not_active(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
     hooks = load_plugin_hooks([plugin])
 
     store = PluginStateStore(tmp_path / "plugin-state")
-    state_path = store.session_state("ralph-session-loop", "session-1")
+    state_path = store.session_state("goal-session", "session-1")
     handle = store.handle(state_path)
     handle.write(
         {
-            "active": True,
-            "prompt": "Build a REST API",
-            "iteration": 1,
-            "max_iterations": 5,
+            "active": False,
+            "status": "paused",
+            "objective": "Build a REST API",
+            "turn_count": 1,
+            "max_turns": 5,
             "completion_promise": "COMPLETE",
-            "verify_commands": ["pytest tests/api -q"],
+            "verification_commands": ["pytest tests/api -q"],
         }
     )
 
@@ -680,7 +669,7 @@ async def test_ralph_stop_hook_allows_exit_without_driving_continuation(tmp_path
     )
 
     assert result.action == "allow"
-    assert handle.read()["iteration"] == 1
+    assert handle.read()["turn_count"] == 1
 
 
 @pytest.mark.asyncio

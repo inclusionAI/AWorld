@@ -25,7 +25,7 @@ The `/plugins` slash command manages framework plugins inside the current intera
 ## Related Pages
 
 - See [Plugin SDK](../Plugins/Plugin%20SDK.md) for the supported plugin manifest and entrypoint contract.
-- See [Ralph Session Loop](../Plugins/Ralph%20Session%20Loop.md) for a built-in plugin example.
+- See [Goal Session](../Plugins/Goal%20Session.md) for a built-in plugin example.
 
 ## Notes And Limits
 

@@ -19,17 +19,6 @@ from aworld_cli.runtime.base import BaseCliRuntime
 from aworld.plugins.discovery import discover_plugins
 
 
-def _get_builtin_ralph_plugin_root() -> Path:
-    return (
-        Path(__file__).resolve().parents[1]
-        / "aworld-cli"
-        / "src"
-        / "aworld_cli"
-        / "builtin_plugins"
-        / "ralph_session_loop"
-    )
-
-
 def _get_builtin_goal_plugin_root() -> Path:
     return (
         Path(__file__).resolve().parents[1]
@@ -379,10 +368,10 @@ EOF
                 return "TEST"
 
             def _get_source_location(self):
-                return "test://ralph"
+                return "test://goal"
 
-        plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
-        runtime = DummyRuntime([_get_builtin_ralph_plugin_root(), _get_builtin_goal_plugin_root()])
+        plugin = discover_plugins([_get_builtin_goal_plugin_root()])[0]
+        runtime = DummyRuntime([_get_builtin_goal_plugin_root()])
 
         snapshot = CommandRegistry.snapshot()
         try:
@@ -390,14 +379,14 @@ EOF
             runtime._initialize_plugin_framework()
             register_plugin_commands([plugin])
 
-            loop_command = CommandRegistry.get("ralph-loop")
-            assert loop_command is not None
+            goal_command = CommandRegistry.get("goal")
+            assert goal_command is not None
 
             workspace_path = str(tmp_path)
-            prompt = await loop_command.get_prompt(
+            prompt = await goal_command.get_prompt(
                 CommandContext(
                     cwd=workspace_path,
-                    user_args='"Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE" --max-iterations 5',
+                    user_args='"Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE" --max-turns 5',
                     runtime=runtime,
                     session_id="session-1",
                 )
@@ -436,7 +425,7 @@ EOF
             CommandRegistry.restore(snapshot)
 
     @pytest.mark.asyncio
-    async def test_apply_stop_hooks_allows_exit_after_ralph_completion(self, tmp_path):
+    async def test_apply_stop_hooks_allows_exit_after_goal_completion(self, tmp_path):
         class DummyRuntime(BaseCliRuntime):
             def __init__(self, plugin_dirs):
                 self.plugin_dirs = plugin_dirs
@@ -452,10 +441,10 @@ EOF
                 return "TEST"
 
             def _get_source_location(self):
-                return "test://ralph"
+                return "test://goal"
 
-        plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
-        runtime = DummyRuntime([_get_builtin_ralph_plugin_root(), _get_builtin_goal_plugin_root()])
+        plugin = discover_plugins([_get_builtin_goal_plugin_root()])[0]
+        runtime = DummyRuntime([_get_builtin_goal_plugin_root()])
 
         snapshot = CommandRegistry.snapshot()
         try:
@@ -463,11 +452,11 @@ EOF
             runtime._initialize_plugin_framework()
             register_plugin_commands([plugin])
 
-            loop_command = CommandRegistry.get("ralph-loop")
-            assert loop_command is not None
+            goal_command = CommandRegistry.get("goal")
+            assert goal_command is not None
 
             workspace_path = str(tmp_path)
-            await loop_command.get_prompt(
+            await goal_command.get_prompt(
                 CommandContext(
                     cwd=workspace_path,
                     user_args='"Build a REST API" --completion-promise "COMPLETE"',
@@ -510,7 +499,7 @@ EOF
             CommandRegistry.restore(snapshot)
 
     @pytest.mark.asyncio
-    async def test_apply_stop_hooks_allows_exit_after_cancel_ralph(self, tmp_path):
+    async def test_apply_stop_hooks_allows_exit_after_goal_clear(self, tmp_path):
         class DummyRuntime(BaseCliRuntime):
             def __init__(self, plugin_dirs):
                 self.plugin_dirs = plugin_dirs
@@ -526,10 +515,10 @@ EOF
                 return "TEST"
 
             def _get_source_location(self):
-                return "test://ralph"
+                return "test://goal"
 
-        plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
-        runtime = DummyRuntime([_get_builtin_ralph_plugin_root(), _get_builtin_goal_plugin_root()])
+        plugin = discover_plugins([_get_builtin_goal_plugin_root()])[0]
+        runtime = DummyRuntime([_get_builtin_goal_plugin_root()])
 
         snapshot = CommandRegistry.snapshot()
         try:
@@ -538,29 +527,27 @@ EOF
             register_plugin_commands([plugin])
 
             workspace_path = str(tmp_path)
-            loop_command = CommandRegistry.get("ralph-loop")
-            cancel_command = CommandRegistry.get("cancel-ralph")
-            assert loop_command is not None
-            assert cancel_command is not None
+            goal_command = CommandRegistry.get("goal")
+            assert goal_command is not None
 
-            await loop_command.get_prompt(
+            await goal_command.get_prompt(
                 CommandContext(
                     cwd=workspace_path,
-                    user_args='"Build a REST API" --max-iterations 5',
+                    user_args='"Build a REST API" --max-turns 5',
                     runtime=runtime,
                     session_id="session-1",
                 )
             )
-            cancel_result = await cancel_command.execute(
+            clear_result = await goal_command.execute(
                 CommandContext(
                     cwd=workspace_path,
-                    user_args="",
+                    user_args="clear",
                     runtime=runtime,
                     session_id="session-1",
                 )
             )
 
-            assert cancel_result == "Ralph loop cancelled."
+            assert clear_result == "Goal cleared."
 
             cli = AWorldCLI()
             session = Session()

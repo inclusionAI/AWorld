@@ -1,27 +1,67 @@
-import shlex
-
 from aworld_cli.core.command_system import CommandContext
 from aworld_cli.plugin_capabilities.commands import PluginBoundCommand
 
+from aworld_cli.builtin_plugins.goal_session.common import (
+    parse_goal_args,
+    resolve_goal_control_action,
+)
 from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
     build_goal_context_prompt,
     goal_status,
     is_goal_active,
+    new_goal_contract_state,
 )
 
 
 class GoalCommand(PluginBoundCommand):
     @property
     def command_type(self) -> str:
-        return "tool"
+        return "prompt"
+
+    def resolve_command_type(self, context: CommandContext) -> str:
+        if resolve_goal_control_action(context.user_args):
+            return "tool"
+        return "prompt"
+
+    async def pre_execute(self, context: CommandContext):
+        if resolve_goal_control_action(context.user_args):
+            return None
+        try:
+            parse_goal_args(context.user_args)
+        except ValueError as exc:
+            return f"/goal error: {exc}"
+        if self.get_state_handle(context) is None:
+            return "/goal requires session-aware plugin state"
+        return None
+
+    def _build_start_state(self, context: CommandContext) -> dict:
+        parsed = parse_goal_args(context.user_args)
+        handle = self.get_state_handle(context)
+        if handle is None:
+            raise ValueError("/goal requires session-aware plugin state")
+        state = new_goal_contract_state(
+            objective=parsed["prompt"],
+            verification_commands=parsed["verify_commands"],
+            completion_promise=parsed["completion_promise"],
+            max_turns=parsed["max_turns"],
+            source="goal",
+        )
+        handle.write(state)
+        return state
 
     async def execute(self, context: CommandContext) -> str:
+        action = resolve_goal_control_action(context.user_args)
+        if action is None:
+            try:
+                state = self._build_start_state(context)
+            except ValueError as exc:
+                return f"/goal error: {exc}"
+            return build_goal_context_prompt(state)
+
         handle = self.get_state_handle(context)
         if handle is None:
             return "Goal session state is unavailable."
 
-        tokens = shlex.split(context.user_args or "")
-        action = (tokens[0] if tokens else "status").strip().lower()
         current = handle.read()
 
         if action == "status":
@@ -41,7 +81,11 @@ class GoalCommand(PluginBoundCommand):
             handle.clear()
             return "Goal cleared."
 
-        return "Usage: /goal [status|pause|clear]"
+        return "Unknown /goal action."
+
+    async def get_prompt(self, context: CommandContext) -> str:
+        state = self._build_start_state(context)
+        return build_goal_context_prompt(state)
 
 
 def handle_event(event, state):

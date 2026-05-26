@@ -7,7 +7,7 @@
       {
         "id": "goal",
         "name": "goal",
-        "description": "Inspect or control the session goal state",
+        "description": "Start, inspect, or control the session goal state",
         "target": "hooks/stop.py",
         "scope": "session"
       }

@@ -150,7 +150,7 @@ Behavior:
 Framework and CLI iteration controls are separate:
 
 - `CompletionCriteria(max_iterations=...)` controls the inner `RalphRunner` loop
-- `/ralph-loop --max-iterations ...` controls the outer CLI session continuation loop
+- `/goal "..." --max-turns ...` controls the outer CLI session continuation loop
 
 Neither overrides the other automatically.
 
