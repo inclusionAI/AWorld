@@ -30,6 +30,17 @@ def _get_builtin_ralph_plugin_root() -> Path:
     )
 
 
+def _get_builtin_goal_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "goal_session"
+    )
+
+
 class TestCliUserInputHooks:
     @pytest.mark.asyncio
     async def test_apply_user_input_hooks_resolves_ask_interactively(self, tmp_path, monkeypatch):
@@ -352,7 +363,7 @@ EOF
         assert follow_up_prompt is None
 
     @pytest.mark.asyncio
-    async def test_apply_stop_hooks_runs_built_in_ralph_continuation_flow(self, tmp_path):
+    async def test_apply_stop_hooks_blocks_exit_while_goal_session_is_active(self, tmp_path):
         class DummyRuntime(BaseCliRuntime):
             def __init__(self, plugin_dirs):
                 self.plugin_dirs = plugin_dirs
@@ -371,7 +382,7 @@ EOF
                 return "test://ralph"
 
         plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
-        runtime = DummyRuntime([_get_builtin_ralph_plugin_root()])
+        runtime = DummyRuntime([_get_builtin_ralph_plugin_root(), _get_builtin_goal_plugin_root()])
 
         snapshot = CommandRegistry.snapshot()
         try:
@@ -383,7 +394,7 @@ EOF
             assert loop_command is not None
 
             workspace_path = str(tmp_path)
-            await loop_command.get_prompt(
+            prompt = await loop_command.get_prompt(
                 CommandContext(
                     cwd=workspace_path,
                     user_args='"Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE" --max-iterations 5',
@@ -391,6 +402,10 @@ EOF
                     session_id="session-1",
                 )
             )
+
+            assert "<goal_contract>" in prompt
+            assert "Objective: Build a REST API" in prompt
+            assert "pytest tests/api -q" in prompt
 
             cli = AWorldCLI()
             session = Session()
@@ -408,15 +423,15 @@ EOF
             )
 
             assert should_exit is False
-            assert "Task:" in follow_up_prompt
-            assert "Verification requirements:" in follow_up_prompt
+            assert follow_up_prompt is None
 
             state = runtime.build_plugin_hook_state(
-                "ralph-session-loop",
+                "goal-session",
                 "session",
                 executor_instance=executor_instance,
             )
-            assert state["iteration"] == 2
+            assert state["status"] == "active"
+            assert state["turn_count"] == 1
         finally:
             CommandRegistry.restore(snapshot)
 
@@ -440,7 +455,7 @@ EOF
                 return "test://ralph"
 
         plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
-        runtime = DummyRuntime([_get_builtin_ralph_plugin_root()])
+        runtime = DummyRuntime([_get_builtin_ralph_plugin_root(), _get_builtin_goal_plugin_root()])
 
         snapshot = CommandRegistry.snapshot()
         try:
@@ -484,6 +499,13 @@ EOF
 
             assert should_exit is True
             assert follow_up_prompt is None
+            state = runtime.build_plugin_hook_state(
+                "goal-session",
+                "session",
+                executor_instance=executor_instance,
+            )
+            assert state["status"] == "complete"
+            assert state["active"] is False
         finally:
             CommandRegistry.restore(snapshot)
 
@@ -507,7 +529,7 @@ EOF
                 return "test://ralph"
 
         plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
-        runtime = DummyRuntime([_get_builtin_ralph_plugin_root()])
+        runtime = DummyRuntime([_get_builtin_ralph_plugin_root(), _get_builtin_goal_plugin_root()])
 
         snapshot = CommandRegistry.snapshot()
         try:
@@ -529,7 +551,7 @@ EOF
                     session_id="session-1",
                 )
             )
-            await cancel_command.execute(
+            cancel_result = await cancel_command.execute(
                 CommandContext(
                     cwd=workspace_path,
                     user_args="",
@@ -537,6 +559,8 @@ EOF
                     session_id="session-1",
                 )
             )
+
+            assert cancel_result == "Ralph loop cancelled."
 
             cli = AWorldCLI()
             session = Session()
@@ -555,5 +579,14 @@ EOF
 
             assert should_exit is True
             assert follow_up_prompt is None
+            state = runtime.build_plugin_hook_state(
+                "goal-session",
+                "session",
+                executor_instance=executor_instance,
+            )
+            assert state["session_id"] == "session-1"
+            assert state["workspace_path"] == workspace_path
+            assert state["task_id"] == "task-1"
+            assert "__plugin_state__" in state
         finally:
             CommandRegistry.restore(snapshot)

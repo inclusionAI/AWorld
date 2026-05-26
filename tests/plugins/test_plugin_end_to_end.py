@@ -30,6 +30,17 @@ def _get_builtin_ralph_plugin_root() -> Path:
     )
 
 
+def _get_builtin_goal_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "goal_session"
+    )
+
+
 def _get_builtin_memory_plugin_root() -> Path:
     return (
         Path(__file__).resolve().parents[2]
@@ -104,6 +115,21 @@ def test_builtin_ralph_plugin_registers_commands_and_hook_capability():
 
         assert CommandRegistry.get("ralph-loop") is not None
         assert CommandRegistry.get("cancel-ralph") is not None
+        assert plugin.manifest.capabilities == {"commands", "hooks", "hud"}
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+def test_builtin_goal_plugin_registers_command_and_hook_capability():
+    plugin_root = _get_builtin_goal_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        assert CommandRegistry.get("goal") is not None
         assert plugin.manifest.capabilities == {"commands", "hooks", "hud"}
     finally:
         CommandRegistry.restore(snapshot)
