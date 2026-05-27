@@ -1,9 +1,10 @@
 # 2026-04-27-ralph-session-loop-plugin
 
-Track the phase-1 design for introducing Ralph session-loop commands in AWorld.
+Track the phase-1 design lineage that ultimately landed as the shared `/goal` session loop in AWorld.
 
 Implementation note:
 
-- the user-facing Ralph commands remain `/ralph-loop` and `/cancel-ralph`
-- the shared persisted contract now lives in the built-in `goal-session` plugin
+- the user-facing entrypoint is now `/goal`
+- `/goal "..."` starts a session goal directly
+- `/goal status`, `/goal pause`, and `/goal clear` control the persisted goal state
 - continuation is driven from task lifecycle hooks, while the `stop` hook only blocks accidental exit from an active goal
