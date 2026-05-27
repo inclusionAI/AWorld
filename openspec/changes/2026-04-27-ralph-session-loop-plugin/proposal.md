@@ -22,7 +22,7 @@ For AWorld, phase 1 should optimize for the smallest clean integration boundary:
 ## What Changes
 
 - Introduce a standalone AWorld goal-session controller plugin that provides the shared in-session loop contract for the interactive CLI.
-- Keep `/ralph-loop` and `/cancel-ralph` as compatibility-facing Ralph commands layered on top of that shared goal-session state.
+- Use `/goal` as the only user-facing command surface for starting and controlling that shared goal-session state.
 - Define the phase-1 plugin shape around:
   - prompt commands
   - task lifecycle hooks that update and continue the active goal
@@ -37,8 +37,8 @@ For AWorld, phase 1 should optimize for the smallest clean integration boundary:
 
 ### New Capabilities
 
-- `ralph-session-loop-plugin`: Adds a standalone plugin-hosted Ralph interaction model for the AWorld interactive CLI.
-- `goal-session-plugin`: Adds the shared persisted goal contract and exit-control surface used by Ralph compatibility commands.
+- `ralph-session-loop-plugin`: Tracks the original design lineage for the interactive session loop that now ships as `/goal`.
+- `goal-session-plugin`: Adds the shared persisted goal contract and exit-control surface used by `/goal`.
 
 ### Modified Capabilities
 
@@ -47,7 +47,7 @@ For AWorld, phase 1 should optimize for the smallest clean integration boundary:
 ## Impact
 
 - Affects plugin manifests and plugin entrypoint usage under the AWorld CLI plugin framework.
-- Affects the interactive CLI experience by adding Ralph-specific slash commands plus a shared goal-status surface (`/goal`) for pause, clear, and status inspection.
+- Affects the interactive CLI experience by adding a single `/goal` slash-command surface for start, pause, clear, and status inspection.
 - Moves continuation control to task lifecycle hooks while leaving stop-hook behavior focused on exit gating.
 - Does not require `aworld/core` changes for phase 1.
 - Does not require `RalphRunner` changes for phase 1.

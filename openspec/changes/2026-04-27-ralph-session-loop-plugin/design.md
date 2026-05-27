@@ -40,7 +40,7 @@ The current `RalphRunner` is not the right primary abstraction for this phase be
 - Do not implement fresh-process or fresh-session orchestration in phase 1.
 - Do not execute verification commands inside the stop hook in phase 1.
 - Do not add phase-1 loop-local runtime overrides such as `--model` or `--work-dir`.
-- Do not introduce Claude-specific state files such as `.claude/ralph-loop.local.md`.
+- Do not introduce Claude-specific state files such as `.claude/goal.local.md`.
 - Do not redesign the general plugin framework as part of this change.
 
 ## Decisions
@@ -51,9 +51,10 @@ The first AWorld Ralph capability should be implemented as a normal plugin, not 
 
 The plugin should own these entrypoints:
 
-- `commands/ralph-loop.md`
-- `commands/cancel-ralph.md`
-- `hooks/stop_hook.py`
+- `hooks/stop.py`
+- `hooks/task_completed.py`
+- `hooks/task_error.py`
+- `hooks/task_interrupted.py`
 - `hud/status.py`
 - `.aworld-plugin/plugin.json`
 
@@ -83,7 +84,7 @@ Implications:
 
 - the phase-1 plugin must not invoke `RalphRunner` implicitly
 - the plugin must not treat `RalphRunner` as the only way AWorld can expose Ralph semantics
-- plugin `--max-iterations` applies only to session continuation
+- plugin `--max-turns` applies only to session continuation
 - runner `completion_criteria.max_iterations` applies only to inner task execution
 - phase 1 does not define a priority or override relationship between those two limits
 
@@ -97,7 +98,7 @@ Why:
 
 The phase-1 control path should be:
 
-1. `/ralph-loop` initializes loop state.
+1. `/goal "..."` initializes loop state.
 2. The current session executes the task.
 3. The shared `goal-session` task lifecycle hooks update turn state and decide whether unfinished work should continue immediately.
 4. When the operator attempts to exit, the `goal-session` `stop` hook only decides whether exit is safe, paused, or should be denied.
@@ -128,7 +129,7 @@ Recommended minimum state shape:
     "pytest tests/api -q",
     "ruff check ."
   ],
-  "source": "ralph_compat",
+  "source": "goal",
   "started_at": "2026-04-27T10:00:00Z",
   "last_task_status": "initialized",
   "last_final_answer_excerpt": null
@@ -146,18 +147,18 @@ Why:
 - The plugin framework already exposes persisted state APIs.
 - It avoids introducing a second state persistence model just for Ralph.
 
-### Decision: `/ralph-loop` stores structured verify requirements in goal-session state, but hooks do not run them
+### Decision: `/goal` stores structured verify requirements in goal-session state, but hooks do not run them
 
 Phase-1 verification requirements should be declared structurally and then injected into the effective prompt.
 
 Recommended user-facing contract:
 
 ```text
-/ralph-loop "Implement the todo API" \
+/goal "Implement the todo API" \
   --verify "pytest tests/api -q" \
   --verify "ruff check ." \
   --completion-promise "COMPLETE" \
-  --max-iterations 20
+  --max-turns 20
 ```
 
 The plugin should persist these `verification_commands` in goal-session state and normalize the working prompt into a goal contract similar to:
@@ -167,7 +168,7 @@ The plugin should persist these `verification_commands` in goal-session state an
 Objective: Implement the todo API
 Status: active
 Turns: 1/20
-Source: ralph_compat
+Source: goal
 Verification commands:
 1. pytest tests/api -q
 2. ruff check .
@@ -245,12 +246,12 @@ Why:
 
 ### Command Contract
 
-`/ralph-loop`
+`/goal`
 
 - accepts task prompt text
 - accepts repeatable `--verify`
 - accepts optional `--completion-promise`
-- accepts optional `--max-iterations`
+- accepts optional `--max-turns`
 - initializes or replaces the active Ralph session state
 - emits a confirmation message describing the active loop policy
 
@@ -259,10 +260,10 @@ Explicitly deferred from the phase-1 command surface:
 - `--model`
 - `--work-dir`
 
-`/cancel-ralph`
+`/goal clear`
 
-- clears the active Ralph loop state
-- emits a confirmation message describing that the loop has been cancelled
+- clears the active goal loop state
+- emits a confirmation message describing that the loop has been cleared
 
 ### Hook Contract
 
@@ -296,8 +297,8 @@ The HUD provider reads plugin state and renders status lines only.
 Phase-1 validation should cover:
 
 - command registration and manifest loading
-- `/ralph-loop` state initialization
-- `/cancel-ralph` state clearing
+- `/goal` state initialization
+- `/goal clear` state clearing
 - `/goal` status, pause, and clear behavior
 - task-completed continuation behavior
 - exact completion-promise match behavior
@@ -309,11 +310,11 @@ Phase-1 validation should cover:
 Recommended simple acceptance cases for phase 1:
 
 - default unbounded loop:
-  `/ralph-loop "Build a Python course"`
+  `/goal "Build a Python course"`
 - explicit iteration cap:
-  `/ralph-loop "Build a REST API" --max-iterations 5`
+  `/goal "Build a REST API" --max-turns 5`
 - declarative verification:
-  `/ralph-loop "Create a CLI tool" --verify "pytest tests/cli -q" --completion-promise "COMPLETE"`
+  `/goal "Create a CLI tool" --verify "pytest tests/cli -q" --completion-promise "COMPLETE"`
 
 Examples intentionally not adopted as phase-1 acceptance cases:
 

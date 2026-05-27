@@ -1,12 +1,12 @@
-# Ralph Session Loop Plugin Implementation Plan
+# Goal Session Loop Implementation Plan
 
-> Historical note: this implementation plan predates the shared `goal-session` refactor. The shipped phase-1 behavior keeps `/ralph-loop` and `/cancel-ralph`, but uses the built-in `goal-session` plugin as the single persisted contract and loop-control surface.
+> Historical note: this implementation plan predates the final command unification. The shipped phase-1 behavior uses the built-in `goal-session` plugin as the single persisted contract and exposes `/goal` as the only user-facing command surface.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a standalone phase-1 Ralph plugin for the interactive AWorld CLI that loops within the current session using plugin commands, plugin state, and stop hooks.
+**Goal:** Build a standalone phase-1 session-goal loop for the interactive AWorld CLI that runs within the current session using plugin commands, plugin state, and stop hooks.
 
-**Architecture:** Extend plugin commands so a plugin can contribute Python-backed slash commands in addition to markdown prompt commands. Implement a built-in Ralph plugin with a prompt command for `/ralph-loop`, a tool command for `/cancel-ralph`, task-state hooks for final-answer diagnostics, a stop hook for continuation, and a HUD provider for loop status.
+**Architecture:** Extend plugin commands so a plugin can contribute Python-backed slash commands in addition to markdown prompt commands. Implement a built-in goal-session plugin with a slash command that starts a goal via `/goal "..."`, handles exact control actions for `/goal status`, `/goal pause`, and `/goal clear`, and uses task-state hooks plus a HUD provider for loop status.
 
 **Tech Stack:** Python, pytest, AWorld CLI plugin framework, plugin state store, command registry, plugin hooks, HUD providers
 
@@ -27,7 +27,7 @@ Add tests that require:
 ```python
 def test_register_python_backed_plugin_command_from_manifest():
     ...
-    command = CommandRegistry.get("ralph-loop")
+    command = CommandRegistry.get("goal")
     assert command is not None
     assert command.command_type == "prompt"
 
@@ -71,38 +71,37 @@ else:
 Run: `pytest tests/plugins/test_plugin_commands.py -k "python_backed or session_id" -v`
 Expected: PASS
 
-### Task 2: Built-in Ralph Plugin Commands
+### Task 2: Built-in Goal Plugin Commands
 
 **Files:**
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/.aworld-plugin/plugin.json`
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/__init__.py`
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/commands/ralph_loop.py`
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/commands/cancel_ralph.py`
+- Create: `aworld-cli/src/aworld_cli/builtin_plugins/goal_session/.aworld-plugin/plugin.json`
+- Create: `aworld-cli/src/aworld_cli/builtin_plugins/goal_session/common.py`
+- Create: `aworld-cli/src/aworld_cli/builtin_plugins/goal_session/hooks/stop.py`
 - Test: `tests/plugins/test_plugin_commands.py`
 
-- [ ] **Step 1: Write the failing tests for `/ralph-loop` and `/cancel-ralph` state behavior**
+- [ ] **Step 1: Write the failing tests for `/goal "..."` and `/goal clear` state behavior**
 
 Add tests that require:
 
 ```python
-async def test_ralph_loop_command_initializes_session_state(tmp_path):
+async def test_goal_command_initializes_session_state(tmp_path):
     ...
     payload = json.loads(state_path.read_text())
     assert payload["active"] is True
-    assert payload["iteration"] == 1
-    assert payload["verify_commands"] == ["pytest tests/api -q"]
+    assert payload["turn_count"] == 1
+    assert payload["verification_commands"] == ["pytest tests/api -q"]
 
-async def test_cancel_ralph_clears_session_state(tmp_path):
+async def test_goal_clear_clears_session_state(tmp_path):
     ...
     result = await command.execute(context)
-    assert "cancelled" in result.lower()
+    assert "cleared" in result.lower()
     assert handle.read() == {}
 ```
 
 - [ ] **Step 2: Run the focused tests to verify they fail**
 
-Run: `pytest tests/plugins/test_plugin_commands.py -k "ralph_loop_command or cancel_ralph" -v`
-Expected: FAIL because the built-in plugin and command modules do not exist yet.
+Run: `pytest tests/plugins/test_plugin_commands.py -k "goal_command" -v`
+Expected: FAIL because the built-in goal-session command behavior does not exist yet.
 
 - [ ] **Step 3: Implement the built-in plugin commands with minimal argument parsing**
 
@@ -111,13 +110,13 @@ Required behavior:
 ```python
 state = {
     "active": True,
-    "prompt": prompt_text,
-    "iteration": 1,
-    "max_iterations": max_iterations,
+    "status": "active",
+    "objective": prompt_text,
+    "turn_count": 1,
+    "max_turns": max_turns,
     "completion_promise": completion_promise,
-    "verify_commands": verify_commands,
+    "verification_commands": verify_commands,
     "started_at": started_at,
-    "last_stop_reason": None,
     "last_final_answer_excerpt": None,
 }
 ```
@@ -137,17 +136,17 @@ Completion rule:
 
 - [ ] **Step 4: Run the focused tests to verify they pass**
 
-Run: `pytest tests/plugins/test_plugin_commands.py -k "ralph_loop_command or cancel_ralph" -v`
+Run: `pytest tests/plugins/test_plugin_commands.py -k "goal_command" -v`
 Expected: PASS
 
-### Task 3: Ralph Hooks And HUD
+### Task 3: Goal Hooks And HUD
 
 **Files:**
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/hooks/task_completed.py`
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/hooks/task_error.py`
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/hooks/task_interrupted.py`
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/hooks/stop.py`
-- Create: `aworld-cli/src/aworld_cli/builtin_plugins/ralph_session_loop/hud/status.py`
+- Create: `aworld-cli/src/aworld_cli/builtin_plugins/goal_session/hooks/task_completed.py`
+- Create: `aworld-cli/src/aworld_cli/builtin_plugins/goal_session/hooks/task_error.py`
+- Create: `aworld-cli/src/aworld_cli/builtin_plugins/goal_session/hooks/task_interrupted.py`
+- Create: `aworld-cli/src/aworld_cli/builtin_plugins/goal_session/hooks/stop.py`
+- Create: `aworld-cli/src/aworld_cli/builtin_plugins/goal_session/hud/status.py`
 - Test: `tests/plugins/test_plugin_hooks.py`
 - Test: `tests/plugins/test_plugin_hud.py`
 
@@ -156,23 +155,23 @@ Expected: PASS
 Add tests that require:
 
 ```python
-async def test_ralph_stop_hook_blocks_and_continues_when_active(...):
+async def test_goal_task_completed_hook_blocks_and_continues_when_active(...):
     assert result.action == "block_and_continue"
-    assert "Task:" in result.follow_up_prompt
+    assert "<goal_contract>" in result.follow_up_prompt
 
-async def test_ralph_stop_hook_allows_exit_on_exact_completion_promise(...):
+async def test_goal_stop_hook_denies_exit_when_goal_is_active(...):
+    assert result.action == "deny"
+
+async def test_goal_task_completed_hook_marks_goal_complete_on_exact_completion_promise(...):
     assert result.action == "allow"
 
-async def test_ralph_stop_hook_allows_exit_when_max_iterations_reached(...):
-    assert result.action == "allow"
-
-def test_ralph_hud_renders_active_state(...):
-    assert any("Ralph: active" in segment for segment in lines[0].segments + lines[1].segments)
+def test_goal_hud_renders_active_state(...):
+    assert any("Goal: active" in segment for segment in lines[0].segments + lines[1].segments)
 ```
 
 - [ ] **Step 2: Run the focused tests to verify they fail**
 
-Run: `pytest tests/plugins/test_plugin_hooks.py tests/plugins/test_plugin_hud.py -k "ralph" -v`
+Run: `pytest tests/plugins/test_plugin_hooks.py tests/plugins/test_plugin_hud.py -k "goal" -v`
 Expected: FAIL because the hook and HUD modules do not exist yet.
 
 - [ ] **Step 3: Implement task-state hooks, stop hook, and HUD provider**
@@ -192,18 +191,18 @@ Stop hook policy:
 if not active:
     return {"action": "allow"}
 if completion promise matched:
-    handle.clear()
+    handle.update({"status": "complete", "active": False})
     return {"action": "allow"}
-if max iterations reached:
-    handle.clear()
+if max turns reached:
+    handle.update({"status": "budget_limited", "active": False})
     return {"action": "allow"}
-handle.update({"iteration": next_iteration, ...})
+handle.update({"turn_count": next_turn, ...})
 return {"action": "block_and_continue", "follow_up_prompt": normalized_prompt}
 ```
 
 - [ ] **Step 4: Run the focused tests to verify they pass**
 
-Run: `pytest tests/plugins/test_plugin_hooks.py tests/plugins/test_plugin_hud.py -k "ralph" -v`
+Run: `pytest tests/plugins/test_plugin_hooks.py tests/plugins/test_plugin_hud.py -k "goal" -v`
 Expected: PASS
 
 ### Task 4: Runtime Integration
@@ -217,8 +216,8 @@ Expected: PASS
 Add a test that:
 
 ```python
-1. loads the built-in Ralph plugin
-2. executes `/ralph-loop ...`
+1. loads the built-in goal plugin
+2. executes `/goal ...`
 3. simulates a completed task hook update without promise match
 4. runs the stop hook
 5. asserts `block_and_continue` and iteration increment
@@ -226,7 +225,7 @@ Add a test that:
 
 - [ ] **Step 2: Run the focused integration test to verify it fails**
 
-Run: `pytest tests/plugins/test_plugin_end_to_end.py -k "ralph" -v`
+Run: `pytest tests/plugins/test_plugin_end_to_end.py -k "goal" -v`
 Expected: FAIL until the full plugin surface is wired together.
 
 - [ ] **Step 3: Implement any missing glue and keep scope minimal**
@@ -235,7 +234,7 @@ Only fill gaps required to make the built-in plugin work through the existing pl
 
 - [ ] **Step 4: Run the focused integration test to verify it passes**
 
-Run: `pytest tests/plugins/test_plugin_end_to_end.py -k "ralph" -v`
+Run: `pytest tests/plugins/test_plugin_end_to_end.py -k "goal" -v`
 Expected: PASS
 
 ### Task 5: Final Verification
@@ -245,9 +244,9 @@ Expected: PASS
 
 - [ ] **Step 1: Mark completed OpenSpec tasks that were actually implemented**
 
-- [ ] **Step 2: Run the complete Ralph-related verification suite**
+- [ ] **Step 2: Run the complete goal-related verification suite**
 
-Run: `pytest tests/plugins/test_plugin_commands.py tests/plugins/test_plugin_hooks.py tests/plugins/test_plugin_hud.py tests/plugins/test_plugin_end_to_end.py -k "ralph or python_backed or session_id" -v`
+Run: `pytest tests/plugins/test_plugin_commands.py tests/plugins/test_plugin_hooks.py tests/plugins/test_plugin_hud.py tests/plugins/test_plugin_end_to_end.py -k "goal or python_backed or session_id" -v`
 Expected: PASS
 
 - [ ] **Step 3: Run manifest and runtime regression checks around the touched plugin framework paths**

@@ -1,4 +1,4 @@
-> Implementation note: phase 1 now lands through the shared `goal-session` contract. Ralph commands remain compatibility entrypoints, but active-loop state, continuation, and exit gating are owned by the goal-session plugin.
+> Implementation note: phase 1 now lands through the shared `goal-session` contract. The user-facing command surface is `/goal`, and active-loop state, continuation, and exit gating are owned by the goal-session plugin.
 
 ## 1. Change Skeleton
 
@@ -8,8 +8,8 @@
 ## 2. State And Command Flow
 
 - [x] 2.1 Define the plugin state schema for active loop state, iteration data, completion promise, and declarative verification commands.
-- [x] 2.2 Implement `/ralph-loop` argument handling for prompt text, repeatable `--verify`, optional `--completion-promise`, and optional `--max-iterations`, while keeping `--model` and `--work-dir` out of scope for phase 1.
-- [x] 2.3 Implement `/cancel-ralph` state clearing.
+- [x] 2.2 Implement `/goal "..."` argument handling for prompt text, repeatable `--verify`, optional `--completion-promise`, and optional `--max-turns`, while keeping `--model` and `--work-dir` out of scope for phase 1.
+- [x] 2.3 Implement `/goal clear` state clearing.
 - [x] 2.4 Normalize stored loop state into the effective follow-up prompt contract used for continuation.
 
 ## 3. Stop Hook
@@ -27,7 +27,7 @@
 ## 5. Validation
 
 - [x] 5.1 Add tests for plugin discovery and command registration.
-- [x] 5.2 Add tests for `/ralph-loop` state initialization and `/cancel-ralph` cleanup.
+- [x] 5.2 Add tests for `/goal "..."` state initialization and `/goal clear` cleanup.
 - [x] 5.3 Add stop-hook tests for `block_and_continue`, completion-promise success, and max-iteration termination.
 - [x] 5.4 Add tests proving `--verify` values are preserved structurally and injected into the effective follow-up prompt.
 - [x] 5.5 Add HUD tests for active and inactive loop rendering.
