@@ -124,9 +124,11 @@ def test_resolver_builds_skill_configs_from_framework_registry(tmp_path: Path) -
     skill_dir = tmp_path / "skills" / "browser-use"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\ndescription: Browser automation\n---\n\n# Usage\nUse browser tools.\n",
+        "---\ndescription: Browser automation\nentrypoint: scripts/run.sh\n---\n\n# Usage\nUse browser tools.\n",
         encoding="utf-8",
     )
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.sh").write_text("echo browser\n", encoding="utf-8")
 
     request = SkillResolverRequest(
         plugin_roots=(),
@@ -140,3 +142,35 @@ def test_resolver_builds_skill_configs_from_framework_registry(tmp_path: Path) -
     assert "browser-use" in resolved.skill_configs
     assert resolved.skill_configs["browser-use"]["description"] == "Browser automation"
     assert resolved.skill_configs["browser-use"]["asset_root"] == str(skill_dir.resolve())
+    assert resolved.skill_configs["browser-use"]["execution_assets"]["enabled"] is True
+    assert resolved.skill_configs["browser-use"]["execution_assets"]["relative_paths"] == ["scripts/run.sh"]
+    assert resolved.skill_configs["browser-use"]["execution_assets"]["entrypoint"] == "scripts/run.sh"
+
+
+def test_resolver_builds_skill_configs_from_nested_metadata_entrypoint(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "browser-use"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "description: Browser automation\n"
+            "metadata:\n"
+            "  entrypoint: scripts/index.ts\n"
+            "---\n\n"
+            "# Usage\nUse browser tools.\n"
+        ),
+        encoding="utf-8",
+    )
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "index.ts").write_text("console.log('browser');\n", encoding="utf-8")
+
+    request = SkillResolverRequest(
+        plugin_roots=(),
+        runtime_scope="session",
+        agent_name="Aworld",
+        compatibility_sources=(str(tmp_path / "skills"),),
+    )
+
+    resolved = SkillActivationResolver().resolve(request)
+
+    assert resolved.skill_configs["browser-use"]["execution_assets"]["entrypoint"] == "scripts/index.ts"

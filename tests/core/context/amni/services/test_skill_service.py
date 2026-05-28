@@ -37,6 +37,11 @@ async def test_skill_service_keeps_inactive_skill_usage_out_of_compat_list() -> 
                 "usage": "Use browser tools",
                 "tool_list": {"browser": {}},
                 "skill_path": "/tmp/browser-use/SKILL.md",
+                "execution_assets": {
+                    "enabled": True,
+                    "relative_paths": ["run.sh"],
+                    "digest": "abcd1234abcd1234",
+                },
                 "active": False,
             },
             "code-review": {
@@ -45,6 +50,11 @@ async def test_skill_service_keeps_inactive_skill_usage_out_of_compat_list() -> 
                 "usage": "Review code carefully",
                 "tool_list": {"shell": {}},
                 "skill_path": "/tmp/code-review/SKILL.md",
+                "execution_assets": {
+                    "enabled": True,
+                    "relative_paths": ["review.py"],
+                    "digest": "dcba4321dcba4321",
+                },
                 "active": True,
             },
         },
@@ -57,6 +67,7 @@ async def test_skill_service_keeps_inactive_skill_usage_out_of_compat_list() -> 
     assert active_skills == ["code-review"]
     assert all_skills["browser-use"].get("usage", "") == ""
     assert all_skills["browser-use"].get("tool_list", {}) == {}
+    assert all_skills["browser-use"]["execution_assets"]["relative_paths"] == ["run.sh"]
     assert all_skills["code-review"]["usage"] == "Review code carefully"
 
 
@@ -73,6 +84,11 @@ async def test_skill_service_loads_inactive_skill_content_on_first_get() -> None
                 "usage": "Use browser tools",
                 "tool_list": {"browser": {}},
                 "skill_path": "/tmp/browser-use/SKILL.md",
+                "execution_assets": {
+                    "enabled": True,
+                    "relative_paths": ["run.sh"],
+                    "digest": "abcd1234abcd1234",
+                },
                 "active": False,
             }
         },
@@ -84,7 +100,9 @@ async def test_skill_service_loads_inactive_skill_content_on_first_get() -> None
     after = await service.get_skill_list("agent-1")
 
     assert before["browser-use"].get("usage", "") == ""
+    assert before["browser-use"]["execution_assets"]["relative_paths"] == ["run.sh"]
     assert skill["usage"] == "Use browser tools"
+    assert skill["execution_assets"]["relative_paths"] == ["run.sh"]
     assert after["browser-use"]["usage"] == "Use browser tools"
 
 

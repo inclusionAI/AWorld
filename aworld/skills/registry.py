@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aworld.skills.execution_assets import merge_execution_assets_configs
 from aworld.skills.models import SkillContent, SkillDescriptor
 
 
@@ -51,6 +52,11 @@ class SkillRegistry:
             ),
             "skill_path": descriptor.skill_file,
             "asset_root": descriptor.asset_root,
+            "execution_assets": merge_execution_assets_configs(
+                descriptor.asset_root,
+                dict(descriptor.execution_assets or {}),
+                dict(content.execution_assets or {}),
+            ),
         }
         if descriptor.requirements:
             skill_config["aworld_metadata"] = dict(descriptor.requirements)
