@@ -81,7 +81,7 @@ Expected: PASS
 ### Task 3: Final regression verification
 
 **Files:**
-- Modify: `openspec/changes/hud-plugin-boundary/tasks.md`
+- Modify: historical HUD boundary task tracker
 
 - [ ] **Step 1: Run the regression suite**
 
@@ -91,7 +91,7 @@ Expected: PASS
 
 - [ ] **Step 2: Update OpenSpec task tracking**
 
-Mark the completed Batch 2 task items in `openspec/changes/hud-plugin-boundary/tasks.md`.
+Mark the completed Batch 2 task items in the historical HUD boundary task tracker.
 
 - [ ] **Step 3: Commit**
 
@@ -104,7 +104,6 @@ git add \
   tests/fixtures/plugins/hud_stateful_like \
   tests/plugins/test_plugin_hud.py \
   tests/plugins/test_plugin_end_to_end.py \
-  tests/plugins/test_plugin_hooks.py \
-  openspec/changes/hud-plugin-boundary/tasks.md
+  tests/plugins/test_plugin_hooks.py
 git commit -m "refactor: add hud plugin sdk boundary"
 ```

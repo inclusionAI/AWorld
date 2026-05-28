@@ -782,7 +782,7 @@ git commit -m "feat: add steering plugin command and hud"
 - Reference: `tests/test_interactive_steering.py`
 - Reference: `tests/plugins/test_plugin_commands.py`
 - Reference: `tests/plugins/test_plugin_hud.py`
-- Reference: `openspec/changes/2026-05-12-aworld-cli-interactive-steering/specs/cli-experience/spec.md`
+- Reference: historical CLI-experience spec note for interactive steering
 
 - [x] **Step 1: Run the full focused steering regression suite**
 

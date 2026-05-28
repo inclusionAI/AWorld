@@ -45,7 +45,7 @@
   Verifies `task_completed` hook behavior for `off`, `shadow`, and `governed`.
 - `tests/plugins/test_plugin_commands.py`
   Verifies `/memory status` and `/memory promotions ...` surfaces.
-- `openspec/changes/2026-05-07-governed-session-log-promotion/tasks.md`
+- historical governed-promotion task tracker
   Marks completed tasks as implementation lands.
 
 ### Do not modify as part of this plan
@@ -636,7 +636,7 @@ git commit -m "feat: add governed promotion command surface"
 - Modify: `aworld-cli/src/aworld_cli/memory/relevance.py`
 - Modify: `tests/cli_memory/test_metrics.py`
 - Modify: `tests/cli_memory/test_memory_acceptance.py`
-- Modify: `openspec/changes/2026-05-07-governed-session-log-promotion/tasks.md`
+- Modify: historical governed-promotion task tracker
 
 - [ ] **Step 1: Write the failing metrics and regression tests**
 
@@ -756,7 +756,7 @@ Expected: PASS
 - [ ] **Step 5: Mark the OpenSpec tasks that are now complete and commit**
 
 ```bash
-git add aworld-cli/src/aworld_cli/memory/metrics.py aworld-cli/src/aworld_cli/memory/relevance.py tests/cli_memory/test_metrics.py tests/cli_memory/test_memory_acceptance.py openspec/changes/2026-05-07-governed-session-log-promotion/tasks.md
+git add aworld-cli/src/aworld_cli/memory/metrics.py aworld-cli/src/aworld_cli/memory/relevance.py tests/cli_memory/test_metrics.py tests/cli_memory/test_memory_acceptance.py
 git commit -m "test: add governed promotion metrics and regression coverage"
 ```
 
