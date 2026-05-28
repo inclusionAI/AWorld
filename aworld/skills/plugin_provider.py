@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from aworld.skills.execution_assets import build_execution_assets_config
 from aworld.skills.models import SkillContent, SkillDescriptor
 from aworld.skills.providers import SkillProvider, read_front_matter_lines
 from aworld.utils.skill_loader import (
@@ -73,6 +74,11 @@ class PluginSkillProvider(SkillProvider):
                 str(front_matter.get("active", "False")).lower() == "true",
             )
             metadata.setdefault("tool_list", dict(tool_list))
+            declared_assets = (
+                metadata.get("execution_assets")
+                if "execution_assets" in metadata
+                else front_matter.get("execution_assets")
+            )
 
             descriptors.append(
                 SkillDescriptor(
@@ -90,6 +96,13 @@ class PluginSkillProvider(SkillProvider):
                     asset_root=str(skill_file.parent.resolve()),
                     skill_file=str(skill_file),
                     metadata=metadata,
+                    execution_assets=build_execution_assets_config(
+                        skill_file.parent,
+                        declared_assets=declared_assets,
+                        skill_name=entrypoint.entrypoint_id,
+                        entrypoint=front_matter.get("entrypoint"),
+                        metadata=metadata if isinstance(metadata, dict) else front_matter.get("metadata"),
+                    ),
                     requirements=requirements,
                 )
             )
@@ -110,6 +123,14 @@ class PluginSkillProvider(SkillProvider):
             usage=usage,
             tool_list=tool_list,
             raw_frontmatter=front_matter,
+            execution_assets=build_execution_assets_config(
+                skill_file.parent,
+                declared_assets=front_matter.get("execution_assets"),
+                usage_text=usage,
+                skill_name=skill_file.parent.name,
+                entrypoint=front_matter.get("entrypoint"),
+                metadata=front_matter.get("metadata"),
+            ),
         )
 
     def resolve_asset_path(self, skill_id: str, relative_path: str) -> Path:

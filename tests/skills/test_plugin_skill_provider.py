@@ -74,3 +74,40 @@ def test_plugin_provider_lists_descriptor_without_decoding_invalid_body(
 
     assert len(descriptors) == 1
     assert descriptors[0].description == "Design before implementation"
+
+
+def test_plugin_provider_reads_entrypoint_from_plugin_metadata(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin-skill"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    skill_dir = plugin_root / "skills" / "swarm"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\ndescription: Run swarm\n---\n\n# Swarm\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "index.ts").write_text("export {};\n", encoding="utf-8")
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "plugin-skill",
+                "version": "0.1.0",
+                "entrypoints": {
+                    "skills": [
+                        {
+                            "id": "swarm",
+                            "target": "skills/swarm/SKILL.md",
+                            "metadata": {"entrypoint": "scripts/index.ts"},
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+    provider = PluginSkillProvider(plugin)
+    descriptor = provider.list_descriptors()[0]
+
+    assert descriptor.execution_assets["entrypoint"] == "scripts/index.ts"

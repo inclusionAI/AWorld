@@ -1,10 +1,12 @@
 import asyncio
 import json
 import os
+import re
 import threading
 import traceback
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
@@ -31,6 +33,10 @@ from aworld.sandbox.runtime import SandboxManager
 
 if TYPE_CHECKING:
     from aworld.sandbox.implementations.sandbox import Sandbox
+
+
+_TERMINAL_EXECUTION_TOOL_NAMES = {"run_code", "execute_command", "mcp_execute_command"}
+_TERMINAL_COMMAND_PARAMETER_KEYS = {"code", "command"}
 
 
 def _coalesce_tool_result_content(content_items: List[str]) -> Any:
@@ -243,7 +249,7 @@ class McpServers:
             bool: Whether parameter check passed
         """
         # Ensure tool_list is loaded
-        if not self.tool_list or not context:
+        if not self.tool_list:
             return False
 
         if not self.mcp_servers or not self.mcp_config:
@@ -269,24 +275,270 @@ class McpServers:
             tool_parameters = function_info.get("parameters", {})
             properties = tool_parameters.get("properties", {})
 
-            # Check if session_id or task_id parameters are needed
-            # Check if session_id is needed
-            if "session_id" in properties:
+            if "session_id" in properties and context:
                 if hasattr(context, 'session_id') and context.session_id:
                     parameter["session_id"] = context.session_id
                     logger.info(f"Auto-added session_id: {context.session_id}")
 
-            # Check if task_id is needed
-            if "task_id" in properties:
+            if "task_id" in properties and context:
                 if hasattr(context, 'task_id') and context.task_id:
                     parameter["task_id"] = context.task_id
                     logger.info(f"Auto-added task_id: {context.task_id}")
+
+            await self._prepare_remote_skill_execution_params(
+                context=context,
+                server_name=server_name,
+                tool_name=tool_name,
+                parameter=parameter,
+            )
 
             return True
 
         except Exception as e:
             logger.warning(f"Error checking tool parameters: {e}")
             return False
+
+    async def _prepare_remote_skill_execution_params(
+        self,
+        *,
+        context: Context | None,
+        server_name: str,
+        tool_name: str,
+        parameter: Dict[str, Any],
+    ) -> None:
+        if (
+            not isinstance(parameter, dict)
+            or not self.sandbox
+            or getattr(self.sandbox, "mode", "local") != "remote"
+            or server_name != "terminal"
+            or tool_name not in _TERMINAL_EXECUTION_TOOL_NAMES
+        ):
+            return
+
+        for key in _TERMINAL_COMMAND_PARAMETER_KEYS:
+            raw_value = parameter.get(key)
+            if not isinstance(raw_value, str) or not raw_value.strip():
+                continue
+            parameter[key] = await self._rewrite_remote_skill_paths(
+                raw_value,
+                context=context,
+            )
+
+    async def _rewrite_remote_skill_paths(
+        self,
+        command_text: str,
+        *,
+        context: Context | None,
+    ) -> str:
+        rewritten = command_text
+        active_skill_names = await self._get_active_skill_names(context)
+        candidate_skill_names = self._resolve_candidate_skill_names(
+            command_text=command_text,
+            active_skill_names=active_skill_names,
+        )
+        relative_path_owners = self._build_relative_path_owners(candidate_skill_names)
+
+        for skill_name in candidate_skill_names:
+            skill_config = (self.skill_configs or {}).get(skill_name)
+            if not isinstance(skill_config, dict):
+                continue
+            execution_assets = dict(skill_config.get("execution_assets", {}) or {})
+            if not execution_assets.get("enabled"):
+                continue
+
+            asset_root_value = str(skill_config.get("asset_root", "") or "").strip()
+            if not asset_root_value:
+                continue
+            asset_root = str(Path(asset_root_value).resolve())
+            relative_paths = [
+                str(path).strip()
+                for path in execution_assets.get("relative_paths", []) or []
+                if str(path).strip()
+            ]
+            if not relative_paths:
+                continue
+
+            host_file_paths = {
+                str((Path(asset_root) / relative_path).resolve()): relative_path
+                for relative_path in relative_paths
+            }
+            virtual_root = f"/skills/{skill_name}"
+            relative_path_matches = [
+                relative_path
+                for relative_path in relative_paths
+                if self._should_rewrite_relative_path(
+                    command_text=rewritten,
+                    relative_path=relative_path,
+                    skill_name=skill_name,
+                    active_skill_names=active_skill_names,
+                    relative_path_owners=relative_path_owners,
+                )
+            ]
+            root_referenced = asset_root in rewritten or virtual_root in rewritten
+            file_referenced = any(host_path in rewritten for host_path in host_file_paths)
+            if not root_referenced and not file_referenced and not relative_path_matches:
+                continue
+
+            remote_root = await self.sandbox.ensure_skill_execution_assets_ready(
+                skill_name,
+                skill_config,
+            )
+
+            for host_path, relative_path in sorted(
+                host_file_paths.items(),
+                key=lambda item: len(item[0]),
+                reverse=True,
+            ):
+                remote_path = str(Path(remote_root) / relative_path)
+                rewritten = rewritten.replace(host_path, remote_path)
+
+            rewritten = self._rewrite_virtual_skill_root(
+                rewritten,
+                skill_name,
+                remote_root,
+            )
+            rewritten = self._rewrite_cd_command_root(
+                rewritten,
+                asset_root,
+                remote_root,
+            )
+            for relative_path in relative_path_matches:
+                remote_path = str(Path(remote_root) / relative_path)
+                rewritten = self._rewrite_relative_path_reference(
+                    rewritten,
+                    relative_path,
+                    remote_path,
+                )
+
+        return rewritten
+
+    async def _get_active_skill_names(self, context: Context | None) -> list[str]:
+        if not context or not hasattr(context, "get_active_skills"):
+            return []
+        getter = getattr(context, "get_active_skills")
+        if not callable(getter):
+            return []
+        try:
+            skills = await getter(namespace=None)
+        except TypeError:
+            skills = await getter()
+        except Exception:
+            return []
+        if not isinstance(skills, list):
+            return []
+        return [str(skill).strip() for skill in skills if str(skill).strip()]
+
+    def _resolve_candidate_skill_names(
+        self,
+        *,
+        command_text: str,
+        active_skill_names: list[str],
+    ) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        for match in re.finditer(r"/skills/(?P<skill_name>[A-Za-z0-9_.-]+)/", command_text):
+            skill_name = match.group("skill_name")
+            if skill_name in self.skill_configs and skill_name not in seen:
+                ordered.append(skill_name)
+                seen.add(skill_name)
+
+        for skill_name in active_skill_names:
+            if skill_name in self.skill_configs and skill_name not in seen:
+                ordered.append(skill_name)
+                seen.add(skill_name)
+
+        for skill_name in self.skill_configs:
+            if skill_name not in seen:
+                ordered.append(skill_name)
+                seen.add(skill_name)
+
+        return ordered
+
+    def _build_relative_path_owners(
+        self,
+        candidate_skill_names: list[str],
+    ) -> dict[str, list[str]]:
+        owners: dict[str, list[str]] = {}
+        for skill_name in candidate_skill_names:
+            skill_config = (self.skill_configs or {}).get(skill_name)
+            if not isinstance(skill_config, dict):
+                continue
+            execution_assets = dict(skill_config.get("execution_assets", {}) or {})
+            for relative_path in execution_assets.get("relative_paths", []) or []:
+                normalized = str(relative_path).strip()
+                if not normalized:
+                    continue
+                owners.setdefault(normalized, []).append(skill_name)
+        return owners
+
+    def _should_rewrite_relative_path(
+        self,
+        *,
+        command_text: str,
+        relative_path: str,
+        skill_name: str,
+        active_skill_names: list[str],
+        relative_path_owners: dict[str, list[str]],
+    ) -> bool:
+        if not self._path_occurs_in_command(command_text, relative_path) and not self._path_occurs_in_command(
+            command_text,
+            f"./{relative_path}",
+        ):
+            return False
+
+        owners = relative_path_owners.get(relative_path, [])
+        if len(owners) <= 1:
+            return True
+
+        active_owners = [owner for owner in owners if owner in active_skill_names]
+        return len(active_owners) == 1 and active_owners[0] == skill_name
+
+    @staticmethod
+    def _path_occurs_in_command(command_text: str, path_text: str) -> bool:
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_./-]){re.escape(path_text)}(?![A-Za-z0-9_./-])"
+        )
+        return bool(pattern.search(command_text))
+
+    @classmethod
+    def _rewrite_relative_path_reference(
+        cls,
+        command_text: str,
+        relative_path: str,
+        remote_path: str,
+    ) -> str:
+        rewritten = command_text
+        for candidate in (f"./{relative_path}", relative_path):
+            pattern = re.compile(
+                rf"(?<![A-Za-z0-9_./-]){re.escape(candidate)}(?![A-Za-z0-9_./-])"
+            )
+            rewritten = pattern.sub(remote_path, rewritten)
+        return rewritten
+
+    @staticmethod
+    def _rewrite_cd_command_root(command_text: str, asset_root: str, remote_root: str) -> str:
+        pattern = re.compile(
+            rf"(?P<prefix>\bcd\s+)(?P<quote>['\"]?){re.escape(asset_root)}(?P=quote)"
+        )
+        return pattern.sub(
+            lambda match: (
+                f"{match.group('prefix')}{match.group('quote')}{remote_root}{match.group('quote')}"
+            ),
+            command_text,
+        )
+
+    @staticmethod
+    def _rewrite_virtual_skill_root(
+        command_text: str,
+        skill_name: str,
+        remote_root: str,
+    ) -> str:
+        virtual_root = f"/skills/{skill_name}"
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_./-]){re.escape(virtual_root)}(?=(?:/|[^A-Za-z0-9_.-]|$))"
+        )
+        return pattern.sub(remote_root, command_text)
 
     async def call_tool(
             self,
