@@ -117,7 +117,7 @@ async def test_terminal_namespace_rewrites_host_skill_paths_for_remote_execution
         "cd /host/skills/browser-use && python /host/skills/browser-use/scripts/run.py"
     )
 
-    assert result == {"success": False, "data": "done", "error": None}
+    assert result == {"success": True, "data": "done", "error": None}
     assert captured["parameter"]["code"] == (
         "cd /remote/workspace/.aworld/skills/browser-use/feed1234feed1234"
         " && python /remote/workspace/.aworld/skills/browser-use/feed1234feed1234/scripts/run.py"
@@ -170,8 +170,9 @@ async def test_terminal_namespace_rewrites_remote_paths_for_aliased_terminal_ser
     sandbox = _AliasedTerminalSandbox()
     terminal = TerminalNamespace(sandbox)
 
-    await terminal.run_code("python /host/skills/browser-use/scripts/run.py")
+    result = await terminal.run_code("python /host/skills/browser-use/scripts/run.py")
 
+    assert result == {"success": True, "data": "done", "error": None}
     assert captured["server_name"] == "workspace_terminal"
     assert captured["parameter"]["code"] == (
         "python /remote/workspace/.aworld/skills/browser-use/feed1234feed1234/scripts/run.py"
