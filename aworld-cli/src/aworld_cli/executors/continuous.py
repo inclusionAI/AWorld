@@ -2,6 +2,7 @@
 Continuous execution executor for running agents in a loop.
 """
 import asyncio
+import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
 from rich.console import Console
@@ -38,6 +39,20 @@ class ContinuousExecutor:
         self.total_cost: float = 0.0
         self.start_time: Optional[datetime] = None
         self.response_history: List[str] = []  # Track recent responses for repetition detection
+
+    def _active_steering_runtime(self, *, non_interactive: bool) -> Any | None:
+        if non_interactive or not sys.stdin.isatty():
+            return None
+
+        runtime = getattr(self.agent_executor, "_base_runtime", None)
+        cli = getattr(runtime, "cli", None) if runtime is not None else None
+        if cli is None:
+            return None
+        if not callable(getattr(cli, "_build_session_completer", None)):
+            return None
+        if not callable(getattr(cli, "_run_executor_with_active_steering", None)):
+            return None
+        return runtime
         
     def _parse_duration(self, duration_str: str) -> timedelta:
         """
@@ -107,6 +122,7 @@ class ContinuousExecutor:
         iteration: int,
         prompt: Union[str, tuple[str, List[str]]],
         completion_signal: Optional[str] = None,
+        agent_name: Optional[str] = None,
         **chat_kwargs,
     ) -> Dict[str, Any]:
         """
@@ -135,7 +151,32 @@ class ContinuousExecutor:
                 if self.agent_executor.console is not global_console:
                     self.console.print(f"[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
             
-            response = await self.agent_executor.chat(prompt, **chat_kwargs)
+            non_interactive = bool(chat_kwargs.pop("non_interactive", False))
+            runtime = self._active_steering_runtime(non_interactive=non_interactive)
+            if runtime is not None:
+                cli = runtime.cli
+                completer = cli._build_session_completer(
+                    agent_names=[agent_name] if agent_name else [],
+                    agent_name=agent_name,
+                    executor_instance=self.agent_executor,
+                    runtime=runtime,
+                    event_loop=asyncio.get_running_loop(),
+                )
+
+                async def _run_prompt(text: str):
+                    return await self.agent_executor.chat(text, **chat_kwargs)
+
+                response = await cli._run_executor_with_active_steering(
+                    prompt=prompt,
+                    executor=_run_prompt,
+                    completer=completer,
+                    runtime=runtime,
+                    agent_name=agent_name or "Aworld",
+                    executor_instance=self.agent_executor,
+                    is_terminal=True,
+                )
+            else:
+                response = await self.agent_executor.chat(prompt, **chat_kwargs)
 
             # Check for completion signal (only check if response is string)
             is_complete = False
@@ -363,7 +404,13 @@ class ContinuousExecutor:
                     break
                 
                 # Run iteration
-                result = await self.run_iteration(iteration, prompt, completion_signal, **kwargs)
+                result = await self.run_iteration(
+                    iteration,
+                    prompt,
+                    completion_signal,
+                    agent_name=agent_name,
+                    **kwargs,
+                )
                 results.append(result)
 
                 self.total_cost += result["cost"]

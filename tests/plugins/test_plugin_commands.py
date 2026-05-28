@@ -1872,6 +1872,7 @@ async def test_goal_command_status_pause_and_clear(tmp_path):
         assert "Objective: Stabilize the goal flow" in status_result
         assert "Status: active" in status_result
         assert "Status: paused" in pause_result
+        assert "Last task status: paused" in pause_result
         assert handle.read() == {}
         assert clear_result == "Goal cleared."
     finally:

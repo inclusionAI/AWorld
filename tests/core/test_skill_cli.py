@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 
 from aworld_cli import main as main_module
 from aworld_cli.console import AWorldCLI
+from aworld_cli.core.command_system import Command, CommandContext, CommandRegistry
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import PluginManager
 from aworld_cli.core.skill_state_manager import SkillStateManager
@@ -406,6 +407,53 @@ async def test_run_direct_mode_passes_requested_skill_names(
 
 
 @pytest.mark.asyncio
+async def test_run_direct_mode_binds_runtime_to_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyExecutor(SimpleNamespace):
+        pass
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, agent_name: str) -> None:
+            captured["bound_agent"] = agent_name
+
+        async def _create_executor(self, _agent):
+            executor = DummyExecutor(console=None)
+            captured["executor"] = executor
+            return executor
+
+    class DummyContinuousExecutor:
+        def __init__(self, agent_executor, console=None) -> None:
+            self.agent_executor = agent_executor
+            self.console = console
+
+        async def run_continuous(self, **kwargs) -> None:
+            captured["runtime_on_executor"] = getattr(self.agent_executor, "_base_runtime", None)
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr(
+        "aworld.core.scheduler.get_scheduler",
+        lambda: SimpleNamespace(),
+    )
+
+    await main_module._run_direct_mode(
+        prompt="use browser",
+        agent_name="Aworld",
+    )
+
+    assert captured["runtime_on_executor"] is not None
+
+
+@pytest.mark.asyncio
 async def test_console_skills_use_sets_pending_override() -> None:
     cli = AWorldCLI()
     cli._pending_skill_overrides = []
@@ -745,3 +793,86 @@ async def test_run_chat_session_reports_disabled_skill_alias(
     assert executed["called"] is False
     assert "disabled" in rendered.lower()
     assert "/skills enable youtube_search" in rendered
+
+
+@pytest.mark.asyncio
+async def test_run_chat_session_routes_prompt_commands_through_active_steering_in_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    output = StringIO()
+    cli.console = Console(file=output, force_terminal=False, color_system=None, width=160)
+    captured: dict[str, object] = {}
+    prompts = iter(["/steercheck now", "/exit"])
+
+    class DummyPromptCommand(Command):
+        @property
+        def name(self) -> str:
+            return "steercheck"
+
+        @property
+        def description(self) -> str:
+            return "exercise active steering path"
+
+        async def get_prompt(self, context: CommandContext) -> str:
+            captured["user_args"] = context.user_args
+            return "generated prompt"
+
+    class FakePromptSession:
+        def prompt(self, *_args, **_kwargs):
+            return next(prompts)
+
+    async def fake_executor(prompt: str, requested_skill_names=None):
+        captured["executor_prompt"] = prompt
+        captured["requested_skill_names"] = requested_skill_names
+        return "ok"
+
+    async def fake_apply_user_input_hooks(user_input: str, executor_instance=None):
+        return True, user_input
+
+    async def fake_ensure_notification_poller(_runtime):
+        return None
+
+    async def fake_stop_notification_poller():
+        return None
+
+    async def fake_run_executor_with_active_steering(**kwargs):
+        captured["steering_kwargs"] = kwargs
+        return "ok"
+
+    def fake_create_prompt_session(_completer, **_kwargs):
+        session = FakePromptSession()
+        cli._active_prompt_session = session
+        return session
+
+    monkeypatch.setattr(cli, "_apply_user_input_hooks", fake_apply_user_input_hooks)
+    monkeypatch.setattr(cli, "_ensure_notification_poller", fake_ensure_notification_poller)
+    monkeypatch.setattr(cli, "_stop_notification_poller", fake_stop_notification_poller)
+    monkeypatch.setattr(cli, "_build_session_completer", lambda **_kwargs: object())
+    monkeypatch.setattr(cli, "_create_prompt_session", fake_create_prompt_session)
+    monkeypatch.setattr(cli, "_run_executor_with_active_steering", fake_run_executor_with_active_steering)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    executor_instance = SimpleNamespace(
+        session_id="sess-1",
+        swarm=SimpleNamespace(tools=[]),
+        _base_runtime=SimpleNamespace(),
+    )
+    command = DummyPromptCommand()
+    CommandRegistry.register(command)
+    try:
+        result = await cli.run_chat_session(
+            "Aworld",
+            fake_executor,
+            available_agents=[AgentInfo(name="Aworld")],
+            executor_instance=executor_instance,
+        )
+    finally:
+        CommandRegistry.unregister(command.name)
+
+    assert result is False
+    assert captured["user_args"] == "now"
+    assert captured["steering_kwargs"]["prompt"] == "generated prompt"
+    assert captured["steering_kwargs"]["executor_instance"] is executor_instance
+    assert captured["steering_kwargs"]["is_terminal"] is True
+    assert "executor_prompt" not in captured

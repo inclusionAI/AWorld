@@ -72,7 +72,13 @@ class GoalCommand(PluginBoundCommand):
         if action == "pause":
             if not is_goal_active(current):
                 return "No active goal to pause."
-            updated = handle.update({"active": False, "status": "paused"})
+            updated = handle.update(
+                {
+                    "active": False,
+                    "status": "paused",
+                    "last_task_status": "paused",
+                }
+            )
             return build_goal_context_prompt(updated)
 
         if action == "clear":

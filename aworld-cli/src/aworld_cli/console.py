@@ -2380,6 +2380,15 @@ class AWorldCLI:
                 )
             return True
 
+        if normalized.startswith("/") and await self._handle_active_task_goal_command(
+            normalized,
+            runtime=runtime,
+            session_id=session_id,
+            executor_task=executor_task,
+            workspace_path=workspace_path,
+        ):
+            return True
+
         if normalized.startswith("/"):
             self._append_active_steering_history(
                 "system_notice",
@@ -2403,6 +2412,68 @@ class AWorldCLI:
             "queued_steering",
             normalized,
         )
+        return True
+
+    async def _handle_active_task_goal_command(
+        self,
+        user_input: str,
+        *,
+        runtime: Any,
+        session_id: str | None,
+        executor_task: asyncio.Task,
+        workspace_path: str | None = None,
+    ) -> bool:
+        normalized = (user_input or "").strip()
+        if not normalized.startswith("/"):
+            return False
+
+        parts = normalized[1:].split(maxsplit=1)
+        cmd_name = (parts[0] if parts else "").strip().lower()
+        if cmd_name != "goal":
+            return False
+
+        command = CommandRegistry.get(cmd_name)
+        if command is None:
+            return False
+
+        cmd_args = parts[1] if len(parts) > 1 else ""
+        context = CommandContext(
+            cwd=workspace_path or os.getcwd(),
+            user_args=cmd_args,
+            sandbox=None,
+            agent_config=None,
+            runtime=runtime,
+            session_id=session_id,
+        )
+        if command.resolve_command_type(context) != "tool":
+            return False
+
+        try:
+            error = await command.pre_execute(context)
+            if error:
+                self._append_active_steering_history("system_notice", f"Error: {error}")
+                return True
+
+            result = await command.execute(context)
+        except Exception as exc:
+            self._append_active_steering_history(
+                "error",
+                f"Error executing /goal: {exc}",
+            )
+            return True
+
+        if result:
+            self._append_active_steering_history("system_notice", str(result))
+
+        action = cmd_args.strip().lower()
+        if action in {"pause", "clear"}:
+            if runtime is not None and hasattr(runtime, "request_session_interrupt"):
+                try:
+                    runtime.request_session_interrupt(session_id)
+                except Exception:
+                    pass
+            if not executor_task.done():
+                executor_task.cancel()
         return True
 
     async def _prompt_active_task_input(
@@ -3516,11 +3587,22 @@ class AWorldCLI:
 
                                                 # Execute the prompt
                                                 try:
-                                                    response = await self._run_executor_prompt(
-                                                        prompt,
-                                                        executor,
-                                                        executor_instance=executor_instance,
-                                                    )
+                                                    if is_terminal:
+                                                        response = await self._run_executor_with_active_steering(
+                                                            prompt=prompt,
+                                                            executor=executor,
+                                                            completer=completer,
+                                                            runtime=runtime,
+                                                            agent_name=agent_name,
+                                                            executor_instance=executor_instance,
+                                                            is_terminal=True,
+                                                        )
+                                                    else:
+                                                        response = await self._run_executor_prompt(
+                                                            prompt,
+                                                            executor,
+                                                            executor_instance=executor_instance,
+                                                        )
                                                     # Response is returned for potential future use
                                                 except Exception as exec_error:
                                                     import traceback
