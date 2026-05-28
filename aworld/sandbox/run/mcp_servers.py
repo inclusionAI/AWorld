@@ -305,7 +305,7 @@ class McpServers:
             not isinstance(parameter, dict)
             or not self.sandbox
             or getattr(self.sandbox, "mode", "local") != "remote"
-            or server_name != "terminal"
+            or not self._is_terminal_service(server_name)
             or tool_name not in _TERMINAL_EXECUTION_TOOL_NAMES
         ):
             return
@@ -318,6 +318,18 @@ class McpServers:
                 raw_value,
                 context=context,
             )
+
+    def _is_terminal_service(self, server_name: str) -> bool:
+        if server_name == "terminal":
+            return True
+        server_config = ((self.mcp_config or {}).get("mcpServers") or {}).get(server_name, {})
+        headers = server_config.get("headers") or {}
+        logical_names = [
+            item.strip()
+            for item in str(headers.get("MCP_SERVERS") or "").split(",")
+            if item.strip()
+        ]
+        return "terminal" in logical_names
 
     async def _rewrite_remote_skill_paths(
         self,
