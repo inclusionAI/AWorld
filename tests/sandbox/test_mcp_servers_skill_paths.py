@@ -47,6 +47,23 @@ def _terminal_tool(tool_name: str, param_name: str) -> dict[str, object]:
     }
 
 
+def _generic_tool(server_name: str, tool_name: str, param_name: str) -> dict[str, object]:
+    return {
+        "type": "function",
+        "function": {
+            "name": f"{server_name}__{tool_name}",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    param_name: {
+                        "type": "string",
+                    }
+                },
+            },
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_check_tool_params_rewrites_remote_run_code_skill_paths(
     tmp_path: Path,
@@ -213,3 +230,43 @@ async def test_check_tool_params_rewrites_virtual_skill_path_reference(
         == "python /remote/workspace/.aworld/skills/code-review/c0de1234c0de1234/lint_check.py ."
     )
     assert sandbox.calls == [("code-review", skill_config)]
+
+
+@pytest.mark.asyncio
+async def test_check_tool_params_does_not_sync_for_non_terminal_tool_calls(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    run_file = skill_root / "run.py"
+    run_file.write_text("print('hi')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["run.py"],
+            "digest": "abcd1234abcd1234",
+            "entrypoint": "run.py",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote")
+    servers = McpServers(
+        mcp_servers=["filesystem"],
+        mcp_config={"mcpServers": {"filesystem": {}}},
+        sandbox=sandbox,
+        skill_configs={"browser-use": skill_config},
+    )
+    servers.tool_list = [_generic_tool("filesystem", "write_file", "content")]
+    parameter = {"content": f"python {run_file}"}
+
+    ok = await servers.check_tool_params(
+        context=None,
+        server_name="filesystem",
+        tool_name="write_file",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert parameter["content"] == f"python {run_file}"
+    assert sandbox.calls == []
