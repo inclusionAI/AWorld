@@ -829,6 +829,7 @@ class McpServers:
                         metadata["artifacts"] = artifact_datas
 
                     action_result = ActionResult(
+                        success=True,
                         tool_name=server_name,
                         action_name=tool_name,
                         content=_coalesce_tool_result_content(content_list),
