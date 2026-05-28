@@ -255,48 +255,43 @@ class McpServers:
         if not self.mcp_servers or not self.mcp_config:
             return False
 
-        try:
-            # Build unique identifier for the tool
-            tool_identifier = f"{server_name}__{tool_name}"
+        # Build unique identifier for the tool
+        tool_identifier = f"{server_name}__{tool_name}"
 
-            # Find corresponding tool in tool_list
-            target_tool = None
-            for tool in self.tool_list:
-                if tool.get("type") == "function" and tool.get("function", {}).get("name") == tool_identifier:
-                    target_tool = tool
-                    break
+        # Find corresponding tool in tool_list
+        target_tool = None
+        for tool in self.tool_list:
+            if tool.get("type") == "function" and tool.get("function", {}).get("name") == tool_identifier:
+                target_tool = tool
+                break
 
-            if not target_tool:
-                logger.warning(f"Tool not found: {tool_identifier}")
-                return False
-
-            # Get tool parameter definitions
-            function_info = target_tool.get("function", {})
-            tool_parameters = function_info.get("parameters", {})
-            properties = tool_parameters.get("properties", {})
-
-            if "session_id" in properties and context:
-                if hasattr(context, 'session_id') and context.session_id:
-                    parameter["session_id"] = context.session_id
-                    logger.info(f"Auto-added session_id: {context.session_id}")
-
-            if "task_id" in properties and context:
-                if hasattr(context, 'task_id') and context.task_id:
-                    parameter["task_id"] = context.task_id
-                    logger.info(f"Auto-added task_id: {context.task_id}")
-
-            await self._prepare_remote_skill_execution_params(
-                context=context,
-                server_name=server_name,
-                tool_name=tool_name,
-                parameter=parameter,
-            )
-
-            return True
-
-        except Exception as e:
-            logger.warning(f"Error checking tool parameters: {e}")
+        if not target_tool:
+            logger.warning(f"Tool not found: {tool_identifier}")
             return False
+
+        # Get tool parameter definitions
+        function_info = target_tool.get("function", {})
+        tool_parameters = function_info.get("parameters", {})
+        properties = tool_parameters.get("properties", {})
+
+        if "session_id" in properties and context:
+            if hasattr(context, 'session_id') and context.session_id:
+                parameter["session_id"] = context.session_id
+                logger.info(f"Auto-added session_id: {context.session_id}")
+
+        if "task_id" in properties and context:
+            if hasattr(context, 'task_id') and context.task_id:
+                parameter["task_id"] = context.task_id
+                logger.info(f"Auto-added task_id: {context.task_id}")
+
+        await self._prepare_remote_skill_execution_params(
+            context=context,
+            server_name=server_name,
+            tool_name=tool_name,
+            parameter=parameter,
+        )
+
+        return True
 
     async def _prepare_remote_skill_execution_params(
         self,
@@ -706,12 +701,24 @@ class McpServers:
                         logger.warning(f"Error calling progress callback: {e}")
 
                 # Check and supplement tool parameters
-                await self.check_tool_params(
-                    context=context,
-                    server_name=server_name,
-                    tool_name=tool_name,
-                    parameter=parameter
-                )
+                try:
+                    await self.check_tool_params(
+                        context=context,
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter
+                    )
+                except Exception as e:
+                    logger.warning(f"Error checking tool parameters: {e}")
+                    action_result = _build_tool_call_failure_result(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
+                        error=e,
+                    )
+                    results.append(action_result)
+                    self._update_metadata(result_key, {"error": str(e)}, operation_info)
+                    continue
 
                 call_result_raw = None
                 action_result = ActionResult(

@@ -95,3 +95,28 @@ async def test_ensure_remote_skill_assets_ready_reuses_cached_root(
     assert first == second
     assert sandbox.file.created == [first]
     assert sandbox.file.written == [(f"{first}/run.sh", "echo hi\n")]
+
+
+@pytest.mark.asyncio
+async def test_ensure_remote_skill_assets_ready_rejects_non_utf8_assets(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    (skill_root / "payload.bin").write_bytes(b"\xff\xfe\x00\x01")
+
+    sandbox = _FakeSandbox()
+
+    with pytest.raises(RuntimeError, match="not UTF-8 text: payload.bin"):
+        await ensure_remote_skill_assets_ready(
+            sandbox,
+            "browser-use",
+            {
+                "asset_root": str(skill_root),
+                "execution_assets": {
+                    "enabled": True,
+                    "relative_paths": ["payload.bin"],
+                    "digest": "deadbeefdeadbeef",
+                },
+            },
+        )
