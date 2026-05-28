@@ -26,12 +26,29 @@ class _FakeFileNamespace:
         return {"success": True, "data": path, "error": None}
 
 
+class _FailingWriteFileNamespace(_FakeFileNamespace):
+    def __init__(self, fail_path_suffix: str) -> None:
+        super().__init__()
+        self.fail_path_suffix = fail_path_suffix
+
+    async def write_file(self, path: str, content: str):
+        if path.endswith(self.fail_path_suffix):
+            return {"success": False, "data": None, "error": f"failed: {path}"}
+        return await super().write_file(path, content)
+
+
 class _FakeSandbox:
     def __init__(self) -> None:
         self.mode = "remote"
         self.file = _FakeFileNamespace()
         self._remote_skill_execution_roots: dict[tuple[str, str], str] = {}
         self._remote_skill_execution_base_dir: str | None = None
+
+
+class _FailingWriteSandbox(_FakeSandbox):
+    def __init__(self, fail_path_suffix: str) -> None:
+        super().__init__()
+        self.file = _FailingWriteFileNamespace(fail_path_suffix)
 
 
 @pytest.mark.asyncio
@@ -98,6 +115,38 @@ async def test_ensure_remote_skill_assets_ready_reuses_cached_root(
 
 
 @pytest.mark.asyncio
+async def test_ensure_remote_skill_assets_ready_excludes_understanding_assets(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("---\n---\n", encoding="utf-8")
+    (skill_root / "scripts").mkdir()
+    (skill_root / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    sandbox = _FakeSandbox()
+    remote_root = await ensure_remote_skill_assets_ready(
+        sandbox,
+        "browser-use",
+        {
+            "asset_root": str(skill_root),
+            "execution_assets": {
+                "enabled": True,
+                "relative_paths": ["scripts/run.py"],
+                "digest": "bead1234bead1234",
+            },
+        },
+    )
+
+    assert sandbox.file.written == [
+        (
+            f"{remote_root}/scripts/run.py",
+            "print('hi')\n",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_ensure_remote_skill_assets_ready_rejects_non_utf8_assets(
     tmp_path: Path,
 ) -> None:
@@ -120,3 +169,38 @@ async def test_ensure_remote_skill_assets_ready_rejects_non_utf8_assets(
                 },
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_ensure_remote_skill_assets_ready_fails_on_partial_remote_write(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    (skill_root / "config.json").write_text('{"debug": true}\n', encoding="utf-8")
+    (skill_root / "scripts").mkdir()
+    (skill_root / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    sandbox = _FailingWriteSandbox("scripts/run.py")
+
+    with pytest.raises(RuntimeError, match="write remote execution asset 'scripts/run.py'"):
+        await ensure_remote_skill_assets_ready(
+            sandbox,
+            "browser-use",
+            {
+                "asset_root": str(skill_root),
+                "execution_assets": {
+                    "enabled": True,
+                    "relative_paths": ["config.json", "scripts/run.py"],
+                    "digest": "face1234face1234",
+                },
+            },
+        )
+
+    assert sandbox.file.written == [
+        (
+            "/remote/workspace/.aworld/skills/browser-use/face1234face1234/config.json",
+            '{"debug": true}\n',
+        )
+    ]
+    assert sandbox._remote_skill_execution_roots == {}

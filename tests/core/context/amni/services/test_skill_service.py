@@ -125,3 +125,37 @@ async def test_application_context_init_skill_list_delegates_to_skill_service() 
     )
 
     assert calls == [({"browser-use": {"name": "browser-use"}}, "agent-1")]
+
+
+@pytest.mark.asyncio
+async def test_skill_service_does_not_validate_execution_assets_during_host_side_staging() -> None:
+    context = _FakeContext()
+    service = SkillService(context)
+
+    await service.init_skill_list(
+        {
+            "browser-use": {
+                "name": "browser-use",
+                "description": "Browser automation",
+                "usage": "Use browser tools",
+                "tool_list": {"browser": {}},
+                "skill_path": "/tmp/browser-use/SKILL.md",
+                "execution_assets": {
+                    "enabled": True,
+                    "relative_paths": ["missing.py"],
+                    "digest": "badbadbadbadbadb",
+                    "entrypoint": "missing.py",
+                },
+                "active": False,
+            }
+        },
+        namespace="agent-1",
+    )
+
+    descriptor_view = await service.get_skill_list("agent-1")
+    loaded_skill = await service.get_skill("browser-use", "agent-1")
+
+    assert descriptor_view["browser-use"]["execution_assets"]["entrypoint"] == "missing.py"
+    assert descriptor_view["browser-use"].get("usage", "") == ""
+    assert loaded_skill["usage"] == "Use browser tools"
+    assert loaded_skill["execution_assets"]["relative_paths"] == ["missing.py"]
