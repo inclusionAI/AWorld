@@ -10,13 +10,13 @@
 
 ---
 
-### Task 1: Extend OpenSpec In-Place For The New Milestone
+### Task 1: Extend The Historical Memory Change Notes For The New Milestone
 
 **Files:**
-- Modify: `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/proposal.md`
-- Modify: `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/design.md`
-- Modify: `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/specs/cli-memory/spec.md`
-- Modify: `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/specs/agent-memory-provider/spec.md`
+- Modify: historical memory-hybrid provider proposal note
+- Modify: historical memory-hybrid provider design note
+- Modify: historical CLI-memory capability note for the same change family
+- Modify: historical agent-memory-provider capability note for the same change family
 - Reference: `docs/superpowers/specs/2026-05-07-llm-calls-truth-source-design.md`
 
 - [ ] **Step 1: Add a failing spec note by searching for missing `llm_calls` language**
@@ -25,18 +25,18 @@ Run:
 
 ```bash
 rg -n "llm_calls|request snapshot|cache usage|request_id" \
-  openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider
+  docs/superpowers/specs/2026-05-07-llm-calls-truth-source-design.md
 ```
 
 Expected:
 
 ```text
-No matches or only incidental matches; the current change does not yet define the milestone.
+Use the matches in the historical design note as the source material for the milestone update.
 ```
 
 - [ ] **Step 2: Update the proposal scope**
 
-Add a scoped extension to `proposal.md` similar to:
+Add a scoped extension to the historical proposal note similar to:
 
 ```md
 - append-only `llm_calls` truth-source capture for real model requests
@@ -46,7 +46,7 @@ Add a scoped extension to `proposal.md` similar to:
 
 - [ ] **Step 3: Update the design document**
 
-Add a section to `design.md` similar to:
+Add a section to the historical design note similar to:
 
 ```md
 ### Decision: LLM call truth-source capture extends the durable session-log boundary
@@ -60,7 +60,8 @@ into trajectory semantic messages.
 
 - [ ] **Step 4: Update requirement specs**
 
-Add or extend requirement language in the two spec files. Include wording like:
+Add or extend requirement language in the two historical capability notes.
+Include wording like:
 
 ```md
 #### Requirement: Completed task artifacts MUST preserve append-only llm_calls
@@ -81,23 +82,21 @@ Run:
 
 ```bash
 rg -n "llm_calls|request snapshot|cache usage|request_id" \
-  openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider
+  docs/superpowers/specs/2026-05-07-llm-calls-truth-source-design.md
 ```
 
 Expected:
 
 ```text
-Multiple matches in proposal/design/specs showing the milestone is now defined.
+Multiple matches in the design note showing the milestone language is captured for the historical update.
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add \
-  openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/proposal.md \
-  openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/design.md \
-  openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/specs/cli-memory/spec.md \
-  openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/specs/agent-memory-provider/spec.md
+  docs/superpowers/specs/2026-05-07-llm-calls-truth-source-design.md \
+  docs/superpowers/plans/2026-05-07-llm-calls-truth-source.md
 git commit -m "docs: extend memory spec for llm call truth source"
 ```
 

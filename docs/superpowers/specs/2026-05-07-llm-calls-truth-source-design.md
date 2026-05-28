@@ -32,8 +32,8 @@ Why:
 
 Relevant evidence:
 
-- `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/proposal.md`
-- `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/design.md`
+- the former memory-hybrid provider proposal draft
+- the former memory-hybrid provider design draft
 - `aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/common.py`
 - `aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py`
 
@@ -235,21 +235,20 @@ Expected implementation cut:
   optionally persist `llm_calls` into workspace session logs under the existing
   append-only durable path
 
-## OpenSpec Update Plan
+## Historical Documentation Update Plan
 
-When this work moves from design to implementation, the existing change should
-be extended in place:
+When this work moves from design to implementation, the historical
+memory-hybrid change notes should be extended in place:
 
-- update `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/proposal.md`
-  to include `llm_calls` truth-source capture as a scoped extension
-- update `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/design.md`
-  to define the new runtime observability path
-- update the affected spec files under
-  `openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider/specs/`
-  so requirements cover `llm_calls`, request snapshot fidelity, and cache usage
+- update the former memory-hybrid provider proposal draft to include
+  `llm_calls` truth-source capture as a scoped extension
+- update the former memory-hybrid provider design draft to define the new
+  runtime observability path
+- update any surviving historical capability notes for that change family so
+  requirements cover `llm_calls`, request snapshot fidelity, and cache usage
   association
 
-This design does not require a separate new change directory.
+This design does not require a separate new change draft.
 
 ## Validation Plan
 

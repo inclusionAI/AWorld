@@ -40,8 +40,8 @@
   Cover `/remember --kind`, typed inspection surfaces, and typed promotion listings.
 - `tests/plugins/test_plugin_hooks.py`
   Cover hook-produced typed governed decisions and recall-only gating.
-- `openspec/changes/2026-05-07-typed-durable-memory-taxonomy/tasks.md`
-  Mark completed OpenSpec tasks after implementation lands.
+- historical typed-taxonomy task tracker
+  Mark completed task items after implementation lands.
 
 ### Do not modify as part of this plan
 
@@ -574,7 +574,7 @@ git commit -m "feat: expose typed durable memory in memory commands"
 - Modify: `aworld-cli/src/aworld_cli/memory/promotion.py`
 - Modify: `aworld-cli/src/aworld_cli/memory/governance.py`
 - Modify: `aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py`
-- Modify: `openspec/changes/2026-05-07-typed-durable-memory-taxonomy/tasks.md`
+- Modify: historical typed-taxonomy task tracker
 
 - [ ] **Step 1: Write the failing governed-promotion tests**
 
@@ -727,7 +727,7 @@ Expected: PASS with governed decisions exposing `memory_kind`, instruction-eligi
 
 - [ ] **Step 5: Mark the OpenSpec tasks that are now complete**
 
-Update `openspec/changes/2026-05-07-typed-durable-memory-taxonomy/tasks.md` to mark completed items as implementation lands.
+Update the historical typed-taxonomy task tracker to mark completed items as implementation lands.
 
 - [ ] **Step 6: Run the full typed-taxonomy verification suite**
 
@@ -742,7 +742,7 @@ Expected: PASS with no failures.
 - [ ] **Step 7: Commit the governed taxonomy integration**
 
 ```bash
-git add tests/cli_memory/test_governance.py tests/plugins/test_plugin_hooks.py tests/cli_memory/test_memory_acceptance.py aworld-cli/src/aworld_cli/memory/promotion.py aworld-cli/src/aworld_cli/memory/governance.py aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py openspec/changes/2026-05-07-typed-durable-memory-taxonomy/tasks.md
+git add tests/cli_memory/test_governance.py tests/plugins/test_plugin_hooks.py tests/cli_memory/test_memory_acceptance.py aworld-cli/src/aworld_cli/memory/promotion.py aworld-cli/src/aworld_cli/memory/governance.py aworld-cli/src/aworld_cli/builtin_plugins/memory_cli/hooks/task_completed.py
 git commit -m "feat: make governed promotion respect typed durable memory"
 ```
 

@@ -4,7 +4,7 @@
 
 **Goal:** Replace the repository's ad hoc `docs/superpowers/*` change-management flow with OpenSpec, establish baseline capability specs, and move assistant workflow rules into `AGENTS.md`.
 
-**Architecture:** Use a single migration change, `adopt-openspec`, as the bootstrap record. Archive that change into `openspec/specs/` so the repo ends with OpenSpec as the source of truth, while keeping legacy docs as historical references only.
+**Architecture:** Use a single migration change, `adopt-openspec`, as the bootstrap record. Archive that change into a stable spec tree so the repo ends with OpenSpec as the source of truth, while keeping legacy docs as historical references only.
 
 **Tech Stack:** OpenSpec CLI, Markdown, existing repository documentation
 
@@ -13,10 +13,10 @@
 ### Task 1: Create The Migration Skeleton
 
 **Files:**
-- Create: `openspec/changes/adopt-openspec/.openspec.yaml`
-- Create: `openspec/changes/adopt-openspec/proposal.md`
-- Create: `openspec/changes/adopt-openspec/design.md`
-- Create: `openspec/changes/adopt-openspec/tasks.md`
+- Create: historical OpenSpec bootstrap manifest
+- Create: historical OpenSpec bootstrap proposal
+- Create: historical OpenSpec bootstrap design note
+- Create: historical OpenSpec bootstrap task list
 
 - [ ] **Step 1: Initialize OpenSpec in the repository**
 
@@ -26,7 +26,7 @@ openspec init --tools codex .
 openspec new change adopt-openspec
 ```
 
-Expected: `openspec/` exists and `openspec/changes/adopt-openspec/.openspec.yaml` is created.
+Expected: the OpenSpec bootstrap files are created.
 
 - [ ] **Step 2: Write the migration artifacts**
 
@@ -35,16 +35,16 @@ Add a proposal, design, and task list that document the switch away from `docs/s
 ### Task 2: Define Baseline Capability Specs
 
 **Files:**
-- Create: `openspec/changes/adopt-openspec/specs/change-governance/spec.md`
-- Create: `openspec/changes/adopt-openspec/specs/agent-runtime/spec.md`
-- Create: `openspec/changes/adopt-openspec/specs/workflow-hooks/spec.md`
-- Create: `openspec/changes/adopt-openspec/specs/cli-experience/spec.md`
-- Create: `openspec/changes/adopt-openspec/specs/skills-system/spec.md`
-- Create: `openspec/changes/adopt-openspec/specs/training-integration/spec.md`
+- Create: historical change-governance capability note
+- Create: historical agent-runtime capability note
+- Create: historical workflow-hooks capability note
+- Create: historical CLI-experience capability note
+- Create: historical skills-system capability note
+- Create: historical training-integration capability note
 
 - [ ] **Step 1: Capture repository governance requirements**
 
-Define that future behavior changes are proposed in `openspec/changes/` and the stable source of truth lives in `openspec/specs/`.
+Define that future behavior changes are proposed as change drafts and the stable source of truth lives in a stable spec tree.
 
 - [ ] **Step 2: Capture baseline product capabilities**
 
@@ -69,12 +69,12 @@ Replace `CLAUDE.md` with a short pointer to `AGENTS.md` and mark `docs/superpowe
 ### Task 4: Materialize Main Specs And Validate
 
 **Files:**
-- Modify: `openspec/specs/change-governance/spec.md`
-- Modify: `openspec/specs/agent-runtime/spec.md`
-- Modify: `openspec/specs/workflow-hooks/spec.md`
-- Modify: `openspec/specs/cli-experience/spec.md`
-- Modify: `openspec/specs/skills-system/spec.md`
-- Modify: `openspec/specs/training-integration/spec.md`
+- Modify: stable change-governance spec
+- Modify: stable agent-runtime spec
+- Modify: stable workflow-hooks spec
+- Modify: stable CLI-experience spec
+- Modify: stable skills-system spec
+- Modify: stable training-integration spec
 
 - [ ] **Step 1: Validate and archive the migration change**
 
@@ -84,7 +84,7 @@ openspec validate adopt-openspec
 openspec archive adopt-openspec -y
 ```
 
-Expected: the change moves into `openspec/changes/archive/` and the six main specs are created under `openspec/specs/`.
+Expected: the change is archived and the six main specs are created in the stable spec tree.
 
 - [ ] **Step 2: Replace generated placeholder purposes**
 

@@ -3,8 +3,8 @@
 ## Purpose
 
 This document organizes the work that remains **outside** the currently
-delivered scope of
-`openspec/changes/2026-04-28-aworld-cli-memory-hybrid-provider`.
+delivered scope of the former
+`2026-04-28-aworld-cli-memory-hybrid-provider` change draft.
 
 It is not a new implementation spec. It is a grounded backlog extracted from:
 
