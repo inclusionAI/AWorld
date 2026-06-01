@@ -199,6 +199,36 @@ async def test_plain_text_steering_ack_is_committed_into_active_history():
 
 
 @pytest.mark.asyncio
+async def test_absolute_path_text_is_queued_while_task_is_active():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+    runtime = FakeRuntime()
+    runtime._steering.begin_task("sess-1", "task-1")
+    task = asyncio.create_task(asyncio.sleep(60))
+    prompt = "/Users/manwu/Documents/health/2026-05-25/icloud，你看看这个里面有今天的健康数据吗？"
+
+    handled = await cli._handle_active_task_input(
+        prompt,
+        runtime=runtime,
+        session_id="sess-1",
+        executor_task=task,
+    )
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert handled is True
+    snapshot = runtime._steering.snapshot("sess-1")
+    assert snapshot["pending_count"] == 1
+    assert snapshot["last_steer_excerpt"] == prompt
+    assert cli._active_steering_view.history[-1] == {
+        "kind": "queued_steering",
+        "text": prompt,
+    }
+
+
+@pytest.mark.asyncio
 async def test_fallback_interrupt_command_cancels_active_task():
     cli = AWorldCLI()
     runtime = FakeRuntime()

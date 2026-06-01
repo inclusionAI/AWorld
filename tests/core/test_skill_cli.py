@@ -810,6 +810,53 @@ async def test_run_chat_session_reports_disabled_skill_alias(
 
 
 @pytest.mark.asyncio
+async def test_run_chat_session_treats_absolute_path_text_as_plain_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    output = StringIO()
+    cli.console = Console(file=output, force_terminal=False, color_system=None, width=160)
+    captured: dict[str, object] = {}
+    prompts = iter(
+        [
+            "/Users/manwu/Documents/health/2026-05-25/icloud，你看看这个里面有今天的健康数据吗？",
+            "/exit",
+        ]
+    )
+
+    async def fake_executor(prompt: str, requested_skill_names=None):
+        captured["prompt"] = prompt
+        captured["requested_skill_names"] = requested_skill_names
+        return "ok"
+
+    async def fake_apply_user_input_hooks(user_input: str, executor_instance=None):
+        return True, user_input
+
+    async def fake_stop_notification_poller():
+        return None
+
+    monkeypatch.setattr(cli, "_apply_user_input_hooks", fake_apply_user_input_hooks)
+    monkeypatch.setattr(cli, "_stop_notification_poller", fake_stop_notification_poller)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda: next(prompts))
+
+    result = await cli.run_chat_session(
+        "Aworld",
+        fake_executor,
+        available_agents=[AgentInfo(name="Aworld")],
+    )
+
+    rendered = output.getvalue()
+
+    assert result is False
+    assert (
+        captured["prompt"]
+        == "/Users/manwu/Documents/health/2026-05-25/icloud，你看看这个里面有今天的健康数据吗？"
+    )
+    assert "Unknown command:" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_run_chat_session_routes_prompt_commands_through_active_steering_in_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
