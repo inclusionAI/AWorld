@@ -3,6 +3,7 @@ import json
 import os
 import time
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +17,12 @@ from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.event.base import Message
 from aworld_cli.console import AWorldCLI, _ESC_INTERRUPT_SENTINEL
+from aworld_cli.core.command_system import CommandRegistry
 from aworld_cli.executors.local import LocalAgentExecutor
+from aworld_cli.plugin_capabilities.commands import register_plugin_commands
+from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.steering.coordinator import SteeringCoordinator
+from aworld.plugins.discovery import discover_plugins
 
 
 class FakeRuntime:
@@ -30,6 +35,45 @@ class FakeRuntime:
             return False
         self.interrupt_requests.append(session_id)
         return self._steering.request_interrupt(session_id)
+
+
+def _get_builtin_goal_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "goal_session"
+    )
+
+
+class GoalCommandRuntime:
+    def __init__(self, state_root: Path):
+        self._steering = SteeringCoordinator()
+        self.interrupt_requests: list[str] = []
+        self._plugin_state_store = PluginStateStore(state_root)
+
+    def request_session_interrupt(self, session_id: str | None) -> bool:
+        if not session_id:
+            return False
+        self.interrupt_requests.append(session_id)
+        return self._steering.request_interrupt(session_id)
+
+    def _resolve_plugin_state_path(
+        self,
+        plugin_id: str,
+        scope: str,
+        session_id: str | None,
+        workspace_path: str | None,
+    ):
+        if scope == "global":
+            return self._plugin_state_store.global_state(plugin_id)
+        if scope == "session" and session_id:
+            return self._plugin_state_store.session_state(plugin_id, session_id)
+        if workspace_path:
+            return self._plugin_state_store.workspace_state(plugin_id, workspace_path)
+        return None
 
 
 def test_active_steering_status_line_uses_runtime_override_when_present():
@@ -155,6 +199,36 @@ async def test_plain_text_steering_ack_is_committed_into_active_history():
 
 
 @pytest.mark.asyncio
+async def test_absolute_path_text_is_queued_while_task_is_active():
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+    runtime = FakeRuntime()
+    runtime._steering.begin_task("sess-1", "task-1")
+    task = asyncio.create_task(asyncio.sleep(60))
+    prompt = "/Users/manwu/Documents/health/2026-05-25/icloud，你看看这个里面有今天的健康数据吗？"
+
+    handled = await cli._handle_active_task_input(
+        prompt,
+        runtime=runtime,
+        session_id="sess-1",
+        executor_task=task,
+    )
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert handled is True
+    snapshot = runtime._steering.snapshot("sess-1")
+    assert snapshot["pending_count"] == 1
+    assert snapshot["last_steer_excerpt"] == prompt
+    assert cli._active_steering_view.history[-1] == {
+        "kind": "queued_steering",
+        "text": prompt,
+    }
+
+
+@pytest.mark.asyncio
 async def test_fallback_interrupt_command_cancels_active_task():
     cli = AWorldCLI()
     runtime = FakeRuntime()
@@ -206,6 +280,57 @@ async def test_escape_interrupts_and_keeps_pending_steering_for_immediate_follow
         "kind": "system_notice",
         "text": "Interrupting current run to submit queued steering immediately.",
     }
+
+
+@pytest.mark.asyncio
+async def test_goal_pause_command_is_allowed_while_task_is_active(tmp_path):
+    cli = AWorldCLI()
+    cli._active_steering_view = cli._create_active_steering_view()
+    runtime = GoalCommandRuntime(tmp_path / "state")
+    plugin = discover_plugins([_get_builtin_goal_plugin_root()])[0]
+    if CommandRegistry.get("goal") is None:
+        register_plugin_commands([plugin])
+    runtime._plugin_state_store.handle(
+        runtime._plugin_state_store.session_state("goal-session", "sess-1")
+    ).write(
+        {
+            "objective": "Create file goal_pause.txt with exact content pause ok",
+            "active": True,
+            "status": "active",
+            "verification_commands": [
+                "test -f goal_pause.txt && grep -qx 'pause ok' goal_pause.txt"
+            ],
+            "completion_promise": None,
+            "max_turns": 3,
+            "turns_used": 1,
+            "source": "goal",
+        }
+    )
+    runtime._steering.begin_task("sess-1", "task-1")
+    task = asyncio.create_task(asyncio.sleep(60))
+
+    try:
+        handled = await cli._handle_active_task_input(
+            "/goal pause",
+            runtime=runtime,
+            session_id="sess-1",
+            executor_task=task,
+            workspace_path=str(tmp_path),
+        )
+
+        assert handled is True
+        assert runtime.interrupt_requests == ["sess-1"]
+        assert task.cancelled() or task.cancelling()
+        paused = runtime._plugin_state_store.handle(
+            runtime._plugin_state_store.session_state("goal-session", "sess-1")
+        ).read()
+        assert paused["status"] == "paused"
+        assert paused["active"] is False
+        assert "Status: paused" in cli._active_steering_view.history[-1]["text"]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio

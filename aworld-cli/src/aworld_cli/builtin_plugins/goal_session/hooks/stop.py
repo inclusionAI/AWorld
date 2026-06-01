@@ -23,6 +23,9 @@ class GoalCommand(PluginBoundCommand):
             return "tool"
         return "prompt"
 
+    def should_start_new_session(self, context: CommandContext) -> bool:
+        return resolve_goal_control_action(context.user_args) is None
+
     async def pre_execute(self, context: CommandContext):
         if resolve_goal_control_action(context.user_args):
             return None
@@ -72,7 +75,13 @@ class GoalCommand(PluginBoundCommand):
         if action == "pause":
             if not is_goal_active(current):
                 return "No active goal to pause."
-            updated = handle.update({"active": False, "status": "paused"})
+            updated = handle.update(
+                {
+                    "active": False,
+                    "status": "paused",
+                    "last_task_status": "paused",
+                }
+            )
             return build_goal_context_prompt(updated)
 
         if action == "clear":

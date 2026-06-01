@@ -12,6 +12,7 @@ from aworld_cli.builtin_plugins.goal_session.common import (
 )
 from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
     _extract_completion_promise as extract_completion_promise,
+    build_goal_context_prompt,
     summarize_text,
 )
 from aworld.plugins.discovery import discover_plugins
@@ -113,6 +114,50 @@ def test_summarize_text_handles_edge_cases():
     assert summarize_text("a" * 161) == "a" * 157 + "..."
     assert summarize_text("Hello 🎉 World", limit=10) == "Hello 🎉..."
     assert summarize_text(None) is None
+
+
+def test_build_goal_context_prompt_omits_iterating_copy_when_paused():
+    prompt = build_goal_context_prompt(
+        {
+            "active": False,
+            "status": "paused",
+            "objective": "Create file goal_pause.txt with exact content pause ok",
+            "turn_count": 1,
+            "max_turns": 3,
+            "verification_commands": [
+                "test -f goal_pause.txt && grep -qx 'pause ok' goal_pause.txt"
+            ],
+            "completion_promise": None,
+            "source": "goal",
+            "last_task_status": "paused",
+        }
+    )
+
+    assert "Status: paused" in prompt
+    assert "Completion promise: none" in prompt
+    assert "Keep iterating until the operator pauses, clears, or the goal budget is exhausted." not in prompt
+
+
+def test_build_goal_context_prompt_labels_idle_as_completed_for_complete_goal():
+    prompt = build_goal_context_prompt(
+        {
+            "active": False,
+            "status": "complete",
+            "objective": "Create file goal_promise.txt with exact content promise ok",
+            "turn_count": 1,
+            "max_turns": 5,
+            "verification_commands": [
+                "test -f goal_promise.txt && grep -qx 'promise ok' goal_promise.txt"
+            ],
+            "completion_promise": "COMPLETE",
+            "source": "goal",
+            "last_task_status": "idle",
+        }
+    )
+
+    assert "Status: complete" in prompt
+    assert "Last task status: completed" in prompt
+    assert "Last task status: idle" not in prompt
 
 
 def test_register_plugin_command_from_manifest():
@@ -1872,8 +1917,96 @@ async def test_goal_command_status_pause_and_clear(tmp_path):
         assert "Objective: Stabilize the goal flow" in status_result
         assert "Status: active" in status_result
         assert "Status: paused" in pause_result
+        assert "Last task status: paused" in pause_result
         assert handle.read() == {}
         assert clear_result == "Goal cleared."
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_goal_command_control_actions_only_affect_current_session(tmp_path):
+    plugin_root = _get_builtin_goal_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        runtime = _build_dummy_runtime(tmp_path)
+        workspace_path = str(tmp_path / "workspace")
+        session_one_path = runtime._resolve_plugin_state_path(
+            plugin_id="goal-session",
+            scope="session",
+            session_id="session-1",
+            workspace_path=workspace_path,
+        )
+        session_two_path = runtime._resolve_plugin_state_path(
+            plugin_id="goal-session",
+            scope="session",
+            session_id="session-2",
+            workspace_path=workspace_path,
+        )
+        session_one = runtime._plugin_state_store.handle(session_one_path)
+        session_two = runtime._plugin_state_store.handle(session_two_path)
+        session_one.write(
+            {
+                "active": True,
+                "status": "active",
+                "objective": "Keep session one intact",
+                "turn_count": 1,
+                "max_turns": 3,
+                "verification_commands": [],
+                "completion_promise": None,
+                "source": "goal",
+            }
+        )
+        session_two.write(
+            {
+                "active": True,
+                "status": "active",
+                "objective": "Pause and clear session two only",
+                "turn_count": 1,
+                "max_turns": 3,
+                "verification_commands": [],
+                "completion_promise": None,
+                "source": "goal",
+            }
+        )
+
+        command = CommandRegistry.get("goal")
+        pause_result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="pause",
+                runtime=runtime,
+                session_id="session-2",
+            )
+        )
+        clear_result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="clear",
+                runtime=runtime,
+                session_id="session-2",
+            )
+        )
+        status_result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="status",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+
+        assert "Status: paused" in pause_result
+        assert clear_result == "Goal cleared."
+        assert "Objective: Keep session one intact" in status_result
+        assert "Status: active" in status_result
+        assert session_two.read() == {}
+        assert session_one.read()["objective"] == "Keep session one intact"
+        assert session_one.read()["status"] == "active"
     finally:
         CommandRegistry.restore(snapshot)
 

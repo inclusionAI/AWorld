@@ -962,6 +962,10 @@ async def _run_direct_mode(
     if not agent_executor:
         print(f"❌ Error: Failed to create executor for agent '{agent_name}'")
         return
+
+    # Match interactive mode so direct runs can access runtime-scoped features
+    # such as steering checkpoints and HUD state.
+    agent_executor._base_runtime = runtime
     
     # If session_id was provided, ensure it's properly restored (for session history management)
     if session_id and hasattr(agent_executor, 'restore_session'):
@@ -995,6 +999,7 @@ async def _run_direct_mode(
         prompt=multimodal_prompt,
         agent_name=agent_name,
         requested_skill_names=requested_skill_names,
+        non_interactive=non_interactive,
         max_runs=max_runs,
         max_cost=max_cost,
         max_duration=max_duration,
