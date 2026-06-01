@@ -138,6 +138,28 @@ def test_build_goal_context_prompt_omits_iterating_copy_when_paused():
     assert "Keep iterating until the operator pauses, clears, or the goal budget is exhausted." not in prompt
 
 
+def test_build_goal_context_prompt_labels_idle_as_completed_for_complete_goal():
+    prompt = build_goal_context_prompt(
+        {
+            "active": False,
+            "status": "complete",
+            "objective": "Create file goal_promise.txt with exact content promise ok",
+            "turn_count": 1,
+            "max_turns": 5,
+            "verification_commands": [
+                "test -f goal_promise.txt && grep -qx 'promise ok' goal_promise.txt"
+            ],
+            "completion_promise": "COMPLETE",
+            "source": "goal",
+            "last_task_status": "idle",
+        }
+    )
+
+    assert "Status: complete" in prompt
+    assert "Last task status: completed" in prompt
+    assert "Last task status: idle" not in prompt
+
+
 def test_register_plugin_command_from_manifest():
     plugin_root = Path("tests/fixtures/plugins/code_review_like").resolve()
     plugin = discover_plugins([plugin_root])[0]

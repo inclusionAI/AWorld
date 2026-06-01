@@ -90,6 +90,9 @@ def build_goal_context_prompt(state: dict) -> str:
     max_turns = _coerce_positive_int(state.get("max_turns"), DEFAULT_MAX_TURNS)
     commands = [str(item).strip() for item in (state.get("verification_commands") or []) if str(item).strip()]
     completion_promise = (state.get("completion_promise") or "").strip() or None
+    last_task_status = str(state.get("last_task_status") or "").strip()
+    if status == "complete" and last_task_status.lower() == "idle":
+        last_task_status = "completed"
 
     lines = [
         "<goal_contract>",
@@ -116,8 +119,8 @@ def build_goal_context_prompt(state: dict) -> str:
         if status in {"active", "budget_limited"}:
             lines.append("Keep iterating until the operator pauses, clears, or the goal budget is exhausted.")
 
-    if state.get("last_task_status"):
-        lines.append(f"Last task status: {state['last_task_status']}")
+    if last_task_status:
+        lines.append(f"Last task status: {last_task_status}")
     excerpt = state.get("last_final_answer_excerpt") or state.get("last_error_excerpt") or state.get(
         "last_partial_answer_excerpt"
     )
