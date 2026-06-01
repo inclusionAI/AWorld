@@ -423,6 +423,8 @@ class EvaluationConfig(BaseConfig):
     eval_target_full_class_name: str = None
     eval_target_config: dict = None
     eval_criterias: List[Union[dict]] = None
+    eval_suite_id: str = None
+    eval_dataset: Any = None
     # eval dataset id or file path, file path should be a jsonl file
     eval_dataset_id_or_file_path: str = None
     eval_dataset_load_config: Optional[DataLoaderConfig] = DataLoaderConfig()
