@@ -2389,13 +2389,6 @@ class AWorldCLI:
         ):
             return True
 
-        if normalized.startswith("/"):
-            self._append_active_steering_history(
-                "system_notice",
-                "Only /interrupt is available while a task is active.",
-            )
-            return True
-
         if steering is None or not session_id:
             return False
 
@@ -3536,10 +3529,7 @@ class AWorldCLI:
                                         f"[dim]Use /skills enable {disabled_skill_name} to enable it[/dim]"
                                     )
                                     continue
-                                # Command not found in registry
-                                self.console.print(f"[yellow]Unknown command: /{cmd_name}[/yellow]")
-                                self.console.print("[dim]Type /help to see available commands[/dim]")
-                                continue
+                                # Unmatched slash-prefixed input falls back to a normal user query.
                             if command:
                                 # Create command context
                                 cmd_context = CommandContext(
