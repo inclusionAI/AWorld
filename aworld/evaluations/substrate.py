@@ -81,6 +81,9 @@ class CallableJudgeBackend:
     backend_id: str
     judge: JudgeCallable
 
+    def is_available(self) -> bool:
+        return True
+
     async def execute(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> JudgeExecution:
         payload = await _maybe_await_judge(self.judge, case_input, target)
         return JudgeExecution(backend_id=self.backend_id, payload=dict(payload))
@@ -92,6 +95,7 @@ class AgentJudgeBackend:
     system_prompt: str
     executor: JudgeExecutor | None = None
     prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], str] | None = None
+    timeout_seconds: float | None = None
 
     def is_available(self) -> bool:
         if self.executor is not None:
@@ -106,9 +110,25 @@ class AgentJudgeBackend:
         prompt_builder = self.prompt_builder or _build_default_judge_prompt
         prompt = prompt_builder(case_input, target, suite)
         executor = self.executor or _default_agent_judge_executor
-        response = executor(prompt, self.system_prompt)
-        if inspect.isawaitable(response):
-            response = await response
+        async def _run_executor():
+            result = executor(prompt, self.system_prompt)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        if self.timeout_seconds is not None:
+            task = asyncio.create_task(_run_executor())
+            try:
+                response = await asyncio.wait_for(task, timeout=self.timeout_seconds)
+            except Exception:
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+                raise
+        else:
+            response = await _run_executor()
         payload = _coerce_judge_payload(response)
         return JudgeExecution(backend_id=self.backend_id, payload=payload)
 
@@ -542,6 +562,7 @@ def get_builtin_eval_suite(name: str, judge_backend: JudgeBackend | None = None)
                     backend_id="app-evaluator-agent",
                     system_prompt=_load_app_evaluator_skill_prompt(),
                     prompt_builder=_build_default_judge_prompt,
+                    timeout_seconds=float(os.getenv("AWORLD_EVALUATOR_AGENT_TIMEOUT_SECONDS", "8.0")),
                 ),
                 CallableJudgeBackend(
                     backend_id="app-evaluator-heuristic",
