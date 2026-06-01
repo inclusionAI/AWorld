@@ -112,6 +112,7 @@ class PluginSkillProvider(SkillProvider):
         skill_file = self._skill_files.get(skill_id)
         if skill_file is None:
             raise KeyError(skill_id)
+        skill_name = skill_id.split(":", 1)[1] if ":" in skill_id else skill_file.parent.name
         content = skill_file.read_text(encoding="utf-8").splitlines()
         front_matter, body_start = extract_front_matter(content)
         usage = "\n".join(content[body_start:]).strip()
@@ -127,7 +128,7 @@ class PluginSkillProvider(SkillProvider):
                 skill_file.parent,
                 declared_assets=front_matter.get("execution_assets"),
                 usage_text=usage,
-                skill_name=skill_file.parent.name,
+                skill_name=skill_name,
                 entrypoint=front_matter.get("entrypoint"),
                 metadata=front_matter.get("metadata"),
             ),

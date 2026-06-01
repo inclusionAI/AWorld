@@ -111,3 +111,44 @@ def test_plugin_provider_reads_entrypoint_from_plugin_metadata(tmp_path: Path) -
     descriptor = provider.list_descriptors()[0]
 
     assert descriptor.execution_assets["entrypoint"] == "scripts/index.ts"
+
+
+def test_plugin_provider_load_content_uses_entrypoint_id_for_virtual_skill_refs(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "plugin-skill"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    skill_dir = plugin_root / "skills" / "internal-skill-dir"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "assets").mkdir()
+    (skill_dir / "assets" / "template.bin").write_bytes(b"BIN")
+    (skill_dir / "SKILL.md").write_text(
+        "---\ndescription: Run external skill\n---\n\n"
+        "Read `/skills/public-skill/assets/template.bin` before execution.\n",
+        encoding="utf-8",
+    )
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "plugin-skill",
+                "version": "0.1.0",
+                "entrypoints": {
+                    "skills": [
+                        {
+                            "id": "public-skill",
+                            "target": "skills/internal-skill-dir/SKILL.md",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+    provider = PluginSkillProvider(plugin)
+    descriptor = provider.list_descriptors()[0]
+    content = provider.load_content(descriptor.skill_id)
+
+    assert content.execution_assets["enabled"] is True
+    assert content.execution_assets["relative_paths"] == ["assets/template.bin"]

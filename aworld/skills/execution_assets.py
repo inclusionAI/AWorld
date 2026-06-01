@@ -36,6 +36,10 @@ _SCRIPT_REFERENCE_RE = re.compile(r"(?P<path>scripts/[A-Za-z0-9_./-]+)")
 _SKILL_VIRTUAL_REFERENCE_RE = re.compile(
     r"/skills/(?P<skill_name>[A-Za-z0-9_.-]+)/(?P<relative_path>[A-Za-z0-9_./-]+)"
 )
+_SKILL_PATH_ALIAS_RE = re.compile(
+    r"(?P<root>(?:\./)?\.claude/skills|/skills)/(?P<skill_name>[A-Za-z0-9_.-]+)"
+    r"(?=(?:/|[^A-Za-z0-9_.-]|$))"
+)
 
 
 @dataclass(frozen=True)
@@ -227,6 +231,33 @@ def merge_execution_assets_configs(
         declared_assets=relative_paths,
         entrypoint=entrypoint,
     )
+
+
+def build_skill_path_aliases(
+    *,
+    skill_name: str,
+    usage_text: str = "",
+) -> list[str]:
+    normalized_skill_name = skill_name.strip()
+    if not normalized_skill_name:
+        return []
+
+    aliases = [f"/skills/{normalized_skill_name}"]
+    seen = set(aliases)
+
+    if not usage_text:
+        return aliases
+
+    for match in _SKILL_PATH_ALIAS_RE.finditer(usage_text):
+        if match.group("skill_name") != normalized_skill_name:
+            continue
+        alias = f"{match.group('root')}/{normalized_skill_name}"
+        if alias in seen:
+            continue
+        aliases.append(alias)
+        seen.add(alias)
+
+    return aliases
 
 
 def resolve_execution_entrypoint(

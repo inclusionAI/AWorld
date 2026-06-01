@@ -52,3 +52,7 @@ async def test_load_skill_agent_uses_descriptor_lookup_before_loading_content(
     assert agent.desc() == "Planning skill"
     assert "browser" in agent.mcp_servers
     assert "Use this skill for planning." in agent.system_prompt
+    assert agent.conf.skill_configs["planner"]["asset_root"] == str(good_skill_dir.resolve())
+    assert agent.conf.skill_configs["planner"]["execution_assets"]["enabled"] is False
+    assert agent.skill_configs["planner"]["asset_root"] == str(good_skill_dir.resolve())
+    assert agent.sandbox.skill_configs["planner"]["asset_root"] == str(good_skill_dir.resolve())
