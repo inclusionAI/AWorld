@@ -354,10 +354,13 @@ async def _load_skill_agent(
     # Preserve framework-loaded skill metadata for downstream runtime features
     # such as remote sandbox execution-asset staging without re-enabling the
     # legacy skill tool path on these agentic skills.
-    agent.conf.skill_configs = {skill_name: runtime_skill_config}
-    agent.skill_configs = {skill_name: runtime_skill_config}
+    merged_skill_configs = dict(agent.conf.skill_configs or {})
+    merged_skill_configs[skill_name] = runtime_skill_config
+
+    agent.conf.skill_configs = merged_skill_configs
+    agent.skill_configs = merged_skill_configs
     if agent.sandbox is not None:
-        agent.sandbox.skill_configs = {skill_name: runtime_skill_config}
+        agent.sandbox.skill_configs = merged_skill_configs
     
     return agent
 

@@ -152,3 +152,50 @@ def test_plugin_provider_load_content_uses_entrypoint_id_for_virtual_skill_refs(
 
     assert content.execution_assets["enabled"] is True
     assert content.execution_assets["relative_paths"] == ["assets/template.bin"]
+
+
+def test_plugin_provider_load_content_preserves_metadata_execution_assets(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "plugin-skill"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    skill_dir = plugin_root / "skills" / "brainstorming"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+    (skill_dir / "notes.txt").write_text("notes\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(
+        "---\ndescription: Design before implementation\n---\n\n# Brainstorming\n",
+        encoding="utf-8",
+    )
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "plugin-skill",
+                "version": "0.1.0",
+                "entrypoints": {
+                    "skills": [
+                        {
+                            "id": "brainstorming",
+                            "target": "skills/brainstorming/SKILL.md",
+                            "metadata": {
+                                "execution_assets": {
+                                    "enabled": True,
+                                    "relative_paths": ["notes.txt"],
+                                }
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+    provider = PluginSkillProvider(plugin)
+    descriptor = provider.list_descriptors()[0]
+    content = provider.load_content(descriptor.skill_id)
+
+    assert content.execution_assets["enabled"] is True
+    assert content.execution_assets["relative_paths"] == ["notes.txt"]
