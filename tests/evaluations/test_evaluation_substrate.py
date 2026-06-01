@@ -5,9 +5,11 @@ import pytest
 from aworld.evaluations.base import EvaluationConfig
 from aworld.evaluations.substrate import (
     AgentJudgeBackend,
+    CallableJudgeBackend,
     EvalCaseDef,
     EvalSuiteDef,
     EvaluationFlowDef,
+    FallbackJudgeBackend,
     GatePolicyDef,
     JudgeSchemaDef,
     compile_evaluation_flow,
@@ -185,3 +187,41 @@ async def test_builtin_app_evaluator_can_use_injected_judge_backend() -> None:
     assert report["results"][0]["judge"]["rank"] == "Good"
     assert report["report_version"] == 1
     assert report["approval"]["required"] is True
+
+
+@pytest.mark.asyncio
+async def test_fallback_judge_backend_uses_next_backend_after_timeout() -> None:
+    async def slow_executor(prompt: str, system_prompt: str):
+        await asyncio.sleep(0.05)
+        return {"results": [{"filename": "artifact.txt", "score": 0.99}]}
+
+    fallback = FallbackJudgeBackend(
+        backend_id="fallback",
+        backends=(
+            AgentJudgeBackend(
+                backend_id="slow-agent",
+                system_prompt="judge",
+                executor=slow_executor,
+                timeout_seconds=0.01,
+            ),
+            CallableJudgeBackend(
+                backend_id="heuristic",
+                judge=lambda case_input, target: {
+                    "score": 0.61,
+                    "rank": "Good",
+                    "criticism": "Fallback path used.",
+                    "praise": "Fallback stayed responsive.",
+                    "improvement_advice": "Keep timeout budgets explicit.",
+                },
+            ),
+        ),
+    )
+
+    execution = await fallback.execute(
+        case_input={"target_path": "artifact.txt"},
+        target={"target_path": "artifact.txt", "target_kind": "file"},
+        suite=EvalSuiteDef(suite_id="app-evaluator"),
+    )
+
+    assert execution.backend_id == "heuristic"
+    assert execution.payload["score"] == pytest.approx(0.61)
