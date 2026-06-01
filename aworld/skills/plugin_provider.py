@@ -42,6 +42,13 @@ class PluginSkillProvider(SkillProvider):
         front_matter, _ = extract_front_matter(content)
         return front_matter
 
+    def _resolve_entrypoint_metadata(self, skill_id: str) -> dict[str, Any]:
+        entrypoint_id = skill_id.split(":", 1)[1] if ":" in skill_id else skill_id
+        for entrypoint in self._plugin.manifest.entrypoints.get("skills", ()):
+            if entrypoint.entrypoint_id == entrypoint_id:
+                return dict(entrypoint.metadata or {})
+        return {}
+
     def list_descriptors(self) -> list[SkillDescriptor]:
         descriptors: list[SkillDescriptor] = []
         for entrypoint in self._plugin.manifest.entrypoints.get("skills", ()):
@@ -113,12 +120,18 @@ class PluginSkillProvider(SkillProvider):
         if skill_file is None:
             raise KeyError(skill_id)
         skill_name = skill_id.split(":", 1)[1] if ":" in skill_id else skill_file.parent.name
+        metadata = self._resolve_entrypoint_metadata(skill_id)
         content = skill_file.read_text(encoding="utf-8").splitlines()
         front_matter, body_start = extract_front_matter(content)
         usage = "\n".join(content[body_start:]).strip()
         tool_list = front_matter.get("tool_list", {})
         if isinstance(tool_list, str):
             tool_list = {}
+        declared_assets = (
+            metadata.get("execution_assets")
+            if "execution_assets" in metadata
+            else front_matter.get("execution_assets")
+        )
         return SkillContent(
             skill_id=skill_id,
             usage=usage,
@@ -126,11 +139,11 @@ class PluginSkillProvider(SkillProvider):
             raw_frontmatter=front_matter,
             execution_assets=build_execution_assets_config(
                 skill_file.parent,
-                declared_assets=front_matter.get("execution_assets"),
+                declared_assets=declared_assets,
                 usage_text=usage,
                 skill_name=skill_name,
                 entrypoint=front_matter.get("entrypoint"),
-                metadata=front_matter.get("metadata"),
+                metadata=metadata if isinstance(metadata, dict) and metadata else front_matter.get("metadata"),
             ),
         )
 

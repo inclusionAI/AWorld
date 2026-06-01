@@ -9,6 +9,7 @@ class _FakeFileNamespace:
     def __init__(self) -> None:
         self.created: list[str] = []
         self.written: list[tuple[str, str]] = []
+        self.uploaded: list[tuple[str, str]] = []
 
     async def list_allowed_directories(self):
         return {
@@ -24,6 +25,10 @@ class _FakeFileNamespace:
     async def write_file(self, path: str, content: str):
         self.written.append((path, content))
         return {"success": True, "data": path, "error": None}
+
+    async def upload_file(self, source_path: str, target_path: str):
+        self.uploaded.append((source_path, target_path))
+        return {"success": True, "data": target_path, "error": None}
 
 
 class _FakeTerminalNamespace:
@@ -157,7 +162,7 @@ async def test_ensure_remote_skill_assets_ready_excludes_understanding_assets(
 
 
 @pytest.mark.asyncio
-async def test_ensure_remote_skill_assets_ready_rejects_non_utf8_assets(
+async def test_ensure_remote_skill_assets_ready_uploads_binary_assets(
     tmp_path: Path,
 ) -> None:
     skill_root = tmp_path / "skills" / "browser-use"
@@ -165,20 +170,26 @@ async def test_ensure_remote_skill_assets_ready_rejects_non_utf8_assets(
     (skill_root / "payload.bin").write_bytes(b"\xff\xfe\x00\x01")
 
     sandbox = _FakeSandbox()
-
-    with pytest.raises(RuntimeError, match="not UTF-8 text: payload.bin"):
-        await ensure_remote_skill_assets_ready(
-            sandbox,
-            "browser-use",
-            {
-                "asset_root": str(skill_root),
-                "execution_assets": {
-                    "enabled": True,
-                    "relative_paths": ["payload.bin"],
-                    "digest": "deadbeefdeadbeef",
-                },
+    remote_root = await ensure_remote_skill_assets_ready(
+        sandbox,
+        "browser-use",
+        {
+            "asset_root": str(skill_root),
+            "execution_assets": {
+                "enabled": True,
+                "relative_paths": ["payload.bin"],
+                "digest": "deadbeefdeadbeef",
             },
+        },
+    )
+
+    assert sandbox.file.written == []
+    assert sandbox.file.uploaded == [
+        (
+            str((skill_root / "payload.bin").resolve()),
+            f"{remote_root}/payload.bin",
         )
+    ]
 
 
 @pytest.mark.asyncio

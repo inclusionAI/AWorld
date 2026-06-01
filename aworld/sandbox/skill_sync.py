@@ -57,17 +57,24 @@ async def ensure_remote_skill_assets_ready(
             raise RuntimeError(
                 f"Skill '{skill_name}' execution asset file not found: {relative_path}"
             )
+        target_path = str(Path(remote_root) / relative_path)
         try:
             content = source_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise RuntimeError(
-                f"Skill '{skill_name}' execution asset is not UTF-8 text: {relative_path}"
-            ) from exc
-        target_path = str(Path(remote_root) / relative_path)
-        await _require_success(
-            await sandbox.file.write_file(target_path, content),
-            f"write remote execution asset '{relative_path}' for '{skill_name}'",
-        )
+        except UnicodeDecodeError:
+            if not hasattr(sandbox.file, "upload_file"):
+                raise RuntimeError(
+                    f"Skill '{skill_name}' execution asset is not UTF-8 text and remote upload is unavailable: "
+                    f"{relative_path}"
+                )
+            await _require_success(
+                await sandbox.file.upload_file(str(source_path), target_path),
+                f"upload remote execution asset '{relative_path}' for '{skill_name}'",
+            )
+        else:
+            await _require_success(
+                await sandbox.file.write_file(target_path, content),
+                f"write remote execution asset '{relative_path}' for '{skill_name}'",
+            )
         await _preserve_remote_permissions(
             sandbox,
             source_path=source_path,
