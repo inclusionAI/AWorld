@@ -10,6 +10,7 @@ from pathlib import Path
 
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
+from aworld.skills.execution_assets import build_skill_path_aliases
 
 
 from aworld.utils.common import sync_exec
@@ -369,7 +370,10 @@ class McpServers:
                 str((Path(asset_root) / relative_path).resolve()): relative_path
                 for relative_path in relative_paths
             }
-            virtual_root = f"/skills/{skill_name}"
+            path_aliases = self._get_skill_path_aliases(
+                skill_name=skill_name,
+                skill_config=skill_config,
+            )
             relative_path_matches = [
                 relative_path
                 for relative_path in relative_paths
@@ -381,7 +385,10 @@ class McpServers:
                     relative_path_owners=relative_path_owners,
                 )
             ]
-            root_referenced = asset_root in rewritten or virtual_root in rewritten
+            root_referenced = asset_root in rewritten or any(
+                self._skill_root_occurs_in_command(rewritten, alias)
+                for alias in path_aliases
+            )
             file_referenced = any(host_path in rewritten for host_path in host_file_paths)
             if not root_referenced and not file_referenced and not relative_path_matches:
                 continue
@@ -401,7 +408,7 @@ class McpServers:
 
             rewritten = self._rewrite_virtual_skill_root(
                 rewritten,
-                skill_name,
+                path_aliases,
                 remote_root,
             )
             rewritten = self._rewrite_cd_command_root(
@@ -425,15 +432,29 @@ class McpServers:
         getter = getattr(context, "get_active_skills")
         if not callable(getter):
             return []
+        namespace = self._resolve_skill_namespace(context)
         try:
-            skills = await getter(namespace=None)
+            skills = await getter(namespace=namespace)
         except TypeError:
-            skills = await getter()
+            try:
+                skills = await getter(namespace)
+            except TypeError:
+                skills = await getter()
         except Exception:
             return []
         if not isinstance(skills, list):
             return []
         return [str(skill).strip() for skill in skills if str(skill).strip()]
+
+    @staticmethod
+    def _resolve_skill_namespace(context: Context | None) -> str | None:
+        if not context:
+            return None
+        agent_info = getattr(context, "agent_info", None)
+        current_agent_id = getattr(agent_info, "current_agent_id", None)
+        if isinstance(current_agent_id, str) and current_agent_id.strip():
+            return current_agent_id.strip()
+        return None
 
     def _resolve_candidate_skill_names(
         self,
@@ -502,9 +523,29 @@ class McpServers:
         return len(active_owners) == 1 and active_owners[0] == skill_name
 
     @staticmethod
+    def _get_skill_path_aliases(
+        *,
+        skill_name: str,
+        skill_config: dict[str, Any],
+    ) -> list[str]:
+        aliases = skill_config.get("path_aliases")
+        if isinstance(aliases, list):
+            normalized = [str(alias).strip() for alias in aliases if str(alias).strip()]
+            if normalized:
+                return normalized
+        return build_skill_path_aliases(skill_name=skill_name)
+
+    @staticmethod
     def _path_occurs_in_command(command_text: str, path_text: str) -> bool:
         pattern = re.compile(
             rf"(?<![A-Za-z0-9_./-]){re.escape(path_text)}(?![A-Za-z0-9_./-])"
+        )
+        return bool(pattern.search(command_text))
+
+    @staticmethod
+    def _skill_root_occurs_in_command(command_text: str, path_text: str) -> bool:
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_./-]){re.escape(path_text)}(?=(?:/|[^A-Za-z0-9_.-]|$))"
         )
         return bool(pattern.search(command_text))
 
@@ -538,15 +579,11 @@ class McpServers:
     @staticmethod
     def _rewrite_virtual_skill_root(
         command_text: str,
-        skill_name: str,
+        path_aliases: list[str],
         remote_root: str,
     ) -> str:
         rewritten = command_text
-        for virtual_root in (
-            f"/skills/{skill_name}",
-            f".claude/skills/{skill_name}",
-            f"./.claude/skills/{skill_name}",
-        ):
+        for virtual_root in path_aliases:
             pattern = re.compile(
                 rf"(?<![A-Za-z0-9_./-]){re.escape(virtual_root)}(?=(?:/|[^A-Za-z0-9_.-]|$))"
             )

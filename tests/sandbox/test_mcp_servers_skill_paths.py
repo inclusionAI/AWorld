@@ -23,10 +23,18 @@ class _FakeSandbox:
 
 
 class _FakeContext:
-    def __init__(self, active_skills: list[str]) -> None:
+    def __init__(
+        self,
+        active_skills: list[str],
+        *,
+        namespace: str | None = None,
+    ) -> None:
         self._active_skills = active_skills
+        self.agent_info = type("AgentInfo", (), {"current_agent_id": namespace})()
+        self.last_namespace: str | None = None
 
     async def get_active_skills(self, namespace: str | None = None):
+        self.last_namespace = namespace
         return list(self._active_skills)
 
 
@@ -175,8 +183,9 @@ async def test_check_tool_params_rewrites_entrypoint_relative_path_for_active_sk
     servers.tool_list = [_terminal_tool("run_code", "code")]
     parameter = {"code": "python scripts/run.py"}
 
+    context = _FakeContext(["browser-use"], namespace="designer-agent")
     ok = await servers.check_tool_params(
-        context=_FakeContext(["browser-use"]),
+        context=context,
         server_name="terminal",
         tool_name="run_code",
         parameter=parameter,
@@ -187,6 +196,7 @@ async def test_check_tool_params_rewrites_entrypoint_relative_path_for_active_sk
         parameter["code"]
         == "python /remote/workspace/.aworld/skills/browser-use/feed1234feed1234/scripts/run.py"
     )
+    assert context.last_namespace == "designer-agent"
     assert sandbox.calls == [("browser-use", skill_config)]
 
 
@@ -244,6 +254,11 @@ async def test_check_tool_params_rewrites_legacy_claude_skill_path_reference(
 
     skill_config = {
         "asset_root": str(skill_root),
+        "path_aliases": [
+            "/skills/html-to-image",
+            ".claude/skills/html-to-image",
+            "./.claude/skills/html-to-image",
+        ],
         "execution_assets": {
             "enabled": True,
             "relative_paths": ["scripts/render.py"],
@@ -271,6 +286,50 @@ async def test_check_tool_params_rewrites_legacy_claude_skill_path_reference(
     assert (
         parameter["command"]
         == "python /remote/workspace/.aworld/skills/html-to-image/abc12345abc12345/scripts/render.py"
+    )
+    assert sandbox.calls == [("html-to-image", skill_config)]
+
+
+@pytest.mark.asyncio
+async def test_check_tool_params_rewrites_custom_skill_path_alias_from_skill_config(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "html-to-image"
+    skill_root.mkdir(parents=True)
+    render_file = skill_root / "scripts" / "render.py"
+    render_file.parent.mkdir()
+    render_file.write_text("print('render')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "path_aliases": ["vendor/skills/html-to-image"],
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["scripts/render.py"],
+            "digest": "bcd23456bcd23456",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote")
+    servers = McpServers(
+        mcp_servers=["terminal"],
+        mcp_config={"mcpServers": {"terminal": {}}},
+        sandbox=sandbox,
+        skill_configs={"html-to-image": skill_config},
+    )
+    servers.tool_list = [_terminal_tool("mcp_execute_command", "command")]
+    parameter = {"command": "python vendor/skills/html-to-image/scripts/render.py"}
+
+    ok = await servers.check_tool_params(
+        context=None,
+        server_name="terminal",
+        tool_name="mcp_execute_command",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert (
+        parameter["command"]
+        == "python /remote/workspace/.aworld/skills/html-to-image/bcd23456bcd23456/scripts/render.py"
     )
     assert sandbox.calls == [("html-to-image", skill_config)]
 
