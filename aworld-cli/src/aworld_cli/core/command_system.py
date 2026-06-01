@@ -101,6 +101,13 @@ class Command(ABC):
         """Return the effective command type for this invocation."""
         return self.command_type
 
+    def should_start_new_session(self, context: CommandContext) -> bool:
+        """
+        Return True when the command should rotate to a fresh executor session
+        before prompt generation and execution.
+        """
+        return False
+
     @property
     def allowed_tools(self) -> List[str]:
         """

@@ -3552,13 +3552,29 @@ class AWorldCLI:
                                 )
 
                                 try:
-                                    # Pre-execute validation
+                                    command_type = command.resolve_command_type(cmd_context)
+                                    # Pre-execute validation on the current session first so
+                                    # invalid prompt commands do not rotate the session.
                                     error = await command.pre_execute(cmd_context)
                                     if error:
                                         self.console.print(f"[red]Error: {error}[/red]")
                                         continue
 
-                                    command_type = command.resolve_command_type(cmd_context)
+                                    if command_type == "prompt" and command.should_start_new_session(cmd_context):
+                                        if executor_instance is None or not hasattr(executor_instance, "new_session"):
+                                            self.console.print(
+                                                f"[red]Error: /{cmd_name} requires session management support.[/red]"
+                                            )
+                                            continue
+                                        new_session_id = executor_instance.new_session()
+                                        cmd_context = CommandContext(
+                                            cwd=os.getcwd(),
+                                            user_args=cmd_args,
+                                            sandbox=None,
+                                            agent_config=None,
+                                            runtime=runtime,
+                                            session_id=new_session_id,
+                                        )
 
                                     # Route by command type
                                     if command_type == "tool":
