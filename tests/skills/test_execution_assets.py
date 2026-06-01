@@ -102,3 +102,44 @@ def test_build_execution_assets_config_resolves_virtual_skill_reference(
     )
 
     assert "lint_check.py" in config["relative_paths"]
+
+
+def test_build_execution_assets_config_keeps_default_companion_assets_for_declared_entrypoint(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "config.json").write_text('{"debug": true}\n', encoding="utf-8")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        entrypoint="scripts/run.py",
+    )
+
+    assert config["enabled"] is True
+    assert config["entrypoint"] == "scripts/run.py"
+    assert config["relative_paths"] == ["config.json", "scripts/run.py"]
+
+
+def test_build_execution_assets_config_honors_explicit_disable_flag(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "config.json").write_text('{"debug": true}\n', encoding="utf-8")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        declared_assets={"enabled": False},
+        entrypoint="scripts/run.py",
+    )
+
+    assert config == {
+        "enabled": False,
+        "relative_paths": [],
+        "digest": "",
+    }
