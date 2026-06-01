@@ -21,7 +21,10 @@ from aworld_cli.core.skill_activation_resolver import (
 )
 from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
 from aworld_cli.models import AgentInfo
+from aworld_cli.plugin_capabilities.commands import register_plugin_commands
+from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
+from aworld.plugins.discovery import discover_plugins
 
 
 def _write_skill(root: Path, skill_name: str) -> None:
@@ -30,6 +33,17 @@ def _write_skill(root: Path, skill_name: str) -> None:
     (skill_dir / "SKILL.md").write_text(
         "---\nname: demo\ndescription: demo\n---\n\n# Demo\n",
         encoding="utf-8",
+    )
+
+
+def _get_builtin_goal_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "goal_session"
     )
 
 
@@ -876,3 +890,130 @@ async def test_run_chat_session_routes_prompt_commands_through_active_steering_i
     assert captured["steering_kwargs"]["executor_instance"] is executor_instance
     assert captured["steering_kwargs"]["is_terminal"] is True
     assert "executor_prompt" not in captured
+
+
+@pytest.mark.asyncio
+async def test_run_chat_session_starts_goal_prompt_in_a_new_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = AWorldCLI()
+    output = StringIO()
+    cli.console = Console(file=output, force_terminal=False, color_system=None, width=160)
+    monkeypatch.chdir(tmp_path)
+    prompts = iter(
+        [
+            '/goal "Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE"',
+            "/exit",
+        ]
+    )
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        def __init__(self, state_root: Path):
+            self._plugin_state_store = PluginStateStore(state_root)
+
+        def _resolve_plugin_state_path(
+            self,
+            plugin_id: str,
+            scope: str,
+            session_id: str | None,
+            workspace_path: str | None,
+        ):
+            if scope == "global":
+                return self._plugin_state_store.global_state(plugin_id)
+            if scope == "session" and session_id:
+                return self._plugin_state_store.session_state(plugin_id, session_id)
+            if workspace_path:
+                return self._plugin_state_store.workspace_state(plugin_id, workspace_path)
+            return None
+
+    class GoalExecutor:
+        def __init__(self, runtime):
+            self.session_id = "sess-1"
+            self._base_runtime = runtime
+            self.swarm = SimpleNamespace(tools=[])
+            self.created_sessions: list[str] = []
+
+        def new_session(self) -> str:
+            self.created_sessions.append(self.session_id)
+            self.session_id = "sess-2"
+            return self.session_id
+
+    class FakePromptSession:
+        def prompt(self, *_args, **_kwargs):
+            return next(prompts)
+
+    async def fake_executor(prompt: str, requested_skill_names=None):
+        captured["executor_prompt"] = prompt
+        captured["requested_skill_names"] = requested_skill_names
+        return "ok"
+
+    async def fake_apply_user_input_hooks(user_input: str, executor_instance=None):
+        return True, user_input
+
+    async def fake_ensure_notification_poller(_runtime):
+        return None
+
+    async def fake_stop_notification_poller():
+        return None
+
+    async def fake_run_executor_with_active_steering(**kwargs):
+        captured["steering_kwargs"] = kwargs
+        return "ok"
+
+    def fake_create_prompt_session(_completer, **_kwargs):
+        session = FakePromptSession()
+        cli._active_prompt_session = session
+        return session
+
+    monkeypatch.setattr(cli, "_apply_user_input_hooks", fake_apply_user_input_hooks)
+    monkeypatch.setattr(cli, "_ensure_notification_poller", fake_ensure_notification_poller)
+    monkeypatch.setattr(cli, "_stop_notification_poller", fake_stop_notification_poller)
+    monkeypatch.setattr(cli, "_build_session_completer", lambda **_kwargs: object())
+    monkeypatch.setattr(cli, "_create_prompt_session", fake_create_prompt_session)
+    monkeypatch.setattr(cli, "_run_executor_with_active_steering", fake_run_executor_with_active_steering)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    runtime = DummyRuntime(tmp_path / "state")
+    executor_instance = GoalExecutor(runtime)
+    plugin = discover_plugins([_get_builtin_goal_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        result = await cli.run_chat_session(
+            "Aworld",
+            fake_executor,
+            available_agents=[AgentInfo(name="Aworld")],
+            executor_instance=executor_instance,
+        )
+    finally:
+        CommandRegistry.restore(snapshot)
+
+    new_session_state_path = runtime._resolve_plugin_state_path(
+        plugin_id="goal-session",
+        scope="session",
+        session_id="sess-2",
+        workspace_path=str(tmp_path),
+    )
+    old_session_state_path = runtime._resolve_plugin_state_path(
+        plugin_id="goal-session",
+        scope="session",
+        session_id="sess-1",
+        workspace_path=str(tmp_path),
+    )
+
+    assert result is False
+    assert executor_instance.created_sessions == ["sess-1"]
+    assert executor_instance.session_id == "sess-2"
+    assert "steering_kwargs" in captured
+    assert "executor_prompt" not in captured
+    assert "Objective: Build a REST API" in str(captured["steering_kwargs"]["prompt"])
+    assert (
+        runtime._plugin_state_store.handle(new_session_state_path).read()["objective"]
+        == "Build a REST API"
+    )
+    assert runtime._plugin_state_store.handle(old_session_state_path).read() == {}

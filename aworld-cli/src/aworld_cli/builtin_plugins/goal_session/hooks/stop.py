@@ -23,6 +23,9 @@ class GoalCommand(PluginBoundCommand):
             return "tool"
         return "prompt"
 
+    def should_start_new_session(self, context: CommandContext) -> bool:
+        return resolve_goal_control_action(context.user_args) is None
+
     async def pre_execute(self, context: CommandContext):
         if resolve_goal_control_action(context.user_args):
             return None

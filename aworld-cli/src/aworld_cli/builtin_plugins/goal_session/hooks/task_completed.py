@@ -113,7 +113,8 @@ def build_goal_context_prompt(state: dict) -> str:
         )
     else:
         lines.append("Completion promise: none")
-        lines.append("Keep iterating until the operator pauses, clears, or the goal budget is exhausted.")
+        if status in {"active", "budget_limited"}:
+            lines.append("Keep iterating until the operator pauses, clears, or the goal budget is exhausted.")
 
     if state.get("last_task_status"):
         lines.append(f"Last task status: {state['last_task_status']}")
