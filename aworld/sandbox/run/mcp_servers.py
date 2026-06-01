@@ -541,11 +541,17 @@ class McpServers:
         skill_name: str,
         remote_root: str,
     ) -> str:
-        virtual_root = f"/skills/{skill_name}"
-        pattern = re.compile(
-            rf"(?<![A-Za-z0-9_./-]){re.escape(virtual_root)}(?=(?:/|[^A-Za-z0-9_.-]|$))"
-        )
-        return pattern.sub(remote_root, command_text)
+        rewritten = command_text
+        for virtual_root in (
+            f"/skills/{skill_name}",
+            f".claude/skills/{skill_name}",
+            f"./.claude/skills/{skill_name}",
+        ):
+            pattern = re.compile(
+                rf"(?<![A-Za-z0-9_./-]){re.escape(virtual_root)}(?=(?:/|[^A-Za-z0-9_.-]|$))"
+            )
+            rewritten = pattern.sub(remote_root, rewritten)
+        return rewritten
 
     async def call_tool(
             self,
