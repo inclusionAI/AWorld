@@ -105,6 +105,13 @@ def build_execution_assets_config(
     entrypoint: str | None = None,
     metadata: Any = None,
 ) -> dict[str, Any]:
+    if _execution_assets_disabled(declared_assets):
+        return {
+            "enabled": False,
+            "relative_paths": [],
+            "digest": "",
+        }
+
     declared_entrypoint = resolve_execution_entrypoint(
         entrypoint=entrypoint,
         metadata=metadata,
@@ -113,16 +120,28 @@ def build_execution_assets_config(
         usage_text=usage_text,
         skill_name=skill_name,
     )
-    declared_relative_paths = parse_declared_execution_assets(declared_assets) or []
-    merged_declared_paths = _merge_relative_paths(
-        declared_relative_paths,
-        referenced_paths,
-        [declared_entrypoint] if declared_entrypoint else [],
-    )
-    manifest = build_execution_asset_manifest(
-        root,
-        merged_declared_paths or None,
-    )
+    declared_relative_paths = parse_declared_execution_assets(declared_assets)
+    if declared_relative_paths is None:
+        base_manifest = build_execution_asset_manifest(root, None)
+        merged_relative_paths = _merge_relative_paths(
+            list(base_manifest.relative_paths),
+            referenced_paths,
+            [declared_entrypoint] if declared_entrypoint else [],
+        )
+        manifest = build_execution_asset_manifest(
+            root,
+            merged_relative_paths or None,
+        )
+    else:
+        merged_declared_paths = _merge_relative_paths(
+            declared_relative_paths,
+            referenced_paths,
+            [declared_entrypoint] if declared_entrypoint else [],
+        )
+        manifest = build_execution_asset_manifest(
+            root,
+            merged_declared_paths or None,
+        )
     if not manifest.relative_paths:
         return {
             "enabled": False,
@@ -143,6 +162,20 @@ def build_execution_assets_config(
     if normalized_entrypoint:
         config["entrypoint"] = normalized_entrypoint
     return config
+
+
+def _execution_assets_disabled(raw: Any) -> bool:
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return False
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return False
+        return _execution_assets_disabled(parsed)
+
+    return isinstance(raw, dict) and raw.get("enabled") is False
 
 
 def merge_execution_assets_configs(

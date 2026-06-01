@@ -26,6 +26,15 @@ class _FakeFileNamespace:
         return {"success": True, "data": path, "error": None}
 
 
+class _FakeTerminalNamespace:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown"):
+        self.commands.append(code)
+        return {"success": True, "data": "ok", "error": None}
+
+
 class _FailingWriteFileNamespace(_FakeFileNamespace):
     def __init__(self, fail_path_suffix: str) -> None:
         super().__init__()
@@ -41,6 +50,7 @@ class _FakeSandbox:
     def __init__(self) -> None:
         self.mode = "remote"
         self.file = _FakeFileNamespace()
+        self.terminal = _FakeTerminalNamespace()
         self._remote_skill_execution_roots: dict[tuple[str, str], str] = {}
         self._remote_skill_execution_base_dir: str | None = None
 
@@ -204,3 +214,39 @@ async def test_ensure_remote_skill_assets_ready_fails_on_partial_remote_write(
         )
     ]
     assert sandbox._remote_skill_execution_roots == {}
+
+
+@pytest.mark.asyncio
+async def test_ensure_remote_skill_assets_ready_preserves_executable_modes(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    script = skill_root / "scripts" / "run.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    sandbox = _FakeSandbox()
+    remote_root = await ensure_remote_skill_assets_ready(
+        sandbox,
+        "browser-use",
+        {
+            "asset_root": str(skill_root),
+            "execution_assets": {
+                "enabled": True,
+                "relative_paths": ["scripts/run.sh"],
+                "digest": "bada55bada55bada",
+            },
+        },
+    )
+
+    assert sandbox.file.written == [
+        (
+            f"{remote_root}/scripts/run.sh",
+            "#!/bin/sh\necho hi\n",
+        )
+    ]
+    assert sandbox.terminal.commands == [
+        f"chmod 755 {remote_root}/scripts/run.sh"
+    ]

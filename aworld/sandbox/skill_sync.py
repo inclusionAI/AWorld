@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,13 @@ async def ensure_remote_skill_assets_ready(
             await sandbox.file.write_file(target_path, content),
             f"write remote execution asset '{relative_path}' for '{skill_name}'",
         )
+        await _preserve_remote_permissions(
+            sandbox,
+            source_path=source_path,
+            target_path=target_path,
+            skill_name=skill_name,
+            relative_path=relative_path,
+        )
 
     cache[cache_key] = remote_root
     return remote_root
@@ -113,3 +121,30 @@ async def _require_success(result: dict[str, Any], phase: str) -> None:
     if isinstance(result, dict):
         error = result.get("error") or result.get("data")
     raise RuntimeError(f"Failed to {phase}: {error or 'unknown error'}")
+
+
+async def _preserve_remote_permissions(
+    sandbox: Any,
+    *,
+    source_path: Path,
+    target_path: str,
+    skill_name: str,
+    relative_path: str,
+) -> None:
+    permission_bits = source_path.stat().st_mode & 0o777
+    if not permission_bits:
+        return
+
+    terminal = getattr(sandbox, "terminal", None)
+    if terminal is None or not hasattr(terminal, "run_code"):
+        raise RuntimeError(
+            f"Failed to preserve remote execution asset permissions for '{skill_name}': "
+            "sandbox terminal namespace is unavailable"
+        )
+
+    quoted_target_path = shlex.quote(target_path)
+    result = await terminal.run_code(f"chmod {permission_bits:o} {quoted_target_path}")
+    await _require_success(
+        result,
+        f"preserve permissions for remote execution asset '{relative_path}' in '{skill_name}'",
+    )
