@@ -14,6 +14,7 @@ from aworld_cli.evaluator_runtime import (
     evaluator_exit_code,
     get_evaluator_report_schema,
     run_evaluator_cli,
+    validate_evaluator_report,
 )
 
 
@@ -227,3 +228,70 @@ def test_get_evaluator_report_schema_describes_report_contract() -> None:
         "case_count",
         "judge_backend",
     ]
+
+
+def test_validate_evaluator_report_accepts_valid_report() -> None:
+    report = {
+        "report_version": 1,
+        "report_format": {"id": "aworld.evaluator.report", "version": 1},
+        "generated_at": "2026-06-02T04:00:00Z",
+        "suite_id": "app-evaluator",
+        "target": {"target_path": "/tmp/artifact.txt", "target_kind": "file"},
+        "summary": {"app-evaluator": {"score": {"mean": 0.9}}},
+        "metrics": {"score": {"mean": 0.9, "min": 0.9, "max": 0.9, "std": 0.0, "eval_status": "PASSED"}},
+        "results": [
+            {
+                "case_id": "artifact.txt",
+                "input": {"target_path": "/tmp/artifact.txt"},
+                "metrics": {"score": {"value": 0.9, "status": "PASSED"}},
+                "judge": {"score": 0.9},
+                "judge_backend": {"backend_id": "stub-agent"},
+            }
+        ],
+        "result_counts": {"cases_total": 1, "cases_with_metrics": 1, "cases_with_judge": 1},
+        "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+        "approval": {"required": False, "resolved": False, "approved": None},
+        "automation": {
+            "gate_status": "pass",
+            "metric_name": "score",
+            "metric_value": 0.9,
+            "approval_required": False,
+            "approval_resolved": False,
+            "approved": None,
+            "suggested_exit_code": 0,
+            "case_count": 1,
+            "judge_backend": "stub-agent",
+        },
+    }
+
+    validate_evaluator_report(report)
+
+
+def test_validate_evaluator_report_rejects_invalid_gate_status() -> None:
+    report = {
+        "report_version": 1,
+        "report_format": {"id": "aworld.evaluator.report", "version": 1},
+        "generated_at": "2026-06-02T04:00:00Z",
+        "suite_id": "app-evaluator",
+        "target": {"target_path": "/tmp/artifact.txt", "target_kind": "file"},
+        "summary": {"app-evaluator": {"score": {"mean": 0.9}}},
+        "metrics": {"score": {"mean": 0.9}},
+        "results": [],
+        "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
+        "gate": {"status": "maybe", "metric_name": "score", "value": 0.9},
+        "approval": {"required": False, "resolved": False, "approved": None},
+        "automation": {
+            "gate_status": "maybe",
+            "metric_name": "score",
+            "metric_value": 0.9,
+            "approval_required": False,
+            "approval_resolved": False,
+            "approved": None,
+            "suggested_exit_code": 0,
+            "case_count": 0,
+            "judge_backend": None,
+        },
+    }
+
+    with pytest.raises(ValueError, match="status"):
+        validate_evaluator_report(report)
