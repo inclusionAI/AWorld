@@ -570,8 +570,12 @@ class McpServers:
             f"./{relative_path}",
         ):
             return False
+        if skill_name not in active_skill_names:
+            return False
 
         owners = relative_path_owners.get(relative_path, [])
+        if not owners:
+            return False
         if len(owners) <= 1:
             return True
 

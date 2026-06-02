@@ -297,6 +297,46 @@ async def test_check_tool_params_rewrites_entrypoint_relative_path_for_active_sk
 
 
 @pytest.mark.asyncio
+async def test_check_tool_params_does_not_rewrite_relative_path_without_active_skill(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    (skill_root / "scripts").mkdir()
+    (skill_root / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["scripts/run.py"],
+            "digest": "deaf1234deaf1234",
+            "entrypoint": "scripts/run.py",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote")
+    servers = McpServers(
+        mcp_servers=["terminal"],
+        mcp_config={"mcpServers": {"terminal": {}}},
+        sandbox=sandbox,
+        skill_configs={"browser-use": skill_config},
+    )
+    servers.tool_list = [_terminal_tool("run_code", "code")]
+    parameter = {"code": "python scripts/run.py"}
+
+    ok = await servers.check_tool_params(
+        context=None,
+        server_name="terminal",
+        tool_name="run_code",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert parameter["code"] == "python scripts/run.py"
+    assert sandbox.calls == []
+
+
+@pytest.mark.asyncio
 async def test_check_tool_params_syncs_active_skill_before_relative_cd_command(
     tmp_path: Path,
 ) -> None:
