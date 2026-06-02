@@ -253,6 +253,52 @@ async def test_check_tool_params_rewrites_entrypoint_relative_path_for_active_sk
 
 
 @pytest.mark.asyncio
+async def test_check_tool_params_syncs_active_skill_before_relative_cd_command(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    (skill_root / "scripts").mkdir()
+    (skill_root / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["scripts/run.py"],
+            "digest": "f00d1234f00d1234",
+            "entrypoint": "scripts/run.py",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote")
+    servers = McpServers(
+        mcp_servers=["terminal"],
+        mcp_config={"mcpServers": {"terminal": {}}},
+        sandbox=sandbox,
+        skill_configs={"browser-use": skill_config},
+    )
+    servers.tool_list = [_terminal_tool("run_code", "code")]
+    parameter = {"code": "cd scripts && python run.py"}
+
+    context = _FakeContext(["browser-use"], namespace="designer-agent")
+    ok = await servers.check_tool_params(
+        context=context,
+        server_name="terminal",
+        tool_name="run_code",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert (
+        parameter["code"]
+        == "cd /remote/workspace/.aworld/skills/browser-use/f00d1234f00d1234/scripts"
+        " && python run.py"
+    )
+    assert context.last_namespace == "designer-agent"
+    assert sandbox.calls == [("browser-use", skill_config)]
+
+
+@pytest.mark.asyncio
 async def test_check_tool_params_rewrites_virtual_skill_path_reference(
     tmp_path: Path,
 ) -> None:

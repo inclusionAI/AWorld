@@ -70,6 +70,26 @@ def test_build_execution_assets_config_includes_scripts_directory_without_suffix
     assert config["relative_paths"] == ["scripts/run"]
 
 
+def test_build_execution_assets_config_includes_executable_helpers_outside_scripts(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "bin").mkdir()
+    runner = skill_dir / "bin" / "runner"
+    runner.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    runner.chmod(0o755)
+
+    config = build_execution_assets_config(
+        skill_dir,
+        usage_text="Run `cd /skills/demo && ./bin/runner` to execute this skill.",
+        skill_name="demo",
+    )
+
+    assert config["enabled"] is True
+    assert "bin/runner" in config["relative_paths"]
+
+
 def test_build_execution_assets_config_infers_entrypoint_from_skill_usage_reference(
     tmp_path: Path,
 ) -> None:

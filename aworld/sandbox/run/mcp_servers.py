@@ -346,6 +346,7 @@ class McpServers:
             active_skill_names=active_skill_names,
         )
         relative_path_owners = self._build_relative_path_owners(candidate_skill_names)
+        relative_directory_owners = self._build_relative_directory_owners(candidate_skill_names)
 
         for skill_name in candidate_skill_names:
             skill_config = (self.skill_configs or {}).get(skill_name)
@@ -386,12 +387,28 @@ class McpServers:
                     relative_path_owners=relative_path_owners,
                 )
             ]
+            relative_directory_matches = [
+                relative_dir
+                for relative_dir in self._build_relative_directories(relative_paths)
+                if self._should_rewrite_relative_directory(
+                    command_text=rewritten,
+                    relative_dir=relative_dir,
+                    skill_name=skill_name,
+                    active_skill_names=active_skill_names,
+                    relative_directory_owners=relative_directory_owners,
+                )
+            ]
             root_referenced = asset_root in rewritten or any(
                 self._skill_root_occurs_in_command(rewritten, alias)
                 for alias in path_aliases
             )
             file_referenced = any(host_path in rewritten for host_path in host_file_paths)
-            if not root_referenced and not file_referenced and not relative_path_matches:
+            if (
+                not root_referenced
+                and not file_referenced
+                and not relative_path_matches
+                and not relative_directory_matches
+            ):
                 continue
 
             remote_root = await self.sandbox.ensure_skill_execution_assets_ready(
@@ -421,6 +438,12 @@ class McpServers:
                 asset_root,
                 remote_root,
             )
+            for relative_dir in relative_directory_matches:
+                rewritten = self._rewrite_relative_cd_directory(
+                    rewritten,
+                    relative_dir,
+                    str(Path(remote_root) / relative_dir),
+                )
             for relative_path in relative_path_matches:
                 remote_path = str(Path(remote_root) / relative_path)
                 rewritten = self._rewrite_relative_path_reference(
@@ -488,6 +511,22 @@ class McpServers:
 
         return ordered
 
+    @classmethod
+    def _build_relative_directories(cls, relative_paths: list[str]) -> list[str]:
+        directories: list[str] = []
+        seen: set[str] = set()
+        for relative_path in relative_paths:
+            path = Path(str(relative_path).strip())
+            parents = list(path.parents)
+            parents.reverse()
+            for parent in parents:
+                candidate = str(parent).strip()
+                if not candidate or candidate == "." or candidate in seen:
+                    continue
+                directories.append(candidate)
+                seen.add(candidate)
+        return directories
+
     def _build_relative_path_owners(
         self,
         candidate_skill_names: list[str],
@@ -503,6 +542,25 @@ class McpServers:
                 if not normalized:
                     continue
                 owners.setdefault(normalized, []).append(skill_name)
+        return owners
+
+    def _build_relative_directory_owners(
+        self,
+        candidate_skill_names: list[str],
+    ) -> dict[str, list[str]]:
+        owners: dict[str, list[str]] = {}
+        for skill_name in candidate_skill_names:
+            skill_config = (self.skill_configs or {}).get(skill_name)
+            if not isinstance(skill_config, dict):
+                continue
+            execution_assets = dict(skill_config.get("execution_assets", {}) or {})
+            relative_paths = [
+                str(relative_path).strip()
+                for relative_path in execution_assets.get("relative_paths", []) or []
+                if str(relative_path).strip()
+            ]
+            for relative_dir in self._build_relative_directories(relative_paths):
+                owners.setdefault(relative_dir, []).append(skill_name)
         return owners
 
     def _should_rewrite_relative_path(
@@ -521,6 +579,29 @@ class McpServers:
             return False
 
         owners = relative_path_owners.get(relative_path, [])
+        if len(owners) <= 1:
+            return True
+
+        active_owners = [owner for owner in owners if owner in active_skill_names]
+        return len(active_owners) == 1 and active_owners[0] == skill_name
+
+    def _should_rewrite_relative_directory(
+        self,
+        *,
+        command_text: str,
+        relative_dir: str,
+        skill_name: str,
+        active_skill_names: list[str],
+        relative_directory_owners: dict[str, list[str]],
+    ) -> bool:
+        if not self._cd_command_targets_path(command_text, relative_dir):
+            return False
+        if skill_name not in active_skill_names:
+            return False
+
+        owners = relative_directory_owners.get(relative_dir, [])
+        if not owners:
+            return False
         if len(owners) <= 1:
             return True
 
@@ -554,6 +635,17 @@ class McpServers:
         )
         return bool(pattern.search(command_text))
 
+    @staticmethod
+    def _cd_command_targets_path(command_text: str, path_text: str) -> bool:
+        for candidate in (path_text, f"./{path_text}"):
+            pattern = re.compile(
+                rf"(?P<prefix>\bcd\s+)(?P<quote>['\"]?)(?P<path>{re.escape(candidate)})(?P=quote)"
+                rf"(?=(?:\s|&&|;|\|\||$))"
+            )
+            if pattern.search(command_text):
+                return True
+        return False
+
     @classmethod
     def _rewrite_relative_path_reference(
         cls,
@@ -572,14 +664,44 @@ class McpServers:
 
     @classmethod
     def _rewrite_cd_command_root(cls, command_text: str, asset_root: str, remote_root: str) -> str:
+        return cls._rewrite_cd_command_path(
+            command_text,
+            asset_root,
+            remote_root,
+        )
+
+    @classmethod
+    def _rewrite_relative_cd_directory(
+        cls,
+        command_text: str,
+        relative_dir: str,
+        remote_path: str,
+    ) -> str:
+        rewritten = command_text
+        for candidate in (relative_dir, f"./{relative_dir}"):
+            rewritten = cls._rewrite_cd_command_path(
+                rewritten,
+                candidate,
+                remote_path,
+            )
+        return rewritten
+
+    @classmethod
+    def _rewrite_cd_command_path(
+        cls,
+        command_text: str,
+        original_path: str,
+        replacement_path: str,
+    ) -> str:
         pattern = re.compile(
-            rf"(?P<prefix>\bcd\s+)(?P<quote>['\"]?)(?P<path>{re.escape(asset_root)})(?P=quote)"
+            rf"(?P<prefix>\bcd\s+)(?P<quote>['\"]?)(?P<path>{re.escape(original_path)})(?P=quote)"
+            rf"(?=(?:\s|&&|;|\|\||$))"
         )
         return pattern.sub(
             lambda match: (
                 f"{match.group('prefix')}"
                 f"{match.group('quote')}"
-                f"{cls._format_shell_path_replacement(command_text, match.start('path'), remote_root)}"
+                f"{cls._format_shell_path_replacement(command_text, match.start('path'), replacement_path)}"
                 f"{match.group('quote')}"
             ),
             command_text,

@@ -33,6 +33,7 @@ _DEFAULT_EXECUTION_SUFFIXES = {
 
 _UNDERSTANDING_FILES = {"SKILL.md", "skill.md"}
 _SCRIPT_REFERENCE_RE = re.compile(r"(?P<path>scripts/[A-Za-z0-9_./-]+)")
+_RELATIVE_REFERENCE_RE = re.compile(r"(?P<path>\./[A-Za-z0-9_./-]+)")
 _SKILL_VIRTUAL_REFERENCE_RE = re.compile(
     r"/skills/(?P<skill_name>[A-Za-z0-9_.-]+)/(?P<relative_path>[A-Za-z0-9_./-]+)"
 )
@@ -116,24 +117,28 @@ def build_execution_assets_config(
             "digest": "",
         }
 
+    root_path = Path(root).resolve()
     declared_entrypoint = resolve_execution_entrypoint(
         entrypoint=entrypoint,
         metadata=metadata,
     )
-    referenced_paths = discover_execution_asset_references(
-        usage_text=usage_text,
-        skill_name=skill_name,
+    referenced_paths = _existing_referenced_execution_paths(
+        root_path,
+        discover_execution_asset_references(
+            usage_text=usage_text,
+            skill_name=skill_name,
+        ),
     )
     declared_relative_paths = parse_declared_execution_assets(declared_assets)
     if declared_relative_paths is None:
-        base_manifest = build_execution_asset_manifest(root, None)
+        base_manifest = build_execution_asset_manifest(root_path, None)
         merged_relative_paths = _merge_relative_paths(
             list(base_manifest.relative_paths),
             referenced_paths,
             [declared_entrypoint] if declared_entrypoint else [],
         )
         manifest = build_execution_asset_manifest(
-            root,
+            root_path,
             merged_relative_paths or None,
         )
     else:
@@ -143,7 +148,7 @@ def build_execution_assets_config(
             [declared_entrypoint] if declared_entrypoint else [],
         )
         manifest = build_execution_asset_manifest(
-            root,
+            root_path,
             merged_declared_paths or None,
         )
     if not manifest.relative_paths:
@@ -292,6 +297,12 @@ def discover_execution_asset_references(
             references.append(candidate)
             seen.add(candidate)
 
+    for match in _RELATIVE_REFERENCE_RE.finditer(usage_text):
+        candidate = _normalize_reference_path(match.group("path"))
+        if candidate and candidate not in seen:
+            references.append(candidate)
+            seen.add(candidate)
+
     for match in _SKILL_VIRTUAL_REFERENCE_RE.finditer(usage_text):
         if normalized_skill_name and match.group("skill_name") != normalized_skill_name:
             continue
@@ -333,10 +344,7 @@ def _collect_default_execution_assets(root: Path) -> list[str]:
         if path.name in _UNDERSTANDING_FILES:
             continue
         relative_path = path.relative_to(root)
-        if _is_default_script_path(relative_path):
-            candidates.append(str(relative_path))
-            continue
-        if path.suffix.lower() not in _DEFAULT_EXECUTION_SUFFIXES:
+        if not _is_execution_asset_candidate(path, relative_path):
             continue
         candidates.append(str(relative_path))
     return candidates
@@ -345,6 +353,21 @@ def _collect_default_execution_assets(root: Path) -> list[str]:
 def _is_default_script_path(relative_path: Path) -> bool:
     parts = relative_path.parts
     return bool(parts) and parts[0] == "scripts"
+
+
+def _is_execution_asset_candidate(path: Path, relative_path: Path) -> bool:
+    if _is_default_script_path(relative_path):
+        return True
+    if path.suffix.lower() in _DEFAULT_EXECUTION_SUFFIXES:
+        return True
+    return _is_executable_file(path)
+
+
+def _is_executable_file(path: Path) -> bool:
+    try:
+        return bool(path.stat().st_mode & 0o111)
+    except OSError:
+        return False
 
 
 def _merge_relative_paths(*groups: list[str]) -> list[str]:
@@ -406,3 +429,7 @@ def _existing_relative_paths(root: Path, candidates: list[str]) -> list[str]:
         if path.is_file():
             existing.append(normalized)
     return existing
+
+
+def _existing_referenced_execution_paths(root: Path, candidates: list[str]) -> list[str]:
+    return _existing_relative_paths(root, candidates)
