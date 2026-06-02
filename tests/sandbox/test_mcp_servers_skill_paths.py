@@ -166,6 +166,50 @@ async def test_check_tool_params_rewrites_remote_paths_for_terminal_server_alias
 
 
 @pytest.mark.asyncio
+async def test_check_tool_params_rewrites_paths_for_secondary_terminal_alias_when_canonical_exists(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    run_file = skill_root / "run.py"
+    run_file.write_text("print('hi')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["run.py"],
+            "digest": "1111aaaa1111aaaa",
+            "entrypoint": "run.py",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote")
+    servers = McpServers(
+        mcp_servers=["terminal", "terminal-server"],
+        mcp_config={"mcpServers": {"terminal": {}, "terminal-server": {}}},
+        sandbox=sandbox,
+        skill_configs={"browser-use": skill_config},
+    )
+    servers.tool_list = [_terminal_tool("run_code", "code")]
+    servers.tool_list[0]["function"]["name"] = "terminal-server__run_code"
+    parameter = {"code": f"python {run_file}"}
+
+    ok = await servers.check_tool_params(
+        context=None,
+        server_name="terminal-server",
+        tool_name="run_code",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert (
+        parameter["code"]
+        == "python /remote/workspace/.aworld/skills/browser-use/1111aaaa1111aaaa/run.py"
+    )
+    assert sandbox.calls == [("browser-use", skill_config)]
+
+
+@pytest.mark.asyncio
 async def test_check_tool_params_quotes_rewritten_remote_paths_with_spaces(
     tmp_path: Path,
 ) -> None:
@@ -555,6 +599,50 @@ async def test_check_tool_params_rewrites_custom_skill_path_alias_from_skill_con
     assert (
         parameter["command"]
         == "python /remote/workspace/.aworld/skills/html-to-image/bcd23456bcd23456/scripts/render.py"
+    )
+    assert sandbox.calls == [("html-to-image", skill_config)]
+
+
+@pytest.mark.asyncio
+async def test_check_tool_params_keeps_default_legacy_aliases_when_skill_config_has_custom_aliases(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "html-to-image"
+    skill_root.mkdir(parents=True)
+    render_file = skill_root / "scripts" / "render.py"
+    render_file.parent.mkdir()
+    render_file.write_text("print('render')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "path_aliases": ["vendor/skills/html-to-image"],
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["scripts/render.py"],
+            "digest": "eeee1234eeee1234",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote")
+    servers = McpServers(
+        mcp_servers=["terminal"],
+        mcp_config={"mcpServers": {"terminal": {}}},
+        sandbox=sandbox,
+        skill_configs={"html-to-image": skill_config},
+    )
+    servers.tool_list = [_terminal_tool("mcp_execute_command", "command")]
+    parameter = {"command": "python .claude/skills/html-to-image/scripts/render.py"}
+
+    ok = await servers.check_tool_params(
+        context=None,
+        server_name="terminal",
+        tool_name="mcp_execute_command",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert (
+        parameter["command"]
+        == "python /remote/workspace/.aworld/skills/html-to-image/eeee1234eeee1234/scripts/render.py"
     )
     assert sandbox.calls == [("html-to-image", skill_config)]
 
