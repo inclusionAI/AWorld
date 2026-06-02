@@ -250,7 +250,11 @@ def build_skill_path_aliases(
     if not normalized_skill_name:
         return []
 
-    aliases = [f"/skills/{normalized_skill_name}"]
+    aliases = [
+        f"/skills/{normalized_skill_name}",
+        f".claude/skills/{normalized_skill_name}",
+        f"./.claude/skills/{normalized_skill_name}",
+    ]
     seen = set(aliases)
 
     if not usage_text:

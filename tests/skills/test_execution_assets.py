@@ -3,6 +3,7 @@ from pathlib import Path
 from aworld.skills.execution_assets import (
     build_execution_asset_manifest,
     build_execution_assets_config,
+    build_skill_path_aliases,
     compute_execution_asset_digest,
 )
 
@@ -184,3 +185,16 @@ def test_build_execution_assets_config_honors_explicit_disable_flag(
         "relative_paths": [],
         "digest": "",
     }
+
+
+def test_build_skill_path_aliases_always_include_legacy_claude_paths() -> None:
+    aliases = build_skill_path_aliases(
+        skill_name="demo-skill",
+        usage_text="Run `python /skills/demo-skill/run.py`.",
+    )
+
+    assert aliases == [
+        "/skills/demo-skill",
+        ".claude/skills/demo-skill",
+        "./.claude/skills/demo-skill",
+    ]
