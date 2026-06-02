@@ -11,7 +11,10 @@ from pathlib import Path
 
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
-from aworld.sandbox.namespaces.base import resolve_service_name_from_config
+from aworld.sandbox.namespaces.base import (
+    resolve_service_name_from_config,
+    service_matches_logical_name,
+)
 from aworld.skills.execution_assets import build_skill_path_aliases
 
 
@@ -323,8 +326,7 @@ class McpServers:
             )
 
     def _is_terminal_service(self, server_name: str) -> bool:
-        resolved = resolve_service_name_from_config(self.mcp_config, "terminal")
-        return server_name == resolved
+        return service_matches_logical_name(self.mcp_config, server_name, "terminal")
 
     async def _rewrite_remote_skill_paths(
         self,
@@ -611,12 +613,14 @@ class McpServers:
         skill_name: str,
         skill_config: dict[str, Any],
     ) -> list[str]:
+        merged = build_skill_path_aliases(skill_name=skill_name)
         aliases = skill_config.get("path_aliases")
         if isinstance(aliases, list):
-            normalized = [str(alias).strip() for alias in aliases if str(alias).strip()]
-            if normalized:
-                return normalized
-        return build_skill_path_aliases(skill_name=skill_name)
+            for alias in aliases:
+                candidate = str(alias).strip()
+                if candidate and candidate not in merged:
+                    merged.append(candidate)
+        return merged
 
     @staticmethod
     def _path_occurs_in_command(command_text: str, path_text: str) -> bool:
