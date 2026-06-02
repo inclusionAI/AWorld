@@ -85,6 +85,21 @@ def test_available_evaluator_suites_lists_builtin_suite() -> None:
     assert "app-evaluator" in suites
 
 
+def test_available_evaluator_suites_filters_by_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "artifact.png"
+    target.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aA1EAAAAASUVORK5CYII="
+        )
+    )
+
+    suites = available_evaluator_suites(target=str(target))
+
+    assert suites == ["app-evaluator"]
+
+
 def test_run_evaluator_cli_marks_image_targets(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -113,3 +128,29 @@ def test_run_evaluator_cli_marks_image_targets(
     report = run_evaluator_cli(target=str(target))
 
     assert report["suite_id"] == "app-evaluator"
+
+
+def test_run_evaluator_cli_records_suite_selection_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "artifact.txt"
+    target.write_text("artifact", encoding="utf-8")
+
+    async def fake_run_evaluation_flow(flow):
+        return {
+            "report_version": 1,
+            "suite_id": "app-evaluator",
+            "judge_backend": {"backend_id": "stub-agent"},
+            "summary": {"app-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_cli(target=str(target))
+
+    assert report["suite_selection"]["mode"] == "auto"
+    assert report["suite_selection"]["resolved"] == "app-evaluator"

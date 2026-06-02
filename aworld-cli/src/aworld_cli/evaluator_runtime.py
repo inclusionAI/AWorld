@@ -8,7 +8,8 @@ from aworld.evaluations.substrate import (
     EvaluationFlowDef,
     describe_eval_target,
     list_eval_suites,
-    resolve_eval_suite,
+    list_matching_eval_suites,
+    resolve_eval_suite_selection,
     run_evaluation_flow,
 )
 
@@ -26,8 +27,23 @@ def default_evaluator_report_path(*, target_path: Path, suite_id: str, cwd: Path
     return report_dir / f"{target_token}.{suite_token}.json"
 
 
-def available_evaluator_suites() -> list[str]:
-    return list_eval_suites()
+def available_evaluator_suites(*, target: str | None = None) -> list[str]:
+    if target is None:
+        return list_eval_suites()
+    return list_matching_eval_suites(target)
+
+
+def get_evaluator_suite_selection(
+    *,
+    target: str,
+    suite: str | None = None,
+) -> dict[str, str | None]:
+    selection = resolve_eval_suite_selection(suite, target)
+    return {
+        "requested": suite,
+        "resolved": selection.suite_id,
+        "mode": selection.mode,
+    }
 
 
 def run_evaluator_cli(
@@ -38,7 +54,8 @@ def run_evaluator_cli(
     interactive_approval: bool = False,
 ) -> dict:
     target_path = Path(target).expanduser().resolve()
-    suite_def = resolve_eval_suite(suite, target_path)
+    selection = resolve_eval_suite_selection(suite, target_path)
+    suite_def = selection.suite
     target_info = describe_eval_target(target_path)
     flow = EvaluationFlowDef(
         target=target_info,
@@ -56,6 +73,11 @@ def run_evaluator_cli(
         approval["resolved"] = True
         approval["approved"] = approved
     report["approval"] = approval
+    report["suite_selection"] = {
+        "requested": suite,
+        "resolved": selection.suite_id,
+        "mode": selection.mode,
+    }
     output_path = (
         Path(output).expanduser().resolve()
         if output
@@ -75,6 +97,9 @@ def render_evaluator_summary(report: dict) -> str:
     summary_line = f"Evaluator suite: {suite_id}\nGate: {status}"
     if metric_value is not None:
         summary_line += f" ({metric_value:.2f})"
+    selection = report.get("suite_selection") or {}
+    if selection.get("resolved"):
+        summary_line += f"\nSuite selection: {selection.get('mode', 'unknown')} -> {selection['resolved']}"
     backend = report.get("judge_backend", {}).get("backend_id")
     if backend:
         summary_line += f"\nJudge backend: {backend}"

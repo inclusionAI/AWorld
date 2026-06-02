@@ -124,6 +124,31 @@ def test_evaluator_command_lists_available_suites(
     assert "app-evaluator" in output
 
 
+def test_evaluator_command_lists_target_matching_suites_and_default(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = tmp_path / "artifact.txt"
+    target.write_text("artifact", encoding="utf-8")
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=str(target),
+            suite=None,
+            output=None,
+            interactive_approval=False,
+            list_suites=True,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Available evaluator suites for target:" in output
+    assert "Default suite: app-evaluator" in output
+
+
 def test_evaluator_command_returns_usage_error_without_target(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
