@@ -4,7 +4,13 @@ import asyncio
 import json
 from pathlib import Path
 
-from aworld.evaluations.substrate import EvaluationFlowDef, get_builtin_eval_suite, resolve_eval_suite, run_evaluation_flow
+from aworld.evaluations.substrate import (
+    EvaluationFlowDef,
+    describe_eval_target,
+    list_eval_suites,
+    resolve_eval_suite,
+    run_evaluation_flow,
+)
 
 
 def _sanitize_path_token(value: str) -> str:
@@ -21,10 +27,7 @@ def default_evaluator_report_path(*, target_path: Path, suite_id: str, cwd: Path
 
 
 def available_evaluator_suites() -> list[str]:
-    # Keep this explicit for now so CLI discovery stays stable even before a broader
-    # suite registry API is introduced.
-    get_builtin_eval_suite("app-evaluator")
-    return ["app-evaluator"]
+    return list_eval_suites()
 
 
 def run_evaluator_cli(
@@ -36,11 +39,9 @@ def run_evaluator_cli(
 ) -> dict:
     target_path = Path(target).expanduser().resolve()
     suite_def = resolve_eval_suite(suite, target_path)
+    target_info = describe_eval_target(target_path)
     flow = EvaluationFlowDef(
-        target={
-            "target_path": str(target_path),
-            "target_kind": "directory" if target_path.is_dir() else "file",
-        },
+        target=target_info,
         suite=suite_def,
         interactive_approval=interactive_approval,
         output_path=output,
