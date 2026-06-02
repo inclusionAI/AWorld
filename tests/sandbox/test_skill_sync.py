@@ -9,6 +9,7 @@ class _FakeFileNamespace:
     def __init__(self) -> None:
         self.created: list[str] = []
         self.written: list[tuple[str, str]] = []
+        self.written_base64: list[tuple[str, str]] = []
         self.uploaded: list[tuple[str, str]] = []
 
     async def list_allowed_directories(self):
@@ -24,6 +25,10 @@ class _FakeFileNamespace:
 
     async def write_file(self, path: str, content: str):
         self.written.append((path, content))
+        return {"success": True, "data": path, "error": None}
+
+    async def write_file_base64(self, path: str, content_base64: str):
+        self.written_base64.append((path, content_base64))
         return {"success": True, "data": path, "error": None}
 
     async def upload_file(self, source_path: str, target_path: str):
@@ -184,12 +189,13 @@ async def test_ensure_remote_skill_assets_ready_uploads_binary_assets(
     )
 
     assert sandbox.file.written == []
-    assert sandbox.file.uploaded == [
+    assert sandbox.file.written_base64 == [
         (
-            str((skill_root / "payload.bin").resolve()),
             f"{remote_root}/payload.bin",
+            "//4AAQ==",
         )
     ]
+    assert sandbox.file.uploaded == []
 
 
 @pytest.mark.asyncio

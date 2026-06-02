@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import shlex
 from pathlib import Path
 from typing import Any
@@ -61,14 +62,15 @@ async def ensure_remote_skill_assets_ready(
         try:
             content = source_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
-            if not hasattr(sandbox.file, "upload_file"):
+            if not hasattr(sandbox.file, "write_file_base64"):
                 raise RuntimeError(
-                    f"Skill '{skill_name}' execution asset is not UTF-8 text and remote upload is unavailable: "
+                    f"Skill '{skill_name}' execution asset is not UTF-8 text and remote binary write is unavailable: "
                     f"{relative_path}"
                 )
+            content_base64 = base64.b64encode(source_path.read_bytes()).decode("ascii")
             await _require_success(
-                await sandbox.file.upload_file(str(source_path), target_path),
-                f"upload remote execution asset '{relative_path}' for '{skill_name}'",
+                await sandbox.file.write_file_base64(target_path, content_base64),
+                f"write remote binary execution asset '{relative_path}' for '{skill_name}'",
             )
         else:
             await _require_success(

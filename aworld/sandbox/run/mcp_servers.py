@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import threading
 import traceback
 import uuid
@@ -404,7 +405,11 @@ class McpServers:
                 reverse=True,
             ):
                 remote_path = str(Path(remote_root) / relative_path)
-                rewritten = rewritten.replace(host_path, remote_path)
+                rewritten = self._rewrite_path_reference(
+                    rewritten,
+                    host_path,
+                    remote_path,
+                )
 
             rewritten = self._rewrite_virtual_skill_root(
                 rewritten,
@@ -558,37 +563,106 @@ class McpServers:
     ) -> str:
         rewritten = command_text
         for candidate in (f"./{relative_path}", relative_path):
-            pattern = re.compile(
-                rf"(?<![A-Za-z0-9_./-]){re.escape(candidate)}(?![A-Za-z0-9_./-])"
+            rewritten = cls._rewrite_path_reference(
+                rewritten,
+                candidate,
+                remote_path,
             )
-            rewritten = pattern.sub(remote_path, rewritten)
         return rewritten
 
-    @staticmethod
-    def _rewrite_cd_command_root(command_text: str, asset_root: str, remote_root: str) -> str:
+    @classmethod
+    def _rewrite_cd_command_root(cls, command_text: str, asset_root: str, remote_root: str) -> str:
         pattern = re.compile(
-            rf"(?P<prefix>\bcd\s+)(?P<quote>['\"]?){re.escape(asset_root)}(?P=quote)"
+            rf"(?P<prefix>\bcd\s+)(?P<quote>['\"]?)(?P<path>{re.escape(asset_root)})(?P=quote)"
         )
         return pattern.sub(
             lambda match: (
-                f"{match.group('prefix')}{match.group('quote')}{remote_root}{match.group('quote')}"
+                f"{match.group('prefix')}"
+                f"{match.group('quote')}"
+                f"{cls._format_shell_path_replacement(command_text, match.start('path'), remote_root)}"
+                f"{match.group('quote')}"
             ),
             command_text,
         )
 
-    @staticmethod
+    @classmethod
     def _rewrite_virtual_skill_root(
+        cls,
         command_text: str,
         path_aliases: list[str],
         remote_root: str,
     ) -> str:
         rewritten = command_text
         for virtual_root in path_aliases:
-            pattern = re.compile(
-                rf"(?<![A-Za-z0-9_./-]){re.escape(virtual_root)}(?=(?:/|[^A-Za-z0-9_.-]|$))"
+            rewritten = cls._rewrite_path_reference(
+                rewritten,
+                virtual_root,
+                remote_root,
+                allow_suffix=True,
             )
-            rewritten = pattern.sub(remote_root, rewritten)
         return rewritten
+
+    @classmethod
+    def _rewrite_path_reference(
+        cls,
+        command_text: str,
+        path_text: str,
+        replacement_path: str,
+        *,
+        allow_suffix: bool = False,
+    ) -> str:
+        suffix_pattern = r"(?=(?:/|[^A-Za-z0-9_.-]|$))" if allow_suffix else r"(?![A-Za-z0-9_./-])"
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_./-])(?P<path>{re.escape(path_text)}){suffix_pattern}"
+        )
+        return pattern.sub(
+            lambda match: cls._format_shell_path_replacement(
+                command_text,
+                match.start("path"),
+                replacement_path,
+            ),
+            command_text,
+        )
+
+    @classmethod
+    def _format_shell_path_replacement(
+        cls,
+        command_text: str,
+        start_index: int,
+        replacement_path: str,
+    ) -> str:
+        if cls._shell_quote_context(command_text, start_index):
+            return replacement_path
+        return shlex.quote(replacement_path)
+
+    @staticmethod
+    def _shell_quote_context(command_text: str, position: int) -> str | None:
+        quote: str | None = None
+        escaped = False
+        for char in command_text[:position]:
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                continue
+            if quote == '"':
+                if escaped:
+                    escaped = False
+                    continue
+                if char == "\\":
+                    escaped = True
+                    continue
+                if char == '"':
+                    quote = None
+                continue
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char in {"'", '"'}:
+                quote = char
+        return quote
 
     async def call_tool(
             self,
