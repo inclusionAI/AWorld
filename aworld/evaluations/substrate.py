@@ -376,6 +376,12 @@ def _extract_metric_value(summary: Mapping[str, Any], metric_name: str) -> float
     raise KeyError(f"metric {metric_name} is missing aggregate summary")
 
 
+def _normalize_metric_status(status: Any) -> str | None:
+    if status is None:
+        return None
+    return getattr(status, "name", str(status))
+
+
 async def run_evaluation_flow(flow: EvaluationFlowDef) -> dict[str, Any]:
     compiled = compile_evaluation_flow(flow)
     eval_result = await EvaluateRunner(config=compiled.eval_config).run()
@@ -392,27 +398,56 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> dict[str, Any]:
 
     results = []
     report_backend_id = None
+    cases_with_metrics = 0
+    cases_with_judge = 0
     for case_result in eval_result.eval_case_results:
         score_row = case_result.score_rows.get(compiled.suite.suite_id)
         judge_payload = {}
+        case_metrics: dict[str, Any] = {}
+        case_backend_id = None
         if score_row is not None:
+            cases_with_metrics += 1
+            for metric_name, metric_result in score_row.metric_results.items():
+                if isinstance(metric_result, Mapping):
+                    case_metrics[metric_name] = {}
+                    if "value" in metric_result:
+                        case_metrics[metric_name]["value"] = metric_result["value"]
+                    status = _normalize_metric_status(metric_result.get("eval_status"))
+                    if status is not None:
+                        case_metrics[metric_name]["status"] = status
+                    metadata = metric_result.get("metadata") or {}
+                    if case_backend_id is None and isinstance(metadata, Mapping):
+                        case_backend_id = metadata.get("_judge_backend")
+                else:
+                    case_metrics[metric_name] = {"value": metric_result}
             metric_result = score_row.metric_results.get(compiled.gate_policy.metric_name if compiled.gate_policy else "score", {})
             judge_payload = dict(metric_result.get("metadata", {}))
             report_backend_id = report_backend_id or judge_payload.pop("_judge_backend", None)
+        if judge_payload:
+            cases_with_judge += 1
         results.append(
             {
                 "case_id": case_result.eval_case_id,
                 "input": dict(case_result.input.case_data if hasattr(case_result.input, "case_data") else case_result.input),
+                "metrics": case_metrics,
                 "judge": judge_payload,
+                "judge_backend": {"backend_id": case_backend_id} if case_backend_id is not None else None,
             }
         )
 
+    metrics = dict(suite_summary)
     report = {
         "report_version": 1,
         "suite_id": compiled.suite.suite_id,
         "target": dict(compiled.target),
         "summary": eval_result.summary,
+        "metrics": metrics,
         "results": results,
+        "result_counts": {
+            "cases_total": len(results),
+            "cases_with_metrics": cases_with_metrics,
+            "cases_with_judge": cases_with_judge,
+        },
         "approval": {
             "required": bool(gate and gate.status == "needs_approval"),
             "resolved": False,

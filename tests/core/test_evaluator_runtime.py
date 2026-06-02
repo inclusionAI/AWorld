@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
-from aworld_cli.evaluator_runtime import available_evaluator_suites, run_evaluator_cli
+from aworld_cli.evaluator_runtime import available_evaluator_suites, evaluator_exit_code, run_evaluator_cli
 
 
 def test_run_evaluator_cli_persists_approval_state(
@@ -154,3 +154,41 @@ def test_run_evaluator_cli_records_suite_selection_metadata(
 
     assert report["suite_selection"]["mode"] == "auto"
     assert report["suite_selection"]["resolved"] == "app-evaluator"
+
+
+def test_run_evaluator_cli_adds_automation_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "artifact.txt"
+    target.write_text("artifact", encoding="utf-8")
+
+    async def fake_run_evaluation_flow(flow):
+        return {
+            "report_version": 1,
+            "suite_id": "app-evaluator",
+            "judge_backend": {"backend_id": "stub-agent"},
+            "summary": {"app-evaluator": {"score": {"mean": 0.7}}},
+            "metrics": {"score": {"mean": 0.7}},
+            "result_counts": {"cases_total": 2, "cases_with_metrics": 2, "cases_with_judge": 2},
+            "results": [{}, {}],
+            "gate": {"status": "needs_approval", "metric_name": "score", "value": 0.7},
+            "approval": {"required": True, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_cli(target=str(target))
+
+    assert report["automation"]["gate_status"] == "needs_approval"
+    assert report["automation"]["case_count"] == 2
+    assert report["automation"]["judge_backend"] == "stub-agent"
+    assert report["automation"]["suggested_exit_code"] == 3
+
+
+def test_evaluator_exit_code_matches_gate_and_approval() -> None:
+    assert evaluator_exit_code({"gate": {"status": "pass"}, "approval": {}}) == 0
+    assert evaluator_exit_code({"gate": {"status": "fail"}, "approval": {}}) == 2
+    assert evaluator_exit_code(
+        {"gate": {"status": "needs_approval"}, "approval": {"approved": False}}
+    ) == 3

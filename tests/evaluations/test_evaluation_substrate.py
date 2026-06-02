@@ -112,6 +112,11 @@ async def test_run_evaluation_flow_executes_suite_judge_and_returns_gate() -> No
     assert report["suite_id"] == "demo-suite"
     assert report["gate"]["status"] == "needs_approval"
     assert report["results"][0]["judge"]["rank"] == "Good"
+    assert report["results"][0]["metrics"]["score"]["value"] == pytest.approx(0.7)
+    assert report["results"][0]["metrics"]["score"]["status"] == "FAILED"
+    assert report["metrics"]["score"]["mean"] == pytest.approx(0.7)
+    assert report["result_counts"]["cases_total"] == 1
+    assert report["result_counts"]["cases_with_metrics"] == 1
     assert report["summary"]["demo-suite"]["score"]["mean"] == pytest.approx(0.7)
 
 
