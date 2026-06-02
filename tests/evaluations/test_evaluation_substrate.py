@@ -18,11 +18,24 @@ from aworld.evaluations.substrate import (
     get_builtin_eval_suite,
     list_eval_suites,
     list_matching_eval_suites,
+    load_declared_eval_suites,
     register_eval_suite,
     resolve_eval_suite,
     resolve_eval_suite_selection,
     run_evaluation_flow,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+    monkeypatch.setattr(substrate_module, "_LOADED_EVAL_MANIFEST_PATHS", set())
+    substrate_module.register_eval_suite(
+        "app-evaluator",
+        lambda target: get_builtin_eval_suite("app-evaluator"),
+        matcher=lambda target: target.get("target_kind") in {"file", "directory", "image"},
+        priority=10,
+    )
 
 
 def test_compile_evaluation_flow_builds_inline_dataset_and_gate_config() -> None:
@@ -211,6 +224,72 @@ def test_eval_suite_registry_reports_matching_suites_and_selection_mode(
     assert auto_selection.suite_id == "image-review"
     assert explicit_selection.mode == "explicit"
     assert explicit_selection.suite_id == "generic-review"
+
+
+def test_load_declared_eval_suites_registers_manifest_backed_suite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    manifest_dir = tmp_path / ".aworld" / "evaluators"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "strict-ui.json").write_text(
+        """
+{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file", "directory"],
+  "gate_policy": {
+    "metric_name": "score",
+    "pass_threshold": 0.92,
+    "approval_threshold": 0.8
+  },
+  "metadata": {
+    "owner": "qa"
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+
+    loaded = load_declared_eval_suites(tmp_path)
+    listed = list_eval_suites()
+
+    assert loaded == ["strict-ui"]
+    assert "strict-ui" in listed
+
+
+def test_declared_eval_suite_can_be_selected_for_matching_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    manifest_dir = tmp_path / ".aworld" / "evaluators"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "strict-ui.json").write_text(
+        """
+{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file"],
+  "gate_policy": {
+    "metric_name": "score",
+    "pass_threshold": 0.92,
+    "approval_threshold": 0.8
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+    load_declared_eval_suites(tmp_path)
+
+    target = tmp_path / "artifact.txt"
+    target.write_text("artifact", encoding="utf-8")
+
+    selection = resolve_eval_suite_selection("strict-ui", target)
+
+    assert selection.suite_id == "strict-ui"
+    assert selection.suite.gate_policy.pass_threshold == pytest.approx(0.92)
 
 
 @pytest.mark.asyncio

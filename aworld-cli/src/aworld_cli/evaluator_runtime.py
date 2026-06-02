@@ -11,6 +11,7 @@ from aworld.evaluations.substrate import (
     describe_eval_target,
     list_eval_suites,
     list_matching_eval_suites,
+    load_declared_eval_suites,
     resolve_eval_suite_selection,
     run_evaluation_flow,
 )
@@ -30,6 +31,7 @@ def default_evaluator_report_path(*, target_path: Path, suite_id: str, cwd: Path
 
 
 def available_evaluator_suites(*, target: str | None = None) -> list[str]:
+    load_declared_eval_suites()
     if target is None:
         return list_eval_suites()
     return list_matching_eval_suites(target)
@@ -40,6 +42,7 @@ def get_evaluator_suite_selection(
     target: str,
     suite: str | None = None,
 ) -> dict[str, str | None]:
+    load_declared_eval_suites()
     selection = resolve_eval_suite_selection(suite, target)
     return {
         "requested": suite,
@@ -261,6 +264,7 @@ def run_evaluator_cli(
     interactive_approval: bool = False,
 ) -> dict:
     target_path = Path(target).expanduser().resolve()
+    load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
     selection = resolve_eval_suite_selection(suite, target_path)
     suite_def = selection.suite
     target_info = describe_eval_target(target_path)

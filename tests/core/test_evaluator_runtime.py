@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
+import aworld.evaluations.substrate as substrate_module
 from aworld_cli.evaluator_runtime import (
     available_evaluator_suites,
     evaluator_exit_code,
@@ -16,6 +17,18 @@ from aworld_cli.evaluator_runtime import (
     run_evaluator_cli,
     validate_evaluator_report,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+    monkeypatch.setattr(substrate_module, "_LOADED_EVAL_MANIFEST_PATHS", set())
+    substrate_module.register_eval_suite(
+        "app-evaluator",
+        lambda target: substrate_module.get_builtin_eval_suite("app-evaluator"),
+        matcher=lambda target: target.get("target_kind") in {"file", "directory", "image"},
+        priority=10,
+    )
 
 
 def test_run_evaluator_cli_persists_approval_state(
@@ -104,6 +117,30 @@ def test_available_evaluator_suites_filters_by_target(
     suites = available_evaluator_suites(target=str(target))
 
     assert suites == ["app-evaluator"]
+
+
+def test_available_evaluator_suites_loads_declared_suites_from_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_dir = tmp_path / ".aworld" / "evaluators"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "strict-ui.json").write_text(
+        """
+{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file"]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    suites = available_evaluator_suites(target=str(tmp_path / "artifact.txt"))
+
+    assert "strict-ui" in suites
 
 
 def test_run_evaluator_cli_marks_image_targets(

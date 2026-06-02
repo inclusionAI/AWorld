@@ -8,9 +8,22 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
+import aworld.evaluations.substrate as substrate_module
 from aworld_cli import main as main_module
 from aworld_cli.core.top_level_command_system import TopLevelCommandContext
 from aworld_cli.top_level_commands.evaluator_cmd import EvaluatorTopLevelCommand
+
+
+@pytest.fixture(autouse=True)
+def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+    monkeypatch.setattr(substrate_module, "_LOADED_EVAL_MANIFEST_PATHS", set())
+    substrate_module.register_eval_suite(
+        "app-evaluator",
+        lambda target: substrate_module.get_builtin_eval_suite("app-evaluator"),
+        matcher=lambda target: target.get("target_kind") in {"file", "directory", "image"},
+        priority=10,
+    )
 
 
 def test_registry_registers_builtin_evaluator_command() -> None:
