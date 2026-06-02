@@ -6,7 +6,8 @@ from aworld.sandbox.skill_sync import ensure_remote_skill_assets_ready
 
 
 class _FakeFileNamespace:
-    def __init__(self) -> None:
+    def __init__(self, *, allowed_directories_data: str = "Allowed directories:\n/remote/workspace") -> None:
+        self.allowed_directories_data = allowed_directories_data
         self.created: list[str] = []
         self.written: list[tuple[str, str]] = []
         self.written_base64: list[tuple[str, str]] = []
@@ -15,7 +16,7 @@ class _FakeFileNamespace:
     async def list_allowed_directories(self):
         return {
             "success": True,
-            "data": "Allowed directories:\n/remote/workspace",
+            "data": self.allowed_directories_data,
             "error": None,
         }
 
@@ -57,9 +58,9 @@ class _FailingWriteFileNamespace(_FakeFileNamespace):
 
 
 class _FakeSandbox:
-    def __init__(self) -> None:
+    def __init__(self, *, allowed_directories_data: str = "Allowed directories:\n/remote/workspace") -> None:
         self.mode = "remote"
-        self.file = _FakeFileNamespace()
+        self.file = _FakeFileNamespace(allowed_directories_data=allowed_directories_data)
         self.terminal = _FakeTerminalNamespace()
         self._remote_skill_execution_roots: dict[tuple[str, str], str] = {}
         self._remote_skill_execution_base_dir: str | None = None
@@ -267,3 +268,58 @@ async def test_ensure_remote_skill_assets_ready_preserves_executable_modes(
     assert sandbox.terminal.commands == [
         f"chmod 755 {remote_root}/scripts/run.sh"
     ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_remote_skill_assets_ready_skips_chmod_for_non_executable_files(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    config_file = skill_root / "config.json"
+    config_file.write_text('{"debug": true}\n', encoding="utf-8")
+    config_file.chmod(0o644)
+
+    sandbox = _FakeSandbox()
+    await ensure_remote_skill_assets_ready(
+        sandbox,
+        "browser-use",
+        {
+            "asset_root": str(skill_root),
+            "execution_assets": {
+                "enabled": True,
+                "relative_paths": ["config.json"],
+                "digest": "abba1234abba1234",
+            },
+        },
+    )
+
+    assert sandbox.terminal.commands == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_remote_skill_assets_ready_skips_chmod_on_windows_remote(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    script = skill_root / "scripts" / "run.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    sandbox = _FakeSandbox(allowed_directories_data="Allowed directories:\nC:\\remote\\workspace")
+    await ensure_remote_skill_assets_ready(
+        sandbox,
+        "browser-use",
+        {
+            "asset_root": str(skill_root),
+            "execution_assets": {
+                "enabled": True,
+                "relative_paths": ["scripts/run.sh"],
+                "digest": "cafe1234cafe1234",
+            },
+        },
+    )
+
+    assert sandbox.terminal.commands == []

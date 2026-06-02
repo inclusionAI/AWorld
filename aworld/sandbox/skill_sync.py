@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -141,7 +142,10 @@ async def _preserve_remote_permissions(
     relative_path: str,
 ) -> None:
     permission_bits = source_path.stat().st_mode & 0o777
-    if not permission_bits:
+    executable_bits = permission_bits & 0o111
+    if not executable_bits:
+        return
+    if not _remote_supports_posix_permissions(sandbox, target_path=target_path):
         return
 
     terminal = getattr(sandbox, "terminal", None)
@@ -157,3 +161,22 @@ async def _preserve_remote_permissions(
         result,
         f"preserve permissions for remote execution asset '{relative_path}' in '{skill_name}'",
     )
+
+
+def _remote_supports_posix_permissions(sandbox: Any, *, target_path: str) -> bool:
+    cached = getattr(sandbox, "_remote_skill_execution_supports_posix_permissions", None)
+    if isinstance(cached, bool):
+        return cached
+
+    base_dir = getattr(sandbox, "_remote_skill_execution_base_dir", None)
+    probe_path = str(base_dir or target_path or "")
+    supports_posix = not _looks_like_windows_path(probe_path)
+    setattr(sandbox, "_remote_skill_execution_supports_posix_permissions", supports_posix)
+    return supports_posix
+
+
+def _looks_like_windows_path(path_text: str) -> bool:
+    candidate = str(path_text or "").strip()
+    if not candidate:
+        return False
+    return bool(re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", candidate))
