@@ -266,6 +266,7 @@ class EvalSuiteSelection:
 
 
 _EVAL_SUITE_REGISTRY: dict[str, EvalSuiteRegistration] = {}
+_LOADED_EVAL_MANIFEST_PATHS: set[str] = set()
 
 
 def register_eval_suite(
@@ -285,6 +286,63 @@ def register_eval_suite(
 
 def list_eval_suites() -> list[str]:
     return sorted(_EVAL_SUITE_REGISTRY)
+
+
+def _build_declared_eval_suite(manifest: Mapping[str, Any]) -> EvalSuiteDef:
+    base_suite = str(manifest.get("base_suite") or "").strip()
+    if base_suite != "app-evaluator":
+        raise ValueError(f"unsupported base_suite: {base_suite}")
+
+    suite = get_builtin_eval_suite(base_suite)
+    suite_id = str(manifest.get("suite_id") or "").strip()
+    if not suite_id:
+        raise ValueError("suite_id is required")
+
+    gate_manifest = manifest.get("gate_policy") or {}
+    if gate_manifest:
+        suite = replace(
+            suite,
+            gate_policy=GatePolicyDef(
+                metric_name=str(gate_manifest.get("metric_name") or suite.gate_policy.metric_name),
+                pass_threshold=float(gate_manifest.get("pass_threshold", suite.gate_policy.pass_threshold)),
+                approval_threshold=(
+                    float(gate_manifest["approval_threshold"])
+                    if gate_manifest.get("approval_threshold") is not None
+                    else suite.gate_policy.approval_threshold
+                ),
+            ),
+        )
+
+    metadata = dict(suite.metadata)
+    metadata.update(dict(manifest.get("metadata") or {}))
+    metadata["declared_manifest"] = True
+    metadata["base_suite"] = base_suite
+    return replace(suite, suite_id=suite_id, metadata=metadata)
+
+
+def load_declared_eval_suites(workspace: str | Path | None = None) -> list[str]:
+    root = Path(workspace or Path.cwd()).expanduser().resolve()
+    manifest_dir = root / ".aworld" / "evaluators"
+    if not manifest_dir.exists() or not manifest_dir.is_dir():
+        return []
+
+    loaded: list[str] = []
+    for manifest_path in sorted(manifest_dir.glob("*.json")):
+        manifest_key = str(manifest_path.resolve())
+        if manifest_key in _LOADED_EVAL_MANIFEST_PATHS:
+            continue
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        suite = _build_declared_eval_suite(manifest)
+        target_kinds = tuple(str(kind) for kind in (manifest.get("target_kinds") or ["file", "directory", "image"]))
+        register_eval_suite(
+            suite.suite_id,
+            lambda target, _suite=suite: _suite,
+            matcher=lambda target, _target_kinds=target_kinds: target.get("target_kind") in _target_kinds,
+            priority=int(manifest.get("priority", 100)),
+        )
+        _LOADED_EVAL_MANIFEST_PATHS.add(manifest_key)
+        loaded.append(suite.suite_id)
+    return loaded
 
 
 def _sorted_eval_suite_registrations(registrations: list[EvalSuiteRegistration]) -> list[EvalSuiteRegistration]:
