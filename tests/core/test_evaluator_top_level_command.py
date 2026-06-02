@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli import main as main_module
+from aworld_cli.core.top_level_command_system import TopLevelCommandContext
+from aworld_cli.top_level_commands.evaluator_cmd import EvaluatorTopLevelCommand
 
 
 def test_registry_registers_builtin_evaluator_command() -> None:
@@ -49,3 +52,93 @@ def test_maybe_dispatch_top_level_command_runs_evaluator_command(
     assert handled is True
     assert "app-evaluator" in output
     assert "pass" in output
+
+
+def test_evaluator_command_returns_nonzero_for_failed_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_cli",
+        lambda **kwargs: {
+            "suite_id": "app-evaluator",
+            "gate": {"status": "fail", "value": 0.3},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        },
+    )
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target="artifact.txt",
+            suite=None,
+            output=None,
+            interactive_approval=False,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    assert exit_code == 2
+
+
+def test_evaluator_command_returns_nonzero_for_unresolved_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_cli",
+        lambda **kwargs: {
+            "suite_id": "app-evaluator",
+            "gate": {"status": "needs_approval", "value": 0.7},
+            "approval": {"required": True, "resolved": False, "approved": None},
+        },
+    )
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target="artifact.txt",
+            suite=None,
+            output=None,
+            interactive_approval=False,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    assert exit_code == 3
+
+
+def test_evaluator_command_lists_available_suites(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=None,
+            suite=None,
+            output=None,
+            interactive_approval=False,
+            list_suites=True,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "app-evaluator" in output
+
+
+def test_evaluator_command_returns_usage_error_without_target(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=None,
+            suite=None,
+            output=None,
+            interactive_approval=False,
+            list_suites=False,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "--target is required" in output
