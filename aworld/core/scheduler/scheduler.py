@@ -778,11 +778,30 @@ class CronScheduler:
         if not current_job:
             return None
 
-        if updates.get("enabled") is True and not current_job.enabled:
-            now = datetime.now(pytz.UTC)
-            recalculated_next_run = self._calculate_next_run(current_job, now)
+        should_recalculate_next_run = (
+            "schedule" in updates
+            or (updates.get("enabled") is True and not current_job.enabled)
+        )
+        if should_recalculate_next_run:
+            candidate = CronJob(
+                id=current_job.id,
+                name=updates.get("name", current_job.name),
+                description=updates.get("description", current_job.description),
+                enabled=updates.get("enabled", current_job.enabled),
+                delete_after_run=updates.get("delete_after_run", current_job.delete_after_run),
+                schedule=updates.get("schedule", current_job.schedule),
+                payload=updates.get("payload", current_job.payload),
+                state=current_job.state,
+                created_at=current_job.created_at,
+                updated_at=current_job.updated_at,
+            )
             state_updates = dict(updates.get("state") or {})
-            state_updates["next_run_at"] = recalculated_next_run.isoformat() if recalculated_next_run else None
+            if candidate.enabled:
+                now = datetime.now(pytz.UTC)
+                recalculated_next_run = self._calculate_next_run(candidate, now)
+                state_updates["next_run_at"] = recalculated_next_run.isoformat() if recalculated_next_run else None
+            else:
+                state_updates.setdefault("next_run_at", None)
             updates["state"] = state_updates
 
         return await self.store.update_job(job_id, **updates)

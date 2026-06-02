@@ -413,6 +413,132 @@ async def test_cron_tool_normalizes_string_max_runs_and_aworld_agent_name(monkey
 
 
 @pytest.mark.asyncio
+async def test_cron_tool_add_updates_existing_same_name_recurring_job(monkeypatch):
+    """Repeated same-name recurring adds should update instead of appending another active job."""
+    import aworld.tools.cron_tool as cron_tool_module
+    from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+    existing_job = CronJob(
+        id="job-existing",
+        name="每日 X AI 资讯摘要",
+        schedule=CronSchedule(kind="cron", cron_expr="0 8 * * *"),
+        payload=CronPayload(message="old message"),
+        state=CronJobState(next_run_at="2026-06-02T08:00:00+00:00", last_status="error"),
+        created_at="2026-05-20T00:00:00+00:00",
+    )
+
+    class FakeScheduler:
+        def __init__(self):
+            self.add_called = False
+            self.updated = []
+
+        async def list_jobs(self, enabled_only=False):
+            assert enabled_only is False
+            return [existing_job]
+
+        async def add_job(self, job):
+            self.add_called = True
+            return job
+
+        async def update_job(self, job_id, **updates):
+            self.updated.append((job_id, updates))
+            existing_job.name = updates.get("name", existing_job.name)
+            existing_job.schedule = updates.get("schedule", existing_job.schedule)
+            existing_job.payload = updates.get("payload", existing_job.payload)
+            existing_job.enabled = updates.get("enabled", existing_job.enabled)
+            existing_job.state.next_run_at = "2026-06-03T01:00:00+00:00"
+            existing_job.state.last_status = updates["state"]["last_status"]
+            return existing_job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="每日 X AI 资讯摘要",
+        message="new message",
+        schedule_type="cron",
+        schedule_value="0 1 * * *",
+    )
+
+    assert result["success"] is True
+    assert result["updated_existing"] is True
+    assert result["job_id"] == "job-existing"
+    assert result["next_run"] == "2026-06-03T01:00:00+00:00"
+    assert fake_scheduler.add_called is False
+    assert len(fake_scheduler.updated) == 1
+    update_id, updates = fake_scheduler.updated[0]
+    assert update_id == "job-existing"
+    assert updates["schedule"].cron_expr == "0 1 * * *"
+    assert updates["payload"].message == "new message"
+    assert updates["state"]["last_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_disables_older_same_name_recurring_duplicates(monkeypatch):
+    """If duplicates already exist, adding one same-name recurring job leaves one active copy."""
+    import aworld.tools.cron_tool as cron_tool_module
+    from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+    older_job = CronJob(
+        id="job-older",
+        name="每日 X AI 资讯摘要",
+        enabled=True,
+        schedule=CronSchedule(kind="cron", cron_expr="0 8 * * *"),
+        payload=CronPayload(message="old"),
+        state=CronJobState(next_run_at="2026-06-02T08:00:00+00:00"),
+        created_at="2026-05-20T00:00:00+00:00",
+    )
+    newer_job = CronJob(
+        id="job-newer",
+        name="每日X AI资讯摘要",
+        enabled=True,
+        schedule=CronSchedule(kind="cron", cron_expr="0 9 * * *"),
+        payload=CronPayload(message="newer"),
+        state=CronJobState(next_run_at="2026-06-02T09:00:00+00:00"),
+        created_at="2026-05-21T00:00:00+00:00",
+    )
+
+    class FakeScheduler:
+        def __init__(self):
+            self.updated = []
+
+        async def list_jobs(self, enabled_only=False):
+            return [older_job, newer_job]
+
+        async def add_job(self, job):
+            raise AssertionError("same-name recurring add should not append")
+
+        async def update_job(self, job_id, **updates):
+            self.updated.append((job_id, updates))
+            job = newer_job if job_id == "job-newer" else older_job
+            if "enabled" in updates:
+                job.enabled = updates["enabled"]
+            if "schedule" in updates:
+                job.schedule = updates["schedule"]
+            if job_id == "job-newer":
+                job.state.next_run_at = "2026-06-03T01:00:00+00:00"
+            return job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="每日 X AI 资讯摘要",
+        message="canonical task",
+        schedule_type="cron",
+        schedule_value="0 1 * * *",
+    )
+
+    assert result["success"] is True
+    assert result["updated_existing"] is True
+    assert result["job_id"] == "job-newer"
+    assert result["disabled_duplicate_job_ids"] == ["job-older"]
+    assert [item[0] for item in fake_scheduler.updated] == ["job-newer", "job-older"]
+
+
+@pytest.mark.asyncio
 async def test_cron_tool_add_binds_job_to_runtime_default_agent(monkeypatch):
     """Cron add should bind the persisted job to the CLI-selected root agent."""
     from aworld.core.scheduler.types import CronJobState
@@ -434,13 +560,14 @@ async def test_cron_tool_add_binds_job_to_runtime_default_agent(monkeypatch):
 
     fake_scheduler = FakeScheduler()
     monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+    future_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
 
     result = await cron_tool_module.cron_tool(
         action="add",
         name="爬取X最新10条内容",
         message="参考当前目录下twitter_scraper_skill.md skill爬取x上面的内容，存到当前目录。注意爬取最新的10条就行",
         schedule_type="at",
-        schedule_value="2026-05-26T18:32:00+08:00",
+        schedule_value=future_at,
         agent_name="default",
         tools=["bash", "CAST_SEARCH"],
         delete_after_run=True,
@@ -473,13 +600,14 @@ async def test_cron_tool_add_ignores_non_string_runtime_default_agent(monkeypatc
 
     fake_scheduler = FakeScheduler()
     monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+    future_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
 
     result = await cron_tool_module.cron_tool(
         action="add",
         name="喝水提醒",
         message="提醒我喝水",
         schedule_type="at",
-        schedule_value="2026-05-26T18:32:00+08:00",
+        schedule_value=future_at,
         delete_after_run=True,
     )
 
@@ -505,13 +633,14 @@ async def test_cron_tool_add_splits_comma_delimited_tools_for_non_aworld_agent(m
 
     fake_scheduler = FakeScheduler()
     monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+    future_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
 
     result = await cron_tool_module.cron_tool(
         action="add",
         name="special-agent-task",
         message="run with specific tools",
         schedule_type="at",
-        schedule_value="2026-05-26T18:32:00+08:00",
+        schedule_value=future_at,
         agent_name="SpecialAgent",
         tools="CAST_SEARCH,bash,SKILL",
         delete_after_run=True,
@@ -653,7 +782,7 @@ async def test_cron_tool_enable_all_skips_expired_one_time_history(monkeypatch):
     from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
 
     updated_ids = []
-    future_at = "2026-04-30T10:00:00+00:00"
+    future_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
     past_at = "2026-04-10T10:00:00+00:00"
 
     class FakeScheduler:
