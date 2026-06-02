@@ -1,6 +1,8 @@
 # coding: utf-8
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import inspect
 import os
@@ -17,7 +19,20 @@ from aworld.runners.evaluate_runner import EvaluateRunner
 
 
 JudgeCallable = Callable[[dict[str, Any], dict[str, Any]], Mapping[str, Any] | Awaitable[Mapping[str, Any]]]
-JudgeExecutor = Callable[[str, str], Mapping[str, Any] | str | Awaitable[Mapping[str, Any] | str]]
+JudgePrompt = str | tuple[str, list[str]]
+JudgeExecutor = Callable[[JudgePrompt, str], Mapping[str, Any] | str | Awaitable[Mapping[str, Any] | str]]
+EvalSuiteFactory = Callable[[dict[str, Any]], "EvalSuiteDef"]
+EvalSuiteMatcher = Callable[[dict[str, Any]], bool]
+
+_IMAGE_SUFFIX_TO_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+}
 
 
 @dataclass(frozen=True)
@@ -94,7 +109,7 @@ class AgentJudgeBackend:
     backend_id: str
     system_prompt: str
     executor: JudgeExecutor | None = None
-    prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], str] | None = None
+    prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None
     timeout_seconds: float | None = None
 
     def is_available(self) -> bool:
@@ -225,12 +240,76 @@ class CompiledEvaluationPlan:
     gate_policy: GatePolicyDef | None
 
 
+@dataclass(frozen=True)
+class EvalSuiteRegistration:
+    suite_id: str
+    factory: EvalSuiteFactory
+    matcher: EvalSuiteMatcher | None = None
+    priority: int = 0
+
+    def matches(self, target: dict[str, Any]) -> bool:
+        if self.matcher is None:
+            return True
+        return bool(self.matcher(target))
+
+
+_EVAL_SUITE_REGISTRY: dict[str, EvalSuiteRegistration] = {}
+
+
+def register_eval_suite(
+    suite_id: str,
+    factory: EvalSuiteFactory,
+    *,
+    matcher: EvalSuiteMatcher | None = None,
+    priority: int = 0,
+) -> None:
+    _EVAL_SUITE_REGISTRY[suite_id] = EvalSuiteRegistration(
+        suite_id=suite_id,
+        factory=factory,
+        matcher=matcher,
+        priority=priority,
+    )
+
+
+def list_eval_suites() -> list[str]:
+    return sorted(_EVAL_SUITE_REGISTRY)
+
+
+def _is_image_path(path: Path) -> bool:
+    return path.suffix.lower() in _IMAGE_SUFFIX_TO_MIME
+
+
+def _infer_target_kind(path: Path) -> str:
+    if path.is_dir():
+        return "directory"
+    if _is_image_path(path):
+        return "image"
+    return "file"
+
+
+def describe_eval_target(target: str | Path | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(target, Mapping):
+        normalized = dict(target)
+        value = normalized.pop("value", None)
+        if isinstance(value, Mapping):
+            normalized.update(value)
+        target_path = normalized.get("target_path")
+        if target_path is None:
+            return normalized
+        path = Path(str(target_path)).expanduser()
+        normalized["target_path"] = str(path)
+        normalized["target_kind"] = normalized.get("target_kind") or _infer_target_kind(path)
+        return normalized
+
+    path = Path(target).expanduser().resolve()
+    return {
+        "target_path": str(path),
+        "target_kind": _infer_target_kind(path),
+    }
+
+
 def _normalize_target(target: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(target)
-    value = normalized.pop("value", None)
-    if isinstance(value, Mapping):
-        normalized.update(value)
-    return normalized
+    return describe_eval_target(target)
 
 
 def build_eval_dataset(cases: list[EvalCaseDef], target: dict[str, Any]) -> EvalDataset:
@@ -352,6 +431,12 @@ def _rank_for_score(score: float) -> str:
 def _artifact_quality_score(target_path: Path) -> tuple[float, list[str], list[str]]:
     positive: list[str] = []
     improvements: list[str] = []
+
+    if target_path.is_file() and _is_image_path(target_path):
+        positive.append("A rendered screenshot is present for direct visual review.")
+        improvements.append("Provide a few more representative screens or brief implementation context for deeper evaluation.")
+        return 0.65, positive, improvements
+
     score = 0.3
 
     if target_path.is_dir():
@@ -361,6 +446,22 @@ def _artifact_quality_score(target_path: Path) -> tuple[float, list[str], list[s
 
     suffixes = {item.suffix.lower() for item in files}
     names = {item.name.lower() for item in files}
+    visual_files = [item for item in files if _is_image_path(item)]
+
+    if visual_files and not {".html", ".css", ".js", ".ts", ".tsx", ".jsx"} & suffixes:
+        score = 0.55
+        positive.append("Rendered screenshots are available for direct visual review.")
+        if len(visual_files) >= 3:
+            score += 0.1
+            positive.append("Multiple screens provide broader product coverage.")
+        else:
+            improvements.append("Include a few more representative states to improve evaluation coverage.")
+        if {"readme.md", "README.md"} & names:
+            score += 0.1
+            positive.append("Project metadata or usage notes are present.")
+        else:
+            improvements.append("Add brief context so evaluators understand what the screens are showing.")
+        return min(score, 0.95), positive, improvements
 
     if ".html" in suffixes:
         score += 0.15
@@ -392,7 +493,7 @@ def _artifact_quality_score(target_path: Path) -> tuple[float, list[str], list[s
     else:
         improvements.append("Package the target with its supporting assets rather than a single thin file.")
 
-    if any(item.suffix.lower() in {".png", ".jpg", ".jpeg", ".svg", ".webp"} for item in files):
+    if visual_files:
         score += 0.1
         positive.append("Visual assets are included for richer presentation.")
     else:
@@ -474,6 +575,60 @@ def _build_default_judge_prompt(case_input: dict[str, Any], target: dict[str, An
     )
 
 
+def _encode_image_as_data_url(path: Path) -> str | None:
+    mime_type = _IMAGE_SUFFIX_TO_MIME.get(path.suffix.lower())
+    if mime_type is None:
+        return None
+    try:
+        encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+    except Exception:
+        return None
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _collect_target_image_urls(target: dict[str, Any], *, max_images: int = 4) -> list[str]:
+    target_path = Path(target["target_path"])
+    image_paths: list[Path] = []
+
+    if target_path.is_file() and _is_image_path(target_path):
+        image_paths = [target_path]
+    elif target_path.is_dir():
+        image_paths = sorted(
+            item for item in target_path.rglob("*") if item.is_file() and _is_image_path(item)
+        )[:max_images]
+
+    image_urls: list[str] = []
+    for path in image_paths:
+        data_url = _encode_image_as_data_url(path)
+        if data_url is not None:
+            image_urls.append(data_url)
+    return image_urls
+
+
+def _build_app_evaluator_judge_prompt(
+    case_input: dict[str, Any],
+    target: dict[str, Any],
+    suite: EvalSuiteDef,
+) -> JudgePrompt:
+    snapshot = _build_target_snapshot(target)
+    target_name = Path(target["target_path"]).name
+    image_urls = _collect_target_image_urls(target)
+    prompt = (
+        "Evaluate the following app artifact.\n"
+        f"Suite: {suite.suite_id}\n"
+        f"Target: {target['target_path']}\n"
+        f"Case input: {json.dumps(case_input, ensure_ascii=False)}\n"
+        f"Artifact snapshot: {json.dumps(snapshot, ensure_ascii=False)}\n"
+        f"Attached visuals: {len(image_urls)}\n"
+        "Use attached visuals as the primary evidence when present. Use the artifact snapshot for filenames and implementation context.\n"
+        "Return a JSON object with a `results` array containing exactly one item for "
+        f"`{target_name}` and include `score`, `rank`, `criticism`, `praise`, and `improvement_advice`."
+    )
+    if image_urls:
+        return prompt, image_urls
+    return prompt
+
+
 def _extract_json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
     try:
@@ -508,9 +663,10 @@ def _coerce_judge_payload(response: Mapping[str, Any] | str) -> dict[str, Any]:
     return dict(response)
 
 
-async def _default_agent_judge_executor(prompt: str, system_prompt: str) -> str:
+async def _default_agent_judge_executor(prompt: JudgePrompt, system_prompt: str) -> str:
     from aworld.agents.llm_agent import Agent
     from aworld.config.conf import AgentConfig
+    from aworld.core.common import Observation
     from aworld.core.context.base import Context
     from aworld.utils.run_util import exec_agent
 
@@ -518,6 +674,13 @@ async def _default_agent_judge_executor(prompt: str, system_prompt: str) -> str:
     model_name = os.getenv("LLM_MODEL_NAME")
     if not api_key or not model_name:
         raise RuntimeError("LLM_MODEL_NAME and LLM_API_KEY/OPENAI_API_KEY are required for agent judge backend")
+
+    prompt_text: str
+    image_urls: list[str] | None
+    if isinstance(prompt, tuple):
+        prompt_text, image_urls = prompt
+    else:
+        prompt_text, image_urls = prompt, None
 
     agent = Agent(
         name="evaluation_judge",
@@ -530,7 +693,10 @@ async def _default_agent_judge_executor(prompt: str, system_prompt: str) -> str:
         ),
         system_prompt=system_prompt,
     )
-    response = await exec_agent(prompt, agent=agent, context=Context())
+    request: str | Observation = prompt_text
+    if image_urls:
+        request = Observation(content=prompt_text, images=image_urls)
+    response = await exec_agent(request, agent=agent, context=Context())
     return str(response.answer)
 
 
@@ -561,7 +727,7 @@ def get_builtin_eval_suite(name: str, judge_backend: JudgeBackend | None = None)
                 AgentJudgeBackend(
                     backend_id="app-evaluator-agent",
                     system_prompt=_load_app_evaluator_skill_prompt(),
-                    prompt_builder=_build_default_judge_prompt,
+                    prompt_builder=_build_app_evaluator_judge_prompt,
                     timeout_seconds=float(os.getenv("AWORLD_EVALUATOR_AGENT_TIMEOUT_SECONDS", "8.0")),
                 ),
                 CallableJudgeBackend(
@@ -578,14 +744,32 @@ def get_builtin_eval_suite(name: str, judge_backend: JudgeBackend | None = None)
 
 
 def resolve_eval_suite(name: str | None, target: str | Path) -> EvalSuiteDef:
-    target_path = Path(target)
-    suite_name = name or "app-evaluator"
-    suite = get_builtin_eval_suite(suite_name)
+    target_info = describe_eval_target(target)
+
+    if name is not None:
+        registration = _EVAL_SUITE_REGISTRY.get(name)
+        if registration is None:
+            raise KeyError(name)
+    else:
+        candidates = [registration for registration in _EVAL_SUITE_REGISTRY.values() if registration.matches(target_info)]
+        if not candidates:
+            raise KeyError(f"no evaluation suite matches target {target_info.get('target_path')}")
+        registration = sorted(candidates, key=lambda item: (-item.priority, item.suite_id))[0]
+
+    suite = registration.factory(target_info)
     case = EvalCaseDef(
-        case_id=target_path.name or "target",
+        case_id=Path(target_info["target_path"]).name or "target",
         input={
-            "target_path": str(target_path),
-            "target_kind": "directory" if target_path.is_dir() else "file",
+            "target_path": target_info["target_path"],
+            "target_kind": target_info["target_kind"],
         },
     )
     return suite.with_cases([case])
+
+
+register_eval_suite(
+    "app-evaluator",
+    lambda target: get_builtin_eval_suite("app-evaluator"),
+    matcher=lambda target: target.get("target_kind") in {"file", "directory", "image"},
+    priority=10,
+)

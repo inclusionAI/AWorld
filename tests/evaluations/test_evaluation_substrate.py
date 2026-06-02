@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import pytest
 
 from aworld.evaluations.base import EvaluationConfig
+import aworld.evaluations.substrate as substrate_module
 from aworld.evaluations.substrate import (
     AgentJudgeBackend,
     CallableJudgeBackend,
@@ -14,6 +16,9 @@ from aworld.evaluations.substrate import (
     JudgeSchemaDef,
     compile_evaluation_flow,
     get_builtin_eval_suite,
+    list_eval_suites,
+    register_eval_suite,
+    resolve_eval_suite,
     run_evaluation_flow,
 )
 
@@ -122,6 +127,49 @@ def test_builtin_app_evaluator_suite_has_required_schema_and_score_gate() -> Non
     assert suite.gate_policy.metric_name == "score"
 
 
+def test_eval_suite_registry_resolves_explicit_and_target_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+
+    def generic_factory(target):
+        return EvalSuiteDef(suite_id="generic-review")
+
+    def image_factory(target):
+        return EvalSuiteDef(suite_id="image-review")
+
+    register_eval_suite(
+        "generic-review",
+        generic_factory,
+        matcher=lambda target: True,
+        priority=10,
+    )
+    register_eval_suite(
+        "image-review",
+        image_factory,
+        matcher=lambda target: target["target_kind"] == "image",
+        priority=50,
+    )
+
+    image_target = tmp_path / "artifact.png"
+    image_target.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aA1EAAAAASUVORK5CYII="))
+    text_target = tmp_path / "artifact.txt"
+    text_target.write_text("artifact", encoding="utf-8")
+
+    listed = list_eval_suites()
+    explicit = resolve_eval_suite("generic-review", image_target)
+    image_default = resolve_eval_suite(None, image_target)
+    text_default = resolve_eval_suite(None, text_target)
+
+    assert listed == ["generic-review", "image-review"]
+    assert explicit.suite_id == "generic-review"
+    assert image_default.suite_id == "image-review"
+    assert image_default.cases[0].input["target_kind"] == "image"
+    assert text_default.suite_id == "generic-review"
+    assert text_default.cases[0].input["target_kind"] == "file"
+
+
 @pytest.mark.asyncio
 async def test_agent_judge_backend_parses_app_evaluator_json_payload() -> None:
     async def fake_executor(prompt: str, system_prompt: str):
@@ -225,3 +273,60 @@ async def test_fallback_judge_backend_uses_next_backend_after_timeout() -> None:
 
     assert execution.backend_id == "heuristic"
     assert execution.payload["score"] == pytest.approx(0.61)
+
+
+@pytest.mark.asyncio
+async def test_builtin_app_evaluator_passes_visual_target_images_to_agent_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    image_path = tmp_path / "artifact.png"
+    image_path.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aA1EAAAAASUVORK5CYII="
+        )
+    )
+
+    captured = {}
+
+    async def fake_executor(prompt, system_prompt: str):
+        captured["prompt"] = prompt
+        return {
+            "results": [
+                {
+                    "filename": image_path.name,
+                    "score": 0.88,
+                    "rank": "Exemplary",
+                    "criticism": "Minor spacing polish remains.",
+                    "praise": "The main visual is clear.",
+                    "improvement_advice": "Tighten secondary detail spacing.",
+                }
+            ]
+        }
+
+    monkeypatch.setenv("LLM_MODEL_NAME", "test-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(substrate_module, "_default_agent_judge_executor", fake_executor)
+
+    suite = get_builtin_eval_suite("app-evaluator").with_cases(
+        [
+            EvalCaseDef(
+                case_id="artifact",
+                input={"target_path": str(image_path), "target_kind": "image"},
+            )
+        ]
+    )
+    flow = EvaluationFlowDef(
+        target={"target_path": str(image_path), "target_kind": "image"},
+        suite=suite,
+    )
+
+    report = await run_evaluation_flow(flow)
+
+    prompt = captured["prompt"]
+
+    assert isinstance(prompt, tuple)
+    assert prompt[0].startswith("Evaluate the following app artifact")
+    assert len(prompt[1]) == 1
+    assert prompt[1][0].startswith("data:image/png;base64,")
+    assert report["judge_backend"]["backend_id"] == "app-evaluator-agent"
