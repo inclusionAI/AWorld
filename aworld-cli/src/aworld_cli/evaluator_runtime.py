@@ -46,6 +46,33 @@ def get_evaluator_suite_selection(
     }
 
 
+def evaluator_exit_code(report: dict) -> int:
+    gate_status = report.get("gate", {}).get("status")
+    approval = report.get("approval") or {}
+    if gate_status == "fail":
+        return 2
+    if gate_status == "needs_approval" and not approval.get("approved", False):
+        return 3
+    return 0
+
+
+def _build_automation_summary(report: dict) -> dict[str, object]:
+    gate = report.get("gate") or {}
+    approval = report.get("approval") or {}
+    result_counts = report.get("result_counts") or {}
+    return {
+        "gate_status": gate.get("status"),
+        "metric_name": gate.get("metric_name"),
+        "metric_value": gate.get("value"),
+        "approval_required": approval.get("required", False),
+        "approval_resolved": approval.get("resolved", False),
+        "approved": approval.get("approved"),
+        "suggested_exit_code": evaluator_exit_code(report),
+        "case_count": result_counts.get("cases_total", len(report.get("results") or [])),
+        "judge_backend": (report.get("judge_backend") or {}).get("backend_id"),
+    }
+
+
 def run_evaluator_cli(
     *,
     target: str,
@@ -78,6 +105,7 @@ def run_evaluator_cli(
         "resolved": selection.suite_id,
         "mode": selection.mode,
     }
+    report["automation"] = _build_automation_summary(report)
     output_path = (
         Path(output).expanduser().resolve()
         if output
