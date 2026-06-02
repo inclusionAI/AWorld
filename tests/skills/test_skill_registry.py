@@ -83,7 +83,11 @@ def test_registry_builds_compat_skill_config():
         "active": True,
         "skill_path": "/tmp/browser-use/SKILL.md",
         "asset_root": "/tmp/browser-use",
-        "path_aliases": ["/skills/browser-use"],
+        "path_aliases": [
+            "/skills/browser-use",
+            ".claude/skills/browser-use",
+            "./.claude/skills/browser-use",
+        ],
         "execution_assets": {
             "enabled": True,
             "relative_paths": ["run.sh"],
