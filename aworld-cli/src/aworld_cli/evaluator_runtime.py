@@ -4,7 +4,27 @@ import asyncio
 import json
 from pathlib import Path
 
-from aworld.evaluations.substrate import EvaluationFlowDef, resolve_eval_suite, run_evaluation_flow
+from aworld.evaluations.substrate import EvaluationFlowDef, get_builtin_eval_suite, resolve_eval_suite, run_evaluation_flow
+
+
+def _sanitize_path_token(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value).strip("-") or "target"
+
+
+def default_evaluator_report_path(*, target_path: Path, suite_id: str, cwd: Path | None = None) -> Path:
+    root = (cwd or Path.cwd()).expanduser().resolve()
+    report_dir = root / ".aworld" / "evaluations"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    target_token = _sanitize_path_token(target_path.stem or target_path.name)
+    suite_token = _sanitize_path_token(suite_id)
+    return report_dir / f"{target_token}.{suite_token}.json"
+
+
+def available_evaluator_suites() -> list[str]:
+    # Keep this explicit for now so CLI discovery stays stable even before a broader
+    # suite registry API is introduced.
+    get_builtin_eval_suite("app-evaluator")
+    return ["app-evaluator"]
 
 
 def run_evaluator_cli(
@@ -35,10 +55,14 @@ def run_evaluator_cli(
         approval["resolved"] = True
         approval["approved"] = approved
     report["approval"] = approval
-    if output:
-        output_path = Path(output).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    output_path = (
+        Path(output).expanduser().resolve()
+        if output
+        else default_evaluator_report_path(target_path=target_path, suite_id=report["suite_id"])
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    report["report_path"] = str(output_path)
+    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
 
@@ -53,4 +77,7 @@ def render_evaluator_summary(report: dict) -> str:
     backend = report.get("judge_backend", {}).get("backend_id")
     if backend:
         summary_line += f"\nJudge backend: {backend}"
+    report_path = report.get("report_path")
+    if report_path:
+        summary_line += f"\nReport: {report_path}"
     return summary_line
