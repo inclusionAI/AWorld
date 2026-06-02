@@ -11,6 +11,7 @@ from pathlib import Path
 
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
+from aworld.sandbox.namespaces.base import resolve_service_name_from_config
 from aworld.skills.execution_assets import build_skill_path_aliases
 
 
@@ -322,16 +323,8 @@ class McpServers:
             )
 
     def _is_terminal_service(self, server_name: str) -> bool:
-        if server_name == "terminal":
-            return True
-        server_config = ((self.mcp_config or {}).get("mcpServers") or {}).get(server_name, {})
-        headers = server_config.get("headers") or {}
-        logical_names = [
-            item.strip()
-            for item in str(headers.get("MCP_SERVERS") or "").split(",")
-            if item.strip()
-        ]
-        return "terminal" in logical_names
+        resolved = resolve_service_name_from_config(self.mcp_config, "terminal")
+        return server_name == resolved
 
     async def _rewrite_remote_skill_paths(
         self,

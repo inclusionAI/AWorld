@@ -122,6 +122,50 @@ async def test_check_tool_params_rewrites_remote_run_code_skill_paths(
 
 
 @pytest.mark.asyncio
+async def test_check_tool_params_rewrites_remote_paths_for_terminal_server_alias(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    run_file = skill_root / "run.py"
+    run_file.write_text("print('hi')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["run.py"],
+            "digest": "a1b2c3d4a1b2c3d4",
+            "entrypoint": "run.py",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote")
+    servers = McpServers(
+        mcp_servers=["terminal-server"],
+        mcp_config={"mcpServers": {"terminal-server": {}}},
+        sandbox=sandbox,
+        skill_configs={"browser-use": skill_config},
+    )
+    servers.tool_list = [_terminal_tool("run_code", "code")]
+    servers.tool_list[0]["function"]["name"] = "terminal-server__run_code"
+    parameter = {"code": f"python {run_file}"}
+
+    ok = await servers.check_tool_params(
+        context=None,
+        server_name="terminal-server",
+        tool_name="run_code",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert (
+        parameter["code"]
+        == "python /remote/workspace/.aworld/skills/browser-use/a1b2c3d4a1b2c3d4/run.py"
+    )
+    assert sandbox.calls == [("browser-use", skill_config)]
+
+
+@pytest.mark.asyncio
 async def test_check_tool_params_quotes_rewritten_remote_paths_with_spaces(
     tmp_path: Path,
 ) -> None:
