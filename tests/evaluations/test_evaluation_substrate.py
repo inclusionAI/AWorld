@@ -110,6 +110,9 @@ async def test_run_evaluation_flow_executes_suite_judge_and_returns_gate() -> No
     report = await run_evaluation_flow(flow)
 
     assert report["suite_id"] == "demo-suite"
+    assert report["report_format"]["id"] == "aworld.evaluator.report"
+    assert report["report_format"]["version"] == 1
+    assert report["generated_at"]
     assert report["gate"]["status"] == "needs_approval"
     assert report["results"][0]["judge"]["rank"] == "Good"
     assert report["results"][0]["metrics"]["score"]["value"] == pytest.approx(0.7)

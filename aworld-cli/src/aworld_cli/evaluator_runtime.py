@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 
 from aworld.evaluations.substrate import (
+    EVALUATOR_REPORT_FORMAT_ID,
+    EVALUATOR_REPORT_FORMAT_VERSION,
     EvaluationFlowDef,
     describe_eval_target,
     list_eval_suites,
@@ -70,6 +72,83 @@ def _build_automation_summary(report: dict) -> dict[str, object]:
         "suggested_exit_code": evaluator_exit_code(report),
         "case_count": result_counts.get("cases_total", len(report.get("results") or [])),
         "judge_backend": (report.get("judge_backend") or {}).get("backend_id"),
+    }
+
+
+def get_evaluator_report_schema() -> dict[str, object]:
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": f"https://schemas.aworld.dev/evaluator/report/v{EVALUATOR_REPORT_FORMAT_VERSION}.json",
+        "title": "AWorld Evaluator Report",
+        "type": "object",
+        "required": [
+            "report_version",
+            "report_format",
+            "generated_at",
+            "suite_id",
+            "target",
+            "summary",
+            "metrics",
+            "results",
+            "result_counts",
+            "approval",
+        ],
+        "properties": {
+            "report_version": {"type": "integer", "const": EVALUATOR_REPORT_FORMAT_VERSION},
+            "report_format": {
+                "type": "object",
+                "required": ["id", "version"],
+                "properties": {
+                    "id": {"type": "string", "const": EVALUATOR_REPORT_FORMAT_ID},
+                    "version": {"type": "integer", "const": EVALUATOR_REPORT_FORMAT_VERSION},
+                },
+                "additionalProperties": False,
+            },
+            "generated_at": {"type": "string", "format": "date-time"},
+            "suite_id": {"type": "string"},
+            "target": {"type": "object"},
+            "summary": {"type": "object"},
+            "metrics": {"type": "object"},
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["case_id", "input", "metrics", "judge"],
+                    "properties": {
+                        "case_id": {"type": "string"},
+                        "input": {"type": "object"},
+                        "metrics": {"type": "object"},
+                        "judge": {"type": "object"},
+                        "judge_backend": {
+                            "type": ["object", "null"],
+                            "properties": {
+                                "backend_id": {"type": "string"},
+                            },
+                            "required": ["backend_id"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "additionalProperties": True,
+                },
+            },
+            "result_counts": {
+                "type": "object",
+                "required": ["cases_total", "cases_with_metrics", "cases_with_judge"],
+                "properties": {
+                    "cases_total": {"type": "integer", "minimum": 0},
+                    "cases_with_metrics": {"type": "integer", "minimum": 0},
+                    "cases_with_judge": {"type": "integer", "minimum": 0},
+                },
+                "additionalProperties": False,
+            },
+            "gate": {"type": "object"},
+            "approval": {"type": "object"},
+            "judge_backend": {"type": "object"},
+            "suite_selection": {"type": "object"},
+            "automation": {"type": "object"},
+            "report_path": {"type": "string"},
+        },
+        "additionalProperties": True,
     }
 
 

@@ -9,6 +9,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, ClassVar, Mapping
 
@@ -33,6 +34,9 @@ _IMAGE_SUFFIX_TO_MIME = {
     ".bmp": "image/bmp",
     ".svg": "image/svg+xml",
 }
+
+EVALUATOR_REPORT_FORMAT_ID = "aworld.evaluator.report"
+EVALUATOR_REPORT_FORMAT_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -382,6 +386,10 @@ def _normalize_metric_status(status: Any) -> str | None:
     return getattr(status, "name", str(status))
 
 
+def _format_report_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 async def run_evaluation_flow(flow: EvaluationFlowDef) -> dict[str, Any]:
     compiled = compile_evaluation_flow(flow)
     eval_result = await EvaluateRunner(config=compiled.eval_config).run()
@@ -438,6 +446,11 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> dict[str, Any]:
     metrics = dict(suite_summary)
     report = {
         "report_version": 1,
+        "report_format": {
+            "id": EVALUATOR_REPORT_FORMAT_ID,
+            "version": EVALUATOR_REPORT_FORMAT_VERSION,
+        },
+        "generated_at": _format_report_timestamp(eval_result.create_time),
         "suite_id": compiled.suite.suite_id,
         "target": dict(compiled.target),
         "summary": eval_result.summary,
