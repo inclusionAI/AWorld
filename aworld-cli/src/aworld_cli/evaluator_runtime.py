@@ -242,6 +242,17 @@ def get_evaluator_report_schema() -> dict[str, object]:
     }
 
 
+def validate_evaluator_report(report: dict) -> None:
+    import jsonschema
+
+    try:
+        jsonschema.validate(instance=report, schema=get_evaluator_report_schema())
+    except jsonschema.ValidationError as exc:
+        path = ".".join(str(part) for part in exc.absolute_path)
+        location = f" at '{path}'" if path else ""
+        raise ValueError(f"evaluator report validation failed{location}: {exc.message}") from exc
+
+
 def run_evaluator_cli(
     *,
     target: str,

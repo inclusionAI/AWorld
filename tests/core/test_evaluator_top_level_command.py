@@ -171,6 +171,113 @@ def test_evaluator_command_prints_report_schema(
     assert "\"aworld.evaluator.report\"" in output
 
 
+def test_evaluator_command_validates_report_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        """
+{
+  "report_version": 1,
+  "report_format": {"id": "aworld.evaluator.report", "version": 1},
+  "generated_at": "2026-06-02T04:00:00Z",
+  "suite_id": "app-evaluator",
+  "target": {"target_path": "/tmp/artifact.txt", "target_kind": "file"},
+  "summary": {"app-evaluator": {"score": {"mean": 0.9}}},
+  "metrics": {"score": {"mean": 0.9}},
+  "results": [],
+  "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
+  "approval": {"required": false, "resolved": false, "approved": null},
+  "automation": {
+    "gate_status": null,
+    "metric_name": null,
+    "metric_value": null,
+    "approval_required": false,
+    "approval_resolved": false,
+    "approved": null,
+    "suggested_exit_code": 0,
+    "case_count": 0,
+    "judge_backend": null
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=None,
+            suite=None,
+            output=None,
+            interactive_approval=False,
+            list_suites=False,
+            print_report_schema=False,
+            validate_report=str(report_path),
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Report is valid" in output
+
+
+def test_evaluator_command_returns_nonzero_for_invalid_report(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        """
+{
+  "report_version": 1,
+  "report_format": {"id": "aworld.evaluator.report", "version": 1},
+  "generated_at": "2026-06-02T04:00:00Z",
+  "suite_id": "app-evaluator",
+  "target": {"target_path": "/tmp/artifact.txt", "target_kind": "file"},
+  "summary": {"app-evaluator": {"score": {"mean": 0.9}}},
+  "metrics": {"score": {"mean": 0.9}},
+  "results": [],
+  "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
+  "gate": {"status": "maybe", "metric_name": "score", "value": 0.9},
+  "approval": {"required": false, "resolved": false, "approved": null},
+  "automation": {
+    "gate_status": "maybe",
+    "metric_name": "score",
+    "metric_value": 0.9,
+    "approval_required": false,
+    "approval_resolved": false,
+    "approved": null,
+    "suggested_exit_code": 0,
+    "case_count": 0,
+    "judge_backend": null
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=None,
+            suite=None,
+            output=None,
+            interactive_approval=False,
+            list_suites=False,
+            print_report_schema=False,
+            validate_report=str(report_path),
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 4
+    assert "Report is invalid" in output
+
+
 def test_evaluator_command_returns_usage_error_without_target(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

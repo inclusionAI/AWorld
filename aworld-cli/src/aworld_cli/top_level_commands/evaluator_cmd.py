@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from aworld_cli.evaluator_runtime import (
     available_evaluator_suites,
@@ -9,6 +10,7 @@ from aworld_cli.evaluator_runtime import (
     get_evaluator_report_schema,
     render_evaluator_summary,
     run_evaluator_cli,
+    validate_evaluator_report,
 )
 
 
@@ -38,10 +40,22 @@ class EvaluatorTopLevelCommand:
         parser.add_argument("--interactive-approval", action="store_true")
         parser.add_argument("--list-suites", action="store_true")
         parser.add_argument("--print-report-schema", action="store_true")
+        parser.add_argument("--validate-report", type=str)
 
     def run(self, args, context) -> int:
         if getattr(args, "print_report_schema", False):
             print(json.dumps(get_evaluator_report_schema(), ensure_ascii=False, indent=2))
+            return 0
+
+        if getattr(args, "validate_report", None):
+            report_path = Path(args.validate_report).expanduser().resolve()
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            try:
+                validate_evaluator_report(report)
+            except ValueError as exc:
+                print(f"Report is invalid: {exc}")
+                return 4
+            print(f"Report is valid: {report_path}")
             return 0
 
         if getattr(args, "list_suites", False):
