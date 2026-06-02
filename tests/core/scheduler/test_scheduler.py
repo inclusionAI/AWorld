@@ -696,5 +696,32 @@ async def test_enable_job_recalculates_next_run(scheduler, temp_store):
     assert updated_job.state.next_run_at == future.isoformat()
 
 
+@pytest.mark.asyncio
+async def test_update_job_recalculates_next_run_when_schedule_changes(scheduler, temp_store):
+    """Updating a recurring job schedule should refresh stale next_run_at."""
+    job = CronJob(
+        name="daily-report",
+        schedule=CronSchedule(kind="cron", cron_expr="0 8 * * *"),
+        payload=CronPayload(message="old"),
+        state=CronJobState(next_run_at="2026-01-01T08:00:00+00:00", last_status="error"),
+    )
+
+    await temp_store.add_job(job)
+
+    updated_job = await scheduler.update_job(
+        job.id,
+        schedule=CronSchedule(kind="cron", cron_expr="0 1 * * *"),
+        payload=CronPayload(message="new"),
+        state={"last_status": None, "last_error": None},
+    )
+
+    assert updated_job is not None
+    assert updated_job.schedule.cron_expr == "0 1 * * *"
+    assert updated_job.payload.message == "new"
+    assert updated_job.state.last_status is None
+    assert updated_job.state.next_run_at is not None
+    assert updated_job.state.next_run_at != "2026-01-01T08:00:00+00:00"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
