@@ -94,7 +94,10 @@ def compute_execution_asset_digest(manifest: ExecutionAssetManifest) -> str:
     hasher = sha256()
     for rel_path in manifest.relative_paths:
         asset_path = manifest.root / rel_path
+        mode_bits = asset_path.stat().st_mode & 0o777
         hasher.update(rel_path.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(f"{mode_bits:o}".encode("ascii"))
         hasher.update(b"\0")
         hasher.update(asset_path.read_bytes())
         hasher.update(b"\0")

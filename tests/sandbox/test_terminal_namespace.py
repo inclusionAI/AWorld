@@ -1,6 +1,7 @@
 import pytest
 from mcp.types import TextContent
 
+from aworld.sandbox.namespaces.file import FileNamespace
 from aworld.sandbox.namespaces.terminal import TerminalNamespace
 from aworld.sandbox.run.mcp_servers import McpServers
 
@@ -148,6 +149,26 @@ class _AliasedTerminalSandbox(_SuccessfulNamespaceSandbox):
         self.mcpservers.tool_list[0]["function"]["name"] = "workspace_terminal__run_code"
 
 
+class _ServerSuffixAliasSandbox(_SuccessfulNamespaceSandbox):
+    def __init__(self) -> None:
+        super().__init__()
+        self._mcp_config = {
+            "mcpServers": {
+                "terminal-server": {},
+                "filesystem-server": {},
+            }
+        }
+        self.mcp_config = self._mcp_config
+        self.mcpservers = McpServers(
+            mcp_servers=["terminal-server", "filesystem-server"],
+            mcp_config=self._mcp_config,
+            sandbox=self,
+            skill_configs=self._skill_configs,
+        )
+        self.mcpservers.tool_list = [_terminal_tool("run_code", "code")]
+        self.mcpservers.tool_list[0]["function"]["name"] = "terminal-server__run_code"
+
+
 @pytest.mark.asyncio
 async def test_terminal_namespace_rewrites_remote_paths_for_aliased_terminal_service(
     monkeypatch: pytest.MonkeyPatch,
@@ -174,6 +195,40 @@ async def test_terminal_namespace_rewrites_remote_paths_for_aliased_terminal_ser
 
     assert result == {"success": True, "data": "done", "error": None}
     assert captured["server_name"] == "workspace_terminal"
+    assert captured["parameter"]["code"] == (
+        "python /remote/workspace/.aworld/skills/browser-use/feed1234feed1234/scripts/run.py"
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_namespace_resolves_server_suffix_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_call(**kwargs):
+        captured.update(kwargs)
+
+        class _Result:
+            content = [TextContent(type="text", text="done")]
+
+        return _Result()
+
+    monkeypatch.setattr(
+        "aworld.sandbox.run.mcp_servers.call_mcp_tool_with_exit_stack",
+        _fake_call,
+    )
+
+    sandbox = _ServerSuffixAliasSandbox()
+    terminal = TerminalNamespace(sandbox)
+    filesystem = FileNamespace(sandbox)
+
+    result = await terminal.run_code("python /host/skills/browser-use/scripts/run.py")
+
+    assert result == {"success": True, "data": "done", "error": None}
+    assert terminal._service_name == "terminal-server"
+    assert filesystem._service_name == "filesystem-server"
+    assert captured["server_name"] == "terminal-server"
     assert captured["parameter"]["code"] == (
         "python /remote/workspace/.aworld/skills/browser-use/feed1234feed1234/scripts/run.py"
     )

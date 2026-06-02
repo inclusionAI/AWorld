@@ -33,6 +33,11 @@ def resolve_service_name(sandbox: Any, logical_name: str) -> str:
     (comma-separated) contains logical_name. Fallback: return logical_name.
     """
     mcp_config = getattr(sandbox, "mcp_config", None) or getattr(sandbox, "_mcp_config", None)
+    return resolve_service_name_from_config(mcp_config, logical_name)
+
+
+def resolve_service_name_from_config(mcp_config: Any, logical_name: str) -> str:
+    """Resolve a logical service name against an MCP config dict."""
     if not mcp_config:
         return logical_name
     servers = mcp_config.get("mcpServers") or {}
@@ -47,6 +52,12 @@ def resolve_service_name(sandbox: Any, logical_name: str) -> str:
             continue
         names = [n.strip() for n in mcp_servers_header.split(",") if n.strip()]
         if logical_name in names:
+            return key
+    server_suffix_alias = f"{logical_name}-server"
+    if server_suffix_alias in servers:
+        return server_suffix_alias
+    for key in servers:
+        if str(key).strip().lower().endswith(f"-{server_suffix_alias}"):
             return key
     return logical_name
 

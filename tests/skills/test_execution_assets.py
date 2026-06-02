@@ -37,6 +37,27 @@ def test_compute_execution_asset_digest_is_stable_for_same_content(
     )
 
 
+def test_compute_execution_asset_digest_changes_when_permissions_change(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    script = skill_dir / "run.sh"
+    script.write_text("echo hi\n", encoding="utf-8")
+    script.chmod(0o644)
+
+    first = compute_execution_asset_digest(
+        build_execution_asset_manifest(skill_dir, declared_assets=None)
+    )
+
+    script.chmod(0o755)
+    second = compute_execution_asset_digest(
+        build_execution_asset_manifest(skill_dir, declared_assets=None)
+    )
+
+    assert first != second
+
+
 def test_build_execution_assets_config_supports_declared_asset_list(tmp_path: Path) -> None:
     skill_dir = tmp_path / "demo"
     skill_dir.mkdir()
