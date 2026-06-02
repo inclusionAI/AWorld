@@ -63,3 +63,15 @@ help me create an English word learning app, with a UI quality score over 0.9
    The agent will generate the app, evaluate it with the official Evaluator skill, and iterate until the UI quality score meets your target. When done, run or deploy the output as needed.
 
 For a reusable workspace setup, keep the same `.env` or interactive CLI configuration across runs.
+
+## Inspecting The Evaluator Report
+
+When you want a stable machine-readable artifact for CI or post-processing, use the standalone evaluator command against the generated app or artifact:
+
+```bash
+aworld-cli evaluator --target ./artifact --output ./report.json
+aworld-cli evaluator --print-report-schema
+aworld-cli evaluator --validate-report ./report.json
+```
+
+The emitted report includes `report_format`, normalized `metrics`, structured `gate`, and `automation` fields. That makes it suitable for quality gates, regression checks, or downstream dashboards without parsing freeform evaluator text.
