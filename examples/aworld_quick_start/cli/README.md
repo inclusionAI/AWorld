@@ -32,6 +32,16 @@ aworld-cli --task "Your task" --agent MyAgent
 - `agents/document_agent.md` - Markdown agent example
 - `agents/hilp.py` - Human in the loop agent example
 
+## Evaluator Report Example
+
+The file `evaluator_report.example.json` shows the current stable evaluator report contract, including:
+
+- `report_format` and `generated_at`
+- normalized `metrics` and per-case `results`
+- structured `gate`, `approval`, and `automation` sections
+
+Use it together with `aworld-cli evaluator --print-report-schema` and `aworld-cli evaluator --validate-report <file>` when integrating evaluator output into scripts or CI.
+
 ## Create Your Agent
 
 ### Python Agent
