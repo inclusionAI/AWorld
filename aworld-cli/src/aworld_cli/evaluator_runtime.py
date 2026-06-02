@@ -81,6 +81,90 @@ def get_evaluator_report_schema() -> dict[str, object]:
         "$id": f"https://schemas.aworld.dev/evaluator/report/v{EVALUATOR_REPORT_FORMAT_VERSION}.json",
         "title": "AWorld Evaluator Report",
         "type": "object",
+        "$defs": {
+            "evalStatus": {
+                "type": "string",
+                "enum": ["PASSED", "FAILED", "NOT_EVALUATED"],
+            },
+            "metricScalar": {
+                "oneOf": [
+                    {"type": "number"},
+                    {"type": "boolean"},
+                ]
+            },
+            "metricAggregate": {
+                "type": "object",
+                "properties": {
+                    "mean": {"type": "number"},
+                    "min": {"type": "number"},
+                    "max": {"type": "number"},
+                    "std": {"type": "number"},
+                    "true_count": {"type": "integer", "minimum": 0},
+                    "true_rate": {"type": "number", "minimum": 0, "maximum": 1},
+                    "value": {"$ref": "#/$defs/metricScalar"},
+                    "eval_status": {"$ref": "#/$defs/evalStatus"},
+                },
+                "additionalProperties": {
+                    "oneOf": [
+                        {"type": "number"},
+                        {"type": "boolean"},
+                        {"type": "string"},
+                        {"$ref": "#/$defs/metricAggregate"},
+                    ]
+                },
+            },
+            "caseMetric": {
+                "type": "object",
+                "properties": {
+                    "value": {"$ref": "#/$defs/metricScalar"},
+                    "status": {"$ref": "#/$defs/evalStatus"},
+                },
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+            "gateDecision": {
+                "type": "object",
+                "required": ["status", "metric_name", "value"],
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["pass", "fail", "needs_approval"],
+                    },
+                    "metric_name": {"type": "string"},
+                    "value": {"type": "number"},
+                },
+                "additionalProperties": False,
+            },
+            "automationSummary": {
+                "type": "object",
+                "required": [
+                    "gate_status",
+                    "metric_name",
+                    "metric_value",
+                    "approval_required",
+                    "approval_resolved",
+                    "approved",
+                    "suggested_exit_code",
+                    "case_count",
+                    "judge_backend",
+                ],
+                "properties": {
+                    "gate_status": {
+                        "type": ["string", "null"],
+                        "enum": ["pass", "fail", "needs_approval", None],
+                    },
+                    "metric_name": {"type": ["string", "null"]},
+                    "metric_value": {"type": ["number", "null"]},
+                    "approval_required": {"type": "boolean"},
+                    "approval_resolved": {"type": "boolean"},
+                    "approved": {"type": ["boolean", "null"]},
+                    "suggested_exit_code": {"type": "integer", "enum": [0, 2, 3]},
+                    "case_count": {"type": "integer", "minimum": 0},
+                    "judge_backend": {"type": ["string", "null"]},
+                },
+                "additionalProperties": False,
+            },
+        },
         "required": [
             "report_version",
             "report_format",
@@ -108,7 +192,10 @@ def get_evaluator_report_schema() -> dict[str, object]:
             "suite_id": {"type": "string"},
             "target": {"type": "object"},
             "summary": {"type": "object"},
-            "metrics": {"type": "object"},
+            "metrics": {
+                "type": "object",
+                "additionalProperties": {"$ref": "#/$defs/metricAggregate"},
+            },
             "results": {
                 "type": "array",
                 "items": {
@@ -117,7 +204,10 @@ def get_evaluator_report_schema() -> dict[str, object]:
                     "properties": {
                         "case_id": {"type": "string"},
                         "input": {"type": "object"},
-                        "metrics": {"type": "object"},
+                        "metrics": {
+                            "type": "object",
+                            "additionalProperties": {"$ref": "#/$defs/caseMetric"},
+                        },
                         "judge": {"type": "object"},
                         "judge_backend": {
                             "type": ["object", "null"],
@@ -141,11 +231,11 @@ def get_evaluator_report_schema() -> dict[str, object]:
                 },
                 "additionalProperties": False,
             },
-            "gate": {"type": "object"},
+            "gate": {"$ref": "#/$defs/gateDecision"},
             "approval": {"type": "object"},
             "judge_backend": {"type": "object"},
             "suite_selection": {"type": "object"},
-            "automation": {"type": "object"},
+            "automation": {"$ref": "#/$defs/automationSummary"},
             "report_path": {"type": "string"},
         },
         "additionalProperties": True,

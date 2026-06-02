@@ -207,3 +207,23 @@ def test_get_evaluator_report_schema_describes_report_contract() -> None:
     assert "report_format" in schema["required"]
     assert schema["properties"]["report_format"]["properties"]["id"]["const"] == "aworld.evaluator.report"
     assert schema["properties"]["report_format"]["properties"]["version"]["const"] == 1
+    assert schema["properties"]["metrics"]["additionalProperties"]["$ref"] == "#/$defs/metricAggregate"
+    assert (
+        schema["properties"]["results"]["items"]["properties"]["metrics"]["additionalProperties"]["$ref"]
+        == "#/$defs/caseMetric"
+    )
+    assert schema["properties"]["gate"]["$ref"] == "#/$defs/gateDecision"
+    assert schema["properties"]["automation"]["$ref"] == "#/$defs/automationSummary"
+    assert schema["$defs"]["gateDecision"]["properties"]["status"]["enum"] == ["pass", "fail", "needs_approval"]
+    assert schema["$defs"]["automationSummary"]["properties"]["suggested_exit_code"]["enum"] == [0, 2, 3]
+    assert schema["$defs"]["automationSummary"]["required"] == [
+        "gate_status",
+        "metric_name",
+        "metric_value",
+        "approval_required",
+        "approval_resolved",
+        "approved",
+        "suggested_exit_code",
+        "case_count",
+        "judge_backend",
+    ]
