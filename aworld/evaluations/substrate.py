@@ -253,6 +253,14 @@ class EvalSuiteRegistration:
         return bool(self.matcher(target))
 
 
+@dataclass(frozen=True)
+class EvalSuiteSelection:
+    suite_id: str
+    suite: EvalSuiteDef
+    target: dict[str, Any]
+    mode: str
+
+
 _EVAL_SUITE_REGISTRY: dict[str, EvalSuiteRegistration] = {}
 
 
@@ -273,6 +281,10 @@ def register_eval_suite(
 
 def list_eval_suites() -> list[str]:
     return sorted(_EVAL_SUITE_REGISTRY)
+
+
+def _sorted_eval_suite_registrations(registrations: list[EvalSuiteRegistration]) -> list[EvalSuiteRegistration]:
+    return sorted(registrations, key=lambda item: (-item.priority, item.suite_id))
 
 
 def _is_image_path(path: Path) -> bool:
@@ -743,28 +755,52 @@ def get_builtin_eval_suite(name: str, judge_backend: JudgeBackend | None = None)
     )
 
 
-def resolve_eval_suite(name: str | None, target: str | Path) -> EvalSuiteDef:
-    target_info = describe_eval_target(target)
-
-    if name is not None:
-        registration = _EVAL_SUITE_REGISTRY.get(name)
-        if registration is None:
-            raise KeyError(name)
-    else:
-        candidates = [registration for registration in _EVAL_SUITE_REGISTRY.values() if registration.matches(target_info)]
-        if not candidates:
-            raise KeyError(f"no evaluation suite matches target {target_info.get('target_path')}")
-        registration = sorted(candidates, key=lambda item: (-item.priority, item.suite_id))[0]
-
-    suite = registration.factory(target_info)
-    case = EvalCaseDef(
+def _build_eval_suite_case(target_info: dict[str, Any]) -> EvalCaseDef:
+    return EvalCaseDef(
         case_id=Path(target_info["target_path"]).name or "target",
         input={
             "target_path": target_info["target_path"],
             "target_kind": target_info["target_kind"],
         },
     )
-    return suite.with_cases([case])
+
+
+def list_matching_eval_suites(target: str | Path | Mapping[str, Any]) -> list[str]:
+    target_info = describe_eval_target(target)
+    candidates = [registration for registration in _EVAL_SUITE_REGISTRY.values() if registration.matches(target_info)]
+    return [registration.suite_id for registration in _sorted_eval_suite_registrations(candidates)]
+
+
+def resolve_eval_suite_selection(name: str | None, target: str | Path | Mapping[str, Any]) -> EvalSuiteSelection:
+    target_info = describe_eval_target(target)
+    if name is not None:
+        registration = _EVAL_SUITE_REGISTRY.get(name)
+        if registration is None:
+            raise KeyError(name)
+        if not registration.matches(target_info):
+            raise ValueError(f"suite '{name}' does not support target kind '{target_info.get('target_kind')}'")
+        mode = "explicit"
+    else:
+        candidates = [registration for registration in _EVAL_SUITE_REGISTRY.values() if registration.matches(target_info)]
+        if not candidates:
+            raise KeyError(f"no evaluation suite matches target {target_info.get('target_path')}")
+        registration = _sorted_eval_suite_registrations(candidates)[0]
+        mode = "auto"
+
+    suite = registration.factory(target_info).with_cases([
+        _build_eval_suite_case(target_info),
+    ])
+    return EvalSuiteSelection(
+        suite_id=suite.suite_id,
+        suite=suite,
+        target=target_info,
+        mode=mode,
+    )
+
+
+def resolve_eval_suite(name: str | None, target: str | Path) -> EvalSuiteDef:
+    selection = resolve_eval_suite_selection(name, target)
+    return selection.suite
 
 
 register_eval_suite(

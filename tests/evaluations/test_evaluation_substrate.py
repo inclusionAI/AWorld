@@ -17,8 +17,10 @@ from aworld.evaluations.substrate import (
     compile_evaluation_flow,
     get_builtin_eval_suite,
     list_eval_suites,
+    list_matching_eval_suites,
     register_eval_suite,
     resolve_eval_suite,
+    resolve_eval_suite_selection,
     run_evaluation_flow,
 )
 
@@ -168,6 +170,39 @@ def test_eval_suite_registry_resolves_explicit_and_target_defaults(
     assert image_default.cases[0].input["target_kind"] == "image"
     assert text_default.suite_id == "generic-review"
     assert text_default.cases[0].input["target_kind"] == "file"
+
+
+def test_eval_suite_registry_reports_matching_suites_and_selection_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+
+    register_eval_suite(
+        "generic-review",
+        lambda target: EvalSuiteDef(suite_id="generic-review"),
+        matcher=lambda target: True,
+        priority=10,
+    )
+    register_eval_suite(
+        "image-review",
+        lambda target: EvalSuiteDef(suite_id="image-review"),
+        matcher=lambda target: target["target_kind"] == "image",
+        priority=50,
+    )
+
+    image_target = tmp_path / "artifact.png"
+    image_target.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aA1EAAAAASUVORK5CYII="))
+
+    matching = list_matching_eval_suites(image_target)
+    auto_selection = resolve_eval_suite_selection(None, image_target)
+    explicit_selection = resolve_eval_suite_selection("generic-review", image_target)
+
+    assert matching == ["image-review", "generic-review"]
+    assert auto_selection.mode == "auto"
+    assert auto_selection.suite_id == "image-review"
+    assert explicit_selection.mode == "explicit"
+    assert explicit_selection.suite_id == "generic-review"
 
 
 @pytest.mark.asyncio

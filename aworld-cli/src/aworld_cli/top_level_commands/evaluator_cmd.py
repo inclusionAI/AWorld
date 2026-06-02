@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aworld_cli.evaluator_runtime import (
     available_evaluator_suites,
+    get_evaluator_suite_selection,
     render_evaluator_summary,
     run_evaluator_cli,
 )
@@ -35,9 +36,17 @@ class EvaluatorTopLevelCommand:
 
     def run(self, args, context) -> int:
         if getattr(args, "list_suites", False):
-            print("Available evaluator suites:")
-            for suite_name in available_evaluator_suites():
+            if getattr(args, "target", None):
+                print("Available evaluator suites for target:")
+                suite_names = available_evaluator_suites(target=args.target)
+            else:
+                print("Available evaluator suites:")
+                suite_names = available_evaluator_suites()
+            for suite_name in suite_names:
                 print(f"  - {suite_name}")
+            if getattr(args, "target", None) and suite_names:
+                selection = get_evaluator_suite_selection(target=args.target, suite=args.suite)
+                print(f"Default suite: {selection['resolved']}")
             return 0
 
         if not getattr(args, "target", None):
