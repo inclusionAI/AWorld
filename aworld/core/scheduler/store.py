@@ -299,6 +299,22 @@ class FileBasedCronStore:
                             if key == "state":
                                 # Merge state updates
                                 job_dict["state"].update(value)
+                            elif key == "schedule":
+                                job_dict["schedule"] = {
+                                    "kind": value.kind,
+                                    "at": value.at,
+                                    "every_seconds": value.every_seconds,
+                                    "cron_expr": value.cron_expr,
+                                    "timezone": value.timezone,
+                                }
+                            elif key == "payload":
+                                job_dict["payload"] = {
+                                    "message": value.message,
+                                    "agent_name": value.agent_name,
+                                    "tool_names": value.tool_names,
+                                    "timeout_seconds": value.timeout_seconds,
+                                    "max_runs": value.max_runs,
+                                }
                             else:
                                 job_dict[key] = value
 
