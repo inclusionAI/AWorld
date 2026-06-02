@@ -332,6 +332,81 @@ async def cron_tool(
             "job_ids": removed_ids,
         }
 
+    def recurring_dedupe_key_local(job: 'CronJob') -> Optional[str]:
+        if job.schedule.kind not in ("cron", "every"):
+            return None
+
+        normalized_name = re.sub(r"[\s_\-]+", "", job.name or "").casefold()
+        if not normalized_name:
+            return None
+
+        return "|".join([
+            normalized_name,
+            normalize_agent_name_local(job.payload.agent_name),
+        ])
+
+    def parse_created_at_local(job: 'CronJob') -> datetime:
+        try:
+            return datetime.fromisoformat(job.created_at.replace("Z", "+00:00"))
+        except Exception:
+            return datetime.min
+
+    async def upsert_recurring_job_local(job: 'CronJob') -> tuple['CronJob', Dict[str, Any]]:
+        dedupe_key = recurring_dedupe_key_local(job)
+        list_jobs = getattr(scheduler, "list_jobs", None)
+        update_job = getattr(scheduler, "update_job", None)
+        if not dedupe_key or not callable(list_jobs) or not callable(update_job):
+            return await scheduler.add_job(job), {"updated_existing": False, "disabled_duplicate_job_ids": []}
+
+        jobs = await list_jobs(enabled_only=False)
+        candidates = [
+            existing
+            for existing in jobs
+            if recurring_dedupe_key_local(existing) == dedupe_key
+        ]
+        if not candidates:
+            return await scheduler.add_job(job), {"updated_existing": False, "disabled_duplicate_job_ids": []}
+
+        keeper = sorted(
+            candidates,
+            key=lambda existing: (bool(existing.enabled), parse_created_at_local(existing)),
+            reverse=True,
+        )[0]
+        updated = await update_job(
+            keeper.id,
+            name=job.name,
+            schedule=job.schedule,
+            payload=job.payload,
+            delete_after_run=job.delete_after_run,
+            enabled=True,
+            state={
+                "last_status": None,
+                "last_error": None,
+                "last_result_summary": None,
+                "running": False,
+                "consecutive_errors": 0,
+            },
+        )
+        if not updated:
+            return await scheduler.add_job(job), {"updated_existing": False, "disabled_duplicate_job_ids": []}
+
+        disabled_duplicate_job_ids = []
+        for duplicate in candidates:
+            if duplicate.id == keeper.id or not duplicate.enabled:
+                continue
+            disabled = await update_job(
+                duplicate.id,
+                enabled=False,
+                state={"next_run_at": None, "running": False},
+            )
+            if disabled:
+                disabled_duplicate_job_ids.append(duplicate.id)
+
+        return updated, {
+            "updated_existing": True,
+            "disabled_duplicate_job_ids": disabled_duplicate_job_ids,
+        }
+
     try:
         from aworld.core.scheduler import get_scheduler
         from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload
@@ -415,7 +490,7 @@ async def cron_tool(
                 delete_after_run=delete_after_run or (schedule_type == "at"),
             )
 
-            result = await scheduler.add_job(job)
+            result, upsert_metadata = await upsert_recurring_job_local(job)
 
             advance_reminder = None
             try:
@@ -446,7 +521,7 @@ async def cron_tool(
                         ),
                         delete_after_run=advance_spec["delete_after_run"],
                     )
-                    advance_result = await scheduler.add_job(advance_job)
+                    advance_result, advance_upsert_metadata = await upsert_recurring_job_local(advance_job)
                     advance_reminder = {
                         "job_id": advance_result.id,
                         "name": advance_result.name,
@@ -454,6 +529,12 @@ async def cron_tool(
                         "display": _format_confirmed_time_display(advance_result.state.next_run_at),
                         "lead_minutes": DEFAULT_ADVANCE_REMINDER_MINUTES,
                     }
+                    if advance_upsert_metadata["updated_existing"]:
+                        advance_reminder["updated_existing"] = True
+                    if advance_upsert_metadata["disabled_duplicate_job_ids"]:
+                        advance_reminder["disabled_duplicate_job_ids"] = advance_upsert_metadata[
+                            "disabled_duplicate_job_ids"
+                        ]
             except Exception as advance_error:
                 logger.warning(
                     "cron_tool(add): failed to create advance reminder for "
@@ -463,10 +544,17 @@ async def cron_tool(
             response = {
                 "success": True,
                 "job_id": result.id,
-                "message": f"Created task '{name}' (ID: {result.id})",
+                "message": (
+                    f"Updated existing task '{name}' (ID: {result.id})"
+                    if upsert_metadata["updated_existing"]
+                    else f"Created task '{name}' (ID: {result.id})"
+                ),
                 "next_run": result.state.next_run_at,
                 "next_run_display": _format_confirmed_time_display(result.state.next_run_at),
+                "updated_existing": upsert_metadata["updated_existing"],
             }
+            if upsert_metadata["disabled_duplicate_job_ids"]:
+                response["disabled_duplicate_job_ids"] = upsert_metadata["disabled_duplicate_job_ids"]
             if advance_reminder:
                 response["advance_reminder"] = advance_reminder
             return response
