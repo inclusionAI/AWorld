@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+
 from aworld_cli.evaluator_runtime import (
     available_evaluator_suites,
     evaluator_exit_code,
     get_evaluator_suite_selection,
+    get_evaluator_report_schema,
     render_evaluator_summary,
     run_evaluator_cli,
 )
@@ -34,8 +37,13 @@ class EvaluatorTopLevelCommand:
         parser.add_argument("--output", type=str)
         parser.add_argument("--interactive-approval", action="store_true")
         parser.add_argument("--list-suites", action="store_true")
+        parser.add_argument("--print-report-schema", action="store_true")
 
     def run(self, args, context) -> int:
+        if getattr(args, "print_report_schema", False):
+            print(json.dumps(get_evaluator_report_schema(), ensure_ascii=False, indent=2))
+            return 0
+
         if getattr(args, "list_suites", False):
             if getattr(args, "target", None):
                 print("Available evaluator suites for target:")

@@ -9,7 +9,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
-from aworld_cli.evaluator_runtime import available_evaluator_suites, evaluator_exit_code, run_evaluator_cli
+from aworld_cli.evaluator_runtime import (
+    available_evaluator_suites,
+    evaluator_exit_code,
+    get_evaluator_report_schema,
+    run_evaluator_cli,
+)
 
 
 def test_run_evaluator_cli_persists_approval_state(
@@ -192,3 +197,13 @@ def test_evaluator_exit_code_matches_gate_and_approval() -> None:
     assert evaluator_exit_code(
         {"gate": {"status": "needs_approval"}, "approval": {"approved": False}}
     ) == 3
+
+
+def test_get_evaluator_report_schema_describes_report_contract() -> None:
+    schema = get_evaluator_report_schema()
+
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["title"] == "AWorld Evaluator Report"
+    assert "report_format" in schema["required"]
+    assert schema["properties"]["report_format"]["properties"]["id"]["const"] == "aworld.evaluator.report"
+    assert schema["properties"]["report_format"]["properties"]["version"]["const"] == 1

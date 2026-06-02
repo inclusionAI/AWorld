@@ -149,6 +149,28 @@ def test_evaluator_command_lists_target_matching_suites_and_default(
     assert "Default suite: app-evaluator" in output
 
 
+def test_evaluator_command_prints_report_schema(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=None,
+            suite=None,
+            output=None,
+            interactive_approval=False,
+            list_suites=False,
+            print_report_schema=True,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "\"title\": \"AWorld Evaluator Report\"" in output
+    assert "\"aworld.evaluator.report\"" in output
+
+
 def test_evaluator_command_returns_usage_error_without_target(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
