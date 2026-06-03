@@ -756,6 +756,10 @@ class McpServers:
     ) -> str:
         if cls._shell_quote_context(command_text, start_index):
             return replacement_path
+        if cls._looks_like_windows_path(replacement_path):
+            if any(char.isspace() for char in replacement_path):
+                return f'"{replacement_path}"'
+            return replacement_path
         return shlex.quote(replacement_path)
 
     @staticmethod
@@ -786,6 +790,13 @@ class McpServers:
             if char in {"'", '"'}:
                 quote = char
         return quote
+
+    @staticmethod
+    def _looks_like_windows_path(path_text: str) -> bool:
+        candidate = str(path_text or "").strip()
+        if not candidate:
+            return False
+        return bool(re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", candidate))
 
     async def call_tool(
             self,

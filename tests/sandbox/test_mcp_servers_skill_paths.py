@@ -256,6 +256,48 @@ async def test_check_tool_params_quotes_rewritten_remote_paths_with_spaces(
 
 
 @pytest.mark.asyncio
+async def test_check_tool_params_uses_windows_safe_quotes_for_rewritten_remote_paths(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "browser-use"
+    skill_root.mkdir(parents=True)
+    run_file = skill_root / "run.py"
+    run_file.write_text("print('hi')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["run.py"],
+            "digest": "abcd1234abcd1234",
+            "entrypoint": "run.py",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote", remote_workspace_root=r"C:\remote\My Project")
+    servers = McpServers(
+        mcp_servers=["terminal"],
+        mcp_config={"mcpServers": {"terminal": {}}},
+        sandbox=sandbox,
+        skill_configs={"browser-use": skill_config},
+    )
+    servers.tool_list = [_terminal_tool("run_code", "code")]
+    parameter = {"code": "python /skills/browser-use/run.py"}
+
+    ok = await servers.check_tool_params(
+        context=None,
+        server_name="terminal",
+        tool_name="run_code",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert parameter["code"] == (
+        'python "C:\\remote\\My Project/.aworld/skills/browser-use/abcd1234abcd1234"/run.py'
+    )
+    assert sandbox.calls == [("browser-use", skill_config)]
+
+
+@pytest.mark.asyncio
 async def test_check_tool_params_leaves_local_mode_skill_paths_unchanged(
     tmp_path: Path,
 ) -> None:
