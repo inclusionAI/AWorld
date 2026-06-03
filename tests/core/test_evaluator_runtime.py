@@ -13,6 +13,7 @@ import aworld.evaluations.substrate as substrate_module
 from aworld_cli.evaluator_runtime import (
     available_evaluator_suites,
     evaluator_exit_code,
+    get_declared_evaluator_suite_schema,
     get_evaluator_report_schema,
     run_evaluator_cli,
     validate_evaluator_report,
@@ -332,3 +333,13 @@ def test_validate_evaluator_report_rejects_invalid_gate_status() -> None:
 
     with pytest.raises(ValueError, match="status"):
         validate_evaluator_report(report)
+
+
+def test_get_declared_evaluator_suite_schema_describes_manifest_contract() -> None:
+    schema = get_declared_evaluator_suite_schema()
+
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["title"] == "AWorld Declared Evaluator Suite"
+    assert schema["properties"]["base_suite"]["const"] == "app-evaluator"
+    assert "suite_id" in schema["required"]
+    assert "target_kinds" in schema["properties"]

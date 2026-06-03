@@ -42,6 +42,12 @@ The file `evaluator_report.example.json` shows the current stable evaluator repo
 
 Use it together with `aworld-cli evaluator --print-report-schema` and `aworld-cli evaluator --validate-report <file>` when integrating evaluator output into scripts or CI.
 
+## Declared Evaluator Suite Example
+
+The file `declared_evaluator_suite.example.json` shows the workspace manifest format loaded from `.aworld/evaluators/*.json`.
+
+Use it when you want to derive a stricter evaluator from `app-evaluator` while keeping AWorld's builtin runner, suite resolution, and report contract unchanged.
+
 ## Create Your Agent
 
 ### Python Agent
