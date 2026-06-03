@@ -78,6 +78,57 @@ def _build_automation_summary(report: dict) -> dict[str, object]:
     }
 
 
+def get_declared_evaluator_suite_schema() -> dict[str, object]:
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://schemas.aworld.dev/evaluator/declared-suite/v1.json",
+        "title": "AWorld Declared Evaluator Suite",
+        "type": "object",
+        "required": ["suite_id", "base_suite"],
+        "properties": {
+            "suite_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Unique suite identifier exposed through aworld-cli evaluator.",
+            },
+            "base_suite": {
+                "type": "string",
+                "const": "app-evaluator",
+                "description": "Builtin evaluator suite used as the declaration base.",
+            },
+            "target_kinds": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["file", "directory", "image"],
+                },
+                "minItems": 1,
+                "uniqueItems": True,
+                "description": "Optional target kinds matched by this declared suite.",
+            },
+            "gate_policy": {
+                "type": "object",
+                "properties": {
+                    "metric_name": {"type": "string"},
+                    "pass_threshold": {"type": "number"},
+                    "approval_threshold": {"type": ["number", "null"]},
+                },
+                "additionalProperties": False,
+                "description": "Optional gate override layered on top of the base suite defaults.",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Optional suite metadata copied into the resolved suite definition.",
+            },
+            "priority": {
+                "type": "integer",
+                "description": "Optional suite selection priority. Larger values win automatic selection.",
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
 def get_evaluator_report_schema() -> dict[str, object]:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
