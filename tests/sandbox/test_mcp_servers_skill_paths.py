@@ -690,6 +690,51 @@ async def test_check_tool_params_keeps_default_legacy_aliases_when_skill_config_
 
 
 @pytest.mark.asyncio
+async def test_check_tool_params_rewrites_tilde_claude_skill_alias(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "lennys-podcast-newsletter"
+    skill_root.mkdir(parents=True)
+    search_file = skill_root / "scripts" / "lenny_search.py"
+    search_file.parent.mkdir()
+    search_file.write_text("print('search')\n", encoding="utf-8")
+
+    skill_config = {
+        "asset_root": str(skill_root),
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["scripts/lenny_search.py"],
+            "digest": "tilde1234tilde1234",
+        },
+    }
+    sandbox = _FakeSandbox(mode="remote")
+    servers = McpServers(
+        mcp_servers=["terminal"],
+        mcp_config={"mcpServers": {"terminal": {}}},
+        sandbox=sandbox,
+        skill_configs={"lennys-podcast-newsletter": skill_config},
+    )
+    servers.tool_list = [_terminal_tool("mcp_execute_command", "command")]
+    parameter = {
+        "command": "SCRIPT=~/.claude/skills/lennys-podcast-newsletter/scripts/lenny_search.py && python $SCRIPT"
+    }
+
+    ok = await servers.check_tool_params(
+        context=None,
+        server_name="terminal",
+        tool_name="mcp_execute_command",
+        parameter=parameter,
+    )
+
+    assert ok is True
+    assert (
+        parameter["command"]
+        == "SCRIPT=/remote/workspace/.aworld/skills/lennys-podcast-newsletter/tilde1234tilde1234/scripts/lenny_search.py && python $SCRIPT"
+    )
+    assert sandbox.calls == [("lennys-podcast-newsletter", skill_config)]
+
+
+@pytest.mark.asyncio
 async def test_check_tool_params_does_not_sync_for_non_terminal_tool_calls(
     tmp_path: Path,
 ) -> None:
