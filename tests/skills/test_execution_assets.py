@@ -92,6 +92,31 @@ def test_build_execution_assets_config_includes_scripts_directory_without_suffix
     assert config["relative_paths"] == ["scripts/run"]
 
 
+def test_build_execution_assets_config_includes_ts_js_helpers_outside_scripts(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "index.ts").write_text(
+        "import '../src/foo.ts';\nimport '../lib/bar.js';\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "src").mkdir()
+    (skill_dir / "src" / "foo.ts").write_text("export const foo = 1;\n", encoding="utf-8")
+    (skill_dir / "lib").mkdir()
+    (skill_dir / "lib" / "bar.js").write_text("export const bar = 1;\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        entrypoint="scripts/index.ts",
+    )
+
+    assert config["enabled"] is True
+    assert config["entrypoint"] == "scripts/index.ts"
+    assert config["relative_paths"] == ["lib/bar.js", "scripts/index.ts", "src/foo.ts"]
+
+
 def test_build_execution_assets_config_includes_executable_helpers_outside_scripts(
     tmp_path: Path,
 ) -> None:
