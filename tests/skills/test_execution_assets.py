@@ -5,6 +5,7 @@ from aworld.skills.execution_assets import (
     build_execution_assets_config,
     build_skill_path_aliases,
     compute_execution_asset_digest,
+    discover_execution_asset_references,
 )
 
 
@@ -222,4 +223,14 @@ def test_build_skill_path_aliases_always_include_legacy_claude_paths() -> None:
         "/skills/demo-skill",
         ".claude/skills/demo-skill",
         "./.claude/skills/demo-skill",
+        "~/.claude/skills/demo-skill",
     ]
+
+
+def test_discover_execution_asset_references_supports_tilde_claude_skill_alias() -> None:
+    references = discover_execution_asset_references(
+        usage_text="SCRIPT=~/.claude/skills/demo-skill/scripts/run.py && python $SCRIPT",
+        skill_name="demo-skill",
+    )
+
+    assert references == ["scripts/run.py"]

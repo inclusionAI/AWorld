@@ -41,10 +41,10 @@ _UNDERSTANDING_FILES = {"SKILL.md", "skill.md"}
 _SCRIPT_REFERENCE_RE = re.compile(r"(?P<path>scripts/[A-Za-z0-9_./-]+)")
 _RELATIVE_REFERENCE_RE = re.compile(r"(?P<path>\./[A-Za-z0-9_./-]+)")
 _SKILL_VIRTUAL_REFERENCE_RE = re.compile(
-    r"/skills/(?P<skill_name>[A-Za-z0-9_.-]+)/(?P<relative_path>[A-Za-z0-9_./-]+)"
+    r"(?:(?:~/(?:\./)?|(?:\./)?)?\.claude/skills|/skills)/(?P<skill_name>[A-Za-z0-9_.-]+)/(?P<relative_path>[A-Za-z0-9_./-]+)"
 )
 _SKILL_PATH_ALIAS_RE = re.compile(
-    r"(?P<root>(?:\./)?\.claude/skills|/skills)/(?P<skill_name>[A-Za-z0-9_.-]+)"
+    r"(?P<root>(?:~/(?:\./)?|(?:\./)?)?\.claude/skills|/skills)/(?P<skill_name>[A-Za-z0-9_.-]+)"
     r"(?=(?:/|[^A-Za-z0-9_.-]|$))"
 )
 
@@ -260,6 +260,7 @@ def build_skill_path_aliases(
         f"/skills/{normalized_skill_name}",
         f".claude/skills/{normalized_skill_name}",
         f"./.claude/skills/{normalized_skill_name}",
+        f"~/.claude/skills/{normalized_skill_name}",
     ]
     seen = set(aliases)
 
