@@ -87,6 +87,7 @@ def test_registry_builds_compat_skill_config():
             "/skills/browser-use",
             ".claude/skills/browser-use",
             "./.claude/skills/browser-use",
+            "~/.claude/skills/browser-use",
         ],
         "execution_assets": {
             "enabled": True,
