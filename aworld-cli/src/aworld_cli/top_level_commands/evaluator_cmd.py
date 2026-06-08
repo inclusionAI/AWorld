@@ -59,28 +59,36 @@ class EvaluatorTopLevelCommand:
             return 0
 
         if getattr(args, "list_suites", False):
-            if getattr(args, "target", None):
-                print("Available evaluator suites for target:")
-                suite_names = available_evaluator_suites(target=args.target)
-            else:
-                print("Available evaluator suites:")
-                suite_names = available_evaluator_suites()
-            for suite_name in suite_names:
-                print(f"  - {suite_name}")
-            if getattr(args, "target", None) and suite_names:
-                selection = get_evaluator_suite_selection(target=args.target, suite=args.suite)
-                print(f"Default suite: {selection['resolved']}")
+            try:
+                if getattr(args, "target", None):
+                    print("Available evaluator suites for target:")
+                    suite_names = available_evaluator_suites(target=args.target)
+                else:
+                    print("Available evaluator suites:")
+                    suite_names = available_evaluator_suites()
+                for suite_name in suite_names:
+                    print(f"  - {suite_name}")
+                if getattr(args, "target", None) and suite_names:
+                    selection = get_evaluator_suite_selection(target=args.target, suite=args.suite)
+                    print(f"Default suite: {selection['resolved']}")
+            except (FileNotFoundError, ValueError, KeyError) as exc:
+                print(f"Evaluator error: {exc}")
+                return 1
             return 0
 
         if not getattr(args, "target", None):
             print("❌ --target is required unless --list-suites is used")
             return 1
 
-        report = run_evaluator_cli(
-            target=args.target,
-            suite=args.suite,
-            output=args.output,
-            interactive_approval=args.interactive_approval,
-        )
+        try:
+            report = run_evaluator_cli(
+                target=args.target,
+                suite=args.suite,
+                output=args.output,
+                interactive_approval=args.interactive_approval,
+            )
+        except (FileNotFoundError, ValueError, KeyError) as exc:
+            print(f"Evaluator error: {exc}")
+            return 1
         print(render_evaluator_summary(report))
         return evaluator_exit_code(report)

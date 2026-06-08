@@ -24,6 +24,7 @@ from aworld_cli.evaluator_runtime import (
 def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
     monkeypatch.setattr(substrate_module, "_LOADED_EVAL_MANIFEST_PATHS", set())
+    monkeypatch.setattr(substrate_module, "_DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE", {})
     substrate_module.register_eval_suite(
         "app-evaluator",
         lambda target: substrate_module.get_builtin_eval_suite("app-evaluator"),
@@ -257,6 +258,15 @@ def test_run_evaluator_cli_adds_automation_metadata(
     assert report["automation"]["case_count"] == 2
     assert report["automation"]["judge_backend"] == "stub-agent"
     assert report["automation"]["suggested_exit_code"] == 3
+
+
+def test_run_evaluator_cli_rejects_missing_target(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing.txt"
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        run_evaluator_cli(target=str(missing))
 
 
 def test_evaluator_exit_code_matches_gate_and_approval() -> None:

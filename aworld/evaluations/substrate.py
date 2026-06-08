@@ -250,6 +250,7 @@ class EvalSuiteRegistration:
     factory: EvalSuiteFactory
     matcher: EvalSuiteMatcher | None = None
     priority: int = 0
+    workspace_root: str | None = None
 
     def matches(self, target: dict[str, Any]) -> bool:
         if self.matcher is None:
@@ -265,9 +266,35 @@ class EvalSuiteSelection:
     mode: str
 
 
-_EVAL_SUITE_REGISTRY: dict[str, EvalSuiteRegistration] = {}
+_EVAL_SUITE_REGISTRY: dict[tuple[str | None, str], EvalSuiteRegistration] = {}
 _LOADED_EVAL_MANIFEST_PATHS: set[str] = set()
-_DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE: dict[str, set[str]] = {}
+_DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE: dict[str, set[tuple[str | None, str]]] = {}
+_BUILTIN_EVAL_SUITE_IDS = {"app-evaluator"}
+
+
+def _eval_suite_registry_key(suite_id: str, workspace_root: str | None = None) -> tuple[str | None, str]:
+    return workspace_root, suite_id
+
+
+def _target_workspace_root(target: Mapping[str, Any]) -> str | None:
+    target_path = target.get("target_path")
+    if target_path is None:
+        return None
+    path = Path(str(target_path)).expanduser().resolve()
+    target_kind = target.get("target_kind")
+    if target_kind in {"file", "image"}:
+        return str(path.parent)
+    return str(path)
+
+
+def _visible_eval_suite_registrations(target: Mapping[str, Any]) -> list[EvalSuiteRegistration]:
+    workspace_root = _target_workspace_root(target)
+    visible: list[EvalSuiteRegistration] = []
+    for registration in _EVAL_SUITE_REGISTRY.values():
+        if registration.workspace_root is not None and registration.workspace_root != workspace_root:
+            continue
+        visible.append(registration)
+    return visible
 
 
 def register_eval_suite(
@@ -276,17 +303,19 @@ def register_eval_suite(
     *,
     matcher: EvalSuiteMatcher | None = None,
     priority: int = 0,
+    workspace_root: str | None = None,
 ) -> None:
-    _EVAL_SUITE_REGISTRY[suite_id] = EvalSuiteRegistration(
+    _EVAL_SUITE_REGISTRY[_eval_suite_registry_key(suite_id, workspace_root)] = EvalSuiteRegistration(
         suite_id=suite_id,
         factory=factory,
         matcher=matcher,
         priority=priority,
+        workspace_root=workspace_root,
     )
 
 
 def list_eval_suites() -> list[str]:
-    return sorted(_EVAL_SUITE_REGISTRY)
+    return sorted({registration.suite_id for registration in _EVAL_SUITE_REGISTRY.values()})
 
 
 def _build_declared_eval_suite(manifest: Mapping[str, Any]) -> EvalSuiteDef:
@@ -298,6 +327,8 @@ def _build_declared_eval_suite(manifest: Mapping[str, Any]) -> EvalSuiteDef:
     suite_id = str(manifest.get("suite_id") or "").strip()
     if not suite_id:
         raise ValueError("suite_id is required")
+    if suite_id in _BUILTIN_EVAL_SUITE_IDS:
+        raise ValueError(f"reserved suite_id: {suite_id}")
 
     gate_manifest = manifest.get("gate_policy") or {}
     if gate_manifest:
@@ -333,20 +364,25 @@ def load_declared_eval_suites(workspace: str | Path | None = None) -> list[str]:
         return []
 
     loaded: list[str] = []
-    current_suite_ids: set[str] = set()
+    current_suite_ids: set[tuple[str | None, str]] = set()
+    seen_suite_ids: set[str] = set()
     for manifest_path in sorted(manifest_dir.glob("*.json")):
         manifest_key = str(manifest_path.resolve())
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         suite = _build_declared_eval_suite(manifest)
+        if suite.suite_id in seen_suite_ids:
+            raise ValueError(f"duplicate suite_id in workspace manifests: {suite.suite_id}")
+        seen_suite_ids.add(suite.suite_id)
         target_kinds = tuple(str(kind) for kind in (manifest.get("target_kinds") or ["file", "directory", "image"]))
         register_eval_suite(
             suite.suite_id,
             lambda target, _suite=suite: _suite,
             matcher=lambda target, _target_kinds=target_kinds: target.get("target_kind") in _target_kinds,
             priority=int(manifest.get("priority", 100)),
+            workspace_root=workspace_key,
         )
         _LOADED_EVAL_MANIFEST_PATHS.add(manifest_key)
-        current_suite_ids.add(suite.suite_id)
+        current_suite_ids.add(_eval_suite_registry_key(suite.suite_id, workspace_key))
         loaded.append(suite.suite_id)
     for removed_suite_id in previous_suite_ids - current_suite_ids:
         _EVAL_SUITE_REGISTRY.pop(removed_suite_id, None)
@@ -882,21 +918,28 @@ def _build_eval_suite_case(target_info: dict[str, Any]) -> EvalCaseDef:
 
 def list_matching_eval_suites(target: str | Path | Mapping[str, Any]) -> list[str]:
     target_info = describe_eval_target(target)
-    candidates = [registration for registration in _EVAL_SUITE_REGISTRY.values() if registration.matches(target_info)]
+    candidates = [registration for registration in _visible_eval_suite_registrations(target_info) if registration.matches(target_info)]
     return [registration.suite_id for registration in _sorted_eval_suite_registrations(candidates)]
 
 
 def resolve_eval_suite_selection(name: str | None, target: str | Path | Mapping[str, Any]) -> EvalSuiteSelection:
     target_info = describe_eval_target(target)
     if name is not None:
-        registration = _EVAL_SUITE_REGISTRY.get(name)
-        if registration is None:
+        candidates = [
+            registration
+            for registration in _visible_eval_suite_registrations(target_info)
+            if registration.suite_id == name
+        ]
+        if not candidates:
             raise KeyError(name)
+        registration = _sorted_eval_suite_registrations(candidates)[0]
         if not registration.matches(target_info):
             raise ValueError(f"suite '{name}' does not support target kind '{target_info.get('target_kind')}'")
         mode = "explicit"
     else:
-        candidates = [registration for registration in _EVAL_SUITE_REGISTRY.values() if registration.matches(target_info)]
+        candidates = [
+            registration for registration in _visible_eval_suite_registrations(target_info) if registration.matches(target_info)
+        ]
         if not candidates:
             raise KeyError(f"no evaluation suite matches target {target_info.get('target_path')}")
         registration = _sorted_eval_suite_registrations(candidates)[0]
