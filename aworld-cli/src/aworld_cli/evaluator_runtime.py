@@ -21,6 +21,13 @@ def _sanitize_path_token(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value).strip("-") or "target"
 
 
+def _resolve_cli_target_path(target: str) -> Path:
+    target_path = Path(target).expanduser().resolve()
+    if not target_path.exists():
+        raise FileNotFoundError(f"evaluation target does not exist: {target_path}")
+    return target_path
+
+
 def default_evaluator_report_path(*, target_path: Path, suite_id: str, cwd: Path | None = None) -> Path:
     root = (cwd or Path.cwd()).expanduser().resolve()
     report_dir = root / ".aworld" / "evaluations"
@@ -34,9 +41,9 @@ def available_evaluator_suites(*, target: str | None = None) -> list[str]:
     if target is None:
         load_declared_eval_suites()
         return list_eval_suites()
-    target_path = Path(target).expanduser().resolve()
+    target_path = _resolve_cli_target_path(target)
     load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
-    return list_matching_eval_suites(target)
+    return list_matching_eval_suites(target_path)
 
 
 def get_evaluator_suite_selection(
@@ -44,7 +51,7 @@ def get_evaluator_suite_selection(
     target: str,
     suite: str | None = None,
 ) -> dict[str, str | None]:
-    target_path = Path(target).expanduser().resolve()
+    target_path = _resolve_cli_target_path(target)
     load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
     selection = resolve_eval_suite_selection(suite, target_path)
     return {
@@ -317,7 +324,7 @@ def run_evaluator_cli(
     output: str | None = None,
     interactive_approval: bool = False,
 ) -> dict:
-    target_path = Path(target).expanduser().resolve()
+    target_path = _resolve_cli_target_path(target)
     load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
     selection = resolve_eval_suite_selection(suite, target_path)
     suite_def = selection.suite

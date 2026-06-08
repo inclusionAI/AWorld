@@ -18,6 +18,7 @@ from aworld_cli.top_level_commands.evaluator_cmd import EvaluatorTopLevelCommand
 def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
     monkeypatch.setattr(substrate_module, "_LOADED_EVAL_MANIFEST_PATHS", set())
+    monkeypatch.setattr(substrate_module, "_DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE", {})
     substrate_module.register_eval_suite(
         "app-evaluator",
         lambda target: substrate_module.get_builtin_eval_suite("app-evaluator"),
@@ -309,3 +310,26 @@ def test_evaluator_command_returns_usage_error_without_target(
 
     assert exit_code == 1
     assert "--target is required" in output
+
+
+def test_evaluator_command_returns_nonzero_for_missing_target(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing.txt"
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=str(missing),
+            suite=None,
+            output=None,
+            interactive_approval=False,
+            list_suites=False,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "does not exist" in output

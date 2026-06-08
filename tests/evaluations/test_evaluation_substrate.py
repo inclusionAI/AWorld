@@ -30,6 +30,7 @@ from aworld.evaluations.substrate import (
 def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
     monkeypatch.setattr(substrate_module, "_LOADED_EVAL_MANIFEST_PATHS", set())
+    monkeypatch.setattr(substrate_module, "_DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE", {})
     substrate_module.register_eval_suite(
         "app-evaluator",
         lambda target: get_builtin_eval_suite("app-evaluator"),
@@ -367,6 +368,66 @@ def test_load_declared_eval_suites_removes_deleted_manifest_registration(
     load_declared_eval_suites(tmp_path)
 
     assert "strict-ui" not in list_eval_suites()
+
+
+def test_declared_eval_suites_are_resolved_per_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    workspace_a = tmp_path / "a"
+    workspace_b = tmp_path / "b"
+    for workspace, threshold in ((workspace_a, 0.91), (workspace_b, 0.99)):
+        manifest_dir = workspace / ".aworld" / "evaluators"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "strict-ui.json").write_text(
+            f"""
+{{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file"],
+  "gate_policy": {{
+    "metric_name": "score",
+    "pass_threshold": {threshold},
+    "approval_threshold": 0.8
+  }}
+}}
+""".strip(),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+
+    load_declared_eval_suites(workspace_a)
+    load_declared_eval_suites(workspace_b)
+
+    selection_a = resolve_eval_suite_selection("strict-ui", workspace_a / "artifact.txt")
+    selection_b = resolve_eval_suite_selection("strict-ui", workspace_b / "artifact.txt")
+
+    assert selection_a.suite.gate_policy.pass_threshold == pytest.approx(0.91)
+    assert selection_b.suite.gate_policy.pass_threshold == pytest.approx(0.99)
+
+
+def test_load_declared_eval_suites_rejects_builtin_suite_id_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    manifest_dir = tmp_path / ".aworld" / "evaluators"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "override.json").write_text(
+        """
+{
+  "suite_id": "app-evaluator",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file"]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reserved suite_id"):
+        load_declared_eval_suites(tmp_path)
+
+    assert list_eval_suites() == ["app-evaluator"]
 
 
 @pytest.mark.asyncio
