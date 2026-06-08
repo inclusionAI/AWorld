@@ -292,6 +292,83 @@ def test_declared_eval_suite_can_be_selected_for_matching_target(
     assert selection.suite.gate_policy.pass_threshold == pytest.approx(0.92)
 
 
+def test_load_declared_eval_suites_refreshes_existing_manifest_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    manifest_dir = tmp_path / ".aworld" / "evaluators"
+    manifest_dir.mkdir(parents=True)
+    manifest_path = manifest_dir / "strict-ui.json"
+    manifest_path.write_text(
+        """
+{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file"],
+  "gate_policy": {
+    "metric_name": "score",
+    "pass_threshold": 0.92,
+    "approval_threshold": 0.8
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+
+    load_declared_eval_suites(tmp_path)
+
+    manifest_path.write_text(
+        """
+{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file"],
+  "gate_policy": {
+    "metric_name": "score",
+    "pass_threshold": 0.99,
+    "approval_threshold": 0.8
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    load_declared_eval_suites(tmp_path)
+    selection = resolve_eval_suite_selection("strict-ui", tmp_path / "artifact.txt")
+
+    assert selection.suite.gate_policy.pass_threshold == pytest.approx(0.99)
+
+
+def test_load_declared_eval_suites_removes_deleted_manifest_registration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    manifest_dir = tmp_path / ".aworld" / "evaluators"
+    manifest_dir.mkdir(parents=True)
+    manifest_path = manifest_dir / "strict-ui.json"
+    manifest_path.write_text(
+        """
+{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file"]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
+
+    load_declared_eval_suites(tmp_path)
+    manifest_path.unlink()
+
+    load_declared_eval_suites(tmp_path)
+
+    assert "strict-ui" not in list_eval_suites()
+
+
 @pytest.mark.asyncio
 async def test_agent_judge_backend_parses_app_evaluator_json_payload() -> None:
     async def fake_executor(prompt: str, system_prompt: str):

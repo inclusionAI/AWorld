@@ -126,6 +126,8 @@ def test_available_evaluator_suites_loads_declared_suites_from_workspace(
 ) -> None:
     manifest_dir = tmp_path / ".aworld" / "evaluators"
     manifest_dir.mkdir(parents=True)
+    target = tmp_path / "artifact.txt"
+    target.write_text("artifact", encoding="utf-8")
     (manifest_dir / "strict-ui.json").write_text(
         """
 {
@@ -139,7 +141,34 @@ def test_available_evaluator_suites_loads_declared_suites_from_workspace(
 
     monkeypatch.chdir(tmp_path)
 
-    suites = available_evaluator_suites(target=str(tmp_path / "artifact.txt"))
+    suites = available_evaluator_suites(target=str(target))
+
+    assert "strict-ui" in suites
+
+
+def test_available_evaluator_suites_uses_target_workspace_not_process_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "project"
+    manifest_dir = workspace / ".aworld" / "evaluators"
+    manifest_dir.mkdir(parents=True)
+    target = workspace / "artifact.txt"
+    target.write_text("artifact", encoding="utf-8")
+    (manifest_dir / "strict-ui.json").write_text(
+        """
+{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file"]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    suites = available_evaluator_suites(target=str(target))
 
     assert "strict-ui" in suites
 
