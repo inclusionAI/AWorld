@@ -267,6 +267,7 @@ class EvalSuiteSelection:
 
 _EVAL_SUITE_REGISTRY: dict[str, EvalSuiteRegistration] = {}
 _LOADED_EVAL_MANIFEST_PATHS: set[str] = set()
+_DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE: dict[str, set[str]] = {}
 
 
 def register_eval_suite(
@@ -323,14 +324,18 @@ def _build_declared_eval_suite(manifest: Mapping[str, Any]) -> EvalSuiteDef:
 def load_declared_eval_suites(workspace: str | Path | None = None) -> list[str]:
     root = Path(workspace or Path.cwd()).expanduser().resolve()
     manifest_dir = root / ".aworld" / "evaluators"
+    workspace_key = str(root)
+    previous_suite_ids = _DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE.get(workspace_key, set())
     if not manifest_dir.exists() or not manifest_dir.is_dir():
+        for suite_id in previous_suite_ids:
+            _EVAL_SUITE_REGISTRY.pop(suite_id, None)
+        _DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE.pop(workspace_key, None)
         return []
 
     loaded: list[str] = []
+    current_suite_ids: set[str] = set()
     for manifest_path in sorted(manifest_dir.glob("*.json")):
         manifest_key = str(manifest_path.resolve())
-        if manifest_key in _LOADED_EVAL_MANIFEST_PATHS:
-            continue
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         suite = _build_declared_eval_suite(manifest)
         target_kinds = tuple(str(kind) for kind in (manifest.get("target_kinds") or ["file", "directory", "image"]))
@@ -341,7 +346,11 @@ def load_declared_eval_suites(workspace: str | Path | None = None) -> list[str]:
             priority=int(manifest.get("priority", 100)),
         )
         _LOADED_EVAL_MANIFEST_PATHS.add(manifest_key)
+        current_suite_ids.add(suite.suite_id)
         loaded.append(suite.suite_id)
+    for removed_suite_id in previous_suite_ids - current_suite_ids:
+        _EVAL_SUITE_REGISTRY.pop(removed_suite_id, None)
+    _DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE[workspace_key] = current_suite_ids
     return loaded
 
 

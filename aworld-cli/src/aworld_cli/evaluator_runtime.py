@@ -31,9 +31,11 @@ def default_evaluator_report_path(*, target_path: Path, suite_id: str, cwd: Path
 
 
 def available_evaluator_suites(*, target: str | None = None) -> list[str]:
-    load_declared_eval_suites()
     if target is None:
+        load_declared_eval_suites()
         return list_eval_suites()
+    target_path = Path(target).expanduser().resolve()
+    load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
     return list_matching_eval_suites(target)
 
 
@@ -42,8 +44,9 @@ def get_evaluator_suite_selection(
     target: str,
     suite: str | None = None,
 ) -> dict[str, str | None]:
-    load_declared_eval_suites()
-    selection = resolve_eval_suite_selection(suite, target)
+    target_path = Path(target).expanduser().resolve()
+    load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
+    selection = resolve_eval_suite_selection(suite, target_path)
     return {
         "requested": suite,
         "resolved": selection.suite_id,
