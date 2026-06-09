@@ -4,6 +4,10 @@
 
 The evaluator command runs suite-backed evaluation flows for local targets and exposes the resulting report as a stable machine-readable contract.
 
+It is the official CLI entrypoint for the framework substrate in `aworld.evaluations`: the CLI resolves targets,
+workspace manifests, output paths, and hooks, while suite semantics, execution-backed state normalization, scoring, and
+gate decisions remain framework-owned.
+
 Use it when you want to:
 
 - run a built-in evaluator suite such as `app-evaluator`
@@ -64,6 +68,39 @@ Minimal example:
 
 See [declared_evaluator_suite.example.json](/Users/wuman/Documents/workspace/aworld-mas/aworld/examples/aworld_quick_start/cli/declared_evaluator_suite.example.json) for a complete example. The current manifest schema is exported by `aworld_cli.evaluator_runtime.get_declared_evaluator_suite_schema()`.
 
+Resolution rules:
+
+- builtin suites are always available
+- declared suites are discovered relative to the evaluation target workspace, not just the current shell cwd
+- declared manifests currently extend `app-evaluator`; they are not yet a generic user-defined suite authoring API
+- `--list-suites --target ...` and actual evaluator execution use the same target-relative discovery path
+
+## Plugin Hooks
+
+`aworld-cli evaluator` is a builtin plugin-backed command with narrow lifecycle hook points intended for CLI assembly concerns, not framework scoring semantics.
+
+Available hook points:
+
+- `evaluator.pre_discover`: inspect or annotate target/workspace inputs before suite discovery
+- `evaluator.post_discover`: react to resolved suite candidates
+- `evaluator.pre_run`: add lightweight CLI metadata before evaluation starts
+- `evaluator.post_run`: upload or post-process the completed report
+- `evaluator.render_summary`: augment rendered terminal summary text
+
+Current event payloads:
+
+- `evaluator.pre_discover`: `target`, `workspace_path`
+- `evaluator.post_discover`: `target`, `workspace_path`, `suite_names`
+- `evaluator.pre_run`: `target`, `suite`, `workspace_path`
+- `evaluator.post_run`: `report`, `target`, `suite`, `workspace_path`
+- `evaluator.render_summary`: `report`, `workspace_path`
+
+Hook boundaries:
+
+- mutable hook state is limited to lightweight CLI assembly metadata
+- hooks should not replace suite logic, judge logic, or gate calculation
+- suitable side effects include report upload, notifications, and summary augmentation
+
 ## Report Contract
 
 Evaluator reports are JSON documents with a stable top-level format marker:
@@ -83,6 +120,8 @@ Key report sections:
 - `results`: per-case judge output plus normalized per-case metrics
 - `gate`: structured `pass` / `fail` / `needs_approval` decision
 - `automation`: exit-code-oriented summary fields for scripts and CI
+- `suite_selection`: resolved/defaulted suite selection diagnostics
+- `approval`: approval decision metadata when the gate requires human confirmation
 
 See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/aworld/examples/aworld_quick_start/cli/evaluator_report.example.json) for a minimal example.
 
@@ -108,3 +147,4 @@ See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/
 - declared suite manifests currently layer on `app-evaluator` only; they are not a generic suite authoring format yet.
 - `--print-report-schema` prints the current JSON Schema for `aworld.evaluator.report`.
 - `--validate-report` validates an existing JSON report against that schema without re-running evaluation.
+- the CLI command is an assembly/product layer; reusable evaluator building blocks stay in `aworld/evaluations/**`.
