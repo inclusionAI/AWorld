@@ -17,6 +17,7 @@ class SkillDescriptor:
     asset_root: str
     skill_file: str
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    execution_assets: Mapping[str, Any] = field(default_factory=dict)
     requirements: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -26,3 +27,4 @@ class SkillContent:
     usage: str
     tool_list: Mapping[str, Any]
     raw_frontmatter: Mapping[str, Any]
+    execution_assets: Mapping[str, Any] = field(default_factory=dict)

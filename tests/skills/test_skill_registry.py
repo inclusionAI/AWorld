@@ -27,6 +27,12 @@ class DummyProvider(SkillProvider):
                 asset_root="/tmp/browser-use",
                 skill_file="/tmp/browser-use/SKILL.md",
                 metadata={"type": "agent", "active": True},
+                execution_assets={
+                    "enabled": True,
+                    "relative_paths": ["run.sh"],
+                    "digest": "deadbeefdeadbeef",
+                    "entrypoint": "run.sh",
+                },
                 requirements={"eligible": True},
             )
         ]
@@ -77,5 +83,17 @@ def test_registry_builds_compat_skill_config():
         "active": True,
         "skill_path": "/tmp/browser-use/SKILL.md",
         "asset_root": "/tmp/browser-use",
+        "path_aliases": [
+            "/skills/browser-use",
+            ".claude/skills/browser-use",
+            "./.claude/skills/browser-use",
+            "~/.claude/skills/browser-use",
+        ],
+        "execution_assets": {
+            "enabled": True,
+            "relative_paths": ["run.sh"],
+            "digest": skill_config["execution_assets"]["digest"],
+            "entrypoint": "run.sh",
+        },
         "aworld_metadata": {"eligible": True},
     }

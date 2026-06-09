@@ -21,6 +21,7 @@ from utils.document_processor import (
 from utils.file_ops import (
     read_file as read_file_content,
     write_file as write_file_content,
+    write_file_base64 as write_file_base64_content,
     head_file,
     tail_file,
     read_file_lines,
@@ -132,6 +133,23 @@ async def write_file(
     valid_path = await validate_path(path, allowed_directories)
     await write_file_content(valid_path, content)
     return TextContent(type="text", text=f"Successfully wrote to {path}")
+
+
+@mcp.tool(
+    description=(
+        "Create or overwrite a file from base64-encoded bytes. "
+        "Completely replaces existing file content and automatically creates parent directories."
+    )
+)
+async def write_file_base64(
+    ctx: Context,
+    path: str = Field(description="File path to write"),
+    content_base64: str = Field(description="Base64-encoded file content"),
+) -> TextContent:
+    """Create or overwrite a file from base64-encoded bytes."""
+    valid_path = await validate_path(path, allowed_directories)
+    await write_file_base64_content(valid_path, content_base64)
+    return TextContent(type="text", text=f"Successfully wrote binary content to {path}")
 
 
 @mcp.tool(description="Create directory. Automatically creates parent directories recursively. Silently succeeds if directory already exists.")
