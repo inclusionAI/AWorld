@@ -10,6 +10,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 import aworld.evaluations.substrate as substrate_module
+from aworld.evaluations.manifests import get_declared_eval_suite_schema
+from aworld.evaluations.report import EvaluatorReport
 from aworld_cli.evaluator_runtime import (
     available_evaluator_suites,
     evaluator_exit_code,
@@ -69,6 +71,27 @@ def test_run_evaluator_cli_persists_approval_state(
     assert persisted["judge_backend"]["backend_id"] == "stub-agent"
 
 
+@pytest.mark.asyncio
+async def test_framework_run_evaluation_flow_returns_report_object() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 0.9}
+
+    flow = substrate_module.EvaluationFlowDef(
+        target={"kind": "file", "target_path": "artifact.txt"},
+        suite=substrate_module.EvalSuiteDef(
+            suite_id="app-evaluator",
+            cases=[substrate_module.EvalCaseDef(case_id="case-1", input={"query": "demo"})],
+            gate_policy=substrate_module.GatePolicyDef(metric_name="score", pass_threshold=0.0),
+            judge=fake_judge,
+        ),
+    )
+
+    report = await substrate_module.run_evaluation_flow(flow)
+
+    assert isinstance(report, EvaluatorReport)
+    assert report["suite_id"] == "app-evaluator"
+
+
 def test_run_evaluator_cli_writes_default_report_when_output_is_omitted(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -104,6 +127,11 @@ def test_available_evaluator_suites_lists_builtin_suite() -> None:
     suites = available_evaluator_suites()
 
     assert "app-evaluator" in suites
+
+
+def test_cli_schema_helpers_delegate_to_framework_sources() -> None:
+    assert get_declared_evaluator_suite_schema() == get_declared_eval_suite_schema()
+    assert get_evaluator_report_schema()["title"] == "AWorld Evaluator Report"
 
 
 def test_available_evaluator_suites_filters_by_target(

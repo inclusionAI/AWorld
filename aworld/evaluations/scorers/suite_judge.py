@@ -4,6 +4,7 @@ from __future__ import annotations
 from aworld.evaluations.base import EvalDataCase, MetricResult, ScorerResult
 from aworld.evaluations.scorers import scorer_register
 from aworld.evaluations.base import Scorer
+from aworld.evaluations.scorers.state_extractors import get_eval_state
 
 
 @scorer_register("score")
@@ -18,6 +19,9 @@ class SuiteJudgeScorer(Scorer):
 
         case_input = dict(input.case_data)
         target = dict(case_input.get("_target", {}))
+        state = get_eval_state(output)
+        if state:
+            target = {**target, **state}
         execution = await self.suite.resolve_judge_backend().execute(case_input, target, self.suite)
         payload = dict(execution.payload)
         self.suite.judge_schema.validate(payload)

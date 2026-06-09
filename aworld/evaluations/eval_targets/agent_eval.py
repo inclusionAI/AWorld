@@ -2,6 +2,7 @@ import abc
 from typing import Optional, Union
 
 from aworld.evaluations.base import EvalTarget, EvalDataCase
+from aworld.evaluations.execution import normalize_task_response_to_eval_state
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.runner import Runners
@@ -73,7 +74,12 @@ class AworldAgentEvalTarget(EvalTarget[dict]):
         query_column = self.eval_config.eval_dataset_query_column or self.query_column
         case_data = input.case_data if isinstance(input, EvalDataCase) else input
         response = await Runners.run(case_data[query_column], agent=self.agent)
-        return {"answer": response.answer}
+        state = normalize_task_response_to_eval_state(
+            case_id=getattr(input, "eval_case_id", str(index)),
+            response=response,
+            metadata=case_data,
+        )
+        return {"answer": response.answer, "state": state.to_dict()}
 
 
 class AworldTaskEvalTarget(EvalTarget[dict]):
@@ -96,8 +102,14 @@ class AworldTaskEvalTarget(EvalTarget[dict]):
         task = await self.build_task(index, input)
         result = await Runners.run_task(task=task)
         if isinstance(result, TaskResponse):
-            return {"answer": result.answer}
+            payload = result
         if isinstance(result, dict):
-            return {"answer": result[task.id].answer}
+            payload = result[task.id]
         else:
-            return {"answer": result}
+            payload = result
+        state = normalize_task_response_to_eval_state(
+            case_id=getattr(input, "eval_case_id", str(index)),
+            response=payload,
+            metadata=input.case_data if isinstance(input, EvalDataCase) else {},
+        )
+        return {"answer": state.answer, "state": state.to_dict()}

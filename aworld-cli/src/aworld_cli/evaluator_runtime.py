@@ -4,28 +4,33 @@ import asyncio
 import json
 from pathlib import Path
 
-from aworld.evaluations.substrate import (
+from aworld.plugins.discovery import discover_plugins
+from aworld.evaluations.manifests import (
+    get_declared_eval_suite_schema as _get_declared_eval_suite_schema,
+)
+from aworld.evaluations.report import (
     EVALUATOR_REPORT_FORMAT_ID,
     EVALUATOR_REPORT_FORMAT_VERSION,
+    get_evaluator_report_schema as _get_evaluator_report_schema,
+    validate_evaluator_report as _validate_evaluator_report,
+)
+from aworld.evaluations.substrate import (
     EvaluationFlowDef,
     describe_eval_target,
-    list_eval_suites,
-    list_matching_eval_suites,
-    load_declared_eval_suites,
-    resolve_eval_suite_selection,
     run_evaluation_flow,
 )
+from aworld_cli.core.plugin_manager import PluginManager, get_builtin_plugin_roots
+from aworld_cli.evaluator_rendering import render_evaluator_summary as _render_evaluator_summary
+from aworld_cli.evaluator_workspace import (
+    discover_workspace_suites,
+    resolve_cli_target_path,
+    resolve_workspace_suite_selection,
+)
+from aworld_cli.plugin_capabilities.hooks import PluginHookResult, load_plugin_hooks
 
 
 def _sanitize_path_token(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value).strip("-") or "target"
-
-
-def _resolve_cli_target_path(target: str) -> Path:
-    target_path = Path(target).expanduser().resolve()
-    if not target_path.exists():
-        raise FileNotFoundError(f"evaluation target does not exist: {target_path}")
-    return target_path
 
 
 def default_evaluator_report_path(*, target_path: Path, suite_id: str, cwd: Path | None = None) -> Path:
@@ -38,12 +43,26 @@ def default_evaluator_report_path(*, target_path: Path, suite_id: str, cwd: Path
 
 
 def available_evaluator_suites(*, target: str | None = None) -> list[str]:
-    if target is None:
-        load_declared_eval_suites()
-        return list_eval_suites()
-    target_path = _resolve_cli_target_path(target)
-    load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
-    return list_matching_eval_suites(target_path)
+    hooks = _load_evaluator_hooks()
+    target_path = resolve_cli_target_path(target) if target is not None else None
+    workspace_path = str((target_path.parent if target_path and target_path.is_file() else target_path) or Path.cwd())
+    hook_state = _run_evaluator_hooks(
+        hooks,
+        "evaluator.pre_discover",
+        event={"target": target, "workspace_path": workspace_path},
+        state={"target": target, "workspace_path": workspace_path},
+    )
+    suites = discover_workspace_suites(target=target)
+    hook_state = _run_evaluator_hooks(
+        hooks,
+        "evaluator.post_discover",
+        event={"target": target, "workspace_path": workspace_path, "suite_names": suites},
+        state={**hook_state, "suite_names": suites},
+    )
+    overridden = hook_state.get("suite_names")
+    if isinstance(overridden, list):
+        return [str(item) for item in overridden]
+    return suites
 
 
 def get_evaluator_suite_selection(
@@ -51,14 +70,7 @@ def get_evaluator_suite_selection(
     target: str,
     suite: str | None = None,
 ) -> dict[str, str | None]:
-    target_path = _resolve_cli_target_path(target)
-    load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
-    selection = resolve_eval_suite_selection(suite, target_path)
-    return {
-        "requested": suite,
-        "resolved": selection.suite_id,
-        "mode": selection.mode,
-    }
+    return resolve_workspace_suite_selection(target=target, suite=suite)
 
 
 def evaluator_exit_code(report: dict) -> int:
@@ -89,232 +101,52 @@ def _build_automation_summary(report: dict) -> dict[str, object]:
 
 
 def get_declared_evaluator_suite_schema() -> dict[str, object]:
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://schemas.aworld.dev/evaluator/declared-suite/v1.json",
-        "title": "AWorld Declared Evaluator Suite",
-        "type": "object",
-        "required": ["suite_id", "base_suite"],
-        "properties": {
-            "suite_id": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Unique suite identifier exposed through aworld-cli evaluator.",
-            },
-            "base_suite": {
-                "type": "string",
-                "const": "app-evaluator",
-                "description": "Builtin evaluator suite used as the declaration base.",
-            },
-            "target_kinds": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "enum": ["file", "directory", "image"],
-                },
-                "minItems": 1,
-                "uniqueItems": True,
-                "description": "Optional target kinds matched by this declared suite.",
-            },
-            "gate_policy": {
-                "type": "object",
-                "properties": {
-                    "metric_name": {"type": "string"},
-                    "pass_threshold": {"type": "number"},
-                    "approval_threshold": {"type": ["number", "null"]},
-                },
-                "additionalProperties": False,
-                "description": "Optional gate override layered on top of the base suite defaults.",
-            },
-            "metadata": {
-                "type": "object",
-                "description": "Optional suite metadata copied into the resolved suite definition.",
-            },
-            "priority": {
-                "type": "integer",
-                "description": "Optional suite selection priority. Larger values win automatic selection.",
-            },
-        },
-        "additionalProperties": False,
-    }
+    return _get_declared_eval_suite_schema()
 
 
 def get_evaluator_report_schema() -> dict[str, object]:
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": f"https://schemas.aworld.dev/evaluator/report/v{EVALUATOR_REPORT_FORMAT_VERSION}.json",
-        "title": "AWorld Evaluator Report",
-        "type": "object",
-        "$defs": {
-            "evalStatus": {
-                "type": "string",
-                "enum": ["PASSED", "FAILED", "NOT_EVALUATED"],
-            },
-            "metricScalar": {
-                "oneOf": [
-                    {"type": "number"},
-                    {"type": "boolean"},
-                ]
-            },
-            "metricAggregate": {
-                "type": "object",
-                "properties": {
-                    "mean": {"type": "number"},
-                    "min": {"type": "number"},
-                    "max": {"type": "number"},
-                    "std": {"type": "number"},
-                    "true_count": {"type": "integer", "minimum": 0},
-                    "true_rate": {"type": "number", "minimum": 0, "maximum": 1},
-                    "value": {"$ref": "#/$defs/metricScalar"},
-                    "eval_status": {"$ref": "#/$defs/evalStatus"},
-                },
-                "additionalProperties": {
-                    "oneOf": [
-                        {"type": "number"},
-                        {"type": "boolean"},
-                        {"type": "string"},
-                        {"$ref": "#/$defs/metricAggregate"},
-                    ]
-                },
-            },
-            "caseMetric": {
-                "type": "object",
-                "properties": {
-                    "value": {"$ref": "#/$defs/metricScalar"},
-                    "status": {"$ref": "#/$defs/evalStatus"},
-                },
-                "required": ["value"],
-                "additionalProperties": False,
-            },
-            "gateDecision": {
-                "type": "object",
-                "required": ["status", "metric_name", "value"],
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["pass", "fail", "needs_approval"],
-                    },
-                    "metric_name": {"type": "string"},
-                    "value": {"type": "number"},
-                },
-                "additionalProperties": False,
-            },
-            "automationSummary": {
-                "type": "object",
-                "required": [
-                    "gate_status",
-                    "metric_name",
-                    "metric_value",
-                    "approval_required",
-                    "approval_resolved",
-                    "approved",
-                    "suggested_exit_code",
-                    "case_count",
-                    "judge_backend",
-                ],
-                "properties": {
-                    "gate_status": {
-                        "type": ["string", "null"],
-                        "enum": ["pass", "fail", "needs_approval", None],
-                    },
-                    "metric_name": {"type": ["string", "null"]},
-                    "metric_value": {"type": ["number", "null"]},
-                    "approval_required": {"type": "boolean"},
-                    "approval_resolved": {"type": "boolean"},
-                    "approved": {"type": ["boolean", "null"]},
-                    "suggested_exit_code": {"type": "integer", "enum": [0, 2, 3]},
-                    "case_count": {"type": "integer", "minimum": 0},
-                    "judge_backend": {"type": ["string", "null"]},
-                },
-                "additionalProperties": False,
-            },
-        },
-        "required": [
-            "report_version",
-            "report_format",
-            "generated_at",
-            "suite_id",
-            "target",
-            "summary",
-            "metrics",
-            "results",
-            "result_counts",
-            "approval",
-        ],
-        "properties": {
-            "report_version": {"type": "integer", "const": EVALUATOR_REPORT_FORMAT_VERSION},
-            "report_format": {
-                "type": "object",
-                "required": ["id", "version"],
-                "properties": {
-                    "id": {"type": "string", "const": EVALUATOR_REPORT_FORMAT_ID},
-                    "version": {"type": "integer", "const": EVALUATOR_REPORT_FORMAT_VERSION},
-                },
-                "additionalProperties": False,
-            },
-            "generated_at": {"type": "string", "format": "date-time"},
-            "suite_id": {"type": "string"},
-            "target": {"type": "object"},
-            "summary": {"type": "object"},
-            "metrics": {
-                "type": "object",
-                "additionalProperties": {"$ref": "#/$defs/metricAggregate"},
-            },
-            "results": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["case_id", "input", "metrics", "judge"],
-                    "properties": {
-                        "case_id": {"type": "string"},
-                        "input": {"type": "object"},
-                        "metrics": {
-                            "type": "object",
-                            "additionalProperties": {"$ref": "#/$defs/caseMetric"},
-                        },
-                        "judge": {"type": "object"},
-                        "judge_backend": {
-                            "type": ["object", "null"],
-                            "properties": {
-                                "backend_id": {"type": "string"},
-                            },
-                            "required": ["backend_id"],
-                            "additionalProperties": False,
-                        },
-                    },
-                    "additionalProperties": True,
-                },
-            },
-            "result_counts": {
-                "type": "object",
-                "required": ["cases_total", "cases_with_metrics", "cases_with_judge"],
-                "properties": {
-                    "cases_total": {"type": "integer", "minimum": 0},
-                    "cases_with_metrics": {"type": "integer", "minimum": 0},
-                    "cases_with_judge": {"type": "integer", "minimum": 0},
-                },
-                "additionalProperties": False,
-            },
-            "gate": {"$ref": "#/$defs/gateDecision"},
-            "approval": {"type": "object"},
-            "judge_backend": {"type": "object"},
-            "suite_selection": {"type": "object"},
-            "automation": {"$ref": "#/$defs/automationSummary"},
-            "report_path": {"type": "string"},
-        },
-        "additionalProperties": True,
-    }
+    return _get_evaluator_report_schema()
 
 
 def validate_evaluator_report(report: dict) -> None:
-    import jsonschema
+    _validate_evaluator_report(report)
 
-    try:
-        jsonschema.validate(instance=report, schema=get_evaluator_report_schema())
-    except jsonschema.ValidationError as exc:
-        path = ".".join(str(part) for part in exc.absolute_path)
-        location = f" at '{path}'" if path else ""
-        raise ValueError(f"evaluator report validation failed{location}: {exc.message}") from exc
+
+def _load_evaluator_hooks() -> dict[str, tuple[object, ...]]:
+    builtin_plugin_roots = tuple(Path(root).resolve() for root in get_builtin_plugin_roots())
+    plugin_manager = PluginManager()
+    if hasattr(plugin_manager, "get_runtime_plugin_roots"):
+        plugin_roots = [Path(root).resolve() for root in plugin_manager.get_runtime_plugin_roots()]
+    else:
+        plugin_roots = list(builtin_plugin_roots)
+    return load_plugin_hooks(discover_plugins(plugin_roots))
+
+
+def _run_evaluator_hooks(
+    hooks: dict[str, tuple[object, ...]],
+    hook_point: str,
+    *,
+    event: dict[str, object],
+    state: dict[str, object],
+) -> dict[str, object]:
+    """
+    Evaluator hook contract:
+    - `evaluator.pre_discover` event payload: `target`, `workspace_path`
+    - `evaluator.post_discover` event payload: `target`, `workspace_path`, `suite_names`
+    - `evaluator.pre_run` event payload: `target`, `suite`, `workspace_path`
+    - `evaluator.post_run` event payload: `report`, `target`, `suite`, `workspace_path`
+    - `evaluator.render_summary` event payload: `report`, `workspace_path`
+    - mutable state: lightweight CLI assembly metadata only
+    - allowed side effects: report upload, notifications, summary augmentation
+    - hooks do not redefine framework execution, scoring, or gate semantics
+    """
+    merged = dict(state)
+    for hook in hooks.get((hook_point or "").strip().lower(), ()):
+        result = asyncio.run(hook.run(event=event, state=merged))
+        hook_result = result if isinstance(result, PluginHookResult) else PluginHookResult.from_payload(result)
+        if hook_result.metadata:
+            merged.update(dict(hook_result.metadata))
+    return merged
 
 
 def run_evaluator_cli(
@@ -324,11 +156,24 @@ def run_evaluator_cli(
     output: str | None = None,
     interactive_approval: bool = False,
 ) -> dict:
-    target_path = _resolve_cli_target_path(target)
-    load_declared_eval_suites(target_path.parent if target_path.is_file() else target_path)
+    hooks = _load_evaluator_hooks()
+    target_path = resolve_cli_target_path(target)
+    workspace_path = str(target_path.parent if target_path.is_file() else target_path)
+    suite_selection = resolve_workspace_suite_selection(target=target, suite=suite)
+    from aworld.evaluations.substrate import resolve_eval_suite_selection
+
     selection = resolve_eval_suite_selection(suite, target_path)
     suite_def = selection.suite
+    hook_state = _run_evaluator_hooks(
+        hooks,
+        "evaluator.pre_run",
+        event={"target": str(target_path), "suite": suite_selection["resolved"], "workspace_path": workspace_path},
+        state={"target": str(target_path), "suite": suite, "interactive_approval": interactive_approval},
+    )
     target_info = describe_eval_target(target_path)
+    for key, value in hook_state.items():
+        if key not in {"target", "suite", "interactive_approval", "summary_suffix", "suite_names"}:
+            target_info[key] = value
     flow = EvaluationFlowDef(
         target=target_info,
         suite=suite_def,
@@ -336,6 +181,8 @@ def run_evaluator_cli(
         output_path=output,
     )
     report = asyncio.run(run_evaluation_flow(flow))
+    if hasattr(report, "to_dict"):
+        report = report.to_dict()
     approval = dict(report.get("approval") or {})
     approval.setdefault("required", report.get("gate", {}).get("status") == "needs_approval")
     approval.setdefault("resolved", False)
@@ -345,11 +192,7 @@ def run_evaluator_cli(
         approval["resolved"] = True
         approval["approved"] = approved
     report["approval"] = approval
-    report["suite_selection"] = {
-        "requested": suite,
-        "resolved": selection.suite_id,
-        "mode": selection.mode,
-    }
+    report["suite_selection"] = suite_selection
     report["automation"] = _build_automation_summary(report)
     output_path = (
         Path(output).expanduser().resolve()
@@ -358,25 +201,28 @@ def run_evaluator_cli(
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     report["report_path"] = str(output_path)
+    _run_evaluator_hooks(
+        hooks,
+        "evaluator.post_run",
+        event={
+            "report": report,
+            "target": str(target_path),
+            "suite": suite_selection["resolved"],
+            "workspace_path": workspace_path,
+        },
+        state=hook_state,
+    )
     output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
 
 def render_evaluator_summary(report: dict) -> str:
-    suite_id = report.get("suite_id", "unknown-suite")
-    gate = report.get("gate", {})
-    status = gate.get("status", "unknown")
-    metric_value = gate.get("value")
-    summary_line = f"Evaluator suite: {suite_id}\nGate: {status}"
-    if metric_value is not None:
-        summary_line += f" ({metric_value:.2f})"
-    selection = report.get("suite_selection") or {}
-    if selection.get("resolved"):
-        summary_line += f"\nSuite selection: {selection.get('mode', 'unknown')} -> {selection['resolved']}"
-    backend = report.get("judge_backend", {}).get("backend_id")
-    if backend:
-        summary_line += f"\nJudge backend: {backend}"
-    report_path = report.get("report_path")
-    if report_path:
-        summary_line += f"\nReport: {report_path}"
-    return summary_line
+    hooks = _load_evaluator_hooks()
+    workspace_path = str(Path(report.get("report_path", report.get("target", {}).get("target_path", Path.cwd()))).resolve().parent)
+    hook_state = _run_evaluator_hooks(
+        hooks,
+        "evaluator.render_summary",
+        event={"report": report, "workspace_path": workspace_path},
+        state={"summary_suffix": None},
+    )
+    return _render_evaluator_summary(report, summary_suffix=hook_state.get("summary_suffix"))

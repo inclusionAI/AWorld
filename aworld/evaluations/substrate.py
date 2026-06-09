@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import json
 import inspect
 import os
@@ -16,6 +17,14 @@ from typing import Any, Awaitable, Callable, ClassVar, Mapping
 from aworld.config.conf import EvaluationConfig
 from aworld.evaluations.base import EvalDataCase, EvalDataset
 from aworld.evaluations.base import NoActionEvalTarget
+from aworld.evaluations.eval_targets.agent_eval import AworldAgentEvalTarget, AworldTaskEvalTarget
+from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec
+from aworld.evaluations.report import (
+    CaseEvaluationReport,
+    EVALUATOR_REPORT_FORMAT_ID,
+    EVALUATOR_REPORT_FORMAT_VERSION,
+    EvaluatorReport,
+)
 from aworld.runners.evaluate_runner import EvaluateRunner
 
 
@@ -35,14 +44,13 @@ _IMAGE_SUFFIX_TO_MIME = {
     ".svg": "image/svg+xml",
 }
 
-EVALUATOR_REPORT_FORMAT_ID = "aworld.evaluator.report"
-EVALUATOR_REPORT_FORMAT_VERSION = 1
-
-
 @dataclass(frozen=True)
 class EvalCaseDef:
     case_id: str
     input: dict[str, Any]
+    expected: Any | None = None
+    max_turns: int | None = None
+    timeout_seconds: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -203,8 +211,10 @@ class _LegacyJudgeBackendAdapter:
 class EvalSuiteDef:
     suite_id: str
     cases: list[EvalCaseDef] = field(default_factory=list)
+    toolsets: tuple[str, ...] = tuple()
     judge_schema: JudgeSchemaDef = field(default_factory=JudgeSchemaDef)
     gate_policy: GatePolicyDef | None = None
+    execution: EvalExecutionSpec | None = None
     judge: JudgeCallable | None = None
     judge_backend: JudgeBackend | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -438,11 +448,44 @@ def build_eval_dataset(cases: list[EvalCaseDef], target: dict[str, Any]) -> Eval
         EvalDataCase(
             eval_case_id=case.case_id,
             eval_dataset_id=dataset_id,
-            case_data={**case.input, "_target": normalized_target, "_case_metadata": dict(case.metadata)},
+            case_data={
+                **case.input,
+                "_target": normalized_target,
+                "_case_metadata": dict(case.metadata),
+                "_expected": case.expected,
+                "_max_turns": case.max_turns,
+                "_timeout_seconds": case.timeout_seconds,
+            },
         )
         for case in cases
     ]
     return EvalDataset(eval_dataset_id=dataset_id, eval_dataset_name="suite_eval_dataset", eval_cases=eval_cases)
+
+
+class _ConfiguredTaskEvalTarget(AworldTaskEvalTarget):
+    def __init__(self, *, target: dict[str, Any], execution: EvalExecutionSpec):
+        super().__init__()
+        self._target = dict(target)
+        self._execution = execution
+
+    async def build_task(self, index: int, input: EvalDataCase[dict]):
+        builder = _load_callable(self._execution.task_builder_ref)
+        task = builder(index=index, input=input, target=self._target, execution=self._execution)
+        return await _maybe_await(task)
+
+
+def _build_eval_target(flow: EvaluationFlowDef):
+    execution = flow.suite.execution
+    if execution is None or execution.mode == EvalExecutionMode.STATIC:
+        return NoActionEvalTarget()
+    if execution.mode == EvalExecutionMode.AGENT:
+        return AworldAgentEvalTarget(
+            agent_config=execution.target_config,
+            query_column=execution.query_column or "query",
+        )
+    if execution.mode == EvalExecutionMode.TASK:
+        return _ConfiguredTaskEvalTarget(target=flow.target, execution=execution)
+    raise ValueError(f"unsupported execution mode: {execution.mode}")
 
 
 def compile_evaluation_flow(flow: EvaluationFlowDef) -> CompiledEvaluationPlan:
@@ -459,7 +502,7 @@ def compile_evaluation_flow(flow: EvaluationFlowDef) -> CompiledEvaluationPlan:
     }
     eval_config = EvaluationConfig(
         eval_suite_id=flow.suite.suite_id,
-        eval_target=NoActionEvalTarget(),
+        eval_target=_build_eval_target(flow),
         eval_criterias=[eval_criteria],
         eval_dataset=dataset,
     )
@@ -493,7 +536,24 @@ def _format_report_timestamp(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-async def run_evaluation_flow(flow: EvaluationFlowDef) -> dict[str, Any]:
+def _build_state_summary(output: Mapping[str, Any] | Any) -> dict[str, Any]:
+    if not isinstance(output, Mapping):
+        return {}
+    state = output.get("state") if isinstance(output.get("state"), Mapping) else output
+    trajectory = state.get("trajectory") if isinstance(state, Mapping) else None
+    completion = state.get("completion") if isinstance(state, Mapping) else None
+    return {
+        "answer": state.get("answer") if isinstance(state, Mapping) else None,
+        "completion_count": len(completion or []) if isinstance(completion, list) else 0,
+        "trajectory_steps": len(trajectory or []) if isinstance(trajectory, list) else 0,
+        "tool_call_count": len(state.get("tool_calls") or []) if isinstance(state, Mapping) else 0,
+        "usage": dict(state.get("usage") or {}) if isinstance(state, Mapping) else {},
+        "timing": dict(state.get("timing") or {}) if isinstance(state, Mapping) else {},
+        "error": state.get("error") if isinstance(state, Mapping) else None,
+    }
+
+
+async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
     compiled = compile_evaluation_flow(flow)
     eval_result = await EvaluateRunner(config=compiled.eval_config).run()
 
@@ -507,7 +567,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> dict[str, Any]:
         )
         gate = compiled.gate_policy.evaluate(gate_metrics)
 
-    results = []
+    results: list[CaseEvaluationReport] = []
     report_backend_id = None
     cases_with_metrics = 0
     cases_with_judge = 0
@@ -537,17 +597,18 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> dict[str, Any]:
         if judge_payload:
             cases_with_judge += 1
         results.append(
-            {
-                "case_id": case_result.eval_case_id,
-                "input": dict(case_result.input.case_data if hasattr(case_result.input, "case_data") else case_result.input),
-                "metrics": case_metrics,
-                "judge": judge_payload,
-                "judge_backend": {"backend_id": case_backend_id} if case_backend_id is not None else None,
-            }
+            CaseEvaluationReport(
+                case_id=case_result.eval_case_id,
+                input=dict(case_result.input.case_data if hasattr(case_result.input, "case_data") else case_result.input),
+                metrics=case_metrics,
+                judge=judge_payload,
+                judge_backend={"backend_id": case_backend_id} if case_backend_id is not None else None,
+                state_summary=_build_state_summary(case_result.output),
+            )
         )
 
     metrics = dict(suite_summary)
-    report = {
+    report = EvaluatorReport({
         "report_version": 1,
         "report_format": {
             "id": EVALUATOR_REPORT_FORMAT_ID,
@@ -569,7 +630,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> dict[str, Any]:
             "resolved": False,
             "approved": None,
         },
-    }
+    })
     if report_backend_id is not None:
         report["judge_backend"] = {"backend_id": report_backend_id}
     if gate is not None:
@@ -686,6 +747,28 @@ async def _maybe_await_judge(judge: JudgeCallable, case_input: dict[str, Any], t
     if inspect.isawaitable(payload):
         return await payload
     return payload
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _load_callable(ref: str | None) -> Callable[..., Any]:
+    if not ref:
+        raise ValueError("task execution mode requires task_builder_ref")
+    if ":" in ref:
+        module_path, attr_name = ref.split(":", 1)
+    elif "." in ref:
+        module_path, attr_name = ref.rsplit(".", 1)
+    else:
+        raise ValueError(f"invalid callable reference: {ref}")
+    module = importlib.import_module(module_path)
+    candidate = getattr(module, attr_name)
+    if not callable(candidate):
+        raise ValueError(f"callable reference is not callable: {ref}")
+    return candidate
 
 
 def _load_app_evaluator_skill_prompt() -> str:
