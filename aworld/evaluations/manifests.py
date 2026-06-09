@@ -40,7 +40,7 @@ def get_declared_eval_suite_schema() -> dict[str, object]:
                     "approval_threshold": {"type": ["number", "null"]},
                 },
                 "additionalProperties": False,
-                "description": "Optional gate override layered on top of the base suite defaults.",
+                "description": "Optional simple gate override layered on top of the base suite defaults.",
             },
             "metadata": {
                 "type": "object",
@@ -52,6 +52,7 @@ def get_declared_eval_suite_schema() -> dict[str, object]:
             },
         },
         "additionalProperties": False,
+        "description": "Declared evaluator suites are metadata-only overlays; executable refs and runtime handles are not accepted.",
     }
 
 
