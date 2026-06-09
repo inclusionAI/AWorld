@@ -33,6 +33,11 @@ def resolve_service_name(sandbox: Any, logical_name: str) -> str:
     (comma-separated) contains logical_name. Fallback: return logical_name.
     """
     mcp_config = getattr(sandbox, "mcp_config", None) or getattr(sandbox, "_mcp_config", None)
+    return resolve_service_name_from_config(mcp_config, logical_name)
+
+
+def resolve_service_name_from_config(mcp_config: Any, logical_name: str) -> str:
+    """Resolve a logical service name against an MCP config dict."""
     if not mcp_config:
         return logical_name
     servers = mcp_config.get("mcpServers") or {}
@@ -48,7 +53,39 @@ def resolve_service_name(sandbox: Any, logical_name: str) -> str:
         names = [n.strip() for n in mcp_servers_header.split(",") if n.strip()]
         if logical_name in names:
             return key
+    server_suffix_alias = f"{logical_name}-server"
+    if server_suffix_alias in servers:
+        return server_suffix_alias
+    for key in servers:
+        if str(key).strip().lower().endswith(f"-{server_suffix_alias}"):
+            return key
     return logical_name
+
+
+def service_matches_logical_name(
+    mcp_config: Any,
+    server_name: str,
+    logical_name: str,
+) -> bool:
+    """Return whether a concrete server name should be treated as a logical service."""
+    if not server_name:
+        return False
+    normalized_server_name = str(server_name).strip()
+    if normalized_server_name == logical_name:
+        return True
+
+    servers = (mcp_config or {}).get("mcpServers") or {}
+    server_config = servers.get(normalized_server_name, {})
+    headers = server_config.get("headers") or {}
+    mcp_servers_header = (headers.get("MCP_SERVERS") or "").strip()
+    if mcp_servers_header:
+        names = [n.strip() for n in mcp_servers_header.split(",") if n.strip()]
+        if logical_name in names:
+            return True
+
+    server_suffix_alias = f"{logical_name}-server"
+    normalized_lower = normalized_server_name.lower()
+    return normalized_lower == server_suffix_alias or normalized_lower.endswith(f"-{server_suffix_alias}")
 
 
 def _parse_action_results(results: List[Any]) -> Dict[str, Any]:

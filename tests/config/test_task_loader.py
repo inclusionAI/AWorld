@@ -43,7 +43,29 @@ async def test_load_skill_agent_uses_descriptor_lookup_before_loading_content(
 
     agent = await _load_skill_agent(
         agent_id="planner-agent",
-        agent_def={"skill_name": "planner", "config": {}},
+        agent_def={
+            "skill_name": "planner",
+            "config": {
+                "skill_configs": {
+                    "browser-use": {
+                        "name": "browser-use",
+                        "description": "Browser automation",
+                        "tool_list": {"browser": {"desc": "Browser MCP"}},
+                        "usage": "Use browser skill.",
+                        "type": "agent",
+                        "active": False,
+                        "skill_path": "/tmp/browser/SKILL.md",
+                        "asset_root": "/tmp/browser",
+                        "path_aliases": ["/skills/browser-use"],
+                        "execution_assets": {
+                            "enabled": True,
+                            "relative_paths": ["run.sh"],
+                            "digest": "feed1234feed1234",
+                        },
+                    }
+                }
+            },
+        },
         skills_path=skills_root,
         global_mcp_config=None,
     )
@@ -52,3 +74,11 @@ async def test_load_skill_agent_uses_descriptor_lookup_before_loading_content(
     assert agent.desc() == "Planning skill"
     assert "browser" in agent.mcp_servers
     assert "Use this skill for planning." in agent.system_prompt
+    assert "browser-use" in agent.conf.skill_configs
+    assert agent.conf.skill_configs["planner"]["asset_root"] == str(good_skill_dir.resolve())
+    assert agent.conf.skill_configs["planner"]["execution_assets"]["enabled"] is False
+    assert agent.conf.skill_configs["browser-use"]["asset_root"] == "/tmp/browser"
+    assert agent.skill_configs["planner"]["asset_root"] == str(good_skill_dir.resolve())
+    assert agent.skill_configs["browser-use"]["asset_root"] == "/tmp/browser"
+    assert agent.sandbox.skill_configs["planner"]["asset_root"] == str(good_skill_dir.resolve())
+    assert agent.sandbox.skill_configs["browser-use"]["asset_root"] == "/tmp/browser"

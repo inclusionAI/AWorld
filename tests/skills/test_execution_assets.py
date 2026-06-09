@@ -1,0 +1,236 @@
+from pathlib import Path
+
+from aworld.skills.execution_assets import (
+    build_execution_asset_manifest,
+    build_execution_assets_config,
+    build_skill_path_aliases,
+    compute_execution_asset_digest,
+    discover_execution_asset_references,
+)
+
+
+def test_build_execution_asset_manifest_excludes_skill_markdown_by_default(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\n---\n", encoding="utf-8")
+    (skill_dir / "run.sh").write_text("echo hi\n", encoding="utf-8")
+    (skill_dir / "config.json").write_text('{"ok": true}\n', encoding="utf-8")
+
+    manifest = build_execution_asset_manifest(skill_dir, declared_assets=None)
+
+    assert "SKILL.md" not in manifest.relative_paths
+    assert "run.sh" in manifest.relative_paths
+    assert "config.json" in manifest.relative_paths
+
+
+def test_compute_execution_asset_digest_is_stable_for_same_content(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "run.sh").write_text("echo hi\n", encoding="utf-8")
+
+    manifest = build_execution_asset_manifest(skill_dir, declared_assets=None)
+
+    assert compute_execution_asset_digest(manifest) == compute_execution_asset_digest(
+        manifest
+    )
+
+
+def test_compute_execution_asset_digest_changes_when_permissions_change(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    script = skill_dir / "run.sh"
+    script.write_text("echo hi\n", encoding="utf-8")
+    script.chmod(0o644)
+
+    first = compute_execution_asset_digest(
+        build_execution_asset_manifest(skill_dir, declared_assets=None)
+    )
+
+    script.chmod(0o755)
+    second = compute_execution_asset_digest(
+        build_execution_asset_manifest(skill_dir, declared_assets=None)
+    )
+
+    assert first != second
+
+
+def test_build_execution_assets_config_supports_declared_asset_list(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\n---\n", encoding="utf-8")
+    (skill_dir / "notes.md").write_text("# Notes\n", encoding="utf-8")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        declared_assets=["scripts/run", "notes.md"],
+    )
+
+    assert config["enabled"] is True
+    assert config["relative_paths"] == ["notes.md", "scripts/run"]
+    assert config["digest"]
+
+
+def test_build_execution_assets_config_includes_scripts_directory_without_suffix(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\n---\n", encoding="utf-8")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+
+    config = build_execution_assets_config(skill_dir)
+
+    assert config["enabled"] is True
+    assert config["relative_paths"] == ["scripts/run"]
+
+
+def test_build_execution_assets_config_includes_ts_js_helpers_outside_scripts(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "index.ts").write_text(
+        "import '../src/foo.ts';\nimport '../lib/bar.js';\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "src").mkdir()
+    (skill_dir / "src" / "foo.ts").write_text("export const foo = 1;\n", encoding="utf-8")
+    (skill_dir / "lib").mkdir()
+    (skill_dir / "lib" / "bar.js").write_text("export const bar = 1;\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        entrypoint="scripts/index.ts",
+    )
+
+    assert config["enabled"] is True
+    assert config["entrypoint"] == "scripts/index.ts"
+    assert config["relative_paths"] == ["lib/bar.js", "scripts/index.ts", "src/foo.ts"]
+
+
+def test_build_execution_assets_config_includes_executable_helpers_outside_scripts(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "bin").mkdir()
+    runner = skill_dir / "bin" / "runner"
+    runner.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    runner.chmod(0o755)
+
+    config = build_execution_assets_config(
+        skill_dir,
+        usage_text="Run `cd /skills/demo && ./bin/runner` to execute this skill.",
+        skill_name="demo",
+    )
+
+    assert config["enabled"] is True
+    assert "bin/runner" in config["relative_paths"]
+
+
+def test_build_execution_assets_config_infers_entrypoint_from_skill_usage_reference(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        usage_text="Run `python scripts/run.py` for this skill.",
+        skill_name="demo",
+    )
+
+    assert config["entrypoint"] == "scripts/run.py"
+    assert "scripts/run.py" in config["relative_paths"]
+
+
+def test_build_execution_assets_config_resolves_virtual_skill_reference(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "lint_check.py").write_text("print('lint')\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        usage_text="Run `python /skills/demo/lint_check.py .` before review.",
+        skill_name="demo",
+    )
+
+    assert "lint_check.py" in config["relative_paths"]
+
+
+def test_build_execution_assets_config_keeps_default_companion_assets_for_declared_entrypoint(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "config.json").write_text('{"debug": true}\n', encoding="utf-8")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        entrypoint="scripts/run.py",
+    )
+
+    assert config["enabled"] is True
+    assert config["entrypoint"] == "scripts/run.py"
+    assert config["relative_paths"] == ["config.json", "scripts/run.py"]
+
+
+def test_build_execution_assets_config_honors_explicit_disable_flag(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "demo"
+    skill_dir.mkdir()
+    (skill_dir / "config.json").write_text('{"debug": true}\n', encoding="utf-8")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+
+    config = build_execution_assets_config(
+        skill_dir,
+        declared_assets={"enabled": False},
+        entrypoint="scripts/run.py",
+    )
+
+    assert config == {
+        "enabled": False,
+        "relative_paths": [],
+        "digest": "",
+    }
+
+
+def test_build_skill_path_aliases_always_include_legacy_claude_paths() -> None:
+    aliases = build_skill_path_aliases(
+        skill_name="demo-skill",
+        usage_text="Run `python /skills/demo-skill/run.py`.",
+    )
+
+    assert aliases == [
+        "/skills/demo-skill",
+        ".claude/skills/demo-skill",
+        "./.claude/skills/demo-skill",
+        "~/.claude/skills/demo-skill",
+    ]
+
+
+def test_discover_execution_asset_references_supports_tilde_claude_skill_alias() -> None:
+    references = discover_execution_asset_references(
+        usage_text="SCRIPT=~/.claude/skills/demo-skill/scripts/run.py && python $SCRIPT",
+        skill_name="demo-skill",
+    )
+
+    assert references == ["scripts/run.py"]

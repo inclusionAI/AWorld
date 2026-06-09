@@ -193,3 +193,26 @@ def test_resolver_filters_disabled_skill_names(tmp_path: Path) -> None:
     )
 
     assert "youtube_search" not in result.skill_configs
+
+
+def test_resolver_preserves_plugin_execution_entrypoint_metadata(tmp_path: Path) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="swarm-tools",
+        skill_id="swarm",
+        metadata={"entrypoint": "scripts/index.ts"},
+    )
+    scripts_dir = plugin_root / "skills" / "swarm" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "index.ts").write_text("export {};\n", encoding="utf-8")
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            agent_name="developer",
+            requested_skill_names=("swarm",),
+        )
+    )
+
+    assert result.skill_configs["swarm"]["execution_assets"]["entrypoint"] == "scripts/index.ts"

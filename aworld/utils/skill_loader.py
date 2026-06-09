@@ -13,6 +13,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
+
+import yaml
 from aworld.logs.util import logger
 
 # Default cache directory for GitHub repositories
@@ -370,23 +372,7 @@ def evaluate_skill_requirements(aworld_meta: Dict[str, Any]) -> Tuple[bool, Dict
     return eligible, missing
 
 
-def extract_front_matter(content_lines: List[str]) -> Tuple[Dict[str, Any], int]:
-    """
-    Extract YAML-like front matter from the provided content lines.
-
-    Args:
-        content_lines (List[str]): The content of the markdown file split into lines.
-
-    Returns:
-        Tuple[Dict[str, Any], int]: A dictionary containing the parsed front matter key-value pairs
-        and the index where the front matter ends. Values can be strings or parsed JSON objects.
-
-    Example:
-        >>> extract_front_matter(["---", "name: sample", "---", "body"])
-        ({'name': 'sample'}, 3)
-        >>> extract_front_matter(["---", "name: sample", 'tool_list: {"ms-playwright": []}', "---", "body"])
-        ({'name': 'sample', 'tool_list': {'ms-playwright': []}}, 4)
-    """
+def _extract_front_matter_legacy(content_lines: List[str]) -> Tuple[Dict[str, Any], int]:
     front_matter: Dict[str, Any] = {}
     if not content_lines or content_lines[0].strip() != "---":
         return front_matter, 0
@@ -439,6 +425,46 @@ def extract_front_matter(content_lines: List[str]) -> Tuple[Dict[str, Any], int]
         return front_matter, len(content_lines)
 
     return front_matter, end_index + 1
+
+
+def extract_front_matter(content_lines: List[str]) -> Tuple[Dict[str, Any], int]:
+    """
+    Extract YAML front matter from the provided content lines.
+
+    Args:
+        content_lines (List[str]): The content of the markdown file split into lines.
+
+    Returns:
+        Tuple[Dict[str, Any], int]: A dictionary containing the parsed front matter key-value pairs
+        and the index where the front matter ends.
+
+    Example:
+        >>> extract_front_matter(["---", "name: sample", "---", "body"])
+        ({'name': 'sample'}, 3)
+        >>> extract_front_matter(["---", "name: sample", 'tool_list: {"ms-playwright": []}', "---", "body"])
+        ({'name': 'sample', 'tool_list': {'ms-playwright': []}}, 4)
+    """
+    if not content_lines or content_lines[0].strip() != "---":
+        return {}, 0
+
+    end_index = 1
+    while end_index < len(content_lines) and content_lines[end_index].strip() != "---":
+        end_index += 1
+
+    if end_index >= len(content_lines):
+        return _extract_front_matter_legacy(content_lines)
+
+    front_matter_block = "\n".join(content_lines[1:end_index])
+    try:
+        parsed = yaml.safe_load(front_matter_block) or {}
+    except yaml.YAMLError as exc:
+        logger.warning(f"⚠️ Failed to parse front matter as YAML: {exc}, falling back to legacy parser")
+        return _extract_front_matter_legacy(content_lines)
+
+    if not isinstance(parsed, dict):
+        return {}, end_index + 1
+
+    return parsed, end_index + 1
 
 
 def collect_skill_docs(

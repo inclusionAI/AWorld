@@ -319,6 +319,11 @@ async def _load_skill_agent(
             f"missing agent {agent_id}: failed to load skill content for '{skill_name}' "
             f"from {skills_path}: {e}"
         )
+
+    runtime_skill_config = registry.build_skill_config(
+        descriptor.skill_id,
+        active_override=True,
+    )
     
     # Build Agent from skill (consistent with skill_service logic)
     agent_config_dict = agent_def.get("config", {})
@@ -345,6 +350,17 @@ async def _load_skill_agent(
             agent_def.get("mcp_config")
         )
     )
+
+    # Preserve framework-loaded skill metadata for downstream runtime features
+    # such as remote sandbox execution-asset staging without re-enabling the
+    # legacy skill tool path on these agentic skills.
+    merged_skill_configs = dict(agent.conf.skill_configs or {})
+    merged_skill_configs[skill_name] = runtime_skill_config
+
+    agent.conf.skill_configs = merged_skill_configs
+    agent.skill_configs = merged_skill_configs
+    if agent.sandbox is not None:
+        agent.sandbox.skill_configs = merged_skill_configs
     
     return agent
 

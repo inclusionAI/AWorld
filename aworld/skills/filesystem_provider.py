@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from aworld.skills.execution_assets import build_execution_assets_config
 from aworld.skills.models import SkillContent, SkillDescriptor
 from aworld.skills.providers import SkillProvider, read_front_matter_lines
 from aworld.utils.skill_loader import (
@@ -92,6 +93,13 @@ class FilesystemSkillProvider(SkillProvider):
                         "active": str(front_matter.get("active", "False")).lower() == "true",
                         "tool_list": dict(tool_list),
                     },
+                    execution_assets=build_execution_assets_config(
+                        skill_file.parent,
+                        declared_assets=front_matter.get("execution_assets"),
+                        skill_name=skill_name,
+                        entrypoint=front_matter.get("entrypoint"),
+                        metadata=front_matter.get("metadata"),
+                    ),
                     requirements=requirements,
                 )
             )
@@ -116,6 +124,14 @@ class FilesystemSkillProvider(SkillProvider):
             usage=usage,
             tool_list=tool_list,
             raw_frontmatter=front_matter,
+            execution_assets=build_execution_assets_config(
+                skill_file.parent,
+                declared_assets=front_matter.get("execution_assets"),
+                usage_text=usage,
+                skill_name=skill_file.parent.name,
+                entrypoint=front_matter.get("entrypoint"),
+                metadata=front_matter.get("metadata"),
+            ),
         )
 
     def resolve_asset_path(self, skill_id: str, relative_path: str) -> Path:
