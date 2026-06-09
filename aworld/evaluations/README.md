@@ -1,8 +1,9 @@
 # AWorld Evaluations Module
 
 The `aworld.evaluations` module is the framework-owned evaluation substrate for AWorld. It supports both legacy
-`EvaluationConfig`-driven flows and newer suite-backed evaluator flows that can execute an agent or task first, then
-score both final outcomes and trajectory/process quality from a normalized execution state.
+`EvaluationConfig`-driven flows and newer suite-backed evaluator flows that can execute an agent, task, or trusted
+program callable first, then score final outcomes and normalized trajectory/process quality from a single execution
+state.
 
 ## Table of Contents
 
@@ -99,11 +100,16 @@ Ownership is explicit:
 - harnesses and execution specs own runtime behavior: whether execution is static, agent-backed, task-backed, or program-backed, plus task/runner configuration
 - `aworld-cli` only assembles workspace inputs into these framework objects; it does not redefine evaluator semantics
 
+Declarative JSON manifests are intentionally narrower than in-memory framework APIs. They do not accept `execution`,
+`target_ref`, `task_builder_ref`, live agent/task objects, or program callables. In-memory callers may still pass live
+AWorld agent/task instances through `EvalExecutionSpec.target_config` for compatibility, but that is not a persisted
+suite contract.
+
 `EvalState` intentionally separates:
 
 - `answer`: the final deliverable or normalized terminal answer
 - `completion`: completion-oriented view used by outcome scorers that only care about the final assistant output
-- `trajectory`: full execution history used by process, tool-use, and efficiency scorers
+- `trajectory`: captured execution history used by process, tool-use, and efficiency scorers
 
 ## Scorers
 
@@ -194,10 +200,15 @@ The current execution modes are:
 - `static`: judge-only evaluation with no runtime execution
 - `agent`: execute through `AworldAgentEvalTarget`
 - `task`: execute through `AworldTaskEvalTarget`
-- `program`: execute an importable callable through the evaluator adapter layer and normalize the result into `EvalState`
+- `program`: execute a trusted importable callable through the evaluator adapter layer and normalize the result into `EvalState`
 
-This gives AWorld a framework-native evaluator path that can assess final artifacts, structured outputs, and trajectory
-quality through one substrate.
+This gives AWorld a framework-native evaluator path that can assess final artifacts, structured outputs, and captured
+trajectory quality through one substrate. It is a single-shot evaluator flow: rollout-owning harnesses, user simulators,
+lifecycle hooks, child-state composition, and step-level training rewards are separate runtime-composition work.
+
+`program` and TASK builder references are trusted in-process extension points. Importing a module can execute top-level
+code, so these references should only point at evaluator code controlled by the runner or workspace owner. They are not
+sandboxed and are not exposed through declared JSON manifests.
 
 Suite-backed evaluation also supports:
 
@@ -211,13 +222,14 @@ The evaluator v2 path is intentionally close to AWorld's existing runner model:
 
 - suite -> describes the evaluation contract and default gate/judge behavior
 - case -> provides per-row input, optional references, and case-local execution hints
-- execution spec -> describes how a case becomes a runnable AWorld execution
+- lightweight harness / execution spec -> describes how a case becomes a runnable AWorld execution
 - eval target -> adapts the execution spec into an existing target implementation
 - evaluator / runner -> executes cases and produces normalized outputs
 - scorers -> read final answer, completion, and trajectory from `EvalState`
 
 In practice this means outcome evaluation and trajectory evaluation share one execution pipeline. A suite can score only
-the final artifact, only the trajectory, or both.
+the final artifact, only the captured trajectory, or both. The lightweight harness boundary selects execution defaults
+and adapters; it does not own multi-turn rollout lifecycle in this version.
 
 ## Recorder
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import importlib
 import json
 import math
 import inspect
@@ -21,7 +20,8 @@ from aworld.config.conf import EvaluationConfig
 from aworld.evaluations.base import EvalDataCase, EvalDataset, EvalTarget
 from aworld.evaluations.base import NoActionEvalTarget
 from aworld.evaluations.eval_targets.agent_eval import AworldAgentEvalTarget, AworldTaskEvalTarget
-from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec
+from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec, load_program_callable
+from aworld.evaluations.manifests import validate_declared_eval_suite_manifest
 from aworld.evaluations.execution_adapters import resolve_execution_adapter
 from aworld.evaluations.report import (
     CaseEvaluationReport,
@@ -181,7 +181,12 @@ class GatePolicyDef:
         matched_pass: list[dict[str, Any]] = []
         failed_pass: list[dict[str, Any]] = []
         for condition in pass_all:
-            if condition.matches(metrics):
+            try:
+                matched = condition.matches(metrics)
+            except KeyError:
+                failed_pass.append({**condition.to_dict(), "reason": "missing_metric"})
+                continue
+            if matched:
                 matched_pass.append(condition.to_dict())
             else:
                 failed_pass.append(condition.to_dict())
@@ -196,11 +201,24 @@ class GatePolicyDef:
                 matched_conditions=matched_pass,
                 failed_conditions=[],
             )
+        if any(condition.get("reason") == "missing_metric" for condition in failed_pass):
+            return GateDecision(
+                status="fail",
+                metric_name=metric_name,
+                value=value,
+                matched_conditions=matched_pass,
+                failed_conditions=failed_pass,
+            )
 
         matched_approval: list[dict[str, Any]] = []
         failed_approval: list[dict[str, Any]] = []
         for condition in approval_all:
-            if condition.matches(metrics):
+            try:
+                matched = condition.matches(metrics)
+            except KeyError:
+                failed_approval.append({**condition.to_dict(), "reason": "missing_metric"})
+                continue
+            if matched:
                 matched_approval.append(condition.to_dict())
             else:
                 failed_approval.append(condition.to_dict())
@@ -517,6 +535,7 @@ def load_declared_eval_suites(workspace: str | Path | None = None) -> list[str]:
     for manifest_path in sorted(manifest_dir.glob("*.json")):
         manifest_key = str(manifest_path.resolve())
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        validate_declared_eval_suite_manifest(manifest)
         suite = _build_declared_eval_suite(manifest)
         if suite.suite_id in seen_suite_ids:
             raise ValueError(f"duplicate suite_id in workspace manifests: {suite.suite_id}")
@@ -837,10 +856,13 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
     if compiled.gate_policy is not None:
         for condition in _gate_policy_conditions(compiled.gate_policy):
             if condition.metric_name not in gate_metrics:
-                gate_metrics[condition.metric_name] = _extract_metric_value_from_result_summary(
-                    eval_result.summary,
-                    condition.metric_name,
-                )
+                try:
+                    gate_metrics[condition.metric_name] = _extract_metric_value_from_result_summary(
+                        eval_result.summary,
+                        condition.metric_name,
+                    )
+                except KeyError:
+                    continue
         gate = compiled.gate_policy.evaluate(gate_metrics)
 
     results: list[CaseEvaluationReport] = []
@@ -1055,17 +1077,7 @@ async def _maybe_await(value: Any) -> Any:
 def _load_callable(ref: str | None) -> Callable[..., Any]:
     if not ref:
         raise ValueError("task execution mode requires task_builder_ref")
-    if ":" in ref:
-        module_path, attr_name = ref.split(":", 1)
-    elif "." in ref:
-        module_path, attr_name = ref.rsplit(".", 1)
-    else:
-        raise ValueError(f"invalid callable reference: {ref}")
-    module = importlib.import_module(module_path)
-    candidate = getattr(module, attr_name)
-    if not callable(candidate):
-        raise ValueError(f"callable reference is not callable: {ref}")
-    return candidate
+    return load_program_callable(ref)
 
 
 def _load_app_evaluator_skill_prompt() -> str:

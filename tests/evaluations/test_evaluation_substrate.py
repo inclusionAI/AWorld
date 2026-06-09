@@ -30,6 +30,7 @@ from aworld.evaluations.substrate import (
     run_evaluation_flow,
 )
 from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec
+from aworld.evaluations.manifests import validate_declared_eval_suite_manifest
 from aworld.evaluations.report import validate_evaluator_report
 from aworld.evaluations.types import MetricNames
 
@@ -135,6 +136,21 @@ def test_compile_evaluation_flow_uses_execution_backed_target_when_suite_declare
     compiled = compile_evaluation_flow(flow)
 
     assert compiled.eval_config.eval_target.__class__.__name__ == "_ConfiguredTaskEvalTarget"
+
+
+@pytest.mark.asyncio
+async def test_task_execution_rejects_path_style_task_builder_ref() -> None:
+    suite = EvalSuiteDef(
+        suite_id="task-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "demo"})],
+        execution=EvalExecutionSpec(mode=EvalExecutionMode.TASK, task_builder_ref="scripts/run.py:build_task"),
+    )
+    compiled = compile_evaluation_flow(
+        EvaluationFlowDef(target={"kind": "inline", "value": {"target_path": "demo.txt"}}, suite=suite)
+    )
+
+    with pytest.raises(ValueError, match="importable callable"):
+        await compiled.eval_config.eval_target.build_task(0, compiled.dataset.eval_cases[0])
 
 
 def test_compile_evaluation_flow_preserves_live_agent_target_config() -> None:
@@ -364,8 +380,26 @@ def test_gate_policy_reports_missing_metric() -> None:
         pass_all=(GateMetricCondition(metric_name="score", op=">=", threshold=0.9),)
     )
 
-    with pytest.raises(KeyError, match="score"):
-        policy.evaluate({})
+    decision = policy.evaluate({})
+
+    assert decision.status == "fail"
+    assert decision.failed_conditions == [
+        {"metric_name": "score", "op": ">=", "threshold": 0.9, "reason": "missing_metric"}
+    ]
+
+
+def test_gate_policy_missing_pass_metric_fails_even_when_approval_matches() -> None:
+    policy = GatePolicyDef(
+        pass_all=(GateMetricCondition(metric_name="trajectory_tool_calls", op=">=", threshold=1.0),),
+        approval_all=(GateMetricCondition(metric_name="score", op=">=", threshold=0.7),),
+    )
+
+    decision = policy.evaluate({"score": 0.8})
+
+    assert decision.status == "fail"
+    assert decision.failed_conditions == [
+        {"metric_name": "trajectory_tool_calls", "op": ">=", "threshold": 1.0, "reason": "missing_metric"}
+    ]
 
 
 def test_gate_policy_rejects_unsupported_operator() -> None:
@@ -517,6 +551,35 @@ async def test_run_evaluation_flow_failed_composite_gate_keeps_metric_status_and
     assert report["gate"]["failed_conditions"] == [
         {"metric_name": "score", "op": ">=", "threshold": 0.9}
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_missing_gate_metric_fails_closed_and_keeps_results() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 0.95}
+
+    suite = EvalSuiteDef(
+        suite_id="composite-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(
+            pass_all=(GateMetricCondition(metric_name="trajectory_tool_calls", op=">=", threshold=1.0),)
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "fail"
+    assert report["gate"]["failed_conditions"] == [
+        {"metric_name": "trajectory_tool_calls", "op": ">=", "threshold": 1.0, "reason": "missing_metric"}
+    ]
+    assert report["results"][0]["case_id"] == "case-1"
+    assert report["results"][0]["metrics"]["score"]["value"] == pytest.approx(0.95)
 
 
 @pytest.mark.asyncio
@@ -913,6 +976,38 @@ def test_load_declared_eval_suites_registers_manifest_backed_suite(
 
     assert loaded == ["strict-ui"]
     assert "strict-ui" in listed
+
+
+def test_load_declared_eval_suites_rejects_execution_in_manifest(tmp_path) -> None:
+    manifest_dir = tmp_path / ".aworld" / "evaluators"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "program-suite.json").write_text(
+        """
+{
+  "suite_id": "program-suite",
+  "base_suite": "app-evaluator",
+  "execution": {
+    "mode": "program",
+    "target_ref": "pkg.module:run_case"
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Additional properties are not allowed"):
+        load_declared_eval_suites(tmp_path)
+
+
+def test_declared_eval_suite_manifest_schema_rejects_execution_contract() -> None:
+    with pytest.raises(ValueError, match="Additional properties are not allowed"):
+        validate_declared_eval_suite_manifest(
+            {
+                "suite_id": "program-suite",
+                "base_suite": "app-evaluator",
+                "execution": {"mode": "program", "target_ref": "pkg.module:run_case"},
+            }
+        )
 
 
 def test_declared_eval_suite_can_be_selected_for_matching_target(
