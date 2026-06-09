@@ -5,6 +5,7 @@ import asyncio
 import base64
 import importlib
 import json
+import math
 import inspect
 import os
 import re
@@ -14,11 +15,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, ClassVar, Mapping
 
+from pydantic import BaseModel, ValidationError
+
 from aworld.config.conf import EvaluationConfig
-from aworld.evaluations.base import EvalDataCase, EvalDataset
+from aworld.evaluations.base import EvalDataCase, EvalDataset, EvalTarget
 from aworld.evaluations.base import NoActionEvalTarget
 from aworld.evaluations.eval_targets.agent_eval import AworldAgentEvalTarget, AworldTaskEvalTarget
 from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec
+from aworld.evaluations.execution_adapters import resolve_execution_adapter
 from aworld.evaluations.report import (
     CaseEvaluationReport,
     EVALUATOR_REPORT_FORMAT_ID,
@@ -55,36 +59,167 @@ class EvalCaseDef:
 
 
 @dataclass(frozen=True)
+class EvalHarnessDef:
+    harness_id: str
+    execution: EvalExecutionSpec = field(default_factory=EvalExecutionSpec)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TrajectoryScorerDef:
+    metric_name: str
+    scorer_class: str | None = None
+    threshold: float = 0.0
+    scorer_params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class JudgeSchemaDef:
     required_fields: tuple[str, ...] = tuple()
+    output_model: type[BaseModel] | None = None
 
     def validate(self, payload: Mapping[str, Any]) -> None:
+        self.validate_payload(payload)
+
+    def validate_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if self.output_model is not None:
+            try:
+                model = self.output_model.model_validate(dict(payload))
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+            return model.model_dump(mode="json", by_alias=True)
+
         missing = [field for field in self.required_fields if field not in payload]
         if missing:
             joined = ", ".join(missing)
             raise ValueError(f"missing required judge fields: {joined}")
+        return dict(payload)
+
+    def json_schema(self) -> dict[str, Any]:
+        if self.output_model is not None:
+            return self.output_model.model_json_schema()
+        if self.required_fields:
+            return {
+                "type": "object",
+                "required": list(self.required_fields),
+                "properties": {field: {} for field in self.required_fields},
+            }
+        return {}
 
 
 @dataclass(frozen=True)
 class GateDecision:
     status: str
+    metric_name: str | None
+    value: float | int | str | bool | None
+    matched_conditions: list[dict[str, Any]] = field(default_factory=list)
+    failed_conditions: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class GateMetricCondition:
     metric_name: str
-    value: float
+    op: str
+    threshold: float | int | str | bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "metric_name": self.metric_name,
+            "op": self.op,
+            "threshold": self.threshold,
+        }
+
+    def matches(self, metrics: Mapping[str, Any]) -> bool:
+        if self.metric_name not in metrics:
+            raise KeyError(f"metric {self.metric_name} is missing")
+        value = metrics[self.metric_name]
+        if self.op == ">=":
+            return float(value) >= float(self.threshold)
+        if self.op == "<=":
+            return float(value) <= float(self.threshold)
+        if self.op == ">":
+            return float(value) > float(self.threshold)
+        if self.op == "<":
+            return float(value) < float(self.threshold)
+        if self.op == "==":
+            return value == self.threshold
+        if self.op == "!=":
+            return value != self.threshold
+        raise ValueError(f"unsupported gate operator: {self.op}")
 
 
 @dataclass(frozen=True)
 class GatePolicyDef:
-    metric_name: str
-    pass_threshold: float
+    metric_name: str | None = None
+    pass_threshold: float | None = None
     approval_threshold: float | None = None
+    pass_all: tuple[GateMetricCondition, ...] = tuple()
+    approval_all: tuple[GateMetricCondition, ...] = tuple()
+
+    def normalized_conditions(self) -> tuple[tuple[GateMetricCondition, ...], tuple[GateMetricCondition, ...]]:
+        pass_all = self.pass_all
+        approval_all = self.approval_all
+        if not pass_all and self.metric_name is not None and self.pass_threshold is not None:
+            pass_all = (GateMetricCondition(metric_name=self.metric_name, op=">=", threshold=self.pass_threshold),)
+        if not approval_all and self.metric_name is not None and self.approval_threshold is not None:
+            approval_all = (GateMetricCondition(metric_name=self.metric_name, op=">=", threshold=self.approval_threshold),)
+        return pass_all, approval_all
+
+    def primary_metric_name(self) -> str:
+        if self.metric_name is not None:
+            return self.metric_name
+        pass_all, approval_all = self.normalized_conditions()
+        for condition in (*pass_all, *approval_all):
+            if condition.metric_name == "score":
+                return condition.metric_name
+        for condition in (*pass_all, *approval_all):
+            return condition.metric_name
+        return "score"
 
     def evaluate(self, metrics: Mapping[str, Any]) -> GateDecision:
-        value = float(metrics[self.metric_name])
-        if value >= self.pass_threshold:
-            return GateDecision(status="pass", metric_name=self.metric_name, value=value)
-        if self.approval_threshold is not None and value >= self.approval_threshold:
-            return GateDecision(status="needs_approval", metric_name=self.metric_name, value=value)
-        return GateDecision(status="fail", metric_name=self.metric_name, value=value)
+        pass_all, approval_all = self.normalized_conditions()
+        matched_pass: list[dict[str, Any]] = []
+        failed_pass: list[dict[str, Any]] = []
+        for condition in pass_all:
+            if condition.matches(metrics):
+                matched_pass.append(condition.to_dict())
+            else:
+                failed_pass.append(condition.to_dict())
+
+        metric_name = self.metric_name
+        value = metrics.get(metric_name) if metric_name is not None else None
+        if pass_all and not failed_pass:
+            return GateDecision(
+                status="pass",
+                metric_name=metric_name,
+                value=value,
+                matched_conditions=matched_pass,
+                failed_conditions=[],
+            )
+
+        matched_approval: list[dict[str, Any]] = []
+        failed_approval: list[dict[str, Any]] = []
+        for condition in approval_all:
+            if condition.matches(metrics):
+                matched_approval.append(condition.to_dict())
+            else:
+                failed_approval.append(condition.to_dict())
+
+        if approval_all and not failed_approval:
+            return GateDecision(
+                status="needs_approval",
+                metric_name=metric_name,
+                value=value,
+                matched_conditions=[*matched_pass, *matched_approval],
+                failed_conditions=failed_pass,
+            )
+        return GateDecision(
+            status="fail",
+            metric_name=metric_name,
+            value=value,
+            matched_conditions=[*matched_pass, *matched_approval],
+            failed_conditions=[*failed_pass, *failed_approval],
+        )
 
 
 @dataclass(frozen=True)
@@ -215,6 +350,8 @@ class EvalSuiteDef:
     judge_schema: JudgeSchemaDef = field(default_factory=JudgeSchemaDef)
     gate_policy: GatePolicyDef | None = None
     execution: EvalExecutionSpec | None = None
+    harness: EvalHarnessDef | None = None
+    trajectory_scorers: tuple[TrajectoryScorerDef, ...] = tuple()
     judge: JudgeCallable | None = None
     judge_backend: JudgeBackend | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -252,6 +389,7 @@ class CompiledEvaluationPlan:
     dataset: EvalDataset
     eval_config: EvaluationConfig
     gate_policy: GatePolicyDef | None
+    harness: EvalHarnessDef | None = None
 
 
 @dataclass(frozen=True)
@@ -462,6 +600,18 @@ def build_eval_dataset(cases: list[EvalCaseDef], target: dict[str, Any]) -> Eval
     return EvalDataset(eval_dataset_id=dataset_id, eval_dataset_name="suite_eval_dataset", eval_cases=eval_cases)
 
 
+def resolve_eval_harness(suite: EvalSuiteDef) -> EvalHarnessDef:
+    if suite.harness is not None:
+        return suite.harness
+    if suite.execution is not None:
+        return EvalHarnessDef(
+            harness_id=f"{suite.suite_id}-execution",
+            execution=suite.execution,
+            metadata={"lowered_from": "suite.execution"},
+        )
+    return EvalHarnessDef(harness_id=f"{suite.suite_id}-static")
+
+
 class _ConfiguredTaskEvalTarget(AworldTaskEvalTarget):
     def __init__(self, *, target: dict[str, Any], execution: EvalExecutionSpec):
         super().__init__()
@@ -474,27 +624,69 @@ class _ConfiguredTaskEvalTarget(AworldTaskEvalTarget):
         return await _maybe_await(task)
 
 
-def _build_eval_target(flow: EvaluationFlowDef):
-    execution = flow.suite.execution
+class _AdapterExecutionEvalTarget(EvalTarget[dict]):
+    def __init__(self, *, target: dict[str, Any], harness: EvalHarnessDef):
+        super().__init__()
+        self._target = dict(target)
+        self._harness = harness
+        self._adapter = resolve_execution_adapter(harness.execution)
+
+    async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
+        case = EvalCaseDef(
+            case_id=getattr(input, "eval_case_id", str(index)),
+            input=dict(input.case_data if isinstance(input, EvalDataCase) else input),
+        )
+        state = await self._adapter.execute(case=case, target=self._target, spec=self._harness.execution)
+        return {"answer": state.answer, "state": state.to_dict()}
+
+
+def _build_eval_target(flow: EvaluationFlowDef, target: dict[str, Any]):
+    harness = resolve_eval_harness(flow.suite)
+    execution = harness.execution
     if execution is None or execution.mode == EvalExecutionMode.STATIC:
         return NoActionEvalTarget()
     if execution.mode == EvalExecutionMode.AGENT:
+        if "agent" in execution.target_config:
+            return AworldAgentEvalTarget(
+                agent=execution.target_config["agent"],
+                query_column=execution.query_column or "query",
+            )
         return AworldAgentEvalTarget(
             agent_config=execution.target_config,
             query_column=execution.query_column or "query",
         )
     if execution.mode == EvalExecutionMode.TASK:
-        return _ConfiguredTaskEvalTarget(target=flow.target, execution=execution)
+        if "task" in execution.target_config:
+            return _AdapterExecutionEvalTarget(target=target, harness=harness)
+        return _ConfiguredTaskEvalTarget(target=target, execution=execution)
+    if execution.mode == EvalExecutionMode.PROGRAM:
+        return _AdapterExecutionEvalTarget(target=target, harness=harness)
     raise ValueError(f"unsupported execution mode: {execution.mode}")
+
+
+def _trajectory_eval_criteria(suite: EvalSuiteDef) -> list[dict[str, Any]]:
+    criteria: list[dict[str, Any]] = []
+    for scorer in suite.trajectory_scorers:
+        item: dict[str, Any] = {
+            "metric_name": scorer.metric_name,
+            "threshold": scorer.threshold,
+            "scorer_params": dict(scorer.scorer_params),
+        }
+        if scorer.scorer_class is not None:
+            item["scorer_class"] = scorer.scorer_class
+        criteria.append(item)
+    return criteria
 
 
 def compile_evaluation_flow(flow: EvaluationFlowDef) -> CompiledEvaluationPlan:
     normalized_target = _normalize_target(flow.target)
     dataset = build_eval_dataset(flow.suite.cases, normalized_target)
+    harness = resolve_eval_harness(flow.suite)
     gate_policy = flow.suite.gate_policy or GatePolicyDef(metric_name="score", pass_threshold=0.0)
+    score_bounds = _gate_metric_eval_bounds(gate_policy, "score")
     eval_criteria = {
-        "metric_name": gate_policy.metric_name,
-        "threshold": gate_policy.pass_threshold,
+        "metric_name": "score",
+        **score_bounds,
         "scorer_params": {
             "suite": flow.suite,
             "name": flow.suite.suite_id,
@@ -502,8 +694,8 @@ def compile_evaluation_flow(flow: EvaluationFlowDef) -> CompiledEvaluationPlan:
     }
     eval_config = EvaluationConfig(
         eval_suite_id=flow.suite.suite_id,
-        eval_target=_build_eval_target(flow),
-        eval_criterias=[eval_criteria],
+        eval_target=_build_eval_target(flow, normalized_target),
+        eval_criterias=[eval_criteria, *_trajectory_eval_criteria(flow.suite)],
         eval_dataset=dataset,
     )
     return CompiledEvaluationPlan(
@@ -512,18 +704,100 @@ def compile_evaluation_flow(flow: EvaluationFlowDef) -> CompiledEvaluationPlan:
         dataset=dataset,
         eval_config=eval_config,
         gate_policy=flow.suite.gate_policy,
+        harness=harness,
     )
 
 
-def _extract_metric_value(summary: Mapping[str, Any], metric_name: str) -> float:
+def _extract_metric_value(summary: Mapping[str, Any], metric_name: str) -> Any:
     metric_summary = summary.get(metric_name, {})
     if "mean" in metric_summary:
         return float(metric_summary["mean"])
     if "true_rate" in metric_summary:
         return float(metric_summary["true_rate"])
     if "value" in metric_summary:
-        return float(metric_summary["value"])
+        return metric_summary["value"]
     raise KeyError(f"metric {metric_name} is missing aggregate summary")
+
+
+def _extract_metric_value_from_result_summary(summary: Mapping[str, Any], metric_name: str) -> float:
+    try:
+        return _extract_metric_value(summary, metric_name)
+    except KeyError:
+        pass
+    for scorer_summary in summary.values():
+        if not isinstance(scorer_summary, Mapping):
+            continue
+        try:
+            return _extract_metric_value(scorer_summary, metric_name)
+        except KeyError:
+            continue
+    raise KeyError(f"metric {metric_name} is missing aggregate summary")
+
+
+def _flatten_result_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for scorer_summary in summary.values():
+        if not isinstance(scorer_summary, Mapping):
+            continue
+        for metric_name, metric_summary in scorer_summary.items():
+            if isinstance(metric_summary, Mapping):
+                metrics[metric_name] = dict(metric_summary)
+    return metrics
+
+
+def _gate_pass_conditions_by_metric(policy: GatePolicyDef | None) -> dict[str, tuple[GateMetricCondition, ...]]:
+    if policy is None:
+        return {}
+    pass_all, _ = policy.normalized_conditions()
+    by_metric: dict[str, list[GateMetricCondition]] = {}
+    for condition in pass_all:
+        by_metric.setdefault(condition.metric_name, []).append(condition)
+    return {metric_name: tuple(conditions) for metric_name, conditions in by_metric.items()}
+
+
+def _gate_metric_status(value: Any, conditions: tuple[GateMetricCondition, ...]) -> str:
+    for condition in conditions:
+        if not condition.matches({condition.metric_name: value}):
+            return "FAILED"
+    return "PASSED"
+
+
+def _gate_policy_conditions(policy: GatePolicyDef) -> tuple[GateMetricCondition, ...]:
+    pass_all, approval_all = policy.normalized_conditions()
+    seen: set[str] = set()
+    conditions: list[GateMetricCondition] = []
+    for condition in (*pass_all, *approval_all):
+        key = f"{condition.metric_name}:{condition.op}:{condition.threshold}"
+        if key in seen:
+            continue
+        seen.add(key)
+        conditions.append(condition)
+    return tuple(conditions)
+
+
+def _gate_metric_eval_bounds(policy: GatePolicyDef, metric_name: str) -> dict[str, float]:
+    bounds: dict[str, float] = {}
+    pass_all, _ = policy.normalized_conditions()
+    for condition in pass_all:
+        if condition.metric_name != metric_name:
+            continue
+        if condition.op == ">=":
+            bounds["threshold"] = float(condition.threshold)
+        elif condition.op == ">":
+            bounds["threshold"] = math.nextafter(float(condition.threshold), math.inf)
+        elif condition.op == "<=":
+            bounds["threshold"] = float("-inf")
+            bounds["max_value"] = float(condition.threshold)
+        elif condition.op == "<":
+            bounds["threshold"] = float("-inf")
+            bounds["max_value"] = math.nextafter(float(condition.threshold), -math.inf)
+        break
+    if "threshold" not in bounds:
+        if policy.metric_name == metric_name and policy.pass_threshold is not None:
+            bounds["threshold"] = float(policy.pass_threshold)
+        else:
+            bounds["threshold"] = 0.0
+    return bounds
 
 
 def _normalize_metric_status(status: Any) -> str | None:
@@ -561,29 +835,37 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
     gate_metrics = {}
     gate = None
     if compiled.gate_policy is not None:
-        gate_metrics[compiled.gate_policy.metric_name] = _extract_metric_value(
-            suite_summary,
-            compiled.gate_policy.metric_name,
-        )
+        for condition in _gate_policy_conditions(compiled.gate_policy):
+            if condition.metric_name not in gate_metrics:
+                gate_metrics[condition.metric_name] = _extract_metric_value_from_result_summary(
+                    eval_result.summary,
+                    condition.metric_name,
+                )
         gate = compiled.gate_policy.evaluate(gate_metrics)
 
     results: list[CaseEvaluationReport] = []
     report_backend_id = None
     cases_with_metrics = 0
     cases_with_judge = 0
+    gate_conditions_by_metric = _gate_pass_conditions_by_metric(compiled.gate_policy)
     for case_result in eval_result.eval_case_results:
-        score_row = case_result.score_rows.get(compiled.suite.suite_id)
         judge_payload = {}
         case_metrics: dict[str, Any] = {}
         case_backend_id = None
-        if score_row is not None:
+        if case_result.score_rows:
             cases_with_metrics += 1
+        for score_row in case_result.score_rows.values():
             for metric_name, metric_result in score_row.metric_results.items():
                 if isinstance(metric_result, Mapping):
                     case_metrics[metric_name] = {}
                     if "value" in metric_result:
                         case_metrics[metric_name]["value"] = metric_result["value"]
                     status = _normalize_metric_status(metric_result.get("eval_status"))
+                    if metric_name in gate_conditions_by_metric and "value" in case_metrics[metric_name]:
+                        status = _gate_metric_status(
+                            case_metrics[metric_name]["value"],
+                            gate_conditions_by_metric[metric_name],
+                        )
                     if status is not None:
                         case_metrics[metric_name]["status"] = status
                     metadata = metric_result.get("metadata") or {}
@@ -591,7 +873,9 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
                         case_backend_id = metadata.get("_judge_backend")
                 else:
                     case_metrics[metric_name] = {"value": metric_result}
-            metric_result = score_row.metric_results.get(compiled.gate_policy.metric_name if compiled.gate_policy else "score", {})
+        score_row = case_result.score_rows.get(compiled.suite.suite_id)
+        if score_row is not None:
+            metric_result = score_row.metric_results.get("score", {})
             judge_payload = dict(metric_result.get("metadata", {}))
             report_backend_id = report_backend_id or judge_payload.pop("_judge_backend", None)
         if judge_payload:
@@ -607,7 +891,15 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
             )
         )
 
-    metrics = dict(suite_summary)
+    metrics = _flatten_result_metrics(eval_result.summary)
+    for metric_name, conditions in gate_conditions_by_metric.items():
+        if metric_name not in metrics:
+            continue
+        try:
+            value = _extract_metric_value(metrics, metric_name)
+        except KeyError:
+            continue
+        metrics[metric_name]["eval_status"] = _gate_metric_status(value, conditions)
     report = EvaluatorReport({
         "report_version": 1,
         "report_format": {
@@ -631,6 +923,9 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
             "approved": None,
         },
     })
+    judge_schema = compiled.suite.judge_schema.json_schema()
+    if judge_schema:
+        report["judge_schema"] = judge_schema
     if report_backend_id is not None:
         report["judge_backend"] = {"backend_id": report_backend_id}
     if gate is not None:
@@ -638,6 +933,8 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
             "status": gate.status,
             "metric_name": gate.metric_name,
             "value": gate.value,
+            "matched_conditions": gate.matched_conditions,
+            "failed_conditions": gate.failed_conditions,
         }
     return report
 

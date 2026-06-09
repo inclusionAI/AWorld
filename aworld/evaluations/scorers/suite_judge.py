@@ -23,17 +23,33 @@ class SuiteJudgeScorer(Scorer):
         if state:
             target = {**target, **state}
         execution = await self.suite.resolve_judge_backend().execute(case_input, target, self.suite)
-        payload = dict(execution.payload)
-        self.suite.judge_schema.validate(payload)
+        payload = self.suite.judge_schema.validate_payload(dict(execution.payload))
 
+        metadata = {
+            **payload,
+            "_judge_backend": execution.backend_id,
+        }
         metric_result: MetricResult = {
             "value": float(payload["score"]),
-            "metadata": {
-                **payload,
-                "_judge_backend": execution.backend_id,
-            },
+            "metadata": metadata,
         }
+        metric_results = {"score": metric_result}
+        declared_trajectory_metrics = {
+            scorer.metric_name
+            for scorer in getattr(self.suite, "trajectory_scorers", tuple())
+        }
+        for metric_name, value in payload.items():
+            if (
+                metric_name == "score"
+                or metric_name in declared_trajectory_metrics
+                or not isinstance(value, (int, float, bool, str))
+            ):
+                continue
+            metric_results[metric_name] = {
+                "value": value,
+                "metadata": metadata,
+            }
         return ScorerResult(
             scorer_name=self.name,
-            metric_results={"score": metric_result},
+            metric_results=metric_results,
         )

@@ -56,6 +56,7 @@ def get_evaluator_report_schema() -> dict[str, object]:
                 "oneOf": [
                     {"type": "number"},
                     {"type": "boolean"},
+                    {"type": "string"},
                 ]
             },
             "metricAggregate": {
@@ -96,8 +97,10 @@ def get_evaluator_report_schema() -> dict[str, object]:
                         "type": "string",
                         "enum": ["pass", "fail", "needs_approval"],
                     },
-                    "metric_name": {"type": "string"},
-                    "value": {"type": "number"},
+                    "metric_name": {"type": ["string", "null"]},
+                    "value": {"type": ["number", "string", "boolean", "null"]},
+                    "matched_conditions": {"type": "array"},
+                    "failed_conditions": {"type": "array"},
                 },
                 "additionalProperties": False,
             },
@@ -120,7 +123,7 @@ def get_evaluator_report_schema() -> dict[str, object]:
                         "enum": ["pass", "fail", "needs_approval", None],
                     },
                     "metric_name": {"type": ["string", "null"]},
-                    "metric_value": {"type": ["number", "null"]},
+                    "metric_value": {"type": ["number", "string", "boolean", "null"]},
                     "approval_required": {"type": "boolean"},
                     "approval_resolved": {"type": "boolean"},
                     "approved": {"type": ["boolean", "null"]},
@@ -202,6 +205,7 @@ def get_evaluator_report_schema() -> dict[str, object]:
             "suite_selection": {"type": "object"},
             "automation": {"$ref": "#/$defs/automationSummary"},
             "report_path": {"type": "string"},
+            "judge_schema": {"type": "object"},
         },
         "additionalProperties": True,
     }
