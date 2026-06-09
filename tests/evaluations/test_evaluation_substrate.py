@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import pytest
+from pydantic import BaseModel, Field
 
 from aworld.evaluations.base import EvaluationConfig
 import aworld.evaluations.substrate as substrate_module
@@ -9,22 +10,38 @@ from aworld.evaluations.substrate import (
     AgentJudgeBackend,
     CallableJudgeBackend,
     EvalCaseDef,
+    EvalHarnessDef,
     EvalSuiteDef,
     EvaluationFlowDef,
     FallbackJudgeBackend,
+    GateMetricCondition,
     GatePolicyDef,
     JudgeSchemaDef,
+    TrajectoryScorerDef,
     compile_evaluation_flow,
     get_builtin_eval_suite,
     list_eval_suites,
     list_matching_eval_suites,
     load_declared_eval_suites,
     register_eval_suite,
+    resolve_eval_harness,
     resolve_eval_suite,
     resolve_eval_suite_selection,
     run_evaluation_flow,
 )
 from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec
+from aworld.evaluations.report import validate_evaluator_report
+from aworld.evaluations.types import MetricNames
+
+
+class DemoJudgeOutput(BaseModel):
+    score: float
+    verdict: str
+
+
+class AliasJudgeOutput(BaseModel):
+    final_score: float = Field(alias="score")
+    verdict: str
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +84,30 @@ def test_compile_evaluation_flow_builds_inline_dataset_and_gate_config() -> None
     assert compiled.gate_policy.metric_name == "score"
 
 
+def test_compile_evaluation_flow_lowers_trajectory_scorers_to_eval_criteria() -> None:
+    suite = EvalSuiteDef(
+        suite_id="trajectory-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello world"})],
+        judge=lambda case_input, target: {"score": 1.0},
+        trajectory_scorers=(
+            TrajectoryScorerDef(
+                metric_name=MetricNames.TRAJECTORY_TOOL_CALLS,
+                threshold=1.0,
+            ),
+        ),
+    )
+
+    compiled = compile_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "inline", "value": {"target_path": "demo.txt"}},
+            suite=suite,
+        )
+    )
+
+    metric_names = [criteria["metric_name"] for criteria in compiled.eval_config.eval_criterias]
+    assert metric_names == ["score", MetricNames.TRAJECTORY_TOOL_CALLS]
+
+
 def test_eval_case_def_supports_expected_and_runtime_overrides() -> None:
     case = EvalCaseDef(
         case_id="case-1",
@@ -96,11 +137,156 @@ def test_compile_evaluation_flow_uses_execution_backed_target_when_suite_declare
     assert compiled.eval_config.eval_target.__class__.__name__ == "_ConfiguredTaskEvalTarget"
 
 
+def test_compile_evaluation_flow_preserves_live_agent_target_config() -> None:
+    live_agent = object()
+    suite = EvalSuiteDef(
+        suite_id="agent-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "demo"})],
+        execution=EvalExecutionSpec(
+            mode=EvalExecutionMode.AGENT,
+            target_config={"agent": live_agent},
+        ),
+    )
+    flow = EvaluationFlowDef(target={"kind": "inline", "value": {"target_path": "demo.txt"}}, suite=suite)
+
+    compiled = compile_evaluation_flow(flow)
+
+    assert compiled.eval_config.eval_target.agent is live_agent
+
+
+@pytest.mark.asyncio
+async def test_program_execution_receives_normalized_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def demo_program(case, spec, target):
+        return {
+            "status": "success",
+            "answer": target["target_path"],
+            "metadata": {"target_kind_seen": target["target_kind"]},
+        }
+
+    async def fake_judge(case_input, target):
+        return {"score": 1.0, "answer": target["answer"]}
+
+    monkeypatch.setattr(
+        "aworld.evaluations.execution_adapters.load_program_callable",
+        lambda ref: demo_program,
+    )
+
+    suite = EvalSuiteDef(
+        suite_id="program-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "demo"})],
+        execution=EvalExecutionSpec(mode=EvalExecutionMode.PROGRAM, target_ref="pkg.module:run_case"),
+        judge=fake_judge,
+    )
+    flow = EvaluationFlowDef(target={"kind": "inline", "value": {"target_path": "demo.txt"}}, suite=suite)
+
+    report = await run_evaluation_flow(flow)
+
+    assert report["results"][0]["judge"]["answer"] == "demo.txt"
+    assert report["results"][0]["state_summary"]["answer"] == "demo.txt"
+
+
+@pytest.mark.asyncio
+async def test_task_execution_uses_adapter_target_config_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = type("Task", (), {"id": "task-1"})()
+
+    async def fake_run_task(*, task):
+        return {task.id: {"status": "success", "answer": "task-ok"}}
+
+    async def fake_judge(case_input, target):
+        return {"score": 1.0, "answer": target["answer"]}
+
+    monkeypatch.setattr("aworld.evaluations.execution_adapters.Runners.run_task", fake_run_task)
+
+    suite = EvalSuiteDef(
+        suite_id="task-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "demo"})],
+        execution=EvalExecutionSpec(mode=EvalExecutionMode.TASK, target_config={"task": task}),
+        judge=fake_judge,
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(target={"kind": "file", "target_path": "artifact.txt"}, suite=suite)
+    )
+
+    assert report["results"][0]["judge"]["answer"] == "task-ok"
+
+
+def test_resolve_eval_harness_lowers_direct_suite_execution() -> None:
+    suite = EvalSuiteDef(
+        suite_id="program-suite",
+        execution=EvalExecutionSpec(mode=EvalExecutionMode.PROGRAM, target_ref="pkg.module:run_case"),
+    )
+
+    harness = resolve_eval_harness(suite)
+
+    assert harness.harness_id == "program-suite-execution"
+    assert harness.execution is suite.execution
+    assert harness.metadata["lowered_from"] == "suite.execution"
+
+
+def test_resolve_eval_harness_prefers_explicit_harness() -> None:
+    harness = EvalHarnessDef(
+        harness_id="shared-program",
+        execution=EvalExecutionSpec(mode=EvalExecutionMode.PROGRAM, target_ref="pkg.module:run_case"),
+    )
+    suite = EvalSuiteDef(suite_id="program-suite", harness=harness)
+
+    assert resolve_eval_harness(suite) is harness
+
+
 def test_judge_schema_validation_rejects_missing_fields() -> None:
     schema = JudgeSchemaDef(required_fields=("score", "rank", "criticism"))
 
     with pytest.raises(ValueError, match="missing required judge fields"):
         schema.validate({"score": 0.8, "rank": "Good"})
+
+
+def test_typed_judge_model_accepts_valid_payload() -> None:
+    schema = JudgeSchemaDef(output_model=DemoJudgeOutput)
+
+    payload = schema.validate_payload({"score": 0.8, "verdict": "ok"})
+
+    assert payload["score"] == 0.8
+    assert payload["verdict"] == "ok"
+
+
+def test_typed_judge_model_rejects_invalid_payload() -> None:
+    schema = JudgeSchemaDef(output_model=DemoJudgeOutput)
+
+    with pytest.raises(ValueError, match="verdict"):
+        schema.validate_payload({"score": 0.8})
+
+
+def test_legacy_required_fields_schema_still_returns_payload() -> None:
+    schema = JudgeSchemaDef(required_fields=("score", "rank"))
+
+    payload = schema.validate_payload({"score": 0.9, "rank": 1})
+
+    assert payload["rank"] == 1
+
+
+def test_judge_schema_exports_json_schema_for_typed_model() -> None:
+    schema = JudgeSchemaDef(output_model=DemoJudgeOutput)
+
+    exported = schema.json_schema()
+
+    assert exported["properties"]["score"]["type"] == "number"
+    assert "verdict" in exported["required"]
+
+
+def test_typed_judge_model_returns_alias_keys_to_match_exported_schema() -> None:
+    schema = JudgeSchemaDef(output_model=AliasJudgeOutput)
+
+    payload = schema.validate_payload({"score": 0.8, "verdict": "ok"})
+    exported = schema.json_schema()
+
+    assert payload["score"] == 0.8
+    assert "final_score" not in payload
+    assert "score" in exported["properties"]
 
 
 def test_gate_policy_uses_pass_and_approval_thresholds() -> None:
@@ -113,6 +299,82 @@ def test_gate_policy_uses_pass_and_approval_thresholds() -> None:
     assert gate.evaluate({"score": 0.9}).status == "pass"
     assert gate.evaluate({"score": 0.7}).status == "needs_approval"
     assert gate.evaluate({"score": 0.5}).status == "fail"
+
+
+def test_composite_gate_returns_pass_when_all_conditions_hold() -> None:
+    policy = GatePolicyDef(
+        pass_all=(
+            GateMetricCondition(metric_name="score", op=">=", threshold=0.9),
+            GateMetricCondition(metric_name="latency", op="<=", threshold=5.0),
+        )
+    )
+
+    decision = policy.evaluate({"score": 0.95, "latency": 4.2})
+
+    assert decision.status == "pass"
+    assert decision.metric_name is None
+    assert decision.value is None
+    assert len(decision.matched_conditions) == 2
+
+
+def test_composite_gate_returns_needs_approval_when_approval_conditions_hold() -> None:
+    policy = GatePolicyDef(
+        pass_all=(GateMetricCondition(metric_name="score", op=">=", threshold=0.9),),
+        approval_all=(GateMetricCondition(metric_name="score", op=">=", threshold=0.75),),
+    )
+
+    decision = policy.evaluate({"score": 0.8})
+
+    assert decision.status == "needs_approval"
+    assert len(decision.failed_conditions) == 1
+    assert len(decision.matched_conditions) == 1
+
+
+def test_legacy_threshold_gate_lowers_to_structured_policy() -> None:
+    policy = GatePolicyDef(metric_name="score", pass_threshold=0.9, approval_threshold=0.8)
+
+    decision = policy.evaluate({"score": 0.85})
+
+    assert decision.status == "needs_approval"
+    assert decision.metric_name == "score"
+    assert decision.value == pytest.approx(0.85)
+
+
+@pytest.mark.parametrize(
+    ("op", "threshold", "value"),
+    [
+        (">", 0.9, 0.91),
+        ("<", 0.9, 0.89),
+        (">=", 0.9, 0.9),
+        ("<=", 0.9, 0.9),
+        ("==", "approved", "approved"),
+        ("!=", "blocked", "approved"),
+    ],
+)
+def test_gate_metric_condition_supports_all_declared_operators(op, threshold, value) -> None:
+    policy = GatePolicyDef(
+        pass_all=(GateMetricCondition(metric_name="metric", op=op, threshold=threshold),)
+    )
+
+    assert policy.evaluate({"metric": value}).status == "pass"
+
+
+def test_gate_policy_reports_missing_metric() -> None:
+    policy = GatePolicyDef(
+        pass_all=(GateMetricCondition(metric_name="score", op=">=", threshold=0.9),)
+    )
+
+    with pytest.raises(KeyError, match="score"):
+        policy.evaluate({})
+
+
+def test_gate_policy_rejects_unsupported_operator() -> None:
+    policy = GatePolicyDef(
+        pass_all=(GateMetricCondition(metric_name="score", op="contains", threshold=0.9),)
+    )
+
+    with pytest.raises(ValueError, match="unsupported gate operator"):
+        policy.evaluate({"score": 0.95})
 
 
 @pytest.mark.asyncio
@@ -166,6 +428,347 @@ async def test_run_evaluation_flow_executes_suite_judge_and_returns_gate() -> No
     assert report["result_counts"]["cases_total"] == 1
     assert report["result_counts"]["cases_with_metrics"] == 1
     assert report["summary"]["demo-suite"]["score"]["mean"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_exposes_judge_schema_once() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 0.95, "verdict": "ok"}
+
+    suite = EvalSuiteDef(
+        suite_id="typed-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge_schema=JudgeSchemaDef(output_model=DemoJudgeOutput),
+        gate_policy=GatePolicyDef(metric_name="score", pass_threshold=0.8),
+        judge=fake_judge,
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["judge_schema"]["properties"]["score"]["type"] == "number"
+    assert "_judge_schema" not in report["results"][0]["judge"]
+    validate_evaluator_report(report.to_dict())
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_evaluates_composite_gate_metrics() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 0.95, "latency": 4.2}
+
+    suite = EvalSuiteDef(
+        suite_id="composite-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(
+            pass_all=(
+                GateMetricCondition(metric_name="score", op=">=", threshold=0.9),
+                GateMetricCondition(metric_name="latency", op="<=", threshold=5.0),
+            )
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "pass"
+    assert len(report["gate"]["matched_conditions"]) == 2
+    assert report["metrics"]["latency"]["mean"] == pytest.approx(4.2)
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_failed_composite_gate_keeps_metric_status_and_matches() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 0.7, "latency": 4.2}
+
+    suite = EvalSuiteDef(
+        suite_id="composite-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(
+            pass_all=(
+                GateMetricCondition(metric_name="score", op=">=", threshold=0.9),
+                GateMetricCondition(metric_name="latency", op="<=", threshold=5.0),
+            )
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "fail"
+    assert report["results"][0]["metrics"]["score"]["status"] == "FAILED"
+    assert report["metrics"]["score"]["eval_status"] == "FAILED"
+    assert report["gate"]["matched_conditions"] == [
+        {"metric_name": "latency", "op": "<=", "threshold": 5.0}
+    ]
+    assert report["gate"]["failed_conditions"] == [
+        {"metric_name": "score", "op": ">=", "threshold": 0.9}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_composite_gate_is_not_condition_order_sensitive() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 0.95, "latency": 4.2}
+
+    suite = EvalSuiteDef(
+        suite_id="composite-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(
+            pass_all=(
+                GateMetricCondition(metric_name="latency", op="<=", threshold=5.0),
+                GateMetricCondition(metric_name="score", op=">=", threshold=0.9),
+            )
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "pass"
+    assert report["metrics"]["score"]["mean"] == pytest.approx(0.95)
+    assert report["metrics"]["latency"]["mean"] == pytest.approx(4.2)
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_composite_gate_without_score_condition_still_runs_suite_judge() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 1.0, "latency": 4.2}
+
+    suite = EvalSuiteDef(
+        suite_id="latency-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(
+            pass_all=(GateMetricCondition(metric_name="latency", op="<=", threshold=5.0),)
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "pass"
+    assert report["metrics"]["latency"]["mean"] == pytest.approx(4.2)
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_legacy_non_score_gate_does_not_set_score_threshold() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 1.0, "latency": 6.0}
+
+    suite = EvalSuiteDef(
+        suite_id="latency-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(metric_name="latency", pass_threshold=5.0),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "pass"
+    assert report["results"][0]["metrics"]["score"]["status"] == "PASSED"
+    assert report["metrics"]["score"]["eval_status"] == "PASSED"
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_strict_gate_operator_keeps_metric_status_consistent() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 0.9}
+
+    suite = EvalSuiteDef(
+        suite_id="strict-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(
+            pass_all=(GateMetricCondition(metric_name="score", op=">", threshold=0.9),)
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "fail"
+    assert report["results"][0]["metrics"]["score"]["status"] == "FAILED"
+    assert report["metrics"]["score"]["eval_status"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_equality_gate_keeps_metric_status_consistent() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 0.7}
+
+    suite = EvalSuiteDef(
+        suite_id="equality-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(
+            pass_all=(GateMetricCondition(metric_name="score", op="==", threshold=0.9),)
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "fail"
+    assert report["results"][0]["metrics"]["score"]["status"] == "FAILED"
+    assert report["metrics"]["score"]["eval_status"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_categorical_gate_metric() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 1.0, "verdict": "approved"}
+
+    suite = EvalSuiteDef(
+        suite_id="categorical-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge=fake_judge,
+        gate_policy=GatePolicyDef(
+            pass_all=(GateMetricCondition(metric_name="verdict", op="==", threshold="approved"),)
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "pass"
+    assert report["gate"]["value"] is None
+    assert report["results"][0]["metrics"]["verdict"]["value"] == "approved"
+    assert report["metrics"]["verdict"]["value"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_reports_trajectory_scorer_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def demo_program(case, spec, target):
+        return {
+            "status": "success",
+            "answer": "ok",
+            "trajectory": [
+                {"action": {"tool_calls": [{"id": "call-1", "function": {"name": "search", "arguments": "{}"}}]}}
+            ],
+        }
+
+    async def fake_judge(case_input, target):
+        return {"score": 1.0}
+
+    monkeypatch.setattr(
+        "aworld.evaluations.execution_adapters.load_program_callable",
+        lambda ref: demo_program,
+    )
+
+    suite = EvalSuiteDef(
+        suite_id="trajectory-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        execution=EvalExecutionSpec(mode=EvalExecutionMode.PROGRAM, target_ref="pkg.module:run_case"),
+        judge=fake_judge,
+        trajectory_scorers=(
+            TrajectoryScorerDef(metric_name=MetricNames.TRAJECTORY_TOOL_CALLS, threshold=1.0),
+        ),
+        gate_policy=GatePolicyDef(
+            pass_all=(
+                GateMetricCondition(metric_name="score", op=">=", threshold=0.9),
+                GateMetricCondition(metric_name=MetricNames.TRAJECTORY_TOOL_CALLS, op="==", threshold=1.0),
+            )
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "pass"
+    assert report["results"][0]["metrics"][MetricNames.TRAJECTORY_TOOL_CALLS]["value"] == pytest.approx(1.0)
+    assert report["metrics"][MetricNames.TRAJECTORY_TOOL_CALLS]["mean"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_declared_trajectory_metric_takes_precedence_over_judge_payload_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def demo_program(case, spec, target):
+        return {
+            "status": "success",
+            "answer": "ok",
+            "trajectory": [
+                {"action": {"tool_calls": [{"id": "call-1", "function": {"name": "search", "arguments": "{}"}}]}}
+            ],
+        }
+
+    async def fake_judge(case_input, target):
+        return {"score": 1.0, MetricNames.TRAJECTORY_TOOL_CALLS: 0.0}
+
+    monkeypatch.setattr(
+        "aworld.evaluations.execution_adapters.load_program_callable",
+        lambda ref: demo_program,
+    )
+
+    suite = EvalSuiteDef(
+        suite_id="trajectory-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        execution=EvalExecutionSpec(mode=EvalExecutionMode.PROGRAM, target_ref="pkg.module:run_case"),
+        judge=fake_judge,
+        trajectory_scorers=(
+            TrajectoryScorerDef(metric_name=MetricNames.TRAJECTORY_TOOL_CALLS, threshold=1.0),
+        ),
+        gate_policy=GatePolicyDef(
+            pass_all=(GateMetricCondition(metric_name=MetricNames.TRAJECTORY_TOOL_CALLS, op="==", threshold=1.0),)
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    assert report["gate"]["status"] == "pass"
+    assert report["results"][0]["metrics"][MetricNames.TRAJECTORY_TOOL_CALLS]["value"] == pytest.approx(1.0)
+    assert report["metrics"][MetricNames.TRAJECTORY_TOOL_CALLS]["mean"] == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio

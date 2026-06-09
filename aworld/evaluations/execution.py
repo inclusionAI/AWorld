@@ -1,6 +1,7 @@
 # coding: utf-8
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
@@ -12,6 +13,7 @@ class EvalExecutionMode(str, Enum):
     STATIC = "static"
     AGENT = "agent"
     TASK = "task"
+    PROGRAM = "program"
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,26 @@ def _extract_tool_calls_from_trajectory(trajectory: list[dict[str, Any]]) -> lis
     return calls
 
 
+def _merge_eval_metadata(
+    response_metadata: Any,
+    invocation_metadata: Mapping[str, Any] | None,
+    target: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    base = dict(response_metadata) if isinstance(response_metadata, Mapping) else {}
+    base.update(dict(invocation_metadata or {}))
+    base["_target"] = dict(target or {})
+    return base
+
+
+def _list_field_from_response(response: Mapping[str, Any], field_name: str, default: list[Any]) -> list[Any]:
+    value = response.get(field_name)
+    if value is None:
+        return default
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    return list(value)
+
+
 def normalize_task_response_to_eval_state(
     *,
     case_id: str,
@@ -78,6 +100,16 @@ def normalize_task_response_to_eval_state(
     target: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> EvalState:
+    if isinstance(response, EvalState):
+        state = response.to_dict()
+        state["case_id"] = case_id
+        state["metadata"] = {
+            **dict(response.metadata or {}),
+            **dict(metadata or {}),
+            "_target": dict(target or {}),
+        }
+        return EvalState(**state)
+
     if isinstance(response, TaskResponse):
         trajectory = list(response.trajectory or [])
         return EvalState(
@@ -90,24 +122,29 @@ def normalize_task_response_to_eval_state(
             usage=dict(response.usage or {}),
             timing={"time_cost": response.time_cost},
             raw_response=response.to_dict(),
-            metadata={**dict(metadata or {}), "_target": dict(target or {})},
+            metadata=_merge_eval_metadata(getattr(response, "metadata", {}), metadata, target),
         )
 
     if isinstance(response, Mapping):
-        trajectory = list(response.get("trajectory") or [])
+        trajectory = _list_field_from_response(response, "trajectory", [])
+        answer = response.get("answer")
         return EvalState(
             case_id=case_id,
             status=str(response.get("status", "success")),
-            answer=response.get("answer"),
-            completion=list(response.get("completion") or ([] if response.get("answer") is None else [response.get("answer")])),
+            answer=answer,
+            completion=_list_field_from_response(response, "completion", [] if answer is None else [answer]),
             artifacts=dict(response.get("artifacts") or {}),
             trajectory=trajectory,
-            tool_calls=list(response.get("tool_calls") or _extract_tool_calls_from_trajectory(trajectory)),
+            tool_calls=_list_field_from_response(
+                response,
+                "tool_calls",
+                _extract_tool_calls_from_trajectory(trajectory),
+            ),
             usage=dict(response.get("usage") or {}),
             timing=dict(response.get("timing") or {}),
             error=dict(response.get("error")) if isinstance(response.get("error"), Mapping) else response.get("error"),
             raw_response=dict(response),
-            metadata={**dict(metadata or {}), "_target": dict(target or {})},
+            metadata=_merge_eval_metadata(response.get("metadata"), metadata, target),
         )
 
     return EvalState(
@@ -115,5 +152,28 @@ def normalize_task_response_to_eval_state(
         status="success",
         answer=response,
         completion=[] if response is None else [response],
-        metadata={**dict(metadata or {}), "_target": dict(target or {})},
+        metadata=_merge_eval_metadata({}, metadata, target),
     )
+
+
+def _validate_importable_callable_ref(ref: str) -> tuple[str, str]:
+    if not ref or any(char.isspace() for char in ref) or "/" in ref or "\\" in ref:
+        raise ValueError("program execution requires an importable callable reference")
+    if ":" in ref:
+        module_name, attr_name = ref.split(":", 1)
+    elif "." in ref:
+        module_name, attr_name = ref.rsplit(".", 1)
+    else:
+        raise ValueError("program execution requires an importable callable reference")
+    module_parts = module_name.split(".")
+    if not module_name or not attr_name or attr_name == "py" or "py" in module_parts:
+        raise ValueError("program execution requires an importable callable reference")
+    return module_name, attr_name
+
+
+def load_program_callable(ref: str):
+    module_name, attr_name = _validate_importable_callable_ref(ref)
+    candidate = getattr(importlib.import_module(module_name), attr_name)
+    if not callable(candidate):
+        raise ValueError(f"program reference is not callable: {ref}")
+    return candidate

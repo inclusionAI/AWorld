@@ -20,6 +20,7 @@ from aworld_cli.evaluator_runtime import (
     run_evaluator_cli,
     validate_evaluator_report,
 )
+from aworld_cli.evaluator_rendering import render_evaluator_summary
 
 
 @pytest.fixture(autouse=True)
@@ -370,6 +371,44 @@ def test_validate_evaluator_report_accepts_valid_report() -> None:
     }
 
     validate_evaluator_report(report)
+
+
+def test_validate_and_render_categorical_gate_report() -> None:
+    report = {
+        "report_version": 1,
+        "report_format": {"id": "aworld.evaluator.report", "version": 1},
+        "generated_at": "2026-06-02T04:00:00Z",
+        "suite_id": "categorical-suite",
+        "target": {"target_path": "/tmp/artifact.txt", "target_kind": "file"},
+        "summary": {"categorical-suite": {"verdict": {"value": "approved"}}},
+        "metrics": {"verdict": {"value": "approved", "eval_status": "PASSED"}},
+        "results": [
+            {
+                "case_id": "artifact.txt",
+                "input": {"target_path": "/tmp/artifact.txt"},
+                "metrics": {"verdict": {"value": "approved", "status": "PASSED"}},
+                "judge": {"score": 1.0, "verdict": "approved"},
+            }
+        ],
+        "result_counts": {"cases_total": 1, "cases_with_metrics": 1, "cases_with_judge": 1},
+        "gate": {"status": "pass", "metric_name": "verdict", "value": "approved"},
+        "approval": {"required": False, "resolved": False, "approved": None},
+        "automation": {
+            "gate_status": "pass",
+            "metric_name": "verdict",
+            "metric_value": "approved",
+            "approval_required": False,
+            "approval_resolved": False,
+            "approved": None,
+            "suggested_exit_code": 0,
+            "case_count": 1,
+            "judge_backend": None,
+        },
+    }
+
+    validate_evaluator_report(report)
+
+    assert "approved" in render_evaluator_summary(report)
 
 
 def test_validate_evaluator_report_rejects_invalid_gate_status() -> None:

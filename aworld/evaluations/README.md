@@ -84,8 +84,9 @@ with input data.
 
 Suite-backed evaluation adds a definition layer on top of the existing runtime skeleton:
 
-- `EvalSuiteDef`: suite identity, cases, judge schema, gate policy, toolset hints, execution spec
+- `EvalSuiteDef`: suite identity, cases, judge schema, gate policy, trajectory scorers, toolset hints, execution spec
 - `EvalCaseDef`: input plus optional expected output and per-case runtime hints
+- `EvalHarnessDef`: reusable execution defaults for suite-backed flows
 - `EvalExecutionSpec`: runtime execution mode and target/task configuration
 - `EvalState`: normalized execution result containing final answer, completion view, trajectory, usage, timing, and errors
 
@@ -95,7 +96,7 @@ official CLI flows, and custom evaluation agents.
 Ownership is explicit:
 
 - suite and case definitions own evaluation intent: input, expected outcome, task-domain tool hints, tags, and judge/gate semantics
-- execution specs own runtime behavior: whether execution is static, agent-backed, or task-backed, plus task/runner configuration
+- harnesses and execution specs own runtime behavior: whether execution is static, agent-backed, task-backed, or program-backed, plus task/runner configuration
 - `aworld-cli` only assembles workspace inputs into these framework objects; it does not redefine evaluator semantics
 
 `EvalState` intentionally separates:
@@ -193,9 +194,16 @@ The current execution modes are:
 - `static`: judge-only evaluation with no runtime execution
 - `agent`: execute through `AworldAgentEvalTarget`
 - `task`: execute through `AworldTaskEvalTarget`
+- `program`: execute an importable callable through the evaluator adapter layer and normalize the result into `EvalState`
 
 This gives AWorld a framework-native evaluator path that can assess final artifacts, structured outputs, and trajectory
 quality through one substrate.
+
+Suite-backed evaluation also supports:
+
+- typed judge schemas: Pydantic-backed validation with JSON schema export and required-field compatibility
+- composite gates: structured metric conditions with `pass`, `fail`, and `needs_approval` outcomes
+- trajectory scorers: suite-declared process metrics that lower into normal evaluator criteria and reports
 
 ## Suite, Case, and Execution Mapping
 
