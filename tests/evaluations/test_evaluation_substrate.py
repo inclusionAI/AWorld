@@ -24,6 +24,7 @@ from aworld.evaluations.substrate import (
     resolve_eval_suite_selection,
     run_evaluation_flow,
 )
+from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +63,37 @@ def test_compile_evaluation_flow_builds_inline_dataset_and_gate_config() -> None
     assert compiled.eval_config.eval_dataset is compiled.dataset
     assert compiled.dataset.eval_cases[0].case_data["query"] == "hello world"
     assert compiled.dataset.eval_cases[0].case_data["_target"]["target_path"] == "demo.txt"
+    assert compiled.dataset.eval_cases[0].case_data["_expected"] is None
     assert compiled.gate_policy.metric_name == "score"
+
+
+def test_eval_case_def_supports_expected_and_runtime_overrides() -> None:
+    case = EvalCaseDef(
+        case_id="case-1",
+        input={"query": "demo"},
+        expected={"answer": "ok"},
+        max_turns=3,
+        timeout_seconds=5.0,
+        metadata={"toolsets": ["search"]},
+    )
+
+    assert case.expected == {"answer": "ok"}
+    assert case.max_turns == 3
+    assert case.timeout_seconds == 5.0
+    assert case.metadata["toolsets"] == ["search"]
+
+
+def test_compile_evaluation_flow_uses_execution_backed_target_when_suite_declares_execution() -> None:
+    suite = EvalSuiteDef(
+        suite_id="task-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "demo"})],
+        execution=EvalExecutionSpec(mode=EvalExecutionMode.TASK, task_builder_ref="tests.helpers:build_demo_task"),
+    )
+    flow = EvaluationFlowDef(target={"kind": "inline", "value": {"target_path": "demo.txt"}}, suite=suite)
+
+    compiled = compile_evaluation_flow(flow)
+
+    assert compiled.eval_config.eval_target.__class__.__name__ == "_ConfiguredTaskEvalTarget"
 
 
 def test_judge_schema_validation_rejects_missing_fields() -> None:
@@ -135,6 +166,27 @@ async def test_run_evaluation_flow_executes_suite_judge_and_returns_gate() -> No
     assert report["result_counts"]["cases_total"] == 1
     assert report["result_counts"]["cases_with_metrics"] == 1
     assert report["summary"]["demo-suite"]["score"]["mean"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
+async def test_suite_judge_prefers_state_payload_over_static_case_target() -> None:
+    async def fake_judge(case_input, target):
+        return {"score": 1.0, "answer": target["answer"]}
+
+    suite = EvalSuiteDef(
+        suite_id="demo-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "demo"})],
+        judge=fake_judge,
+    )
+    from aworld.evaluations.scorers.suite_judge import SuiteJudgeScorer
+
+    scorer = SuiteJudgeScorer(suite=suite)
+    input_case = type("Case", (), {"case_data": {"query": "demo", "_target": {"path": "legacy"}}})()
+    output = {"state": {"answer": "from-state", "status": "success"}}
+
+    result = await scorer.score(0, input_case, output)
+
+    assert result.metric_results["score"]["metadata"]["answer"] == "from-state"
 
 
 def test_builtin_app_evaluator_suite_has_required_schema_and_score_gate() -> None:

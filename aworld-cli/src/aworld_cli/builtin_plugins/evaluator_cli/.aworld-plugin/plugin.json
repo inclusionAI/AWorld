@@ -1,0 +1,19 @@
+{
+  "id": "aworld-evaluator-cli",
+  "name": "aworld-evaluator-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "evaluator",
+        "name": "evaluator",
+        "target": "cli_commands/evaluator.py",
+        "scope": "workspace",
+        "visibility": "public",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}
