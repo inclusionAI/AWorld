@@ -339,6 +339,51 @@ class SinglePromptUserSimulator:
         return RolloutTurn(role="user", content=content)
 
 
+class LLMUserSimulator:
+    def __init__(self, *, turn_generator: Callable[..., Any]):
+        self.turn_generator = turn_generator
+
+    def next_turn(
+        self,
+        *,
+        case: Any,
+        target: Mapping[str, Any],
+        state: RolloutState,
+        last_output: Any | None = None,
+    ) -> RolloutTurn | None | Any:
+        user_turn_count = sum(1 for turn in state.turns if turn.role == "user")
+        generated = self.turn_generator(
+            case=case,
+            target=target,
+            state=state,
+            last_output=last_output,
+            turn_index=user_turn_count,
+        )
+        if inspect.isawaitable(generated):
+            return self._await_turn(generated)
+        return self._normalize_turn(generated)
+
+    async def _await_turn(self, generated: Any) -> RolloutTurn | None:
+        return self._normalize_turn(await generated)
+
+    def _normalize_turn(self, generated: Any) -> RolloutTurn | None:
+        if generated is None:
+            return None
+        if isinstance(generated, RolloutTurn):
+            return generated
+        if isinstance(generated, str):
+            return RolloutTurn(role="user", content=generated)
+        if isinstance(generated, Mapping):
+            if generated.get("stop") is True:
+                return None
+            return RolloutTurn(
+                role=str(generated.get("role", "user")),
+                content=generated.get("content"),
+                metadata=dict(generated.get("metadata") or {}),
+            )
+        raise TypeError("LLMUserSimulator generator must return str, mapping, RolloutTurn, or None")
+
+
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -459,11 +504,13 @@ class CallableRuntimeHarness:
         state = RolloutState(case_id=str(case_id))
         last_output: Any | None = None
         for _ in range(self.max_turns):
-            user_turn = self.simulator.next_turn(
-                case=case,
-                target=target,
-                state=state,
-                last_output=last_output,
+            user_turn = await _maybe_await(
+                self.simulator.next_turn(
+                    case=case,
+                    target=target,
+                    state=state,
+                    last_output=last_output,
+                )
             )
             if user_turn is None:
                 break
