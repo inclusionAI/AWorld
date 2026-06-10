@@ -18,6 +18,9 @@ class CaseEvaluationReport(dict):
         judge: dict[str, Any],
         judge_backend: dict[str, Any] | None = None,
         state_summary: dict[str, Any] | None = None,
+        artifacts: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        metric_details: dict[str, Any] | None = None,
     ) -> None:
         payload = {
             "case_id": case_id,
@@ -27,6 +30,12 @@ class CaseEvaluationReport(dict):
             "judge_backend": judge_backend,
             "state_summary": state_summary or {},
         }
+        if artifacts:
+            payload["artifacts"] = artifacts
+        if metadata:
+            payload["metadata"] = metadata
+        if metric_details:
+            payload["metric_details"] = metric_details
         super().__init__(payload)
 
     def to_dict(self) -> dict[str, Any]:

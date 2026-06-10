@@ -22,7 +22,15 @@ from aworld.evaluations.base import NoActionEvalTarget
 from aworld.evaluations.eval_targets.agent_eval import AworldAgentEvalTarget, AworldTaskEvalTarget
 from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec, load_program_callable
 from aworld.evaluations.manifests import validate_declared_eval_suite_manifest
+from aworld.evaluations.runtime_composition import (
+    CallableRuntimeHarness,
+    RuntimeHarness,
+    SinglePromptUserSimulator,
+    StateCheckGrader,
+    StepReward,
+)
 from aworld.evaluations.scorers import scorer_factory
+from aworld.evaluations.types import MetricNames
 from aworld.evaluations.execution_adapters import resolve_execution_adapter
 from aworld.evaluations.report import (
     CaseEvaluationReport,
@@ -247,6 +255,11 @@ class JudgeExecution:
     payload: dict[str, Any]
 
 
+class _RuntimeCompositionJudgeOutput(BaseModel):
+    score: float
+    verdict: str
+
+
 class JudgeBackend:
     backend_id: ClassVar[str] = "judge-backend"
 
@@ -370,6 +383,10 @@ class EvalSuiteDef:
     gate_policy: GatePolicyDef | None = None
     execution: EvalExecutionSpec | None = None
     harness: EvalHarnessDef | None = None
+    runtime_harness: RuntimeHarness | None = None
+    outcome_scorers: tuple[StateCheckGrader, ...] = tuple()
+    reward_metrics: tuple[str, ...] = tuple()
+    standard_metrics: tuple[str, ...] = tuple()
     trajectory_scorers: tuple[TrajectoryScorerDef, ...] = tuple()
     judge: JudgeCallable | None = None
     judge_backend: JudgeBackend | None = None
@@ -436,7 +453,7 @@ class EvalSuiteSelection:
 _EVAL_SUITE_REGISTRY: dict[tuple[str | None, str], EvalSuiteRegistration] = {}
 _LOADED_EVAL_MANIFEST_PATHS: set[str] = set()
 _DECLARED_EVAL_SUITE_IDS_BY_WORKSPACE: dict[str, set[tuple[str | None, str]]] = {}
-_BUILTIN_EVAL_SUITE_IDS = {"app-evaluator"}
+_BUILTIN_EVAL_SUITE_IDS = {"app-evaluator", "runtime-composition-adoption"}
 
 
 def _eval_suite_registry_key(suite_id: str, workspace_root: str | None = None) -> tuple[str | None, str]:
@@ -660,7 +677,27 @@ class _AdapterExecutionEvalTarget(EvalTarget[dict]):
         return {"answer": state.answer, "state": state.to_dict()}
 
 
+class _RuntimeCompositionEvalTarget(EvalTarget[dict]):
+    def __init__(self, *, target: dict[str, Any], harness: RuntimeHarness):
+        super().__init__()
+        self._target = dict(target)
+        self._harness = harness
+
+    async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
+        case = EvalCaseDef(
+            case_id=getattr(input, "eval_case_id", str(index)),
+            input=dict(input.case_data if isinstance(input, EvalDataCase) else input),
+            expected=(input.case_data or {}).get("_expected") if isinstance(input, EvalDataCase) else None,
+            metadata=(input.case_data or {}).get("_case_metadata", {}) if isinstance(input, EvalDataCase) else {},
+        )
+        rollout_state = await self._harness.run_rollout(case=case, target=self._target)
+        eval_state = rollout_state.to_eval_state(target=self._target)
+        return {"answer": eval_state.answer, "state": eval_state.to_dict()}
+
+
 def _build_eval_target(flow: EvaluationFlowDef, target: dict[str, Any]):
+    if flow.suite.runtime_harness is not None:
+        return _RuntimeCompositionEvalTarget(target=target, harness=flow.suite.runtime_harness)
     harness = resolve_eval_harness(flow.suite)
     execution = harness.execution
     if execution is None or execution.mode == EvalExecutionMode.STATIC:
@@ -696,6 +733,36 @@ def _trajectory_eval_criteria(suite: EvalSuiteDef) -> list[dict[str, Any]]:
         if scorer.scorer_class is not None:
             item["scorer_class"] = scorer.scorer_class
         criteria.append(item)
+    return criteria
+
+
+def _runtime_eval_criteria(suite: EvalSuiteDef) -> list[dict[str, Any]]:
+    criteria: list[dict[str, Any]] = []
+    for scorer in suite.outcome_scorers:
+        criteria.append(
+            {
+                "metric_name": scorer.metric_name,
+                "threshold": 1.0,
+                "scorer_class": "RuntimeOutcomeScorer",
+                "scorer_params": {"grader": scorer.to_dict()},
+            }
+        )
+    for metric_name in suite.reward_metrics:
+        criteria.append(
+            {
+                "metric_name": metric_name,
+                "threshold": 0.0,
+                "scorer_class": "RuntimeRewardScorer",
+            }
+        )
+    for metric_name in suite.standard_metrics:
+        criteria.append(
+            {
+                "metric_name": metric_name,
+                "threshold": 0.0,
+                "scorer_class": "RuntimeStandardMetricScorer",
+            }
+        )
     return criteria
 
 
@@ -740,7 +807,7 @@ def compile_evaluation_flow(flow: EvaluationFlowDef) -> CompiledEvaluationPlan:
     eval_config = EvaluationConfig(
         eval_suite_id=flow.suite.suite_id,
         eval_target=_build_eval_target(flow, normalized_target),
-        eval_criterias=[eval_criteria, *_trajectory_eval_criteria(flow.suite)],
+        eval_criterias=[eval_criteria, *_trajectory_eval_criteria(flow.suite), *_runtime_eval_criteria(flow.suite)],
         eval_dataset=dataset,
     )
     return CompiledEvaluationPlan(
@@ -868,8 +935,27 @@ def _build_state_summary(output: Mapping[str, Any] | Any) -> dict[str, Any]:
         "tool_call_count": len(state.get("tool_calls") or []) if isinstance(state, Mapping) else 0,
         "usage": dict(state.get("usage") or {}) if isinstance(state, Mapping) else {},
         "timing": dict(state.get("timing") or {}) if isinstance(state, Mapping) else {},
+        "standard_metrics": dict((state.get("metadata") or {}).get("standard_metrics") or {}) if isinstance(state, Mapping) else {},
         "error": state.get("error") if isinstance(state, Mapping) else None,
     }
+
+
+def _build_state_artifacts(output: Mapping[str, Any] | Any) -> dict[str, Any]:
+    if not isinstance(output, Mapping):
+        return {}
+    state = output.get("state") if isinstance(output.get("state"), Mapping) else output
+    if not isinstance(state, Mapping):
+        return {}
+    return dict(state.get("artifacts") or {})
+
+
+def _build_state_metadata(output: Mapping[str, Any] | Any) -> dict[str, Any]:
+    if not isinstance(output, Mapping):
+        return {}
+    state = output.get("state") if isinstance(output.get("state"), Mapping) else output
+    if not isinstance(state, Mapping):
+        return {}
+    return dict(state.get("metadata") or {})
 
 
 async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
@@ -899,6 +985,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
     for case_result in eval_result.eval_case_results:
         judge_payload = {}
         case_metrics: dict[str, Any] = {}
+        case_metric_details: dict[str, Any] = {}
         case_backend_id = None
         if case_result.score_rows:
             cases_with_metrics += 1
@@ -917,6 +1004,8 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
                     if status is not None:
                         case_metrics[metric_name]["status"] = status
                     metadata = metric_result.get("metadata") or {}
+                    if isinstance(metadata, Mapping) and metadata:
+                        case_metric_details[metric_name] = dict(metadata)
                     if case_backend_id is None and isinstance(metadata, Mapping):
                         case_backend_id = metadata.get("_judge_backend")
                 else:
@@ -936,6 +1025,9 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
                 judge=judge_payload,
                 judge_backend={"backend_id": case_backend_id} if case_backend_id is not None else None,
                 state_summary=_build_state_summary(case_result.output),
+                artifacts=_build_state_artifacts(case_result.output),
+                metadata=_build_state_metadata(case_result.output),
+                metric_details=case_metric_details,
             )
         )
 
@@ -970,6 +1062,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
             "resolved": False,
             "approved": None,
         },
+        "suite_metadata": dict(compiled.suite.metadata),
     })
     judge_schema = compiled.suite.judge_schema.json_schema()
     if judge_schema:
@@ -1281,7 +1374,75 @@ async def _default_agent_judge_executor(prompt: JudgePrompt, system_prompt: str)
     return str(response.answer)
 
 
+async def _runtime_adoption_assistant_step(*, user_turn, state, case, target) -> dict[str, Any]:
+    return {
+        "answer": "runtime composition resolved the scripted case",
+        "outcome": {"ticket": {"status": "resolved"}},
+        "step_rewards": [
+            StepReward(
+                metric_name="process_quality",
+                step_index=len(state.turns),
+                value=1.0,
+                reason="scripted runtime reached the expected terminal state",
+            )
+        ],
+        "tool_calls": [{"id": "call-1", "function": {"name": "resolve_ticket", "arguments": "{}"}}],
+        "usage": {"total_tokens": 8},
+        "timing": {"duration_ms": 1},
+    }
+
+
+async def _runtime_adoption_judge(case_input: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    outcome = ((target.get("artifacts") or {}).get("outcome") or {})
+    resolved = ((outcome.get("ticket") or {}).get("status") == "resolved")
+    return {
+        "score": 1.0 if resolved else 0.0,
+        "verdict": "approved" if resolved else "blocked",
+    }
+
+
+def _get_runtime_composition_adoption_suite() -> EvalSuiteDef:
+    return EvalSuiteDef(
+        suite_id="runtime-composition-adoption",
+        runtime_harness=CallableRuntimeHarness(
+            simulator=SinglePromptUserSimulator(),
+            assistant_step=_runtime_adoption_assistant_step,
+            max_turns=1,
+        ),
+        judge_schema=JudgeSchemaDef(output_model=_RuntimeCompositionJudgeOutput),
+        judge=_runtime_adoption_judge,
+        outcome_scorers=(
+            StateCheckGrader(
+                metric_name="ticket_resolved",
+                path=("ticket", "status"),
+                expected="resolved",
+            ),
+        ),
+        reward_metrics=("process_quality",),
+        standard_metrics=("n_turns", "n_tool_calls", "n_tokens", "duration_ms"),
+        trajectory_scorers=(
+            TrajectoryScorerDef(metric_name=MetricNames.TRAJECTORY_TOOL_CALLS, threshold=1.0),
+        ),
+        gate_policy=GatePolicyDef(
+            pass_all=(
+                GateMetricCondition(metric_name="score", op=">=", threshold=0.9),
+                GateMetricCondition(metric_name="ticket_resolved", op="==", threshold=1.0),
+                GateMetricCondition(metric_name="process_quality", op=">=", threshold=1.0),
+                GateMetricCondition(metric_name="n_turns", op="==", threshold=2),
+                GateMetricCondition(metric_name=MetricNames.TRAJECTORY_TOOL_CALLS, op="==", threshold=1.0),
+            )
+        ),
+        metadata={
+            "evaluation_purpose": "capability",
+            "adoption_suite": True,
+            "runtime_composition": True,
+        },
+    )
+
+
 def get_builtin_eval_suite(name: str, judge_backend: JudgeBackend | None = None) -> EvalSuiteDef:
+    if name == "runtime-composition-adoption":
+        return _get_runtime_composition_adoption_suite()
     if name != "app-evaluator":
         raise KeyError(name)
 
@@ -1384,4 +1545,10 @@ register_eval_suite(
     lambda target: get_builtin_eval_suite("app-evaluator"),
     matcher=lambda target: target.get("target_kind") in {"file", "directory", "image"},
     priority=10,
+)
+register_eval_suite(
+    "runtime-composition-adoption",
+    lambda target: get_builtin_eval_suite("runtime-composition-adoption"),
+    matcher=lambda target: target.get("target_kind") in {"file", "directory", "image", "inline"},
+    priority=1,
 )
