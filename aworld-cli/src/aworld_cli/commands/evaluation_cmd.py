@@ -20,10 +20,10 @@ def _usage() -> str:
   /evaluation --input <trajectory.log> --kind trajectory --task-id <id> --judge-agent <agent.md> [--out-dir <dir>]
 
 Examples:
-  /evaluation --input ./tasks.jsonl --kind task --judge-agent ./eval/answer_judge/agent.md
-  /evaluation --input ./task_answers.jsonl --kind answer --judge-agent ./eval/answer_judge/agent.md
-  /evaluation --input ./tasks.jsonl --kind trajectory --judge-agent ./eval/trajectory_evaluator/agent.md
-  /evaluation --input ~/Documents/logs/trajectory.log --kind trajectory --task-id task_123 --judge-agent ./eval/trajectory_evaluator/agent.md
+  /evaluation --input ./tasks.jsonl --kind task --judge-agent ./judge_agents/answer_judge.md
+  /evaluation --input ./task_answers.jsonl --kind answer --judge-agent ./judge_agents/answer_judge.md
+  /evaluation --input ./tasks.jsonl --kind trajectory --judge-agent ./judge_agents/trajectory_judge.md
+  /evaluation --input ~/Documents/logs/trajectory.log --kind trajectory --task-id task_123 --judge-agent ./judge_agents/trajectory_judge.md
 """
 
 

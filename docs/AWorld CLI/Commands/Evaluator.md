@@ -36,32 +36,32 @@ Source-backed usage:
 aworld-cli evaluator \
   --input ./tasks.jsonl \
   --kind task \
-  --judge-agent ./eval/answer_judge/agent.md \
+  --judge-agent ./judge_agents/answer_judge.md \
   --out-dir ./reports
 
 aworld-cli evaluator \
   --input ./task_answers.jsonl \
   --kind answer \
-  --judge-agent ./eval/answer_judge/agent.md \
+  --judge-agent ./judge_agents/answer_judge.md \
   --out-dir ./reports
 
 aworld-cli evaluator \
   --input ~/Documents/logs/trajectory.log \
   --kind trajectory \
   --task-id task_20260609193335 \
-  --judge-agent ./eval/trajectory_evaluator/agent.md \
+  --judge-agent ./judge_agents/trajectory_judge.md \
   --out-dir ./reports
 
 aworld-cli evaluator \
   --input ~/Documents/logs/trajectory.log \
   --kind trajectory \
-  --judge-agent ./eval/trajectory_evaluator/agent.md \
+  --judge-agent ./judge_agents/trajectory_judge.md \
   --out-dir ./reports
 
 aworld-cli evaluator \
   --input ./tasks.jsonl \
   --kind trajectory \
-  --judge-agent ./eval/trajectory_evaluator/agent.md \
+  --judge-agent ./judge_agents/trajectory_judge.md \
   --out-dir ./reports
 ```
 
