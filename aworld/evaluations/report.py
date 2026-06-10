@@ -21,6 +21,7 @@ class CaseEvaluationReport(dict):
         artifacts: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         metric_details: dict[str, Any] | None = None,
+        trial: dict[str, Any] | None = None,
     ) -> None:
         payload = {
             "case_id": case_id,
@@ -36,6 +37,8 @@ class CaseEvaluationReport(dict):
             payload["metadata"] = metadata
         if metric_details:
             payload["metric_details"] = metric_details
+        if trial:
+            payload["trial"] = trial
         super().__init__(payload)
 
     def to_dict(self) -> dict[str, Any]:

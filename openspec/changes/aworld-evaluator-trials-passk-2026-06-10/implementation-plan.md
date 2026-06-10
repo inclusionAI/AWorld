@@ -23,7 +23,7 @@
 
 ## Task 1: Trial Policy
 
-- [ ] **Step 1: Write failing trial policy tests**
+- [x] **Step 1: Write failing trial policy tests**
 
 Add tests in `tests/evaluations/test_evaluator_trials.py`:
 
@@ -36,13 +36,13 @@ def test_trial_policy_rejects_invalid_k_values():
         TrialPolicyDef(num_trials=2, pass_at_k=(3,)).validate()
 ```
 
-- [ ] **Step 2: Run test and confirm failure**
+- [x] **Step 2: Run test and confirm failure**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py::test_trial_policy_rejects_invalid_k_values -q`
 
 Expected: FAIL because `TrialPolicyDef` does not exist.
 
-- [ ] **Step 3: Implement `TrialPolicyDef`**
+- [x] **Step 3: Implement `TrialPolicyDef`**
 
 Add a frozen dataclass in `aworld/evaluations/substrate.py`:
 
@@ -62,7 +62,7 @@ class TrialPolicyDef:
             raise ValueError("k values must be between 1 and num_trials")
 ```
 
-- [ ] **Step 4: Run policy tests until green**
+- [x] **Step 4: Run policy tests until green**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py -q`
 
@@ -70,7 +70,7 @@ Expected: PASS for initial policy tests.
 
 ## Task 2: Trial Case Expansion
 
-- [ ] **Step 1: Write failing expansion tests**
+- [x] **Step 1: Write failing expansion tests**
 
 ```python
 def test_build_eval_dataset_expands_trial_cases():
@@ -87,17 +87,17 @@ def test_build_eval_dataset_expands_trial_cases():
     assert compiled.dataset.eval_cases[0].case_data["_trial"]["trial_index"] == 1
 ```
 
-- [ ] **Step 2: Run expansion test and confirm failure**
+- [x] **Step 2: Run expansion test and confirm failure**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py::test_build_eval_dataset_expands_trial_cases -q`
 
 Expected: FAIL because `EvalSuiteDef` does not accept `trial_policy`.
 
-- [ ] **Step 3: Implement trial expansion**
+- [x] **Step 3: Implement trial expansion**
 
 Add `trial_policy: TrialPolicyDef = field(default_factory=TrialPolicyDef)` to `EvalSuiteDef`. Update `compile_evaluation_flow()` to expand `flow.suite.cases` before `build_eval_dataset()`, preserving `_trial` metadata.
 
-- [ ] **Step 4: Run expansion tests until green**
+- [x] **Step 4: Run expansion tests until green**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py -q`
 
@@ -105,21 +105,21 @@ Expected: PASS.
 
 ## Task 3: pass@k/pass^k Aggregation
 
-- [ ] **Step 1: Write failing aggregation tests**
+- [x] **Step 1: Write failing aggregation tests**
 
 Use a deterministic judge that passes trial 2 and fails trials 1/3. Assert `score_pass@2 == 1.0` and `score_pass^2 == 0.0`.
 
-- [ ] **Step 2: Run aggregation test and confirm failure**
+- [x] **Step 2: Run aggregation test and confirm failure**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py::test_run_evaluation_flow_reports_pass_at_k_and_pass_caret_k -q`
 
 Expected: FAIL because trial aggregation does not exist.
 
-- [ ] **Step 3: Implement trial aggregation**
+- [x] **Step 3: Implement trial aggregation**
 
 In `run_evaluation_flow()`, group case results by `_trial.original_case_id`, derive each trial pass/fail from `TrialPolicyDef.success_metric` or gate primary metric, then add aggregate metrics named `<metric>_pass@k` and `<metric>_pass^k`.
 
-- [ ] **Step 4: Run aggregation tests until green**
+- [x] **Step 4: Run aggregation tests until green**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py -q`
 
@@ -127,21 +127,21 @@ Expected: PASS.
 
 ## Task 4: Retry Separation
 
-- [ ] **Step 1: Write failing retry/trial separation test**
+- [x] **Step 1: Write failing retry/trial separation test**
 
 Use a runtime harness wrapped in retry with `num_trials=2`. Assert report trial count is `2`, not the number of retry attempts, and pass@k counts terminal trial outcomes only.
 
-- [ ] **Step 2: Run retry separation test and confirm failure**
+- [x] **Step 2: Run retry separation test and confirm failure**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py::test_retry_attempts_do_not_count_as_trials -q`
 
 Expected: FAIL until trial grouping ignores retry child attempts.
 
-- [ ] **Step 3: Preserve retry attempts as artifacts only**
+- [x] **Step 3: Preserve retry attempts as artifacts only**
 
 Ensure trial aggregation reads only top-level trial results and never inspects `artifacts.attempts` as independent outcomes.
 
-- [ ] **Step 4: Run retry separation tests until green**
+- [x] **Step 4: Run retry separation tests until green**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py -q`
 
@@ -149,17 +149,17 @@ Expected: PASS.
 
 ## Task 5: Report Shape and Compatibility
 
-- [ ] **Step 1: Write failing report compatibility tests**
+- [x] **Step 1: Write failing report compatibility tests**
 
 Assert one-trial `app-evaluator` style suites keep current required report fields, while multi-trial reports include `trial_policy`, `trial_counts`, and per-result trial metadata.
 
-- [ ] **Step 2: Run report tests and confirm failure**
+- [x] **Step 2: Run report tests and confirm failure**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py::test_multi_trial_report_exposes_trial_metadata -q`
 
 Expected: FAIL until report metadata is added.
 
-- [ ] **Step 3: Add additive report fields**
+- [x] **Step 3: Add additive report fields**
 
 Add report fields without changing existing required fields:
 
@@ -168,7 +168,7 @@ report["trial_policy"] = {...}
 report["trial_counts"] = {"original_cases": n, "trials_total": m}
 ```
 
-- [ ] **Step 4: Run report tests until green**
+- [x] **Step 4: Run report tests until green**
 
 Run: `pytest tests/evaluations/test_evaluator_trials.py tests/evaluations/test_evaluation_substrate.py -q`
 
@@ -176,7 +176,7 @@ Expected: PASS.
 
 ## Task 6: Verification and Commit
 
-- [ ] **Step 1: Run evaluator regression suite**
+- [x] **Step 1: Run evaluator regression suite**
 
 Run:
 
@@ -186,13 +186,13 @@ pytest tests/evaluations/test_execution_state.py tests/evaluations/test_executio
 
 Expected: PASS.
 
-- [ ] **Step 2: Validate OpenSpec**
+- [x] **Step 2: Validate OpenSpec**
 
 Run: `openspec validate aworld-evaluator-trials-passk-2026-06-10 --strict`
 
 Expected: `Change 'aworld-evaluator-trials-passk-2026-06-10' is valid`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add aworld/evaluations/substrate.py aworld/evaluations/report.py tests/evaluations/test_evaluator_trials.py openspec/changes/aworld-evaluator-trials-passk-2026-06-10

@@ -83,6 +83,33 @@ class TrajectoryScorerDef:
 
 
 @dataclass(frozen=True)
+class TrialPolicyDef:
+    num_trials: int = 1
+    pass_at_k: tuple[int, ...] = tuple()
+    pass_caret_k: tuple[int, ...] = tuple()
+    success_metric: str | None = None
+
+    def validate(self) -> None:
+        if self.num_trials < 1:
+            raise ValueError("num_trials must be >= 1")
+        invalid = [
+            k
+            for k in (*self.pass_at_k, *self.pass_caret_k)
+            if k < 1 or k > self.num_trials
+        ]
+        if invalid:
+            raise ValueError("k values must be between 1 and num_trials")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "num_trials": self.num_trials,
+            "pass_at_k": list(self.pass_at_k),
+            "pass_caret_k": list(self.pass_caret_k),
+            "success_metric": self.success_metric,
+        }
+
+
+@dataclass(frozen=True)
 class JudgeSchemaDef:
     required_fields: tuple[str, ...] = tuple()
     output_model: type[BaseModel] | None = None
@@ -387,6 +414,7 @@ class EvalSuiteDef:
     outcome_scorers: tuple[StateCheckGrader, ...] = tuple()
     reward_metrics: tuple[str, ...] = tuple()
     standard_metrics: tuple[str, ...] = tuple()
+    trial_policy: TrialPolicyDef = field(default_factory=TrialPolicyDef)
     trajectory_scorers: tuple[TrajectoryScorerDef, ...] = tuple()
     judge: JudgeCallable | None = None
     judge_backend: JudgeBackend | None = None
@@ -637,6 +665,31 @@ def build_eval_dataset(cases: list[EvalCaseDef], target: dict[str, Any]) -> Eval
     return EvalDataset(eval_dataset_id=dataset_id, eval_dataset_name="suite_eval_dataset", eval_cases=eval_cases)
 
 
+def _expand_trial_cases(cases: list[EvalCaseDef], trial_policy: TrialPolicyDef) -> list[EvalCaseDef]:
+    trial_policy.validate()
+    if trial_policy.num_trials == 1:
+        return cases
+
+    expanded: list[EvalCaseDef] = []
+    for case in cases:
+        for trial_index in range(1, trial_policy.num_trials + 1):
+            trial_id = f"{case.case_id}::trial-{trial_index}"
+            trial_metadata = {
+                "original_case_id": case.case_id,
+                "trial_index": trial_index,
+                "trial_id": trial_id,
+            }
+            expanded.append(
+                replace(
+                    case,
+                    case_id=trial_id,
+                    input={**case.input, "_trial": trial_metadata},
+                    metadata={**case.metadata, "_trial": trial_metadata},
+                )
+            )
+    return expanded
+
+
 def resolve_eval_harness(suite: EvalSuiteDef) -> EvalHarnessDef:
     if suite.harness is not None:
         return suite.harness
@@ -792,7 +845,8 @@ def _validate_trajectory_scorer_def(scorer: TrajectoryScorerDef) -> None:
 
 def compile_evaluation_flow(flow: EvaluationFlowDef) -> CompiledEvaluationPlan:
     normalized_target = _normalize_target(flow.target)
-    dataset = build_eval_dataset(flow.suite.cases, normalized_target)
+    trial_cases = _expand_trial_cases(flow.suite.cases, flow.suite.trial_policy)
+    dataset = build_eval_dataset(trial_cases, normalized_target)
     harness = resolve_eval_harness(flow.suite)
     gate_policy = flow.suite.gate_policy or GatePolicyDef(metric_name="score", pass_threshold=0.0)
     score_bounds = _gate_metric_eval_bounds(gate_policy, "score")
@@ -844,6 +898,96 @@ def _extract_metric_value_from_result_summary(summary: Mapping[str, Any], metric
         except KeyError:
             continue
     raise KeyError(f"metric {metric_name} is missing aggregate summary")
+
+
+def _case_trial_metadata(case_result: Any) -> dict[str, Any]:
+    input_obj = getattr(case_result, "input", None)
+    case_data = getattr(input_obj, "case_data", {}) if input_obj is not None else {}
+    trial = case_data.get("_trial") if isinstance(case_data, Mapping) else None
+    return dict(trial or {})
+
+
+def _case_metric_value(case_result: Any, metric_name: str) -> Any:
+    for score_row in getattr(case_result, "score_rows", {}).values():
+        metric_result = getattr(score_row, "metric_results", {}).get(metric_name)
+        if isinstance(metric_result, Mapping) and "value" in metric_result:
+            return metric_result["value"]
+        if metric_result is not None:
+            return metric_result
+    raise KeyError(metric_name)
+
+
+def _metric_value_passed(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) > 0.0
+    return bool(value)
+
+
+def _summarize_binary_values(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"mean": 0.0, "min": 0.0, "max": 0.0, "std": 0.0}
+    mean = sum(values) / len(values)
+    return {
+        "mean": mean,
+        "min": min(values),
+        "max": max(values),
+        "std": 0.0,
+    }
+
+
+def _trial_base_success_metric(metric_name: str) -> str:
+    for marker in ("_pass@", "_pass^"):
+        if marker in metric_name:
+            return metric_name.split(marker, 1)[0]
+    return metric_name
+
+
+def _apply_trial_metrics(eval_result: Any, suite: EvalSuiteDef, gate_policy: GatePolicyDef | None) -> dict[str, Any]:
+    policy = suite.trial_policy
+    if policy.num_trials == 1 and not policy.pass_at_k and not policy.pass_caret_k:
+        return {
+            "original_cases": len(eval_result.eval_case_results),
+            "trials_total": len(eval_result.eval_case_results),
+        }
+
+    configured_metric = policy.success_metric or (gate_policy.primary_metric_name() if gate_policy else "score")
+    success_metric = _trial_base_success_metric(configured_metric)
+    groups: dict[str, list[Any]] = {}
+    for case_result in eval_result.eval_case_results:
+        trial = _case_trial_metadata(case_result)
+        original_case_id = trial.get("original_case_id") or case_result.eval_case_id
+        groups.setdefault(str(original_case_id), []).append(case_result)
+
+    trial_metrics: dict[str, dict[str, Any]] = {}
+    for k in policy.pass_at_k:
+        values: list[float] = []
+        for results in groups.values():
+            ordered = sorted(results, key=lambda result: int(_case_trial_metadata(result).get("trial_index", 1)))
+            selected = ordered[:k]
+            passed = any(_metric_value_passed(_case_metric_value(result, success_metric)) for result in selected)
+            values.append(1.0 if passed else 0.0)
+        trial_metrics[f"{success_metric}_pass@{k}"] = _summarize_binary_values(values)
+
+    for k in policy.pass_caret_k:
+        values = []
+        for results in groups.values():
+            ordered = sorted(results, key=lambda result: int(_case_trial_metadata(result).get("trial_index", 1)))
+            selected = ordered[:k]
+            passed = len(selected) >= k and all(
+                _metric_value_passed(_case_metric_value(result, success_metric))
+                for result in selected
+            )
+            values.append(1.0 if passed else 0.0)
+        trial_metrics[f"{success_metric}_pass^{k}"] = _summarize_binary_values(values)
+
+    if trial_metrics:
+        eval_result.summary["trial_metrics"] = trial_metrics
+    return {
+        "original_cases": len(groups),
+        "trials_total": len(eval_result.eval_case_results),
+    }
 
 
 def _flatten_result_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
@@ -961,6 +1105,7 @@ def _build_state_metadata(output: Mapping[str, Any] | Any) -> dict[str, Any]:
 async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
     compiled = compile_evaluation_flow(flow)
     eval_result = await EvaluateRunner(config=compiled.eval_config).run()
+    trial_counts = _apply_trial_metrics(eval_result, compiled.suite, compiled.gate_policy)
 
     suite_summary = eval_result.summary.get(compiled.suite.suite_id, {})
     gate_metrics = {}
@@ -1028,6 +1173,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
                 artifacts=_build_state_artifacts(case_result.output),
                 metadata=_build_state_metadata(case_result.output),
                 metric_details=case_metric_details,
+                trial=_case_trial_metadata(case_result),
             )
         )
 
@@ -1063,6 +1209,8 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
             "approved": None,
         },
         "suite_metadata": dict(compiled.suite.metadata),
+        "trial_policy": compiled.suite.trial_policy.to_dict(),
+        "trial_counts": trial_counts,
     })
     judge_schema = compiled.suite.judge_schema.json_schema()
     if judge_schema:
