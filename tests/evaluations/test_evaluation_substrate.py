@@ -896,6 +896,36 @@ async def test_suite_judge_prefers_state_payload_over_static_case_target() -> No
     assert result.metric_results["score"]["metadata"]["answer"] == "from-state"
 
 
+@pytest.mark.asyncio
+async def test_report_keeps_full_judge_metadata_only_on_score_metric() -> None:
+    async def fake_judge(case_input, target):
+        return {
+            "score": 0.5,
+            "verdict": "Fail",
+            "A1_groundedness": 1,
+            "veto_triggered": True,
+        }
+
+    suite = EvalSuiteDef(
+        suite_id="demo-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "demo"})],
+        judge=fake_judge,
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "inline", "value": {"target_path": "demo"}},
+            suite=suite,
+        )
+    )
+
+    result = report["results"][0]
+    assert result["judge"]["A1_groundedness"] == 1
+    assert result["metrics"]["verdict"]["value"] == "Fail"
+    assert set(result["metric_details"]) == {"score"}
+    assert result["metric_details"]["score"]["veto_triggered"] is True
+
+
 def test_builtin_app_evaluator_suite_has_required_schema_and_score_gate() -> None:
     suite = get_builtin_eval_suite("app-evaluator")
 
