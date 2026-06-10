@@ -82,9 +82,9 @@ def test_maybe_dispatch_top_level_command_runs_source_evaluator_command(
     def fake_run_evaluator_source_cli(**kwargs):
         calls.update(kwargs)
         return {
-            "suite_id": "source-evaluator",
+            "suite_id": "answer-source-evaluator",
             "gate": {"status": "pass"},
-            "summary": {"source-evaluator": {"score": {"mean": 0.9}}},
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
             "results": [],
             "approval": {"required": False, "resolved": False, "approved": None},
         }
@@ -101,7 +101,7 @@ def test_maybe_dispatch_top_level_command_runs_source_evaluator_command(
             "--input",
             str(input_path),
             "--kind",
-            "task-answer",
+            "answer",
             "--judge-agent",
             str(judge_agent),
             "--out-dir",
@@ -112,13 +112,62 @@ def test_maybe_dispatch_top_level_command_runs_source_evaluator_command(
 
     assert handled is True
     assert calls["input"] == str(input_path)
-    assert calls["kind"] == "task-answer"
+    assert calls["kind"] == "answer"
     assert calls["judge_agent"] == str(judge_agent)
     assert calls["out_dir"] == str(tmp_path / "reports")
     assert calls["id_field"] == "id"
     assert calls["task_field"] == "input"
     assert calls["answer_field"] == "answer"
-    assert "source-evaluator" in output
+    assert "answer-source-evaluator" in output
+    assert "pass" in output
+
+
+def test_maybe_dispatch_top_level_command_runs_task_source_with_default_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "tasks.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    calls = {}
+
+    def fake_run_evaluator_source_cli(**kwargs):
+        calls.update(kwargs)
+        return {
+            "suite_id": "task-source-evaluator",
+            "gate": {"status": "pass"},
+            "summary": {"task-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [{"state_summary": {"answer": "answer"}}],
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_source_cli",
+        fake_run_evaluator_source_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "evaluator",
+            "--input",
+            str(input_path),
+            "--kind",
+            "task",
+            "--judge-agent",
+            str(judge_agent),
+            "--out-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert handled is True
+    assert calls["kind"] == "task"
+    assert calls["agent"] is None
+    assert "task-source-evaluator" in output
     assert "pass" in output
 
 
@@ -160,7 +209,7 @@ def test_evaluator_source_run_rejects_target_mode_arguments(
         SimpleNamespace(
             target="artifact.txt",
             input="answers.jsonl",
-            kind="task-answer",
+            kind="answer",
             judge_agent="agent.md",
             out_dir=None,
             output=None,
@@ -202,7 +251,7 @@ def test_evaluator_source_run_rejects_other_target_mode_arguments(
         "target": None,
         "suite": None,
         "input": "answers.jsonl",
-        "kind": "task-answer",
+        "kind": "answer",
         "judge_agent": "agent.md",
         "out_dir": None,
         "output": None,

@@ -145,6 +145,7 @@ def get_evaluator_report_schema() -> dict[str, object]:
                     "source_kind": {"type": ["string", "null"]},
                     "source_input": {"type": ["string", "null"]},
                     "task_id": {"type": ["string", "null"]},
+                    "agent": {"type": ["string", "null"]},
                 },
                 "additionalProperties": False,
             },

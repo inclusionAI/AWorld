@@ -12,7 +12,7 @@ Use it when you want to:
 
 - run a built-in evaluator suite such as `app-evaluator`
 - load declaration-backed evaluator suites from workspace manifests
-- evaluate existing source records such as task+answer JSONL files or AWorld trajectory logs
+- evaluate task JSONL files, existing task+answer JSONL files, or AWorld trajectory logs
 - inspect which suites match a target
 - export the evaluator report schema
 - validate a saved evaluator report in automation
@@ -34,27 +34,47 @@ Source-backed usage:
 
 ```bash
 aworld-cli evaluator \
+  --input ./tasks.jsonl \
+  --kind task \
+  --judge-agent ./eval/answer_judge/agent.md \
+  --out-dir ./reports
+
+aworld-cli evaluator \
   --input ./task_answers.jsonl \
-  --kind task-answer \
+  --kind answer \
   --judge-agent ./eval/answer_judge/agent.md \
   --out-dir ./reports
 
 aworld-cli evaluator \
   --input ~/Documents/logs/trajectory.log \
-  --kind aworld-trajectory-log \
+  --kind trajectory \
   --task-id task_20260609193335 \
+  --judge-agent ./eval/trajectory_evaluator/agent.md \
+  --out-dir ./reports
+
+aworld-cli evaluator \
+  --input ~/Documents/logs/trajectory.log \
+  --kind trajectory \
+  --judge-agent ./eval/trajectory_evaluator/agent.md \
+  --out-dir ./reports
+
+aworld-cli evaluator \
+  --input ./tasks.jsonl \
+  --kind trajectory \
   --judge-agent ./eval/trajectory_evaluator/agent.md \
   --out-dir ./reports
 ```
 
-For `task-answer` JSONL inputs, the default fields are `id`, `input`, and `answer`. Use `--id-field`, `--task-field`, and `--answer-field` only when the file uses different names.
+For `task` JSONL inputs, the default fields are `id` and `input`; the evaluator runs each task through the CLI default `Aworld` agent unless `--agent` is supplied. For `trajectory`, passing `--task-id` replays one task from an existing AWorld trajectory log, omitting `--task-id` with a trajectory log replays all tasks in that log, and omitting `--task-id` with task JSONL runs the main agent, extracts the response trajectory, and evaluates that generated trajectory. For `answer` JSONL inputs, the default fields are `id`, `input`, and `answer`. Use `--id-field`, `--task-field`, and `--answer-field` only when the file uses different names.
 
 Useful options:
 
 ```bash
 aworld-cli evaluator --target ./artifact --output ./report.json
 aworld-cli evaluator --target ./artifact --interactive-approval
-aworld-cli evaluator --input ./task_answers.jsonl --kind task-answer --judge-agent ./agent.md --output ./report.json
+aworld-cli evaluator --input ./tasks.jsonl --kind task --judge-agent ./agent.md --agent Aworld --output ./report.json
+aworld-cli evaluator --input ./tasks.jsonl --kind trajectory --judge-agent ./trajectory_agent.md --output ./report.json
+aworld-cli evaluator --input ./task_answers.jsonl --kind answer --judge-agent ./agent.md --output ./report.json
 ```
 
 ## Declared Suite Manifests
@@ -153,7 +173,7 @@ See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/
 
 1. Inspect matching suites with `aworld-cli evaluator --list-suites --target ./artifact`.
 2. Run evaluation with `aworld-cli evaluator --target ./artifact`.
-3. For existing outputs, run source-backed evaluation with `aworld-cli evaluator --input <file> --kind task-answer --judge-agent <agent.md>`.
+3. For task-only inputs, run source-backed execution and evaluation with `aworld-cli evaluator --input <file> --kind task --judge-agent <agent.md>`.
 4. Save or collect the emitted JSON report.
 5. Validate persisted reports with `aworld-cli evaluator --validate-report <file>`.
 6. Export the current JSON Schema with `aworld-cli evaluator --print-report-schema` when integrating with external tooling.
@@ -172,5 +192,5 @@ See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/
 - declared suite manifests currently layer on `app-evaluator` only; they are not a generic suite authoring format yet.
 - `--print-report-schema` prints the current JSON Schema for `aworld.evaluator.report`.
 - `--validate-report` validates an existing JSON report against that schema without re-running evaluation.
-- `aworld-cli evaluator --input ...` currently supports `task-answer` and `aworld-trajectory-log`; task-only execution sources and generic serialized-state sources are intentionally deferred until the framework provides those source kinds.
+- `aworld-cli evaluator --input ...` currently supports `task`, `answer`, and `trajectory`; generic serialized-state sources are intentionally deferred until the framework provides those source kinds.
 - the CLI command is an assembly/product layer; reusable evaluator building blocks stay in `aworld/evaluations/**`.

@@ -14,8 +14,9 @@ def test_evaluator_report_command_doc_covers_schema_and_validation() -> None:
     assert "--print-report-schema" in content
     assert "--validate-report" in content
     assert "aworld-cli evaluator --input" in content
-    assert "--kind task-answer" in content
-    assert "--kind aworld-trajectory-log" in content
+    assert "--kind task" in content
+    assert "--kind answer" in content
+    assert "--kind trajectory" in content
     assert "report_format" in content
     assert "automation" in content
     assert ".aworld/evaluators/*.json" in content

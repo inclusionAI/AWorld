@@ -563,7 +563,7 @@ class TestEvaluationCommand:
 
         assert "Usage:" in result
         assert "/evaluation --input" in result
-        assert "--kind aworld-trajectory-log" in result
+        assert "--kind trajectory" in result
 
     @pytest.mark.asyncio
     async def test_evaluation_delegates_to_source_runtime(self, monkeypatch, tmp_path):
@@ -575,9 +575,9 @@ class TestEvaluationCommand:
         def fake_run_evaluator_source_cli(**kwargs):
             calls.update(kwargs)
             return {
-                "suite_id": "trajectory-log-source-evaluator",
+                "suite_id": "trajectory-source-evaluator",
                 "gate": {"status": "pass"},
-                "summary": {"trajectory-log-source-evaluator": {"score": {"mean": 88.0}}},
+                "summary": {"trajectory-source-evaluator": {"score": {"mean": 88.0}}},
                 "results": [],
                 "approval": {"required": False, "resolved": False, "approved": None},
                 "report_path": str(tmp_path / "report.json"),
@@ -592,18 +592,18 @@ class TestEvaluationCommand:
             CommandContext(
                 cwd=os.getcwd(),
                 user_args=(
-                    f"--input {input_path} --kind aworld-trajectory-log "
+                    f"--input {input_path} --kind trajectory "
                     f"--task-id task-1 --judge-agent {agent_path} --out-dir {tmp_path}"
                 ),
             )
         )
 
         assert calls["input"] == str(input_path)
-        assert calls["kind"] == "aworld-trajectory-log"
+        assert calls["kind"] == "trajectory"
         assert calls["task_id"] == "task-1"
         assert calls["judge_agent"] == str(agent_path)
         assert calls["out_dir"] == str(tmp_path)
-        assert "trajectory-log-source-evaluator" in result
+        assert "trajectory-source-evaluator" in result
         assert "Report:" in result
 
     @pytest.mark.asyncio
@@ -619,10 +619,10 @@ class TestEvaluationCommand:
                 "report_version": 1,
                 "report_format": {"id": "aworld.evaluator.report", "version": 1},
                 "generated_at": "2026-06-10T00:00:00Z",
-                "suite_id": "source-evaluator",
+                "suite_id": "answer-source-evaluator",
                 "target": flow.target,
                 "judge_backend": {"backend_id": "source-agent-md"},
-                "summary": {"source-evaluator": {"score": {"mean": 88.0}}},
+                "summary": {"answer-source-evaluator": {"score": {"mean": 88.0}}},
                 "metrics": {"score": {"mean": 88.0}},
                 "results": [],
                 "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
@@ -637,13 +637,13 @@ class TestEvaluationCommand:
             CommandContext(
                 cwd=os.getcwd(),
                 user_args=(
-                    f"--input {input_path} --kind task-answer "
+                    f"--input {input_path} --kind answer "
                     f"--judge-agent {agent_path} --output {tmp_path / 'report.json'}"
                 ),
             )
         )
 
-        assert "source-evaluator" in result
+        assert "answer-source-evaluator" in result
         assert "Report:" in result
 
 
@@ -656,8 +656,8 @@ class TestSlashCommandCompletion:
         words, meta = cli._build_completion_entries(agent_names=[])
 
         assert "/evaluation" in words
-        assert "/evaluation --kind task-answer" in words
-        assert "/evaluation --kind aworld-trajectory-log" in words
+        assert "/evaluation --kind answer" in words
+        assert "/evaluation --kind trajectory" in words
         assert meta["/evaluation"] == "Run evaluator flows"
 
     def test_console_completion_entries_include_cron_subcommands(self):

@@ -257,10 +257,10 @@ def test_source_cli_report_assertion_matches_manual_trajectory_goal(tmp_path: Pa
         "report_version": 1,
         "report_format": {"id": "aworld.evaluator.report", "version": 1},
         "generated_at": "2026-06-10T00:00:00Z",
-        "suite_id": "trajectory-log-source-evaluator",
+        "suite_id": "trajectory-source-evaluator",
         "target": {"target_kind": "source", "target_path": str(log_path)},
         "judge_backend": {"backend_id": "trajectory-evaluator-agent-md"},
-        "summary": {"trajectory-log-source-evaluator": {"score": {"mean": 64.0}}},
+        "summary": {"trajectory-source-evaluator": {"score": {"mean": 64.0}}},
         "metrics": {
             "score": {"mean": 64.0},
             "has_evidence": {"mean": 1.0},
@@ -294,14 +294,14 @@ def test_source_cli_report_assertion_matches_manual_trajectory_goal(tmp_path: Pa
             "suggested_exit_code": 2,
             "case_count": 1,
             "judge_backend": "trajectory-evaluator-agent-md",
-            "source_kind": "aworld-trajectory-log",
+            "source_kind": "trajectory",
             "source_input": str(log_path),
             "task_id": task_id,
         },
         "source_selection": {
             "mode": "source",
             "input": str(log_path),
-            "kind": "aworld-trajectory-log",
+            "kind": "trajectory",
             "task_id": task_id,
             "judge_agent": str(agent_prompt_path),
         },
@@ -333,7 +333,7 @@ def _assert_source_cli_trajectory_report_matches_manual_goal(
     validate_evaluator_report(dict(report))
     report_path = Path(str(report["report_path"]))
     assert report_path.exists()
-    assert report["suite_id"] == "trajectory-log-source-evaluator"
+    assert report["suite_id"] == "trajectory-source-evaluator"
     assert report["gate"]["status"] in {"pass", "fail", "needs_approval"}
     assert report["metrics"]["has_evidence"]["mean"] == 1.0
     assert report["metrics"]["agent_finished"]["mean"] == 1.0
@@ -341,13 +341,13 @@ def _assert_source_cli_trajectory_report_matches_manual_goal(
 
     source_selection = report["source_selection"]
     assert source_selection["mode"] == "source"
-    assert source_selection["kind"] == "aworld-trajectory-log"
+    assert source_selection["kind"] == "trajectory"
     assert source_selection["task_id"] == task_id
     assert Path(str(source_selection["input"])).resolve() == log_path.resolve()
     assert Path(str(source_selection["judge_agent"])).resolve() == agent_prompt_path.resolve()
 
     automation = report["automation"]
-    assert automation["source_kind"] == "aworld-trajectory-log"
+    assert automation["source_kind"] == "trajectory"
     assert automation["task_id"] == task_id
     assert Path(str(automation["source_input"])).resolve() == log_path.resolve()
 
@@ -508,7 +508,7 @@ def test_manual_trajectory_log_case_runs_via_source_cli_for_human_replay(request
 
     report = run_evaluator_source_cli(
         input=str(log_path),
-        kind="aworld-trajectory-log",
+        kind="trajectory",
         task_id=task_id,
         judge_agent=str(agent_prompt_path),
         out_dir=str(out_dir),
