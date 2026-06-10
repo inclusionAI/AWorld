@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add rollout-owning evaluator runtime composition with multi-turn harnesses, user simulation, step-level rewards, and one adoption suite that actively consumes v2 evaluator capabilities.
+**Goal:** Add rollout-owning evaluator runtime composition with multi-turn harnesses, outcome/state-check grading, user simulation, step-level rewards, and one adoption suite that actively consumes v2 evaluator capabilities.
 
-**Architecture:** Keep the current single-shot evaluator substrate intact. Add a runtime-composition layer under `aworld/evaluations/` that can execute multi-turn rollouts, normalize them into `EvalState`, aggregate reward metrics, and compose retry attempts while preserving child state.
+**Architecture:** Keep the current single-shot evaluator substrate intact. Add a runtime-composition layer under `aworld/evaluations/` that can execute multi-turn rollouts, normalize them into `EvalState`, evaluate final outcome snapshots, aggregate weighted reward metrics, derive standard rollout metrics, and compose retry attempts while preserving child state. Retry remains an execution wrapper, not pass@k/pass^k trial evaluation.
 
 **Tech Stack:** Python dataclasses/protocols, AWorld evaluator substrate, existing scorer/report infrastructure, Pydantic for typed judge outputs, pytest, OpenSpec.
 
@@ -13,17 +13,17 @@
 ## File Structure
 
 - Create: `aworld/evaluations/runtime_composition.py`
-  Rollout state, turn records, user simulator protocols, runtime harness protocols, and retry wrapper primitives.
+  Rollout state, turn records, outcome check records, user simulator protocols, runtime harness protocols, reward records, and retry wrapper primitives.
 - Modify: `aworld/evaluations/substrate.py`
   Compile opt-in runtime-composition suites and register the adoption suite.
 - Modify: `aworld/evaluations/execution.py`
   Add rollout-state-to-`EvalState` normalization helpers if they do not fit cleanly in `runtime_composition.py`.
 - Modify: `aworld/evaluations/report.py`
-  Preserve attempt/reward metadata in existing report shape without breaking schema.
+  Preserve attempt/reward/outcome metadata in existing report shape without breaking schema.
 - Modify: `aworld/evaluations/scorers/**`
-  Add reward aggregation scorers or reuse existing scorer infrastructure for step reward metrics.
+  Add outcome and reward aggregation scorers or reuse existing scorer infrastructure for those metrics.
 - Test: `tests/evaluations/test_runtime_composition.py`
-  Focused tests for rollout state, simulator, harness, retry wrapper, reward aggregation, and adoption suite.
+  Focused tests for rollout state, outcome grading, simulator, harness, retry wrapper, reward aggregation, standard metrics, and adoption suite.
 - Test: existing evaluator regression tests
   Ensure single-shot behavior remains compatible.
 
@@ -41,6 +41,7 @@ def test_rollout_state_to_eval_state_excludes_live_handles():
         status="success",
         answer="done",
         turns=[RolloutTurn(role="user", content="hello")],
+        outcome={"artifact_exists": True},
         metadata={"live_agent": live_agent, "safe": "ok"},
     )
 
@@ -49,6 +50,7 @@ def test_rollout_state_to_eval_state_excludes_live_handles():
     assert eval_state.case_id == "case-1"
     assert eval_state.answer == "done"
     assert eval_state.trajectory
+    assert eval_state.artifacts["outcome"]["artifact_exists"] is True
     assert "live_agent" not in eval_state.metadata
     assert eval_state.metadata["safe"] == "ok"
 ```
@@ -61,7 +63,7 @@ Expected: FAIL because `runtime_composition.py` and `RolloutState` do not exist.
 
 - [ ] **Step 3: Add minimal rollout models**
 
-Create `aworld/evaluations/runtime_composition.py` with serializable dataclasses for `RolloutTurn`, `StepReward`, `RolloutState`, `EvalRuntimeHarnessDef`, `RuntimeHarness`, and `UserSimulator`.
+Create `aworld/evaluations/runtime_composition.py` with serializable dataclasses for `RolloutTurn`, `OutcomeCheckResult`, `StepReward`, `RolloutState`, `EvalRuntimeHarnessDef`, `RuntimeHarness`, and `UserSimulator`.
 
 - [ ] **Step 4: Run rollout tests until green**
 
@@ -69,7 +71,49 @@ Run: `pytest tests/evaluations/test_runtime_composition.py -q`
 
 Expected: PASS for initial rollout state tests.
 
-## Task 2: Scripted User Simulator
+## Task 2: Outcome / State-Check Grading
+
+- [ ] **Step 1: Write failing outcome grader tests**
+
+Cover deterministic final-state checks:
+
+```python
+def test_state_check_grader_emits_outcome_metric():
+    state = RolloutState(
+        case_id="case-1",
+        status="success",
+        outcome={"ticket": {"status": "resolved"}},
+    )
+    grader = StateCheckGrader(
+        metric_name="ticket_resolved",
+        path=("ticket", "status"),
+        expected="resolved",
+    )
+
+    result = grader.grade(state=state, case=None, target={})
+
+    assert result.metric_name == "ticket_resolved"
+    assert result.value == 1.0
+    assert result.passed is True
+```
+
+- [ ] **Step 2: Run outcome tests and confirm failure**
+
+Run: `pytest tests/evaluations/test_runtime_composition.py::test_state_check_grader_emits_outcome_metric -q`
+
+Expected: FAIL because `StateCheckGrader` does not exist.
+
+- [ ] **Step 3: Implement deterministic state-check grader**
+
+Add an in-process state-check grader that reads serializable rollout `outcome` data and emits normal metric-compatible results. Reject checks that require command execution, sandbox reset, or non-serializable live handles.
+
+- [ ] **Step 4: Run outcome tests until green**
+
+Run: `pytest tests/evaluations/test_runtime_composition.py -q`
+
+Expected: PASS.
+
+## Task 3: Scripted User Simulator
 
 - [ ] **Step 1: Write failing simulator tests**
 
@@ -105,7 +149,7 @@ Run: `pytest tests/evaluations/test_runtime_composition.py -q`
 
 Expected: PASS.
 
-## Task 3: Runtime Harness Execution
+## Task 4: Runtime Harness Execution
 
 - [ ] **Step 1: Write failing harness execution tests**
 
@@ -127,11 +171,11 @@ Run: `pytest tests/evaluations/test_runtime_composition.py -q`
 
 Expected: PASS.
 
-## Task 4: Step Rewards and Aggregation
+## Task 5: Step Rewards and Aggregation
 
 - [ ] **Step 1: Write failing reward aggregation tests**
 
-Cover reward records becoming case and aggregate metrics.
+Cover reward records becoming weighted and partial-credit case/aggregate metrics.
 
 - [ ] **Step 2: Run reward tests and confirm failure**
 
@@ -141,7 +185,7 @@ Expected: FAIL because reward aggregation is not wired.
 
 - [ ] **Step 3: Implement step reward records and aggregation scorer**
 
-Use existing scorer/report metric shapes. Keep reward metrics distinct from judge metrics.
+Use existing scorer/report metric shapes. Keep reward metrics distinct from judge and outcome metrics.
 
 - [ ] **Step 4: Run reward tests until green**
 
@@ -149,11 +193,11 @@ Run: `pytest tests/evaluations/test_runtime_composition.py -q`
 
 Expected: PASS.
 
-## Task 5: Retry Wrapper Composition
+## Task 6: Retry Wrapper Composition
 
 - [ ] **Step 1: Write failing retry wrapper tests**
 
-Cover failed first attempt, successful second attempt, and preserved child/attempt state.
+Cover failed first attempt, successful second attempt, preserved child/attempt state, and explicit absence of pass@k/pass^k labels.
 
 - [ ] **Step 2: Run retry tests and confirm failure**
 
@@ -163,7 +207,7 @@ Expected: FAIL because retry wrapper does not exist.
 
 - [ ] **Step 3: Implement retry wrapper**
 
-Add a retry wrapper around a base `RuntimeHarness` with max attempts and selected terminal attempt.
+Add a retry wrapper around a base `RuntimeHarness` with max attempts and selected terminal attempt. Preserve attempts as child state and do not emit trial metrics.
 
 - [ ] **Step 4: Run retry tests until green**
 
@@ -171,11 +215,33 @@ Run: `pytest tests/evaluations/test_runtime_composition.py -q`
 
 Expected: PASS.
 
-## Task 6: Adoption Suite
+## Task 7: Standard Metrics and Suite Purpose
+
+- [ ] **Step 1: Write failing standard metric tests**
+
+Cover `n_turns`, `n_tool_calls`, token usage, and duration derivation from rollout state.
+
+- [ ] **Step 2: Run standard metric tests and confirm failure**
+
+Run: `pytest tests/evaluations/test_runtime_composition.py::test_rollout_standard_metrics_are_derived -q`
+
+Expected: FAIL because standard metric derivation does not exist.
+
+- [ ] **Step 3: Implement standard metric derivation and purpose metadata preservation**
+
+Add rollout standard metrics and preserve suite metadata such as `evaluation_purpose="capability"` or `evaluation_purpose="regression"` in report context.
+
+- [ ] **Step 4: Run standard metric tests until green**
+
+Run: `pytest tests/evaluations/test_runtime_composition.py -q`
+
+Expected: PASS.
+
+## Task 8: Adoption Suite
 
 - [ ] **Step 1: Write failing adoption suite tests**
 
-Assert the new suite is registered, uses typed judge schema, composite gate, trajectory scorer, step reward metric, scripted simulator, and runtime harness.
+Assert the new suite is registered, uses typed judge schema, composite gate, outcome/state-check grader, trajectory scorer, step reward metric, scripted simulator, purpose metadata, and runtime harness.
 
 - [ ] **Step 2: Run adoption tests and confirm failure**
 
@@ -193,7 +259,7 @@ Run: `pytest tests/evaluations/test_runtime_composition.py tests/evaluations/tes
 
 Expected: PASS.
 
-## Task 7: Verification and Commit
+## Task 9: Verification and Commit
 
 - [ ] **Step 1: Run evaluator regression suite**
 
