@@ -109,6 +109,47 @@ def test_compile_evaluation_flow_lowers_trajectory_scorers_to_eval_criteria() ->
     assert metric_names == ["score", MetricNames.TRAJECTORY_TOOL_CALLS]
 
 
+def test_compile_evaluation_flow_rejects_unknown_trajectory_metric() -> None:
+    suite = EvalSuiteDef(
+        suite_id="trajectory-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello world"})],
+        judge=lambda case_input, target: {"score": 1.0},
+        trajectory_scorers=(
+            TrajectoryScorerDef(metric_name="trajectory_typo"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unknown trajectory metric"):
+        compile_evaluation_flow(
+            EvaluationFlowDef(
+                target={"kind": "inline", "value": {"target_path": "demo.txt"}},
+                suite=suite,
+            )
+        )
+
+
+def test_compile_evaluation_flow_rejects_unsupported_trajectory_scorer_params() -> None:
+    suite = EvalSuiteDef(
+        suite_id="trajectory-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello world"})],
+        judge=lambda case_input, target: {"score": 1.0},
+        trajectory_scorers=(
+            TrajectoryScorerDef(
+                metric_name=MetricNames.TRAJECTORY_TOOL_CALLS,
+                scorer_params={"minimum_calls": 2},
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unsupported trajectory scorer_params"):
+        compile_evaluation_flow(
+            EvaluationFlowDef(
+                target={"kind": "inline", "value": {"target_path": "demo.txt"}},
+                suite=suite,
+            )
+        )
+
+
 def test_eval_case_def_supports_expected_and_runtime_overrides() -> None:
     case = EvalCaseDef(
         case_id="case-1",

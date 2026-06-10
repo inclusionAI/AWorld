@@ -51,6 +51,9 @@ class ScorerFactory(Factory):
         if scorer_id in self._metric_to_scorers:
             del self._default_scorer_params[scorer_id]
 
+    def get_scorer_class(self, metric_name: str) -> Type[Scorer] | None:
+        return self._metric_to_scorers.get(metric_name)
+
     def create_scorer_instance(self, scorer_class: Type[Scorer], criteria: EvalCriteria = None) -> Scorer:
         """Create a scorer instance using parameters from EvalCriteria and defaults.
 

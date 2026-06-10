@@ -81,20 +81,15 @@ class AworldAgentEvalTarget(EvalTarget[dict]):
                 "input": dict(case_data),
             },
         )()
-        state = await resolve_execution_adapter(
-            EvalExecutionSpec(
-                mode=EvalExecutionMode.AGENT,
-                target_config={"agent": self.agent},
-                query_column=query_column,
-            )
-        ).execute(
+        spec = EvalExecutionSpec(
+            mode=EvalExecutionMode.AGENT,
+            target_config={"agent": self.agent},
+            query_column=query_column,
+        )
+        state = await resolve_execution_adapter(spec).execute(
             case=case,
             target=dict(case_data.get("_target", {})),
-            spec=EvalExecutionSpec(
-                mode=EvalExecutionMode.AGENT,
-                target_config={"agent": self.agent},
-                query_column=query_column,
-            ),
+            spec=spec,
         )
         return {"answer": state.answer, "state": state.to_dict()}
 
