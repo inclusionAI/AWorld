@@ -301,6 +301,7 @@ def _build_source_suite(
                 pass_all=(
                     GateMetricCondition(metric_name="score", op=">=", threshold=70.0),
                     GateMetricCondition(metric_name="A1_groundedness", op=">=", threshold=3),
+                    GateMetricCondition(metric_name="veto_triggered", op="==", threshold=False),
                     GateMetricCondition(metric_name="has_evidence", op="==", threshold=1.0),
                     GateMetricCondition(metric_name="agent_finished", op="==", threshold=1.0),
                 )

@@ -42,27 +42,18 @@ class EvaluatorTopLevelCommand:
         parser.add_argument("--list-suites", action="store_true")
         parser.add_argument("--print-report-schema", action="store_true")
         parser.add_argument("--validate-report", type=str)
-        subparsers = parser.add_subparsers(dest="evaluator_action")
-        run_parser = subparsers.add_parser(
-            "run",
-            help="Run a source-backed evaluator flow.",
-            description="Run a source-backed evaluator flow.",
-            prog="aworld-cli evaluator run",
-        )
-        run_parser.add_argument("--input", required=True)
-        run_parser.add_argument("--kind", required=True)
-        run_parser.add_argument("--judge-agent", required=True)
-        run_parser.add_argument("--out-dir")
-        run_parser.add_argument("--output")
-        run_parser.add_argument("--task-id")
-        run_parser.add_argument("--agent")
-        run_parser.add_argument("--id-field", default="id")
-        run_parser.add_argument("--task-field", default="input")
-        run_parser.add_argument("--answer-field", default="answer")
-        run_parser.add_argument("--interactive-approval", action="store_true")
+        parser.add_argument("--input", type=str)
+        parser.add_argument("--kind", type=str)
+        parser.add_argument("--judge-agent", type=str)
+        parser.add_argument("--out-dir", type=str)
+        parser.add_argument("--task-id", type=str)
+        parser.add_argument("--agent", type=str)
+        parser.add_argument("--id-field", default="id")
+        parser.add_argument("--task-field", default="input")
+        parser.add_argument("--answer-field", default="answer")
 
     def run(self, args, context) -> int:
-        if getattr(args, "evaluator_action", None) == "run":
+        if getattr(args, "input", None):
             incompatible_args = (
                 ("target", "--target"),
                 ("suite", "--suite"),
@@ -72,8 +63,14 @@ class EvaluatorTopLevelCommand:
             )
             for attr_name, flag_name in incompatible_args:
                 if getattr(args, attr_name, None):
-                    print(f"Evaluator error: {flag_name} cannot be used with evaluator run")
+                    print(f"Evaluator error: {flag_name} cannot be used with --input")
                     return 1
+            if not getattr(args, "kind", None):
+                print("Evaluator error: --kind is required with --input")
+                return 1
+            if not getattr(args, "judge_agent", None):
+                print("Evaluator error: --judge-agent is required with --input")
+                return 1
             try:
                 report = run_evaluator_source_cli(
                     input=args.input,
@@ -93,6 +90,18 @@ class EvaluatorTopLevelCommand:
                 return 1
             print(render_evaluator_summary(report))
             return evaluator_exit_code(report)
+
+        source_only_args = (
+            ("kind", "--kind"),
+            ("judge_agent", "--judge-agent"),
+            ("out_dir", "--out-dir"),
+            ("task_id", "--task-id"),
+            ("agent", "--agent"),
+        )
+        for attr_name, flag_name in source_only_args:
+            if getattr(args, attr_name, None):
+                print(f"Evaluator error: --input is required when using {flag_name}")
+                return 1
 
         if getattr(args, "print_report_schema", False):
             print(json.dumps(get_evaluator_report_schema(), ensure_ascii=False, indent=2))

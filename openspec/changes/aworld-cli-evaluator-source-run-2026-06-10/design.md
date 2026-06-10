@@ -30,7 +30,7 @@ The new framework input-source layer will make evaluation inputs first-class: ta
 The canonical source-backed path should be:
 
 ```bash
-aworld-cli evaluator run \
+aworld-cli evaluator \
   --input ~/Documents/logs/trajectory.log \
   --kind aworld-trajectory-log \
   --task-id task_20260609193335 \
@@ -41,7 +41,7 @@ aworld-cli evaluator run \
 Task+answer files:
 
 ```bash
-aworld-cli evaluator run \
+aworld-cli evaluator \
   --input task_answers.jsonl \
   --kind task-answer \
   --judge-agent eval/answer_judge/agent.md \
@@ -53,7 +53,7 @@ The default JSONL fields are `id`, `input`, and `answer`. `--id-field`, `--task-
 Task-only files are a follow-on source kind once the framework input-source layer adds task-only source support:
 
 ```bash
-aworld-cli evaluator run \
+aworld-cli evaluator \
   --input tasks.jsonl \
   --kind task \
   --id-field task_id \
@@ -94,7 +94,7 @@ The evaluator command does not own:
 The implementation should follow existing CLI conventions:
 
 - keep `EvaluatorTopLevelCommand` as the command object exposed through the builtin evaluator plugin entrypoint
-- add `run` as a subparser under `evaluator`, or otherwise route source-backed arguments through the same command object without creating a new top-level command
+- route source-backed `--input` arguments through the same command object without creating a new top-level command
 - keep source-backed flow assembly in `aworld_cli.evaluator_runtime`
 - use `PluginManager`, `get_builtin_plugin_roots`, `load_plugin_hooks`, and `_run_evaluator_hooks` as the hook path
 
@@ -147,19 +147,19 @@ Existing usage remains valid:
 aworld-cli evaluator --target ./some-target --suite app-evaluator
 ```
 
-The new `evaluator run` source path should not break `--list-suites`, `--print-report-schema`, `--validate-report`, or interactive approval behavior.
+The new `evaluator --input ...` source path should not break `--list-suites`, `--print-report-schema`, `--validate-report`, or interactive approval behavior.
 
 ## Risks / Trade-offs
 
-- [Command ambiguity] `evaluator --target` and `evaluator run --input` can coexist, but parser errors must clearly explain which mode is active.
+- [Command ambiguity] `evaluator --target` and `evaluator --input` are mutually exclusive, so parser errors must clearly explain which mode is active.
 - [Too many flags] Field mappings are necessary for generic JSONL. Presets can reduce repeated arguments later.
-- [Case-specific drift] Avoid canonical `evaluator trajectory-log`; if aliases are added later, they should delegate to `evaluator run --kind aworld-trajectory-log`.
+- [Case-specific drift] Avoid canonical `evaluator trajectory-log`; if aliases are added later, they should delegate to `evaluator --input ... --kind aworld-trajectory-log`.
 - [Plugin overreach] Hook contracts must state that plugins customize CLI assembly and side effects only.
 
 ## Migration Plan
 
 1. Land framework input sources first, including the manual test refactor.
-2. Add source-run parser mode to the existing evaluator command.
+2. Add source-backed `--input` parser mode to the existing evaluator command.
 3. Add source-run runtime helper that calls framework APIs.
 4. Extend evaluator hook event payloads with source mode fields.
 5. Add CLI tests for argument validation and runtime delegation.

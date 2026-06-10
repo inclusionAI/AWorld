@@ -1,7 +1,7 @@
 ## 1. Parser And Command Shape
 
 - [x] 1.1 Confirm `aworld-evaluator-input-sources-2026-06-10` has landed before implementing source-backed CLI behavior.
-- [x] 1.2 Extend the existing `EvaluatorTopLevelCommand` parser with a source-backed `run` mode.
+- [x] 1.2 Extend the existing `EvaluatorTopLevelCommand` parser with source-backed `--input` mode.
 - [x] 1.3 Add `--input`, `--kind`, `--judge-agent`, `--out-dir`, `--output`, `--task-id`, `--agent`, and optional JSONL field mapping arguments for source mode.
 - [x] 1.4 Default task+answer JSONL field mappings to `id`, `input`, and `answer`.
 - [x] 1.5 Preserve existing `--target`, `--suite`, `--list-suites`, `--print-report-schema`, `--validate-report`, and `--interactive-approval` behavior.
@@ -32,7 +32,7 @@
 
 ## 5. Tests
 
-- [x] 5.1 Add parser tests for source-backed `evaluator run` arguments.
+- [x] 5.1 Add parser tests for source-backed `evaluator --input` arguments.
 - [x] 5.2 Add validation tests for required source-mode arguments and incompatible argument combinations.
 - [x] 5.3 Add runtime delegation tests using fake framework source helpers.
 - [x] 5.4 Add hook payload tests for source-backed pre-run/post-run/render events.

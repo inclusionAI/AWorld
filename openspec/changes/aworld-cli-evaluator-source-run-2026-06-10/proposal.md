@@ -10,7 +10,7 @@ The existing CLI already has an official evaluator command implemented through t
 
 ## What Changes
 
-- Add a source-backed `aworld-cli evaluator run` mode to the existing evaluator command.
+- Add a source-backed `aworld-cli evaluator --input ...` mode to the existing evaluator command.
 - Support source-oriented arguments: `--input`, `--kind`, optional field mappings, optional `--task-id`, `--agent`, `--judge-agent`, and output options.
 - Use conventional JSONL field defaults (`id`, `input`, `answer`) so simple task+answer files do not require field-mapping flags.
 - Keep the canonical command source-oriented rather than case-specific; trajectory-log, task-only, and task+answer are input kinds, not separate evaluator stacks.

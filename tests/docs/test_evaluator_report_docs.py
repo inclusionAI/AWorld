@@ -13,7 +13,7 @@ def test_evaluator_report_command_doc_covers_schema_and_validation() -> None:
     assert "aworld-cli evaluator" in content
     assert "--print-report-schema" in content
     assert "--validate-report" in content
-    assert "aworld-cli evaluator run" in content
+    assert "aworld-cli evaluator --input" in content
     assert "--kind task-answer" in content
     assert "--kind aworld-trajectory-log" in content
     assert "report_format" in content

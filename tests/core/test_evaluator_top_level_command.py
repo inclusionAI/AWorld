@@ -98,7 +98,6 @@ def test_maybe_dispatch_top_level_command_runs_source_evaluator_command(
         [
             "aworld-cli",
             "evaluator",
-            "run",
             "--input",
             str(input_path),
             "--kind",
@@ -159,7 +158,6 @@ def test_evaluator_source_run_rejects_target_mode_arguments(
 
     exit_code = EvaluatorTopLevelCommand().run(
         SimpleNamespace(
-            evaluator_action="run",
             target="artifact.txt",
             input="answers.jsonl",
             kind="task-answer",
@@ -178,16 +176,16 @@ def test_evaluator_source_run_rejects_target_mode_arguments(
 
     output = capsys.readouterr().out
     assert exit_code == 1
-    assert "--target cannot be used with evaluator run" in output
+    assert "--target cannot be used with --input" in output
 
 
 @pytest.mark.parametrize(
     ("arg_name", "expected"),
     [
-        ("suite", "--suite cannot be used with evaluator run"),
-        ("list_suites", "--list-suites cannot be used with evaluator run"),
-        ("print_report_schema", "--print-report-schema cannot be used with evaluator run"),
-        ("validate_report", "--validate-report cannot be used with evaluator run"),
+        ("suite", "--suite cannot be used with --input"),
+        ("list_suites", "--list-suites cannot be used with --input"),
+        ("print_report_schema", "--print-report-schema cannot be used with --input"),
+        ("validate_report", "--validate-report cannot be used with --input"),
     ],
 )
 def test_evaluator_source_run_rejects_other_target_mode_arguments(
@@ -201,7 +199,6 @@ def test_evaluator_source_run_rejects_other_target_mode_arguments(
         lambda **kwargs: pytest.fail("source runtime should not be called"),
     )
     args = {
-        "evaluator_action": "run",
         "target": None,
         "suite": None,
         "input": "answers.jsonl",
@@ -229,6 +226,42 @@ def test_evaluator_source_run_rejects_other_target_mode_arguments(
     output = capsys.readouterr().out
     assert exit_code == 1
     assert expected in output
+
+
+def test_evaluator_source_mode_requires_kind_and_judge_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_source_cli",
+        lambda **kwargs: pytest.fail("source runtime should not be called"),
+    )
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=None,
+            suite=None,
+            input="answers.jsonl",
+            kind=None,
+            judge_agent=None,
+            out_dir=None,
+            output=None,
+            task_id=None,
+            agent=None,
+            id_field="id",
+            task_field="input",
+            answer_field="answer",
+            interactive_approval=False,
+            list_suites=False,
+            print_report_schema=False,
+            validate_report=None,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "--kind is required with --input" in output
 
 
 def test_evaluator_command_returns_nonzero_for_unresolved_approval(

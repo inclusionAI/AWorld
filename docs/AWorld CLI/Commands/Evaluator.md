@@ -33,13 +33,13 @@ aworld-cli evaluator --validate-report ./.aworld/evaluations/artifact.app-evalua
 Source-backed usage:
 
 ```bash
-aworld-cli evaluator run \
+aworld-cli evaluator \
   --input ./task_answers.jsonl \
   --kind task-answer \
   --judge-agent ./eval/answer_judge/agent.md \
   --out-dir ./reports
 
-aworld-cli evaluator run \
+aworld-cli evaluator \
   --input ~/Documents/logs/trajectory.log \
   --kind aworld-trajectory-log \
   --task-id task_20260609193335 \
@@ -54,7 +54,7 @@ Useful options:
 ```bash
 aworld-cli evaluator --target ./artifact --output ./report.json
 aworld-cli evaluator --target ./artifact --interactive-approval
-aworld-cli evaluator run --input ./task_answers.jsonl --kind task-answer --judge-agent ./agent.md --output ./report.json
+aworld-cli evaluator --input ./task_answers.jsonl --kind task-answer --judge-agent ./agent.md --output ./report.json
 ```
 
 ## Declared Suite Manifests
@@ -144,7 +144,7 @@ Key report sections:
 - `gate`: structured `pass` / `fail` / `needs_approval` decision
 - `automation`: exit-code-oriented summary fields for scripts and CI
 - `suite_selection`: resolved/defaulted suite selection diagnostics
-- `source_selection`: source input diagnostics for `aworld-cli evaluator run`
+- `source_selection`: source input diagnostics for source-backed `aworld-cli evaluator --input ...`
 - `approval`: approval decision metadata when the gate requires human confirmation
 
 See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/aworld/examples/aworld_quick_start/cli/evaluator_report.example.json) for a minimal example.
@@ -153,7 +153,7 @@ See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/
 
 1. Inspect matching suites with `aworld-cli evaluator --list-suites --target ./artifact`.
 2. Run evaluation with `aworld-cli evaluator --target ./artifact`.
-3. For existing outputs, run source-backed evaluation with `aworld-cli evaluator run --input <file> --kind task-answer --judge-agent <agent.md>`.
+3. For existing outputs, run source-backed evaluation with `aworld-cli evaluator --input <file> --kind task-answer --judge-agent <agent.md>`.
 4. Save or collect the emitted JSON report.
 5. Validate persisted reports with `aworld-cli evaluator --validate-report <file>`.
 6. Export the current JSON Schema with `aworld-cli evaluator --print-report-schema` when integrating with external tooling.
@@ -172,5 +172,5 @@ See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/
 - declared suite manifests currently layer on `app-evaluator` only; they are not a generic suite authoring format yet.
 - `--print-report-schema` prints the current JSON Schema for `aworld.evaluator.report`.
 - `--validate-report` validates an existing JSON report against that schema without re-running evaluation.
-- `aworld-cli evaluator run` currently supports `task-answer` and `aworld-trajectory-log`; task-only execution sources and generic serialized-state sources are intentionally deferred until the framework provides those source kinds.
+- `aworld-cli evaluator --input ...` currently supports `task-answer` and `aworld-trajectory-log`; task-only execution sources and generic serialized-state sources are intentionally deferred until the framework provides those source kinds.
 - the CLI command is an assembly/product layer; reusable evaluator building blocks stay in `aworld/evaluations/**`.
