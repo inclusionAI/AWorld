@@ -34,8 +34,8 @@ aworld-cli evaluator \
   --input ~/Documents/logs/trajectory.log \
   --kind trajectory \
   --task-id task_20260609193335 \
-  --judge-agent eval/trajectory_evaluator/agent.md \
-  --out-dir eval/trajectory_evaluator/reports
+  --judge-agent judge_agents/trajectory_judge.md \
+  --out-dir reports
 ```
 
 Task+answer files:
@@ -44,7 +44,7 @@ Task+answer files:
 aworld-cli evaluator \
   --input task_answers.jsonl \
   --kind answer \
-  --judge-agent eval/answer_judge/agent.md \
+  --judge-agent judge_agents/answer_judge.md \
   --out-dir reports
 ```
 
@@ -59,7 +59,7 @@ aworld-cli evaluator \
   --id-field task_id \
   --task-field task \
   --agent Aworld \
-  --judge-agent eval/answer_judge/agent.md \
+  --judge-agent judge_agents/answer_judge.md \
   --out-dir reports
 ```
 
