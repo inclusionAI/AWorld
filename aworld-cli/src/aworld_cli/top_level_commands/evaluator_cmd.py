@@ -10,6 +10,7 @@ from aworld_cli.evaluator_runtime import (
     get_evaluator_report_schema,
     render_evaluator_summary,
     run_evaluator_cli,
+    run_evaluator_source_cli,
     validate_evaluator_report,
 )
 
@@ -41,8 +42,58 @@ class EvaluatorTopLevelCommand:
         parser.add_argument("--list-suites", action="store_true")
         parser.add_argument("--print-report-schema", action="store_true")
         parser.add_argument("--validate-report", type=str)
+        subparsers = parser.add_subparsers(dest="evaluator_action")
+        run_parser = subparsers.add_parser(
+            "run",
+            help="Run a source-backed evaluator flow.",
+            description="Run a source-backed evaluator flow.",
+            prog="aworld-cli evaluator run",
+        )
+        run_parser.add_argument("--input", required=True)
+        run_parser.add_argument("--kind", required=True)
+        run_parser.add_argument("--judge-agent", required=True)
+        run_parser.add_argument("--out-dir")
+        run_parser.add_argument("--output")
+        run_parser.add_argument("--task-id")
+        run_parser.add_argument("--agent")
+        run_parser.add_argument("--id-field", default="id")
+        run_parser.add_argument("--task-field", default="input")
+        run_parser.add_argument("--answer-field", default="answer")
+        run_parser.add_argument("--interactive-approval", action="store_true")
 
     def run(self, args, context) -> int:
+        if getattr(args, "evaluator_action", None) == "run":
+            incompatible_args = (
+                ("target", "--target"),
+                ("suite", "--suite"),
+                ("list_suites", "--list-suites"),
+                ("print_report_schema", "--print-report-schema"),
+                ("validate_report", "--validate-report"),
+            )
+            for attr_name, flag_name in incompatible_args:
+                if getattr(args, attr_name, None):
+                    print(f"Evaluator error: {flag_name} cannot be used with evaluator run")
+                    return 1
+            try:
+                report = run_evaluator_source_cli(
+                    input=args.input,
+                    kind=args.kind,
+                    judge_agent=args.judge_agent,
+                    out_dir=args.out_dir,
+                    output=args.output,
+                    task_id=args.task_id,
+                    agent=args.agent,
+                    id_field=args.id_field,
+                    task_field=args.task_field,
+                    answer_field=args.answer_field,
+                    interactive_approval=args.interactive_approval,
+                )
+            except (FileNotFoundError, ValueError, KeyError) as exc:
+                print(f"Evaluator error: {exc}")
+                return 1
+            print(render_evaluator_summary(report))
+            return evaluator_exit_code(report)
+
         if getattr(args, "print_report_schema", False):
             print(json.dumps(get_evaluator_report_schema(), ensure_ascii=False, indent=2))
             return 0

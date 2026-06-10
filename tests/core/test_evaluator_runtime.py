@@ -13,11 +13,13 @@ import aworld.evaluations.substrate as substrate_module
 from aworld.evaluations.manifests import get_declared_eval_suite_schema
 from aworld.evaluations.report import EvaluatorReport
 from aworld_cli.evaluator_runtime import (
+    _build_source_prompt,
     available_evaluator_suites,
     evaluator_exit_code,
     get_declared_evaluator_suite_schema,
     get_evaluator_report_schema,
     run_evaluator_cli,
+    run_evaluator_source_cli,
     validate_evaluator_report,
 )
 from aworld_cli.evaluator_rendering import render_evaluator_summary
@@ -70,6 +72,133 @@ def test_run_evaluator_cli_persists_approval_state(
     assert report["approval"]["approved"] is True
     assert persisted["approval"]["approved"] is True
     assert persisted["judge_backend"]["backend_id"] == "stub-agent"
+
+
+def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question","answer":"existing"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    output = tmp_path / "report.json"
+    captured = {}
+
+    async def fake_run_evaluation_flow(flow):
+        captured["flow"] = flow
+        return {
+            "report_version": 1,
+            "suite_id": "source-evaluator",
+            "judge_backend": {"backend_id": "source-agent-md"},
+            "summary": {"source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="task-answer",
+        judge_agent=str(judge_agent),
+        output=str(output),
+    )
+
+    flow = captured["flow"]
+    assert flow.target["target_kind"] == "source"
+    assert flow.target["source_kind"] == "task-answer"
+    assert flow.suite.cases[0].case_id == "case-1"
+    assert flow.suite.cases[0].input == {"input": "question"}
+    assert flow.suite.judge_backend.backend_id == "source-agent-md"
+    assert report["source_selection"]["kind"] == "task-answer"
+    assert report["automation"]["source_kind"] == "task-answer"
+    assert output.exists()
+
+
+def test_source_prompt_uses_zero_to_hundred_score_contract() -> None:
+    prompt = _build_source_prompt(
+        {"input": "question"},
+        {"answer": "existing"},
+        suite=None,
+    )
+
+    payload = json.loads(prompt)
+    assert payload["required_output_schema"]["score"] == "number, weighted score from 0 to 100"
+
+
+def test_run_evaluator_source_cli_rejects_unsupported_source_kind(tmp_path: Path) -> None:
+    input_path = tmp_path / "tasks.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported source kind"):
+        run_evaluator_source_cli(
+            input=str(input_path),
+            kind="task",
+            judge_agent=str(judge_agent),
+        )
+
+
+def test_run_evaluator_source_cli_passes_source_fields_to_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question","answer":"existing"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    events: list[tuple[str, dict]] = []
+
+    class CaptureHook:
+        def __init__(self, hook_point: str):
+            self.hook_point = hook_point
+
+        async def run(self, *, event, state):
+            events.append((self.hook_point, dict(event)))
+            return {"metadata": {"hook_tag": "source-hook"}}
+
+    async def fake_run_evaluation_flow(flow):
+        assert flow.target["hook_tag"] == "source-hook"
+        return {
+            "report_version": 1,
+            "suite_id": "source-evaluator",
+            "summary": {"source-evaluator": {"score": {"mean": 0.9}}},
+            "metrics": {"score": {"mean": 0.9}},
+            "results": [],
+            "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
+            "approval": {"required": False, "resolved": False, "approved": None},
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._load_evaluator_hooks",
+        lambda: {
+            "evaluator.pre_run": (CaptureHook("pre"),),
+            "evaluator.post_run": (CaptureHook("post"),),
+        },
+    )
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    run_evaluator_source_cli(
+        input=str(input_path),
+        kind="task-answer",
+        judge_agent=str(judge_agent),
+        task_id="case-1",
+        output=str(tmp_path / "report.json"),
+    )
+
+    assert events[0][0] == "pre"
+    assert events[0][1]["mode"] == "source"
+    assert events[0][1]["input"] == str(input_path.resolve())
+    assert events[0][1]["kind"] == "task-answer"
+    assert events[0][1]["task_id"] == "case-1"
+    assert events[0][1]["judge_agent"] == str(judge_agent.resolve())
+    assert events[1][0] == "post"
+    assert events[1][1]["mode"] == "source"
+    assert events[1][1]["report"]["source_selection"]["kind"] == "task-answer"
 
 
 @pytest.mark.asyncio

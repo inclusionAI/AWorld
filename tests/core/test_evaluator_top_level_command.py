@@ -68,6 +68,61 @@ def test_maybe_dispatch_top_level_command_runs_evaluator_command(
     assert "pass" in output
 
 
+def test_maybe_dispatch_top_level_command_runs_source_evaluator_command(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question","answer":"answer"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    calls = {}
+
+    def fake_run_evaluator_source_cli(**kwargs):
+        calls.update(kwargs)
+        return {
+            "suite_id": "source-evaluator",
+            "gate": {"status": "pass"},
+            "summary": {"source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_source_cli",
+        fake_run_evaluator_source_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "evaluator",
+            "run",
+            "--input",
+            str(input_path),
+            "--kind",
+            "task-answer",
+            "--judge-agent",
+            str(judge_agent),
+            "--out-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert handled is True
+    assert calls["input"] == str(input_path)
+    assert calls["kind"] == "task-answer"
+    assert calls["judge_agent"] == str(judge_agent)
+    assert calls["out_dir"] == str(tmp_path / "reports")
+    assert calls["id_field"] == "id"
+    assert calls["task_field"] == "input"
+    assert calls["answer_field"] == "answer"
+    assert "source-evaluator" in output
+    assert "pass" in output
+
+
 def test_evaluator_command_returns_nonzero_for_failed_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -91,6 +146,89 @@ def test_evaluator_command_returns_nonzero_for_failed_gate(
     )
 
     assert exit_code == 2
+
+
+def test_evaluator_source_run_rejects_target_mode_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_source_cli",
+        lambda **kwargs: pytest.fail("source runtime should not be called"),
+    )
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            evaluator_action="run",
+            target="artifact.txt",
+            input="answers.jsonl",
+            kind="task-answer",
+            judge_agent="agent.md",
+            out_dir=None,
+            output=None,
+            task_id=None,
+            agent=None,
+            id_field="id",
+            task_field="input",
+            answer_field="answer",
+            interactive_approval=False,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "--target cannot be used with evaluator run" in output
+
+
+@pytest.mark.parametrize(
+    ("arg_name", "expected"),
+    [
+        ("suite", "--suite cannot be used with evaluator run"),
+        ("list_suites", "--list-suites cannot be used with evaluator run"),
+        ("print_report_schema", "--print-report-schema cannot be used with evaluator run"),
+        ("validate_report", "--validate-report cannot be used with evaluator run"),
+    ],
+)
+def test_evaluator_source_run_rejects_other_target_mode_arguments(
+    arg_name: str,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_source_cli",
+        lambda **kwargs: pytest.fail("source runtime should not be called"),
+    )
+    args = {
+        "evaluator_action": "run",
+        "target": None,
+        "suite": None,
+        "input": "answers.jsonl",
+        "kind": "task-answer",
+        "judge_agent": "agent.md",
+        "out_dir": None,
+        "output": None,
+        "task_id": None,
+        "agent": None,
+        "id_field": "id",
+        "task_field": "input",
+        "answer_field": "answer",
+        "interactive_approval": False,
+        "list_suites": False,
+        "print_report_schema": False,
+        "validate_report": None,
+    }
+    args[arg_name] = "value" if arg_name in {"suite", "validate_report"} else True
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(**args),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert expected in output
 
 
 def test_evaluator_command_returns_nonzero_for_unresolved_approval(
