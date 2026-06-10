@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld.evaluations.sources import AWorldTrajectoryLogSource, create_source_eval_suite
 from aworld.evaluations.substrate import (
@@ -20,6 +23,7 @@ from aworld.evaluations.substrate import (
 )
 from aworld.evaluations.report import validate_evaluator_report
 from aworld.evaluations.trajectory_judge import TrajectoryJudgeSchema
+from aworld_cli.evaluator_runtime import run_evaluator_source_cli
 
 
 DEFAULT_JUDGE_TIMEOUT_SECONDS = 600.0
@@ -230,10 +234,135 @@ def test_trajectory_step_assertion_uses_extracted_num_steps(tmp_path: Path):
     _assert_report_trajectory_steps_match_extracted(result)
 
 
+def test_source_cli_report_assertion_matches_manual_trajectory_goal(tmp_path: Path):
+    task_id = "task_for_cli_assertion"
+    log_path = tmp_path / "trajectory.log"
+    agent_prompt_path = tmp_path / "agent.md"
+    report_path = tmp_path / "report.json"
+    extracted_path = tmp_path / f"extracted_{task_id}.json"
+    log_path.write_text("log", encoding="utf-8")
+    agent_prompt_path.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    extracted_path.write_text(
+        json.dumps(
+            {
+                "task_id": task_id,
+                "num_steps": 2,
+                "final_answer": "final",
+                "evidence": [{"content": "tool result"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = {
+        "report_version": 1,
+        "report_format": {"id": "aworld.evaluator.report", "version": 1},
+        "generated_at": "2026-06-10T00:00:00Z",
+        "suite_id": "trajectory-log-source-evaluator",
+        "target": {"target_kind": "source", "target_path": str(log_path)},
+        "judge_backend": {"backend_id": "trajectory-evaluator-agent-md"},
+        "summary": {"trajectory-log-source-evaluator": {"score": {"mean": 64.0}}},
+        "metrics": {
+            "score": {"mean": 64.0},
+            "has_evidence": {"mean": 1.0},
+            "agent_finished": {"mean": 1.0},
+        },
+        "results": [
+            {
+                "case_id": task_id,
+                "input": {"task_id": task_id, "trajectory_log": str(log_path)},
+                "metrics": {
+                    "score": {"value": 64.0, "status": "PASSED"},
+                    "has_evidence": {"value": True, "status": "PASSED"},
+                    "agent_finished": {"value": True, "status": "PASSED"},
+                },
+                "judge": {"score": 64.0, "verdict": "Marginal", "A1_groundedness": 3},
+                "judge_backend": {"backend_id": "trajectory-evaluator-agent-md"},
+                "state_summary": {"answer": "final", "trajectory_steps": 2},
+                "metadata": {"extracted_path": str(extracted_path)},
+            }
+        ],
+        "result_counts": {"cases_total": 1, "cases_with_metrics": 1, "cases_with_judge": 1},
+        "gate": {"status": "fail", "metric_name": None, "value": None},
+        "approval": {"required": False, "resolved": False, "approved": None},
+        "automation": {
+            "gate_status": "fail",
+            "metric_name": None,
+            "metric_value": None,
+            "approval_required": False,
+            "approval_resolved": False,
+            "approved": None,
+            "suggested_exit_code": 2,
+            "case_count": 1,
+            "judge_backend": "trajectory-evaluator-agent-md",
+            "source_kind": "aworld-trajectory-log",
+            "source_input": str(log_path),
+            "task_id": task_id,
+        },
+        "source_selection": {
+            "mode": "source",
+            "input": str(log_path),
+            "kind": "aworld-trajectory-log",
+            "task_id": task_id,
+            "judge_agent": str(agent_prompt_path),
+        },
+        "report_path": str(report_path),
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    _assert_source_cli_trajectory_report_matches_manual_goal(
+        report,
+        task_id=task_id,
+        log_path=log_path,
+        agent_prompt_path=agent_prompt_path,
+    )
+
+
 def _assert_report_trajectory_steps_match_extracted(result: Mapping[str, Any]) -> None:
     extracted_path = Path(str(result["metadata"]["extracted_path"]))
     extracted = json.loads(extracted_path.read_text(encoding="utf-8"))
     assert result["state_summary"]["trajectory_steps"] == extracted["num_steps"]
+
+
+def _assert_source_cli_trajectory_report_matches_manual_goal(
+    report: Mapping[str, Any],
+    *,
+    task_id: str,
+    log_path: Path,
+    agent_prompt_path: Path,
+) -> None:
+    validate_evaluator_report(dict(report))
+    report_path = Path(str(report["report_path"]))
+    assert report_path.exists()
+    assert report["suite_id"] == "trajectory-log-source-evaluator"
+    assert report["gate"]["status"] in {"pass", "fail", "needs_approval"}
+    assert report["metrics"]["has_evidence"]["mean"] == 1.0
+    assert report["metrics"]["agent_finished"]["mean"] == 1.0
+    assert report["judge_backend"]["backend_id"] == "trajectory-evaluator-agent-md"
+
+    source_selection = report["source_selection"]
+    assert source_selection["mode"] == "source"
+    assert source_selection["kind"] == "aworld-trajectory-log"
+    assert source_selection["task_id"] == task_id
+    assert Path(str(source_selection["input"])).resolve() == log_path.resolve()
+    assert Path(str(source_selection["judge_agent"])).resolve() == agent_prompt_path.resolve()
+
+    automation = report["automation"]
+    assert automation["source_kind"] == "aworld-trajectory-log"
+    assert automation["task_id"] == task_id
+    assert Path(str(automation["source_input"])).resolve() == log_path.resolve()
+
+    result = report["results"][0]
+    assert result["case_id"] == task_id
+    assert result["judge"]["verdict"] in {"Excellent", "Pass", "Marginal", "Fail"}
+    assert 0 <= result["judge"]["score"] <= 100
+    assert result["state_summary"]["answer"]
+    assert Path(result["metadata"]["extracted_path"]).exists()
+    _assert_report_trajectory_steps_match_extracted(result)
+
+    extracted = json.loads(Path(result["metadata"]["extracted_path"]).read_text(encoding="utf-8"))
+    assert extracted["task_id"] == task_id
+    assert extracted["final_answer"]
+    assert extracted["evidence"]
 
 
 def _trajectory_judge_prompt(case_input: dict[str, Any], target: dict[str, Any], suite: EvalSuiteDef) -> str:
@@ -358,3 +487,36 @@ async def test_manual_trajectory_log_case_runs_end_to_end_for_human_replay(reque
     assert Path(report["results"][0]["metadata"]["extracted_path"]).exists()
     _assert_report_trajectory_steps_match_extracted(report["results"][0])
     assert report_path.exists()
+
+
+def test_manual_trajectory_log_case_runs_via_source_cli_for_human_replay(request: pytest.FixtureRequest):
+    try:
+        config = _manual_replay_config(request.config)
+    except pytest.UsageError as exc:
+        pytest.skip(str(exc))
+    task_id = config["task_id"]
+    log_path = config["log_path"]
+    agent_prompt_path = config["agent_prompt_path"]
+    out_dir = config["out_dir"]
+
+    if not log_path.exists():
+        pytest.skip(f"manual trajectory log not found: {log_path}")
+    if not agent_prompt_path.exists():
+        pytest.skip(f"manual trajectory evaluator agent prompt not found: {agent_prompt_path}")
+    if not os.getenv("LLM_MODEL_NAME") or not (os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        pytest.skip("real trajectory judge requires LLM_MODEL_NAME and LLM_API_KEY/OPENAI_API_KEY")
+
+    report = run_evaluator_source_cli(
+        input=str(log_path),
+        kind="aworld-trajectory-log",
+        task_id=task_id,
+        judge_agent=str(agent_prompt_path),
+        out_dir=str(out_dir),
+    )
+
+    _assert_source_cli_trajectory_report_matches_manual_goal(
+        report,
+        task_id=task_id,
+        log_path=log_path,
+        agent_prompt_path=agent_prompt_path,
+    )
