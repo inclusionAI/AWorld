@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from aworld.evaluations.sources import (
     AWorldTrajectoryLogSource,
+    JsonlTaskSource,
     JsonlTaskAnswerSource,
     create_source_eval_suite,
 )
@@ -52,6 +53,26 @@ def test_jsonl_task_answer_source_defaults_fields_and_default_adapter(tmp_path: 
     assert cases[0].metadata["source_record"]["answer"] == "4"
 
 
+def test_jsonl_task_source_defaults_fields_without_answer(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.jsonl"
+    path.write_text(
+        json.dumps({"id": "case-1", "input": "What is 2+2?"}) + "\n",
+        encoding="utf-8",
+    )
+
+    source = JsonlTaskSource(path=path)
+    records = list(source.iter_records())
+    cases = source.to_cases()
+
+    assert records[0].case_id == "case-1"
+    assert records[0].input == {"input": "What is 2+2?"}
+    assert records[0].answer is None
+    assert records[0].metadata["source_kind"] == "task"
+    assert cases[0].case_id == "case-1"
+    assert cases[0].input == {"input": "What is 2+2?"}
+    assert "answer" not in cases[0].metadata["source_record"]
+
+
 @pytest.mark.asyncio
 async def test_source_eval_suite_replays_task_answer_without_execution(tmp_path: Path) -> None:
     path = tmp_path / "answers.jsonl"
@@ -71,7 +92,7 @@ async def test_source_eval_suite_replays_task_answer_without_execution(tmp_path:
         return {"score": 1.0, "verdict": "pass"}
 
     suite = create_source_eval_suite(
-        suite_id="task-answer-source",
+        suite_id="answer-source",
         source=JsonlTaskAnswerSource(path=path),
         judge_backend=CallableJudgeBackend(backend_id="judge", judge=judge),
         judge_schema=JudgeSchemaDef(output_model=_ScoreJudgeOutput),
@@ -174,6 +195,41 @@ def test_trajectory_log_source_reports_missing_task_id(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="missing-task"):
         list(source.iter_records())
+
+
+def test_trajectory_log_source_can_iterate_all_tasks(tmp_path: Path) -> None:
+    path = tmp_path / "trajectory.log"
+    first = [
+        {
+            "state": {"input": {"content": "first"}, "messages": []},
+            "meta": {"step": 1},
+            "action": {"content": "first answer", "is_agent_finished": "True"},
+        }
+    ]
+    second = [
+        {
+            "state": {"input": {"content": "second"}, "messages": []},
+            "meta": {"step": 1},
+            "action": {"content": "second answer", "is_agent_finished": "True"},
+        }
+    ]
+    path.write_text(
+        "\n".join(
+            [
+                repr({"task_id": "task-1", "is_sub_task": False, "trajectory": json.dumps(first)}),
+                repr({"task_id": "task-2", "is_sub_task": False, "trajectory": json.dumps(second)}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = list(AWorldTrajectoryLogSource(path=path, task_ids=None).iter_records())
+
+    assert [record.case_id for record in records] == ["task-1", "task-2"]
+    assert records[0].answer == "first answer"
+    assert records[1].answer == "second answer"
+    assert records[0].metadata["source_kind"] == "trajectory"
 
 
 def test_trajectory_judge_schema_normalizes_dimensions_report() -> None:

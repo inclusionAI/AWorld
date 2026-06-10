@@ -14,12 +14,16 @@ from aworld_cli.evaluator_runtime import run_evaluator_source_cli
 
 def _usage() -> str:
     return """Usage:
-  /evaluation --input <path> --kind task-answer --judge-agent <agent.md> [--out-dir <dir>]
-  /evaluation --input <path> --kind aworld-trajectory-log --task-id <id> --judge-agent <agent.md> [--out-dir <dir>]
+  /evaluation --input <path> --kind task --judge-agent <agent.md> [--agent <agent-name>] [--out-dir <dir>]
+  /evaluation --input <path> --kind answer --judge-agent <agent.md> [--out-dir <dir>]
+  /evaluation --input <task.jsonl> --kind trajectory --judge-agent <agent.md> [--agent <agent-name>] [--out-dir <dir>]
+  /evaluation --input <trajectory.log> --kind trajectory --task-id <id> --judge-agent <agent.md> [--out-dir <dir>]
 
 Examples:
-  /evaluation --input ./task_answers.jsonl --kind task-answer --judge-agent ./eval/answer_judge/agent.md
-  /evaluation --input ~/Documents/logs/trajectory.log --kind aworld-trajectory-log --task-id task_123 --judge-agent ./eval/trajectory_evaluator/agent.md
+  /evaluation --input ./tasks.jsonl --kind task --judge-agent ./eval/answer_judge/agent.md
+  /evaluation --input ./task_answers.jsonl --kind answer --judge-agent ./eval/answer_judge/agent.md
+  /evaluation --input ./tasks.jsonl --kind trajectory --judge-agent ./eval/trajectory_evaluator/agent.md
+  /evaluation --input ~/Documents/logs/trajectory.log --kind trajectory --task-id task_123 --judge-agent ./eval/trajectory_evaluator/agent.md
 """
 
 
@@ -57,8 +61,9 @@ class EvaluationCommand(Command):
     @property
     def completion_items(self) -> dict[str, str]:
         return {
-            "/evaluation --kind task-answer": "Evaluate task+answer JSONL records",
-            "/evaluation --kind aworld-trajectory-log": "Evaluate an AWorld trajectory log task",
+            "/evaluation --kind task": "Run tasks with the default agent, then evaluate the produced state",
+            "/evaluation --kind answer": "Evaluate existing task+answer JSONL records",
+            "/evaluation --kind trajectory": "Evaluate generated or replayed trajectories",
         }
 
     async def execute(self, context: CommandContext) -> str:

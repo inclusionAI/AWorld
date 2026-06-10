@@ -32,7 +32,7 @@ The canonical source-backed path should be:
 ```bash
 aworld-cli evaluator \
   --input ~/Documents/logs/trajectory.log \
-  --kind aworld-trajectory-log \
+  --kind trajectory \
   --task-id task_20260609193335 \
   --judge-agent eval/trajectory_evaluator/agent.md \
   --out-dir eval/trajectory_evaluator/reports
@@ -43,14 +43,14 @@ Task+answer files:
 ```bash
 aworld-cli evaluator \
   --input task_answers.jsonl \
-  --kind task-answer \
+  --kind answer \
   --judge-agent eval/answer_judge/agent.md \
   --out-dir reports
 ```
 
 The default JSONL fields are `id`, `input`, and `answer`. `--id-field`, `--task-field`, and `--answer-field` are override flags for files that do not follow that convention.
 
-Task-only files are a follow-on source kind once the framework input-source layer adds task-only source support:
+Task-only files are supported once the framework input-source layer exposes `JsonlTaskSource`; the CLI wires them to the default `Aworld` agent unless `--agent` is supplied:
 
 ```bash
 aworld-cli evaluator \
@@ -58,12 +58,15 @@ aworld-cli evaluator \
   --kind task \
   --id-field task_id \
   --task-field task \
-  --agent ./agent.md \
+  --agent Aworld \
   --judge-agent eval/answer_judge/agent.md \
   --out-dir reports
 ```
 
 `--kind auto` can be added once detection is reliable, but the first version should require explicit `--kind` to keep failures predictable.
+
+For `--kind trajectory`, `--task-id` selects the existing-log replay path. When `--task-id` is omitted, the input is treated as task JSONL: the CLI runs the task through the default or specified main agent, extracts the AWorld response trajectory, and feeds that generated trajectory into the trajectory judge prompt.
+If the input is an AWorld trajectory log and `--task-id` is omitted, the CLI uses the framework trajectory-log source to replay all task records in that log. This makes all-task replay explicit through the `trajectory` kind while keeping trajectory parsing in the framework source layer.
 
 ## CLI Boundary
 
@@ -153,7 +156,7 @@ The new `evaluator --input ...` source path should not break `--list-suites`, `-
 
 - [Command ambiguity] `evaluator --target` and `evaluator --input` are mutually exclusive, so parser errors must clearly explain which mode is active.
 - [Too many flags] Field mappings are necessary for generic JSONL. Presets can reduce repeated arguments later.
-- [Case-specific drift] Avoid canonical `evaluator trajectory-log`; if aliases are added later, they should delegate to `evaluator --input ... --kind aworld-trajectory-log`.
+- [Case-specific drift] Avoid canonical `evaluator trajectory-log`; if aliases are added later, they should delegate to `evaluator --input ... --kind trajectory`.
 - [Plugin overreach] Hook contracts must state that plugins customize CLI assembly and side effects only.
 
 ## Migration Plan

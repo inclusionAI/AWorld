@@ -122,7 +122,7 @@ class JsonlTaskAnswerSource(_BaseEvalSource):
                 metadata = {}
                 if self.metadata_field is not None and isinstance(payload.get(self.metadata_field), Mapping):
                     metadata.update(dict(payload[self.metadata_field]))
-                metadata.update({"source_kind": "task-answer", "source_path": str(path), "line_number": line_number})
+                metadata.update({"source_kind": "answer", "source_path": str(path), "line_number": line_number})
                 expected = payload.get(self.expected_field) if self.expected_field else None
                 yield EvalSourceRecord(
                     case_id=str(payload[self.id_field]),
@@ -137,6 +137,44 @@ class JsonlTaskAnswerSource(_BaseEvalSource):
         from aworld.evaluations.state_adapters import AnswerStateAdapter
 
         return AnswerStateAdapter()
+
+
+@dataclass(frozen=True)
+class JsonlTaskSource(_BaseEvalSource):
+    path: str | Path
+    id_field: str = "id"
+    input_field: str = "input"
+    expected_field: str | None = None
+    metadata_field: str | None = None
+
+    def iter_records(self) -> Iterable[EvalSourceRecord]:
+        path = Path(self.path).expanduser()
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                payload = json.loads(stripped)
+                if not isinstance(payload, Mapping):
+                    raise ValueError(f"{path}:{line_number} must contain a JSON object")
+                for field_name in (self.id_field, self.input_field):
+                    if field_name not in payload:
+                        raise ValueError(f"{path}:{line_number} missing required field: {field_name}")
+                metadata = {}
+                if self.metadata_field is not None and isinstance(payload.get(self.metadata_field), Mapping):
+                    metadata.update(dict(payload[self.metadata_field]))
+                metadata.update({"source_kind": "task", "source_path": str(path), "line_number": line_number})
+                expected = payload.get(self.expected_field) if self.expected_field else None
+                yield EvalSourceRecord(
+                    case_id=str(payload[self.id_field]),
+                    input={"input": payload[self.input_field]},
+                    expected=expected,
+                    metadata=metadata,
+                    raw_payload=dict(payload),
+                )
+
+    def default_adapter(self):
+        raise ValueError("task source requires a runtime_harness")
 
 
 def _truthy_string(value: Any) -> bool:
@@ -154,20 +192,13 @@ def _tool_calls_from_action(action: Mapping[str, Any]) -> list[dict[str, Any]]:
     return calls
 
 
-def extract_aworld_trajectory_record(log_path: str | Path, task_id: str) -> dict[str, Any]:
-    path = Path(log_path).expanduser()
-    target_line = None
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            if task_id in line:
-                target_line = line
-                break
-    if target_line is None:
-        raise ValueError(f"task_id {task_id} not found in {path}")
-
-    clean = re.sub(r"\x1b\[[0-9;]*m", "", target_line).strip()
-    record = ast.literal_eval(clean)
-    trajectory = json.loads(record["trajectory"])
+def extract_aworld_trajectory_payload(
+    trajectory: Iterable[Mapping[str, Any]],
+    *,
+    task_id: str,
+    is_sub_task: Any | None = None,
+) -> dict[str, Any]:
+    trajectory = list(trajectory)
     if not isinstance(trajectory, list):
         raise ValueError(f"task_id {task_id} trajectory must be a list")
 
@@ -215,7 +246,7 @@ def extract_aworld_trajectory_record(log_path: str | Path, task_id: str) -> dict
 
     return {
         "task_id": task_id,
-        "is_sub_task": record.get("is_sub_task"),
+        "is_sub_task": is_sub_task,
         "num_steps": len(trajectory),
         "question": question,
         "system_prompt_excerpt": system_prompt[:8000],
@@ -225,23 +256,70 @@ def extract_aworld_trajectory_record(log_path: str | Path, task_id: str) -> dict
     }
 
 
+def _parse_aworld_trajectory_log_line(line: str) -> Mapping[str, Any]:
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+    record = ast.literal_eval(clean)
+    if not isinstance(record, Mapping):
+        raise ValueError("trajectory log line must contain a mapping")
+    return record
+
+
+def _extract_aworld_trajectory_record_payload(record: Mapping[str, Any], *, task_id: str) -> dict[str, Any]:
+    trajectory = json.loads(record["trajectory"])
+    return extract_aworld_trajectory_payload(
+        trajectory,
+        task_id=task_id,
+        is_sub_task=record.get("is_sub_task"),
+    )
+
+
+def iter_aworld_trajectory_records(log_path: str | Path) -> Iterable[tuple[str, dict[str, Any]]]:
+    path = Path(log_path).expanduser()
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = _parse_aworld_trajectory_log_line(line)
+            except (SyntaxError, ValueError) as exc:
+                raise ValueError(f"{path}:{line_number} is not a valid AWorld trajectory log record") from exc
+            task_id = record.get("task_id")
+            if task_id is None:
+                raise ValueError(f"{path}:{line_number} missing required field: task_id")
+            yield str(task_id), _extract_aworld_trajectory_record_payload(record, task_id=str(task_id))
+
+
+def extract_aworld_trajectory_record(log_path: str | Path, task_id: str) -> dict[str, Any]:
+    path = Path(log_path).expanduser()
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if task_id not in line:
+                continue
+            record = _parse_aworld_trajectory_log_line(line)
+            if str(record.get("task_id")) == str(task_id):
+                return _extract_aworld_trajectory_record_payload(record, task_id=str(task_id))
+    raise ValueError(f"task_id {task_id} not found in {path}")
+
+
 @dataclass(frozen=True)
 class AWorldTrajectoryLogSource(_BaseEvalSource):
     path: str | Path
-    task_ids: Iterable[str]
+    task_ids: Iterable[str] | None
     extraction_dir: str | Path | None = None
 
     def iter_records(self) -> Iterable[EvalSourceRecord]:
         path = Path(self.path).expanduser()
-        for task_id in self.task_ids:
-            task_id = str(task_id)
-            extracted = extract_aworld_trajectory_record(path, task_id)
+        items = iter_aworld_trajectory_records(path) if self.task_ids is None else (
+            (str(task_id), extract_aworld_trajectory_record(path, str(task_id)))
+            for task_id in self.task_ids
+        )
+        for task_id, extracted in items:
             yield EvalSourceRecord(
                 case_id=task_id,
                 input={"task_id": task_id, "trajectory_log": str(path)},
                 answer=extracted.get("final_answer"),
                 metadata={
-                    "source_kind": "aworld-trajectory-log",
+                    "source_kind": "trajectory",
                     "source_path": str(path),
                     "extraction_dir": str(Path(self.extraction_dir).expanduser()) if self.extraction_dir else None,
                 },
@@ -262,6 +340,7 @@ def create_source_eval_suite(
     judge_schema,
     gate_policy=None,
     state_adapter=None,
+    runtime_harness=None,
     outcome_scorers=tuple(),
     reward_metrics=tuple(),
     standard_metrics=tuple(),
@@ -272,13 +351,16 @@ def create_source_eval_suite(
     from aworld.evaluations.substrate import EvalSuiteDef
 
     records = list(source.iter_records())
-    adapter = state_adapter
-    if adapter is None:
-        adapter = source.default_adapter()
+    harness = runtime_harness
+    if harness is None:
+        adapter = state_adapter
+        if adapter is None:
+            adapter = source.default_adapter()
+        harness = ReplayRuntimeHarness(adapter=adapter, records=tuple(records))
     return EvalSuiteDef(
         suite_id=suite_id,
         cases=[record.to_case() for record in records],
-        runtime_harness=ReplayRuntimeHarness(adapter=adapter, records=tuple(records)),
+        runtime_harness=harness,
         judge_backend=judge_backend,
         judge_schema=judge_schema,
         gate_policy=gate_policy,

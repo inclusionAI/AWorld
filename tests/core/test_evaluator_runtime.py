@@ -4,6 +4,7 @@ import base64
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,8 +14,10 @@ import aworld.evaluations.substrate as substrate_module
 from aworld.evaluations.manifests import get_declared_eval_suite_schema
 from aworld.evaluations.report import EvaluatorReport
 from aworld_cli.evaluator_runtime import (
+    _CliAgentRuntimeHarness,
     _build_source_suite,
     _build_source_prompt,
+    _build_trajectory_prompt,
     available_evaluator_suites,
     evaluator_exit_code,
     get_declared_evaluator_suite_schema,
@@ -90,9 +93,9 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
         captured["flow"] = flow
         return {
             "report_version": 1,
-            "suite_id": "source-evaluator",
+            "suite_id": "answer-source-evaluator",
             "judge_backend": {"backend_id": "source-agent-md"},
-            "summary": {"source-evaluator": {"score": {"mean": 0.9}}},
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
             "results": [],
             "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
             "approval": {"required": False, "resolved": False, "approved": None},
@@ -102,20 +105,209 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
 
     report = run_evaluator_source_cli(
         input=str(input_path),
-        kind="task-answer",
+        kind="answer",
         judge_agent=str(judge_agent),
         output=str(output),
     )
 
     flow = captured["flow"]
     assert flow.target["target_kind"] == "source"
-    assert flow.target["source_kind"] == "task-answer"
+    assert flow.target["source_kind"] == "answer"
     assert flow.suite.cases[0].case_id == "case-1"
     assert flow.suite.cases[0].input == {"input": "question"}
     assert flow.suite.judge_backend.backend_id == "source-agent-md"
-    assert report["source_selection"]["kind"] == "task-answer"
-    assert report["automation"]["source_kind"] == "task-answer"
+    assert report["source_selection"]["kind"] == "answer"
+    assert report["automation"]["source_kind"] == "answer"
     assert output.exists()
+
+
+def test_run_evaluator_source_cli_builds_task_flow_with_default_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "tasks.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    captured = {}
+
+    class FakeHarness:
+        pass
+
+    def fake_build_cli_agent_runtime_harness(*, agent_name):
+        captured["agent_name"] = agent_name
+        return FakeHarness()
+
+    async def fake_run_evaluation_flow(flow):
+        captured["flow"] = flow
+        return {
+            "report_version": 1,
+            "suite_id": "task-source-evaluator",
+            "judge_backend": {"backend_id": "source-agent-md"},
+            "summary": {"task-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._build_cli_agent_runtime_harness",
+        fake_build_cli_agent_runtime_harness,
+    )
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="task",
+        judge_agent=str(judge_agent),
+        output=str(tmp_path / "report.json"),
+    )
+
+    flow = captured["flow"]
+    assert captured["agent_name"] == "Aworld"
+    assert flow.target["source_kind"] == "task"
+    assert flow.target["agent"] == "Aworld"
+    assert flow.suite.cases[0].case_id == "case-1"
+    assert flow.suite.cases[0].input == {"input": "question"}
+    assert flow.suite.runtime_harness is not None
+    assert report["source_selection"]["kind"] == "task"
+    assert report["source_selection"]["agent"] == "Aworld"
+    assert report["automation"]["source_kind"] == "task"
+
+
+def test_run_evaluator_source_cli_builds_generated_trajectory_flow_with_default_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "tasks.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    captured = {}
+
+    class FakeHarness:
+        pass
+
+    def fake_build_cli_agent_runtime_harness(*, agent_name):
+        captured["agent_name"] = agent_name
+        return FakeHarness()
+
+    async def fake_run_evaluation_flow(flow):
+        captured["flow"] = flow
+        return {
+            "report_version": 1,
+            "suite_id": "trajectory-source-evaluator",
+            "judge_backend": {"backend_id": "trajectory-evaluator-agent-md"},
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._build_cli_agent_runtime_harness",
+        fake_build_cli_agent_runtime_harness,
+    )
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="trajectory",
+        judge_agent=str(judge_agent),
+        output=str(tmp_path / "report.json"),
+    )
+
+    flow = captured["flow"]
+    assert captured["agent_name"] == "Aworld"
+    assert flow.target["source_kind"] == "trajectory"
+    assert flow.target["agent"] == "Aworld"
+    assert flow.suite.cases[0].case_id == "case-1"
+    assert flow.suite.cases[0].input == {"input": "question"}
+    assert report["source_selection"]["kind"] == "trajectory"
+    assert report["source_selection"]["agent"] == "Aworld"
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_runtime_harness_returns_rollout_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeExecutor:
+        async def chat(self, query):
+            return f"answer for {query}"
+
+    async def fake_load_cli_agent_executor(agent_name):
+        assert agent_name == "Aworld"
+        return FakeExecutor()
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._load_cli_agent_executor",
+        fake_load_cli_agent_executor,
+    )
+
+    case = SimpleNamespace(
+        case_id="case-1",
+        input={"input": "question"},
+        metadata={
+            "source_record": {
+                "metadata": {"source_kind": "task", "source_path": "tasks.jsonl"},
+            },
+        },
+    )
+    state = await _CliAgentRuntimeHarness(agent_name="Aworld").run_rollout(
+        case=case,
+        target={"source_kind": "task"},
+    )
+
+    assert state.status == "success"
+    assert state.answer == "answer for question"
+    assert state.outcome["has_answer"] is True
+    assert state.metadata["agent"] == "Aworld"
+    assert state.metadata["source_kind"] == "task"
+    assert state.standard_metrics["n_turns"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_runtime_harness_prefers_swarm_task_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSwarm:
+        pass
+
+    class FakeExecutor:
+        swarm = FakeSwarm()
+
+        async def chat(self, query):
+            raise AssertionError("chat fallback should not be used for local swarm executors")
+
+    async def fake_load_cli_agent_executor(agent_name):
+        return FakeExecutor()
+
+    async def fake_run(*, input, swarm):
+        assert input == "question"
+        assert isinstance(swarm, FakeSwarm)
+        return {
+            "answer": "answer with tools",
+            "trajectory": [{"tool_calls": [{"name": "search"}]}],
+            "usage": {"total_tokens": 12},
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._load_cli_agent_executor",
+        fake_load_cli_agent_executor,
+    )
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.Runners.run", fake_run)
+
+    case = SimpleNamespace(case_id="case-1", input={"input": "question"}, metadata={})
+    state = await _CliAgentRuntimeHarness(agent_name="Aworld").run_rollout(
+        case=case,
+        target={"source_kind": "task"},
+    )
+
+    assert state.answer == "answer with tools"
+    assert state.tool_calls == [{"name": "search"}]
+    assert state.trajectory == [{"tool_calls": [{"name": "search"}]}]
+    assert state.standard_metrics["n_tool_calls"] == 1
+    assert state.standard_metrics["n_tokens"] == 12
 
 
 def test_source_prompt_uses_zero_to_hundred_score_contract() -> None:
@@ -138,7 +330,7 @@ def test_run_evaluator_source_cli_rejects_unsupported_source_kind(tmp_path: Path
     with pytest.raises(ValueError, match="unsupported source kind"):
         run_evaluator_source_cli(
             input=str(input_path),
-            kind="task",
+            kind="task-only",
             judge_agent=str(judge_agent),
         )
 
@@ -161,7 +353,7 @@ def test_trajectory_source_gate_consumes_veto_signal(tmp_path: Path) -> None:
     judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
 
     suite = _build_source_suite(
-        kind="aworld-trajectory-log",
+        kind="trajectory",
         input_path=input_path,
         judge_agent_path=judge_agent,
         task_id=task_id,
@@ -191,6 +383,133 @@ def test_trajectory_source_gate_consumes_veto_signal(tmp_path: Path) -> None:
     assert any(condition["metric_name"] == "veto_triggered" for condition in decision.failed_conditions)
 
 
+def test_aworld_trajectory_log_without_task_id_builds_task_execution_suite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "tasks.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    captured = {}
+
+    class FakeHarness:
+        pass
+
+    def fake_build_cli_agent_runtime_harness(*, agent_name):
+        captured["agent_name"] = agent_name
+        return FakeHarness()
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._build_cli_agent_runtime_harness",
+        fake_build_cli_agent_runtime_harness,
+    )
+
+    suite = _build_source_suite(
+        kind="trajectory",
+        input_path=input_path,
+        judge_agent_path=judge_agent,
+        task_id=None,
+        id_field="id",
+        task_field="input",
+        answer_field="answer",
+        out_dir=str(tmp_path),
+    )
+
+    assert captured["agent_name"] == "Aworld"
+    assert suite.suite_id == "trajectory-source-evaluator"
+    assert suite.cases[0].case_id == "case-1"
+    assert suite.cases[0].input == {"input": "question"}
+    assert suite.runtime_harness is not None
+    assert suite.judge_backend.backend_id == "trajectory-evaluator-agent-md"
+    pass_conditions = suite.gate_policy.normalized_conditions()[0]
+    assert any(condition.metric_name == "A1_groundedness" for condition in pass_conditions)
+    assert any(condition.metric_name == "veto_triggered" for condition in pass_conditions)
+
+
+def test_trajectory_log_without_task_id_builds_replay_suite_for_all_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "trajectory.log"
+    trajectory = [
+        {
+            "state": {"input": {"content": "question"}, "messages": []},
+            "meta": {"step": 1},
+            "action": {"content": "final", "is_agent_finished": "True"},
+        }
+    ]
+    input_path.write_text(
+        "\n".join(
+            [
+                repr({"task_id": "task-1", "is_sub_task": False, "trajectory": json.dumps(trajectory)}),
+                repr({"task_id": "task-2", "is_sub_task": False, "trajectory": json.dumps(trajectory)}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+
+    def fake_build_cli_agent_runtime_harness(*, agent_name):
+        raise AssertionError("trajectory log replay must not execute the main agent")
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._build_cli_agent_runtime_harness",
+        fake_build_cli_agent_runtime_harness,
+    )
+
+    suite = _build_source_suite(
+        kind="trajectory",
+        input_path=input_path,
+        judge_agent_path=judge_agent,
+        task_id=None,
+        id_field="id",
+        task_field="input",
+        answer_field="answer",
+        out_dir=str(tmp_path),
+    )
+
+    assert suite.suite_id == "trajectory-source-evaluator"
+    assert [case.case_id for case in suite.cases] == ["task-1", "task-2"]
+    assert suite.runtime_harness is not None
+
+
+def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question", "_case_metadata": {}},
+            {
+                "case_id": "case-1",
+                "answer": "final answer",
+                "trajectory": [
+                    {
+                        "state": {
+                            "input": {"content": "question"},
+                            "messages": [{"role": "tool", "content": "evidence"}],
+                        },
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {
+                            "content": "final answer",
+                            "is_agent_finished": "True",
+                            "tool_calls": [{"function": {"name": "search", "arguments": "{}"}}],
+                        },
+                    }
+                ],
+            },
+            suite=None,
+        )
+    )
+
+    extracted = prompt["extracted_trajectory"]
+    assert extracted["task_id"] == "case-1"
+    assert extracted["question"] == "question"
+    assert extracted["final_answer"] == "final answer"
+    assert extracted["evidence"][0]["content"] == "evidence"
+    assert extracted["steps"][0]["tool_calls"] == [{"name": "search", "arguments": "{}"}]
+
+
 def test_run_evaluator_source_cli_passes_source_fields_to_hooks(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -213,8 +532,8 @@ def test_run_evaluator_source_cli_passes_source_fields_to_hooks(
         assert flow.target["hook_tag"] == "source-hook"
         return {
             "report_version": 1,
-            "suite_id": "source-evaluator",
-            "summary": {"source-evaluator": {"score": {"mean": 0.9}}},
+            "suite_id": "answer-source-evaluator",
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
             "metrics": {"score": {"mean": 0.9}},
             "results": [],
             "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
@@ -233,7 +552,7 @@ def test_run_evaluator_source_cli_passes_source_fields_to_hooks(
 
     run_evaluator_source_cli(
         input=str(input_path),
-        kind="task-answer",
+        kind="answer",
         judge_agent=str(judge_agent),
         task_id="case-1",
         output=str(tmp_path / "report.json"),
@@ -242,12 +561,12 @@ def test_run_evaluator_source_cli_passes_source_fields_to_hooks(
     assert events[0][0] == "pre"
     assert events[0][1]["mode"] == "source"
     assert events[0][1]["input"] == str(input_path.resolve())
-    assert events[0][1]["kind"] == "task-answer"
+    assert events[0][1]["kind"] == "answer"
     assert events[0][1]["task_id"] == "case-1"
     assert events[0][1]["judge_agent"] == str(judge_agent.resolve())
     assert events[1][0] == "post"
     assert events[1][1]["mode"] == "source"
-    assert events[1][1]["report"]["source_selection"]["kind"] == "task-answer"
+    assert events[1][1]["report"]["source_selection"]["kind"] == "answer"
 
 
 def test_run_evaluator_source_cli_persists_schema_valid_source_report(
@@ -264,10 +583,10 @@ def test_run_evaluator_source_cli_persists_schema_valid_source_report(
             "report_version": 1,
             "report_format": {"id": "aworld.evaluator.report", "version": 1},
             "generated_at": "2026-06-10T00:00:00Z",
-            "suite_id": "source-evaluator",
+            "suite_id": "answer-source-evaluator",
             "target": flow.target,
             "judge_backend": {"backend_id": "source-agent-md"},
-            "summary": {"source-evaluator": {"score": {"mean": 88.0}}},
+            "summary": {"answer-source-evaluator": {"score": {"mean": 88.0}}},
             "metrics": {"score": {"mean": 88.0}},
             "results": [
                 {
@@ -288,7 +607,7 @@ def test_run_evaluator_source_cli_persists_schema_valid_source_report(
 
     report = run_evaluator_source_cli(
         input=str(input_path),
-        kind="task-answer",
+        kind="answer",
         judge_agent=str(judge_agent),
         output=str(tmp_path / "report.json"),
     )

@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import builtins
 import json
+import time
 from pathlib import Path
+from typing import Any, Mapping
 
 from aworld.plugins.discovery import discover_plugins
+from aworld.evaluations.execution import normalize_task_response_to_eval_state
 from aworld.evaluations.manifests import (
     get_declared_eval_suite_schema as _get_declared_eval_suite_schema,
 )
@@ -25,8 +28,16 @@ from aworld.evaluations.substrate import (
     describe_eval_target,
     run_evaluation_flow,
 )
-from aworld.evaluations.sources import AWorldTrajectoryLogSource, JsonlTaskAnswerSource, create_source_eval_suite
+from aworld.evaluations.runtime_composition import RolloutState, RolloutTurn, derive_standard_metrics
+from aworld.evaluations.sources import (
+    AWorldTrajectoryLogSource,
+    JsonlTaskAnswerSource,
+    JsonlTaskSource,
+    create_source_eval_suite,
+    extract_aworld_trajectory_payload,
+)
 from aworld.evaluations.trajectory_judge import TrajectoryJudgeSchema
+from aworld.runner import Runners
 from pydantic import BaseModel
 from aworld_cli.core.plugin_manager import PluginManager, get_builtin_plugin_roots
 from aworld_cli.evaluator_rendering import render_evaluator_summary as _render_evaluator_summary
@@ -36,6 +47,10 @@ from aworld_cli.evaluator_workspace import (
     resolve_workspace_suite_selection,
 )
 from aworld_cli.plugin_capabilities.hooks import PluginHookResult, load_plugin_hooks
+
+
+_CLI_AGENT_RUNTIME_BOOTSTRAPPED = False
+_SUPPORTED_SOURCE_KINDS = ("task", "answer", "trajectory")
 
 
 def _sanitize_path_token(value: str) -> str:
@@ -112,6 +127,7 @@ def _build_automation_summary(report: dict) -> dict[str, object]:
         automation["source_kind"] = source_selection.get("kind")
         automation["source_input"] = source_selection.get("input")
         automation["task_id"] = source_selection.get("task_id")
+        automation["agent"] = source_selection.get("agent")
     return automation
 
 
@@ -171,6 +187,19 @@ class _SourceJudgeOutput(BaseModel):
     verdict: str
 
 
+def _looks_like_aworld_trajectory_log(path: Path) -> bool:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                return stripped.startswith("{") and "'trajectory'" in stripped and "'task_id'" in stripped
+    except OSError:
+        return False
+    return False
+
+
 def _source_report_path(
     *,
     input_path: Path,
@@ -203,12 +232,180 @@ def _build_source_prompt(case_input: dict, target: dict, suite) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _case_query(case) -> str:
+    case_input = getattr(case, "input", {}) or {}
+    for key in ("input", "query", "prompt"):
+        if key in case_input and case_input[key] is not None:
+            return str(case_input[key])
+    raise ValueError("task source case is missing input/query/prompt")
+
+
+def _case_source_metadata(case) -> dict[str, Any]:
+    metadata = getattr(case, "metadata", {}) or {}
+    source_record = metadata.get("source_record")
+    if isinstance(source_record, Mapping) and isinstance(source_record.get("metadata"), Mapping):
+        return dict(source_record["metadata"])
+    return {}
+
+
+class _CliAgentRuntimeHarness:
+    def __init__(self, *, agent_name: str):
+        self.agent_name = agent_name
+        self._executor = None
+
+    async def run_rollout(self, *, case, target: Mapping[str, Any]) -> RolloutState:
+        query = _case_query(case)
+        started_at = time.monotonic()
+        source_metadata = _case_source_metadata(case)
+        turns = [RolloutTurn(role="user", content=query)]
+        executor = await self._get_executor()
+        try:
+            swarm = getattr(executor, "swarm", None)
+            if swarm is not None:
+                answer = await Runners.run(input=query, swarm=swarm)
+            else:
+                answer = await executor.chat(query)
+        except Exception as exc:
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            state = RolloutState(
+                case_id=str(getattr(case, "case_id", "case")),
+                status="failed",
+                turns=turns,
+                trajectory=[turn.to_dict() for turn in turns],
+                timing={"duration_ms": duration_ms},
+                error={"type": exc.__class__.__name__, "message": str(exc)},
+                outcome={"has_answer": False, "agent": self.agent_name},
+                metadata={**source_metadata, "agent": self.agent_name},
+            )
+            state.standard_metrics.update(derive_standard_metrics(state))
+            return state
+
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        eval_state = normalize_task_response_to_eval_state(
+            case_id=str(getattr(case, "case_id", "case")),
+            response=answer,
+            target=target,
+            metadata={**source_metadata, "agent": self.agent_name},
+        )
+        assistant_turn = RolloutTurn(role="assistant", content=eval_state.answer)
+        turns.append(assistant_turn)
+        trajectory = list(eval_state.trajectory) or [turn.to_dict() for turn in turns]
+        extracted_trajectory = {}
+        if trajectory:
+            try:
+                extracted_trajectory = extract_aworld_trajectory_payload(
+                    trajectory,
+                    task_id=eval_state.case_id,
+                    is_sub_task=False,
+                )
+            except Exception:
+                extracted_trajectory = {}
+        evidence_blocks = len(extracted_trajectory.get("evidence") or [])
+        is_finished = any(
+            bool(step.get("is_agent_finished"))
+            for step in extracted_trajectory.get("steps", [])
+            if isinstance(step, Mapping)
+        )
+        state = RolloutState(
+            case_id=eval_state.case_id,
+            status=eval_state.status,
+            answer=eval_state.answer,
+            turns=turns,
+            trajectory=trajectory,
+            tool_calls=list(eval_state.tool_calls),
+            usage=dict(eval_state.usage),
+            timing={**dict(eval_state.timing), "duration_ms": duration_ms},
+            error=eval_state.error,
+            outcome={
+                "has_answer": eval_state.answer is not None,
+                "agent": self.agent_name,
+                "task_id": eval_state.case_id,
+                "question": query,
+                "evidence_blocks": evidence_blocks,
+                "num_steps": len(trajectory),
+                "is_finished": is_finished or eval_state.status == "success",
+                "final_answer_len": len(str(eval_state.answer or "")),
+            },
+            metadata=dict(eval_state.metadata),
+        )
+        state.standard_metrics.update(derive_standard_metrics(state))
+        return state
+
+    async def _get_executor(self):
+        if self._executor is None:
+            self._executor = await _load_cli_agent_executor(self.agent_name)
+        return self._executor
+
+
+def _build_cli_agent_runtime_harness(*, agent_name: str):
+    return _CliAgentRuntimeHarness(agent_name=agent_name)
+
+
+async def _load_cli_agent_executor(agent_name: str):
+    from aworld.core.scheduler import get_scheduler
+    from aworld_cli.main import _resolve_agent_dirs
+    from aworld_cli.runtime.cli import CliRuntime
+
+    _ensure_cli_agent_runtime_bootstrapped()
+    runtime = CliRuntime(
+        agent_name=agent_name,
+        local_dirs=_resolve_agent_dirs(None),
+        disable_live_display=True,
+    )
+    all_agents = await runtime._load_agents()
+    selected_agent = next((item for item in all_agents if item.name == agent_name), None)
+    if selected_agent is None:
+        available = ", ".join(sorted(item.name for item in all_agents)) or "none"
+        raise ValueError(f"agent '{agent_name}' not found; available agents: {available}")
+
+    runtime._scheduler = get_scheduler()
+    runtime._bind_scheduler_default_agent(selected_agent.name)
+    executor = await runtime._create_executor(selected_agent)
+    if executor is None:
+        raise ValueError(f"failed to create executor for agent '{agent_name}'")
+    executor._base_runtime = runtime
+    executor._suppress_interactive_loading_status = True
+    return executor
+
+
+def _ensure_cli_agent_runtime_bootstrapped() -> None:
+    global _CLI_AGENT_RUNTIME_BOOTSTRAPPED
+    if _CLI_AGENT_RUNTIME_BOOTSTRAPPED:
+        return
+    from aworld_cli.main import _show_banner, init_middlewares
+    from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
+
+    try:
+        bootstrap_runtime(
+            env_file=".env",
+            skill_paths=None,
+            show_banner=False,
+            init_middlewares_fn=init_middlewares,
+            show_banner_fn=_show_banner,
+        )
+    except RuntimeBootstrapError as exc:
+        raise ValueError(str(exc)) from exc
+    _CLI_AGENT_RUNTIME_BOOTSTRAPPED = True
+
+
 def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
     outcome = (target.get("artifacts") or {}).get("outcome") or {}
     extracted_path = outcome.get("extracted_path")
     extracted_payload = {}
     if extracted_path:
         extracted_payload = json.loads(Path(str(extracted_path)).read_text(encoding="utf-8"))
+    elif isinstance(target.get("trajectory"), list) and target.get("trajectory"):
+        task_id = str(target.get("case_id") or case_input.get("id") or case_input.get("input_id") or case_input.get("_case_id") or "case")
+        extracted_payload = extract_aworld_trajectory_payload(
+            target["trajectory"],
+            task_id=task_id,
+            is_sub_task=False,
+        )
+        if not extracted_payload.get("final_answer") and target.get("answer") is not None:
+            extracted_payload["final_answer"] = target.get("answer")
+        case_value = case_input.get("input") or case_input.get("query") or case_input.get("prompt")
+        if not extracted_payload.get("question") and case_value is not None:
+            extracted_payload["question"] = str(case_value)
     payload = {
         "case": {key: value for key, value in case_input.items() if not str(key).startswith("_")},
         "extracted_trajectory": extracted_payload,
@@ -244,8 +441,55 @@ def _build_source_suite(
     task_field: str,
     answer_field: str,
     out_dir: str | None,
+    agent: str | None = None,
 ):
-    if kind == "task-answer":
+    agent_name = agent or "Aworld"
+    trajectory_gate = GatePolicyDef(
+        pass_all=(
+            GateMetricCondition(metric_name="score", op=">=", threshold=70.0),
+            GateMetricCondition(metric_name="A1_groundedness", op=">=", threshold=3),
+            GateMetricCondition(metric_name="veto_triggered", op="==", threshold=False),
+            GateMetricCondition(metric_name="has_evidence", op="==", threshold=1.0),
+            GateMetricCondition(metric_name="agent_finished", op="==", threshold=1.0),
+        )
+    )
+    trajectory_outcome_scorers = (
+        StateCheckGrader(
+            metric_name="has_evidence",
+            source="outcome",
+            path=("evidence_blocks",),
+            op=">",
+            expected=0,
+        ),
+        StateCheckGrader(
+            metric_name="agent_finished",
+            source="outcome",
+            path=("is_finished",),
+            op="==",
+            expected=True,
+        ),
+    )
+    if kind == "task":
+        source = JsonlTaskSource(
+            path=input_path,
+            id_field=id_field,
+            input_field=task_field,
+        )
+        return create_source_eval_suite(
+            suite_id="task-source-evaluator",
+            source=source,
+            runtime_harness=_build_cli_agent_runtime_harness(agent_name=agent_name),
+            judge_backend=AgentJudgeBackend.from_agent_markdown(
+                judge_agent_path,
+                backend_id="source-agent-md",
+                prompt_builder=_build_source_prompt,
+            ),
+            judge_schema=JudgeSchemaDef(output_model=_SourceJudgeOutput),
+            gate_policy=GatePolicyDef(metric_name="score", pass_threshold=70.0),
+            metadata={"agent": agent_name},
+        )
+
+    if kind == "answer":
         source = JsonlTaskAnswerSource(
             path=input_path,
             id_field=id_field,
@@ -253,7 +497,7 @@ def _build_source_suite(
             answer_field=answer_field,
         )
         return create_source_eval_suite(
-            suite_id="source-evaluator",
+            suite_id="answer-source-evaluator",
             source=source,
             judge_backend=AgentJudgeBackend.from_agent_markdown(
                 judge_agent_path,
@@ -264,51 +508,37 @@ def _build_source_suite(
             gate_policy=GatePolicyDef(metric_name="score", pass_threshold=70.0),
         )
 
-    if kind == "aworld-trajectory-log":
-        if not task_id:
-            raise ValueError("--task-id is required for aworld-trajectory-log source")
-        source = AWorldTrajectoryLogSource(
-            path=input_path,
-            task_ids=[task_id],
-            extraction_dir=out_dir,
-        )
+    if kind == "trajectory":
+        if task_id or _looks_like_aworld_trajectory_log(input_path):
+            source = AWorldTrajectoryLogSource(
+                path=input_path,
+                task_ids=[task_id] if task_id else None,
+                extraction_dir=out_dir,
+            )
+            runtime_harness = None
+        else:
+            source = JsonlTaskSource(
+                path=input_path,
+                id_field=id_field,
+                input_field=task_field,
+            )
+            runtime_harness = _build_cli_agent_runtime_harness(agent_name=agent_name)
         return create_source_eval_suite(
-            suite_id="trajectory-log-source-evaluator",
+            suite_id="trajectory-source-evaluator",
             source=source,
+            runtime_harness=runtime_harness,
             judge_backend=AgentJudgeBackend.from_agent_markdown(
                 judge_agent_path,
                 backend_id="trajectory-evaluator-agent-md",
                 prompt_builder=_build_trajectory_prompt,
             ),
             judge_schema=TrajectoryJudgeSchema.default(),
-            outcome_scorers=(
-                StateCheckGrader(
-                    metric_name="has_evidence",
-                    source="outcome",
-                    path=("evidence_blocks",),
-                    op=">",
-                    expected=0,
-                ),
-                StateCheckGrader(
-                    metric_name="agent_finished",
-                    source="outcome",
-                    path=("is_finished",),
-                    op="==",
-                    expected=True,
-                ),
-            ),
-            gate_policy=GatePolicyDef(
-                pass_all=(
-                    GateMetricCondition(metric_name="score", op=">=", threshold=70.0),
-                    GateMetricCondition(metric_name="A1_groundedness", op=">=", threshold=3),
-                    GateMetricCondition(metric_name="veto_triggered", op="==", threshold=False),
-                    GateMetricCondition(metric_name="has_evidence", op="==", threshold=1.0),
-                    GateMetricCondition(metric_name="agent_finished", op="==", threshold=1.0),
-                )
-            ),
+            outcome_scorers=trajectory_outcome_scorers,
+            gate_policy=trajectory_gate,
+            metadata={"agent": agent_name} if not task_id else None,
         )
 
-    raise ValueError(f"unsupported source kind: {kind}")
+    raise ValueError(f"unsupported source kind: {kind}; expected one of: {', '.join(_SUPPORTED_SOURCE_KINDS)}")
 
 
 def run_evaluator_source_cli(
@@ -326,6 +556,7 @@ def run_evaluator_source_cli(
     interactive_approval: bool = False,
 ) -> dict:
     hooks = _load_evaluator_hooks()
+    kind = (kind or "").strip().lower()
     input_path = Path(input).expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"source input does not exist: {input_path}")
@@ -367,13 +598,17 @@ def run_evaluator_source_cli(
         task_field=task_field,
         answer_field=answer_field,
         out_dir=out_dir,
+        agent=agent,
     )
+    agent_name = agent or "Aworld"
+    executes_agent = kind == "task" or (kind == "trajectory" and not task_id)
     target_info = {
         "target_kind": "source",
         "target_path": str(input_path),
         "source_kind": kind,
         "task_id": task_id,
         "judge_agent": str(judge_agent_path),
+        "agent": agent_name if executes_agent else agent,
     }
     for key, value in hook_state.items():
         if key not in {"mode", "input", "kind", "task_id", "judge_agent", "agent", "interactive_approval", "summary_suffix"}:
@@ -402,6 +637,7 @@ def run_evaluator_source_cli(
         "kind": kind,
         "task_id": task_id,
         "judge_agent": str(judge_agent_path),
+        "agent": agent_name if executes_agent else agent,
     }
     report["automation"] = _build_automation_summary(report)
     output_path = _source_report_path(

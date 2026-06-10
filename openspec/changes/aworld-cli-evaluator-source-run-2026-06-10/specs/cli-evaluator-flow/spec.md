@@ -59,15 +59,27 @@ The evaluator command SHALL document the event payloads, mutable state surface, 
 The evaluator command SHALL provide a source-backed run mode that accepts an input path, source kind, optional field mappings, optional task filters, optional execution agent, and judge agent configuration.
 
 #### Scenario: User evaluates an AWorld trajectory log
-- **WHEN** a user runs the evaluator with `--input`, `--kind aworld-trajectory-log`, `--task-id`, and `--judge-agent`
+- **WHEN** a user runs the evaluator with `--input`, `--kind trajectory`, `--task-id`, and `--judge-agent`
 - **THEN** the CLI SHALL use framework trajectory-log source and replay adapters to evaluate the selected task without implementing trajectory parsing in CLI code
 
+#### Scenario: User evaluates every task in an AWorld trajectory log
+- **WHEN** a user runs the evaluator with AWorld trajectory log `--input`, `--kind trajectory`, and `--judge-agent` without `--task-id`
+- **THEN** the CLI SHALL use framework trajectory-log source and replay adapters to evaluate every task record in that log without executing the main agent
+
+#### Scenario: User evaluates generated trajectory from task input
+- **WHEN** a user runs the evaluator with task JSONL `--input`, `--kind trajectory`, and `--judge-agent` without `--task-id`
+- **THEN** the CLI SHALL run each task through the CLI default `Aworld` agent unless `--agent` is provided, extract the trajectory from the AWorld response, and evaluate that generated trajectory with the trajectory judge flow
+
 #### Scenario: User evaluates task and answer records
-- **WHEN** a user runs the evaluator with `--input`, `--kind task-answer`, and `--judge-agent`
+- **WHEN** a user runs the evaluator with `--input`, `--kind answer`, and `--judge-agent`
 - **THEN** the CLI SHALL use framework task+answer source and answer-state adapters to evaluate existing answers without re-executing the target
 
+#### Scenario: User evaluates task-only records through the default agent
+- **WHEN** a user runs the evaluator with `--input`, `--kind task`, and `--judge-agent` and omits `--agent`
+- **THEN** the CLI SHALL use the framework task source, execute each task through the CLI default `Aworld` agent, convert the produced output into evaluation state, and evaluate that state with the judge agent
+
 #### Scenario: User overrides task and answer field names
-- **WHEN** a user runs the evaluator with `--kind task-answer` and custom field mapping flags
+- **WHEN** a user runs the evaluator with `--kind answer` and custom field mapping flags
 - **THEN** the CLI SHALL pass those mappings to the framework source while defaulting omitted mappings to `id`, `input`, and `answer`
 
 #### Scenario: User requests a deferred source kind
@@ -79,7 +91,7 @@ The evaluator command SHALL provide a source-backed run mode that accepts an inp
 The evaluator CLI SHALL treat source kinds as input adapters under a single canonical source-backed command path rather than creating independent evaluator stacks for each source format.
 
 #### Scenario: Source kind selects adapter
-- **WHEN** a user specifies a supported source kind such as `task-answer` or `aworld-trajectory-log`
+- **WHEN** a user specifies a supported source kind such as `task`, `answer`, or `trajectory`
 - **THEN** the CLI SHALL select the matching framework source adapter while preserving the same evaluation flow and report semantics
 
 #### Scenario: Source kind is not yet supported by framework
