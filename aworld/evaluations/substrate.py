@@ -22,6 +22,7 @@ from aworld.evaluations.base import NoActionEvalTarget
 from aworld.evaluations.eval_targets.agent_eval import AworldAgentEvalTarget, AworldTaskEvalTarget
 from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec, load_program_callable
 from aworld.evaluations.manifests import validate_declared_eval_suite_manifest
+from aworld.evaluations.scorers import scorer_factory
 from aworld.evaluations.execution_adapters import resolve_execution_adapter
 from aworld.evaluations.report import (
     CaseEvaluationReport,
@@ -686,6 +687,7 @@ def _build_eval_target(flow: EvaluationFlowDef, target: dict[str, Any]):
 def _trajectory_eval_criteria(suite: EvalSuiteDef) -> list[dict[str, Any]]:
     criteria: list[dict[str, Any]] = []
     for scorer in suite.trajectory_scorers:
+        _validate_trajectory_scorer_def(scorer)
         item: dict[str, Any] = {
             "metric_name": scorer.metric_name,
             "threshold": scorer.threshold,
@@ -695,6 +697,30 @@ def _trajectory_eval_criteria(suite: EvalSuiteDef) -> list[dict[str, Any]]:
             item["scorer_class"] = scorer.scorer_class
         criteria.append(item)
     return criteria
+
+
+def _validate_trajectory_scorer_def(scorer: TrajectoryScorerDef) -> None:
+    scorer_class = scorer_factory.get_scorer_class(scorer.metric_name)
+    if scorer_class is None:
+        raise ValueError(f"unknown trajectory metric: {scorer.metric_name}")
+    if scorer.scorer_class is not None and scorer.scorer_class != scorer_class.__name__:
+        raise ValueError(
+            f"trajectory metric {scorer.metric_name} is registered to {scorer_class.__name__}, "
+            f"not {scorer.scorer_class}"
+        )
+    if not scorer.scorer_params:
+        return
+
+    signature = inspect.signature(scorer_class)
+    has_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+    unsupported = [
+        key
+        for key in scorer.scorer_params
+        if key not in signature.parameters and not has_kwargs
+    ]
+    if unsupported:
+        joined = ", ".join(sorted(unsupported))
+        raise ValueError(f"unsupported trajectory scorer_params for {scorer.metric_name}: {joined}")
 
 
 def compile_evaluation_flow(flow: EvaluationFlowDef) -> CompiledEvaluationPlan:

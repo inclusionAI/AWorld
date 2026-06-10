@@ -5,7 +5,6 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from aworld.core.task import TaskResponse
 from aworld.evaluations.execution import (
     EvalExecutionMode,
     EvalExecutionSpec,
@@ -20,6 +19,13 @@ from aworld.runner import Runners
 class ExecutionAdapter(Protocol):
     async def execute(self, *, case: Any, target: dict[str, Any], spec: EvalExecutionSpec) -> EvalState:
         raise NotImplementedError
+
+
+def _execution_metadata(*, mode: EvalExecutionMode | None = None) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if mode is not None:
+        metadata["_execution_mode"] = mode.value
+    return metadata
 
 
 @dataclass(frozen=True)
@@ -44,7 +50,7 @@ class AgentExecutionAdapter:
             case_id=case.case_id,
             response=response,
             target=target,
-            metadata=case.input,
+            metadata=_execution_metadata(mode=spec.mode),
         )
 
 
@@ -65,14 +71,12 @@ class TaskExecutionAdapter:
             result = result[task.id]
         elif isinstance(result, dict) and len(result) == 1 and not {"status", "answer", "completion"} & result.keys():
             result = next(iter(result.values()))
-        elif isinstance(result, TaskResponse):
-            result = result
 
         return normalize_task_response_to_eval_state(
             case_id=case.case_id,
             response=result,
             target=target,
-            metadata=case.input,
+            metadata=_execution_metadata(mode=spec.mode),
         )
 
 
@@ -89,7 +93,7 @@ class ProgramExecutionAdapter:
             case_id=case.case_id,
             response=result,
             target=target,
-            metadata={**case.input, "_execution_mode": spec.mode.value},
+            metadata=_execution_metadata(mode=spec.mode),
         )
 
 
