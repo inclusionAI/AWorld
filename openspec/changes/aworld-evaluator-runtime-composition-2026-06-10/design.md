@@ -11,7 +11,7 @@ Evaluator v2 extensibility made the AWorld evaluator substrate more configurable
 - trial-based pass@k/pass^k metrics for nondeterministic agents
 - an adoption suite that exercises these capabilities outside tests
 
-This change introduces runtime composition as a framework-owned layer under `aworld/evaluations/` while preserving the v2 single-shot substrate. It also adds outcome/state-check grading because outcome verification is tightly coupled to rollout state and environment snapshots. Trial-based pass@k/pass^k execution is explicitly deferred because retry composition and independent trials have different semantics.
+This change introduces runtime composition as a framework-owned layer under `aworld/evaluations/` while preserving the v2 single-shot substrate. It also adds outcome/state-check grading because outcome verification is tightly coupled to rollout state and environment snapshots. Trial-based pass@k/pass^k execution is explicitly deferred because retry composition and independent trials have different semantics. This change should therefore be described as the runtime-composition and outcome-grading slice of complete evaluation capability, not as the full evaluator roadmap.
 
 ## Goals / Non-Goals
 
@@ -96,14 +96,27 @@ The bridge into `EvalState` should preserve the existing state summary and score
 
 ### 3. Add outcome/state-check grading
 
-Outcome evaluation must not be limited to terminal text. Add an outcome/state-check contract that can verify the final state produced by a rollout:
+Outcome evaluation must not be limited to terminal text. In this design, `answer` is the target's terminal response, while `outcome` is the serializable final environment, artifact, or domain state captured by the harness after rollout. Add an outcome/state-check contract that can verify that final state:
 
 - file or artifact existence/content checks
 - structured environment snapshot checks
 - database or domain-state assertions when the harness provides a serializable snapshot
-- test-command or sandbox checks only through a future trusted execution/sandbox change
+- coding-task results such as precomputed test summaries when produced by a trusted harness
+- test-command or sandbox execution only through a future trusted execution/sandbox change
 
 The first implementation should keep state checks deterministic and in-process. A state-check grader receives the `RolloutState`, case, target, and optional serializable environment snapshot. It returns normal evaluator metric results plus structured details explaining which checks passed or failed.
+
+A minimal state-check definition should support:
+
+- `metric_name`
+- `source`: for example `outcome`, `metadata`, or `artifacts`
+- `path`: a structured path into the selected source
+- `op`: equality or numeric comparison against an expected value
+- `expected`
+- `weight`
+- `required`
+
+Outcome graders must emit numeric metric values for gate compatibility, plus pass/fail details for report inspection. They must not open live databases, inspect arbitrary file paths, run shell commands, or retain environment handles. If a harness needs external checks, it must capture a serializable snapshot or summary into `RolloutState.outcome` before grading.
 
 Outcome graders are distinct from:
 
@@ -152,7 +165,19 @@ The wrapper must preserve child/attempt state so reports can explain which attem
 
 Retry and fallback are not trials. Retry is an execution strategy that tries to produce one terminal rollout; trials are independent repeated evaluations used to estimate nondeterministic performance. This change must not label retry results as pass@k or pass^k.
 
-### 7. Add suite purpose metadata and standard metrics
+### 7. Defer multi-trial evaluation explicitly
+
+Complete agent evaluation needs independent trial execution and distribution-level metrics, but that is a scheduler and aggregation concern rather than a harness-wrapper concern. A later evaluator-trials change should own:
+
+- `num_trials` or equivalent independent repeat configuration
+- clean-environment reset requirements per trial
+- trial-level report records
+- pass@k and pass^k aggregation
+- separation between retry attempts inside a trial and independent trials across the same case
+
+Until that exists, runtime-composed reports should expose retry attempts only as child states for one rollout and should not compute nondeterminism metrics from them.
+
+### 8. Add suite purpose metadata and standard metrics
 
 Suites should be able to describe whether they are intended for capability evaluation or regression evaluation. The first implementation can use suite metadata, for example:
 
@@ -163,13 +188,13 @@ Runtime-composed harnesses should derive standard transcript and latency metrics
 
 - `n_turns`
 - `n_tool_calls`
-- `n_tokens` or token usage fields
+- `n_tokens` or token usage fields such as prompt, completion, and total tokens
 - wall-clock duration / time cost
 - optional first-token or first-action latency when exposed by the runtime
 
 Suites can still declare custom metrics, but these baseline metrics should not require every suite to hand-roll them.
 
-### 8. Add one adoption suite
+### 9. Add one adoption suite
 
 Add one builtin or framework-registered adoption suite that consumes the new runtime:
 
@@ -183,7 +208,7 @@ Add one builtin or framework-registered adoption suite that consumes the new run
 
 This suite can be narrow and deterministic. Its purpose is to prove that the substrate is active in production code paths, not only in isolated unit tests. It should not replace `app-evaluator` unless that public contract is ready to change.
 
-### 9. Keep CLI additive
+### 10. Keep CLI additive
 
 `aworld-cli evaluator` should discover and run the adoption suite through existing suite selection paths. Do not add CLI-only runtime syntax in this change. If CLI ergonomics are needed later, handle them in a product-focused change after the framework contract settles.
 
