@@ -606,6 +606,46 @@ class TestEvaluationCommand:
         assert "trajectory-log-source-evaluator" in result
         assert "Report:" in result
 
+    @pytest.mark.asyncio
+    async def test_evaluation_runs_source_runtime_without_nested_event_loop(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("evaluation")
+        input_path = tmp_path / "answers.jsonl"
+        input_path.write_text('{"id":"case-1","input":"question","answer":"answer"}\n', encoding="utf-8")
+        agent_path = tmp_path / "agent.md"
+        agent_path.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+
+        async def fake_run_evaluation_flow(flow):
+            return {
+                "report_version": 1,
+                "report_format": {"id": "aworld.evaluator.report", "version": 1},
+                "generated_at": "2026-06-10T00:00:00Z",
+                "suite_id": "source-evaluator",
+                "target": flow.target,
+                "judge_backend": {"backend_id": "source-agent-md"},
+                "summary": {"source-evaluator": {"score": {"mean": 88.0}}},
+                "metrics": {"score": {"mean": 88.0}},
+                "results": [],
+                "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
+                "gate": {"status": "pass", "metric_name": "score", "value": 88.0},
+                "approval": {"required": False, "resolved": False, "approved": None},
+            }
+
+        monkeypatch.setattr("aworld_cli.evaluator_runtime._load_evaluator_hooks", lambda: {})
+        monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=os.getcwd(),
+                user_args=(
+                    f"--input {input_path} --kind task-answer "
+                    f"--judge-agent {agent_path} --output {tmp_path / 'report.json'}"
+                ),
+            )
+        )
+
+        assert "source-evaluator" in result
+        assert "Report:" in result
+
 
 class TestSlashCommandCompletion:
     """Test slash command completion sources."""

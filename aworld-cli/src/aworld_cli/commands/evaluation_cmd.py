@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import shlex
 
 from aworld_cli.core.command_system import Command, CommandContext, register_command
@@ -83,7 +84,8 @@ class EvaluationCommand(Command):
             return _usage()
 
         try:
-            report = run_evaluator_source_cli(
+            report = await asyncio.to_thread(
+                run_evaluator_source_cli,
                 input=args.input,
                 kind=args.kind,
                 judge_agent=args.judge_agent,
