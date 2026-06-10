@@ -13,6 +13,7 @@ import aworld.evaluations.substrate as substrate_module
 from aworld.evaluations.manifests import get_declared_eval_suite_schema
 from aworld.evaluations.report import EvaluatorReport
 from aworld_cli.evaluator_runtime import (
+    _build_source_suite,
     _build_source_prompt,
     available_evaluator_suites,
     evaluator_exit_code,
@@ -140,6 +141,54 @@ def test_run_evaluator_source_cli_rejects_unsupported_source_kind(tmp_path: Path
             kind="task",
             judge_agent=str(judge_agent),
         )
+
+
+def test_trajectory_source_gate_consumes_veto_signal(tmp_path: Path) -> None:
+    task_id = "task-with-veto"
+    trajectory = [
+        {
+            "state": {"input": {"content": "question"}, "messages": []},
+            "meta": {"step": 1},
+            "action": {"content": "final", "is_agent_finished": "True"},
+        }
+    ]
+    input_path = tmp_path / "trajectory.log"
+    input_path.write_text(
+        repr({"task_id": task_id, "is_sub_task": False, "trajectory": json.dumps(trajectory)}) + "\n",
+        encoding="utf-8",
+    )
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+
+    suite = _build_source_suite(
+        kind="aworld-trajectory-log",
+        input_path=input_path,
+        judge_agent_path=judge_agent,
+        task_id=task_id,
+        id_field="id",
+        task_field="input",
+        answer_field="answer",
+        out_dir=str(tmp_path),
+    )
+
+    pass_conditions = suite.gate_policy.normalized_conditions()[0]
+    assert any(
+        condition.metric_name == "veto_triggered"
+        and condition.op == "=="
+        and condition.threshold is False
+        for condition in pass_conditions
+    )
+    decision = suite.gate_policy.evaluate(
+        {
+            "score": 95.0,
+            "A1_groundedness": 5,
+            "has_evidence": 1.0,
+            "agent_finished": 1.0,
+            "veto_triggered": True,
+        }
+    )
+    assert decision.status == "fail"
+    assert any(condition["metric_name"] == "veto_triggered" for condition in decision.failed_conditions)
 
 
 def test_run_evaluator_source_cli_passes_source_fields_to_hooks(

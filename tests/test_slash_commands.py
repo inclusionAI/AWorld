@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
 from aworld.plugins.discovery import discover_plugins
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
-from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd
+from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd, evaluation_cmd
 from aworld_cli.console import AWorldCLI
 
 
@@ -27,7 +27,7 @@ class TestCommandRegistration:
 
     def test_commands_registered(self):
         """Verify all commands are registered."""
-        expected_commands = ['help', 'commit', 'review', 'diff', 'cron', 'plugins']
+        expected_commands = ['help', 'commit', 'review', 'diff', 'cron', 'plugins', 'evaluation']
         for cmd_name in expected_commands:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd is not None, f"Command /{cmd_name} not registered"
@@ -44,7 +44,7 @@ class TestCommandRegistration:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd.command_type == 'prompt', f"/{cmd_name} should be prompt command"
 
-        for cmd_name in ['cron', 'plugins']:
+        for cmd_name in ['cron', 'plugins', 'evaluation']:
             tool_cmd = CommandRegistry.get(cmd_name)
             assert tool_cmd.command_type == 'tool'
 
@@ -59,6 +59,7 @@ class TestCommandRegistration:
         assert 'diff' in command_names
         assert 'cron' in command_names
         assert 'plugins' in command_names
+        assert 'evaluation' in command_names
 
 
 class TestHelpCommand:
@@ -79,6 +80,7 @@ class TestHelpCommand:
         assert '/review' in result
         assert '/diff' in result
         assert '/plugins' in result
+        assert '/evaluation' in result
 
     @pytest.mark.asyncio
     async def test_help_command_with_args(self):
@@ -550,8 +552,73 @@ class TestCronCommand:
         assert remaining[0].job_id == "job-2"
 
 
+class TestEvaluationCommand:
+    """Test /evaluation command direct execution."""
+
+    @pytest.mark.asyncio
+    async def test_evaluation_without_args_shows_usage(self):
+        cmd = CommandRegistry.get("evaluation")
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args=""))
+
+        assert "Usage:" in result
+        assert "/evaluation --input" in result
+        assert "--kind aworld-trajectory-log" in result
+
+    @pytest.mark.asyncio
+    async def test_evaluation_delegates_to_source_runtime(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("evaluation")
+        input_path = tmp_path / "trajectory.log"
+        agent_path = tmp_path / "agent.md"
+        calls = {}
+
+        def fake_run_evaluator_source_cli(**kwargs):
+            calls.update(kwargs)
+            return {
+                "suite_id": "trajectory-log-source-evaluator",
+                "gate": {"status": "pass"},
+                "summary": {"trajectory-log-source-evaluator": {"score": {"mean": 88.0}}},
+                "results": [],
+                "approval": {"required": False, "resolved": False, "approved": None},
+                "report_path": str(tmp_path / "report.json"),
+            }
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.evaluation_cmd.run_evaluator_source_cli",
+            fake_run_evaluator_source_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=os.getcwd(),
+                user_args=(
+                    f"--input {input_path} --kind aworld-trajectory-log "
+                    f"--task-id task-1 --judge-agent {agent_path} --out-dir {tmp_path}"
+                ),
+            )
+        )
+
+        assert calls["input"] == str(input_path)
+        assert calls["kind"] == "aworld-trajectory-log"
+        assert calls["task_id"] == "task-1"
+        assert calls["judge_agent"] == str(agent_path)
+        assert calls["out_dir"] == str(tmp_path)
+        assert "trajectory-log-source-evaluator" in result
+        assert "Report:" in result
+
+
 class TestSlashCommandCompletion:
     """Test slash command completion sources."""
+
+    def test_console_completion_entries_include_evaluation_command(self):
+        cli = AWorldCLI()
+
+        words, meta = cli._build_completion_entries(agent_names=[])
+
+        assert "/evaluation" in words
+        assert "/evaluation --kind task-answer" in words
+        assert "/evaluation --kind aworld-trajectory-log" in words
+        assert meta["/evaluation"] == "Run evaluator flows"
 
     def test_console_completion_entries_include_cron_subcommands(self):
         """Typing /cron should expose concrete cron subcommands in the completer source."""
