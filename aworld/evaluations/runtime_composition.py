@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Protocol
 
 from aworld.evaluations.execution import EvalExecutionSpec, EvalState
@@ -85,6 +85,20 @@ class StepReward:
             "weight": self.weight,
             "partial_credit": self.partial_credit,
             "reason": self.reason,
+            "metadata": _serializable_dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class EnvironmentSnapshot:
+    environment_id: str
+    trial_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "environment_id": self.environment_id,
+            "trial_id": self.trial_id,
             "metadata": _serializable_dict(self.metadata),
         }
 
@@ -251,6 +265,21 @@ class RuntimeHarness(Protocol):
         ...
 
 
+class EnvironmentFixture(Protocol):
+    def reset(self, *, case: Any, target: Mapping[str, Any]) -> EnvironmentSnapshot | Mapping[str, Any]:
+        ...
+
+    def cleanup(
+        self,
+        *,
+        snapshot: EnvironmentSnapshot,
+        case: Any,
+        target: Mapping[str, Any],
+        state: RolloutState,
+    ) -> EnvironmentSnapshot | Mapping[str, Any] | None:
+        ...
+
+
 class UserSimulator(Protocol):
     def next_turn(
         self,
@@ -314,6 +343,103 @@ async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _environment_snapshot_from(value: EnvironmentSnapshot | Mapping[str, Any], *, case: Any) -> EnvironmentSnapshot:
+    if isinstance(value, EnvironmentSnapshot):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("environment fixture must return EnvironmentSnapshot or mapping")
+    environment_id = value.get("environment_id")
+    if environment_id is None:
+        raise ValueError("environment snapshot requires environment_id")
+    case_input = _case_input(case)
+    trial = case_input.get("_trial") if isinstance(case_input.get("_trial"), Mapping) else {}
+    return EnvironmentSnapshot(
+        environment_id=str(environment_id),
+        trial_id=value.get("trial_id") or trial.get("trial_id"),
+        metadata=dict(value.get("metadata") or {}),
+    )
+
+
+def _case_with_environment(case: Any, snapshot: EnvironmentSnapshot) -> Any:
+    snapshot_dict = snapshot.to_dict()
+    case_input = _case_input(case)
+    metadata = getattr(case, "metadata", {})
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    try:
+        return replace(
+            case,
+            input={**case_input, "_environment": snapshot_dict},
+            metadata={**dict(metadata), "_environment": snapshot_dict},
+        )
+    except TypeError:
+        return case
+
+
+class EnvironmentIsolatedRuntimeHarness:
+    def __init__(self, *, base_harness: RuntimeHarness, fixture: EnvironmentFixture):
+        self.base_harness = base_harness
+        self.fixture = fixture
+
+    async def run_rollout(self, *, case: Any, target: Mapping[str, Any]) -> RolloutState:
+        reset_value = await _maybe_await(self.fixture.reset(case=case, target=target))
+        snapshot = _environment_snapshot_from(reset_value, case=case)
+        snapshot_dict = snapshot.to_dict()
+        isolated_case = _case_with_environment(case, snapshot)
+        isolated_target = {**dict(target), "_environment": snapshot_dict}
+
+        try:
+            state = await self.base_harness.run_rollout(case=isolated_case, target=isolated_target)
+        except Exception:
+            cleanup_state = RolloutState(case_id=str(getattr(case, "case_id", "case")), status="failed")
+            try:
+                await _maybe_await(
+                    self.fixture.cleanup(
+                        snapshot=snapshot,
+                        case=isolated_case,
+                        target=isolated_target,
+                        state=cleanup_state,
+                    )
+                )
+            except Exception:
+                pass
+            raise
+
+        state.metadata = {
+            **state.metadata,
+            "environment": snapshot_dict,
+        }
+        try:
+            cleanup_value = await _maybe_await(
+                self.fixture.cleanup(
+                    snapshot=snapshot,
+                    case=isolated_case,
+                    target=isolated_target,
+                    state=state,
+                )
+            )
+        except Exception as exc:
+            state.status = "failed"
+            state.error = {
+                "type": exc.__class__.__name__,
+                "message": str(exc),
+                "phase": "environment_cleanup",
+            }
+            state.metadata = {
+                **state.metadata,
+                "environment_cleanup_error": dict(state.error),
+            }
+            return state
+
+        if cleanup_value is not None:
+            cleanup_snapshot = _environment_snapshot_from(cleanup_value, case=isolated_case)
+            state.metadata = {
+                **state.metadata,
+                "environment_cleanup": cleanup_snapshot.to_dict(),
+            }
+        return state
 
 
 class CallableRuntimeHarness:
