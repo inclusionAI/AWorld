@@ -201,6 +201,52 @@ def test_run_evaluator_source_cli_passes_source_fields_to_hooks(
     assert events[1][1]["report"]["source_selection"]["kind"] == "task-answer"
 
 
+def test_run_evaluator_source_cli_persists_schema_valid_source_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question","answer":"existing"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+
+    async def fake_run_evaluation_flow(flow):
+        return {
+            "report_version": 1,
+            "report_format": {"id": "aworld.evaluator.report", "version": 1},
+            "generated_at": "2026-06-10T00:00:00Z",
+            "suite_id": "source-evaluator",
+            "target": flow.target,
+            "judge_backend": {"backend_id": "source-agent-md"},
+            "summary": {"source-evaluator": {"score": {"mean": 88.0}}},
+            "metrics": {"score": {"mean": 88.0}},
+            "results": [
+                {
+                    "case_id": "case-1",
+                    "input": {"input": "question"},
+                    "metrics": {"score": {"value": 88.0, "status": "PASSED"}},
+                    "judge": {"score": 88.0, "verdict": "Pass"},
+                    "judge_backend": {"backend_id": "source-agent-md"},
+                    "state_summary": {"answer": "existing"},
+                }
+            ],
+            "result_counts": {"cases_total": 1, "cases_with_metrics": 1, "cases_with_judge": 1},
+            "gate": {"status": "pass", "metric_name": "score", "value": 88.0},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="task-answer",
+        judge_agent=str(judge_agent),
+        output=str(tmp_path / "report.json"),
+    )
+
+    validate_evaluator_report(report)
+
+
 @pytest.mark.asyncio
 async def test_framework_run_evaluation_flow_returns_report_object() -> None:
     async def fake_judge(case_input, target):
