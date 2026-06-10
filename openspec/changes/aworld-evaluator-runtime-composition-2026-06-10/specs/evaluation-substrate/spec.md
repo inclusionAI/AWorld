@@ -40,13 +40,25 @@ Runtime-composed evaluation flows SHALL represent multi-turn execution as serial
 
 Runtime-composed evaluation flows SHALL support outcome graders that verify final environment, artifact, or domain state separately from final text answer and trajectory.
 
+#### Scenario: Outcome is distinct from terminal answer
+- **WHEN** a runtime-composed rollout completes
+- **THEN** the framework SHALL treat the terminal answer as response text and the outcome as serializable final environment, artifact, or domain state captured by the harness
+
 #### Scenario: Outcome grader checks final state
 - **WHEN** a runtime-composed suite declares an outcome or state-check grader
-- **THEN** the framework SHALL evaluate the rollout state's terminal outcome or serializable environment snapshot and emit normal evaluator metrics with pass/fail details
+- **THEN** the framework SHALL evaluate the rollout state's terminal outcome or serializable environment snapshot and emit normal evaluator metrics with numeric values and pass/fail details
+
+#### Scenario: State check addresses a structured snapshot
+- **WHEN** a state-check grader declares a source, path, operator, and expected value
+- **THEN** the framework SHALL resolve that path against the selected serializable rollout state source and compare it without opening live files, databases, clients, or runtime handles
 
 #### Scenario: Outcome metrics remain distinct
 - **WHEN** a suite uses typed judge output, trajectory scorers, step rewards, and outcome graders together
 - **THEN** the framework SHALL keep outcome metrics distinct while allowing composite gates to reference them alongside judge, trajectory, and reward metrics
+
+#### Scenario: Trusted harness provides coding-task results
+- **WHEN** a trusted harness runs external checks before grading and records a serializable test summary or artifact summary in rollout outcome
+- **THEN** outcome graders SHALL evaluate that recorded summary rather than invoking test commands themselves
 
 #### Scenario: Environment check needs sandbox reset
 - **WHEN** an outcome grader requires clean-environment isolation, command execution, or sandbox reset semantics
@@ -63,6 +75,10 @@ Runtime-composed evaluation flows SHALL support deterministic user simulators th
 #### Scenario: Single-prompt simulator preserves one-shot behavior
 - **WHEN** a case only includes a single prompt or query
 - **THEN** the framework SHALL support a simulator that emits one user turn and then terminates unless the harness requests additional turns
+
+#### Scenario: Adaptive LLM user simulator is requested
+- **WHEN** a suite requires an LLM-backed adaptive user simulator
+- **THEN** the framework SHALL treat it as out of scope for this change and require a later simulator extension
 
 #### Scenario: Simulator errors are captured
 - **WHEN** a user simulator cannot produce a valid next turn
@@ -108,6 +124,10 @@ Suite-backed evaluation flows SHALL allow suites to declare whether they are int
 - **WHEN** a suite declares evaluation-purpose metadata
 - **THEN** the framework SHALL preserve that metadata in the resolved suite/report context without changing scorer semantics
 
+#### Scenario: Purpose uses supported values
+- **WHEN** a suite declares `evaluation_purpose`
+- **THEN** the framework SHALL accept `capability` and `regression` as supported values and leave scorer thresholds under the suite's explicit gate policy
+
 ### Requirement: Runtime-composition adoption suite
 
 The framework SHALL include one opt-in adoption suite that exercises runtime composition and v2 extensibility together.
@@ -124,6 +144,14 @@ The framework SHALL include one opt-in adoption suite that exercises runtime com
 
 Runtime composition SHALL distinguish retry/fallback execution from independent trial-based evaluation.
 
+#### Scenario: Retry attempts are reported
+- **WHEN** retry or fallback attempts are retained as child rollout state
+- **THEN** the framework SHALL NOT count those attempts as independent trials or use them to calculate pass@k, pass^k, or trial-distribution metrics
+
 #### Scenario: Caller requests pass@k or pass^k
 - **WHEN** a caller needs independent repeated trials, pass@k, pass^k, or trial-distribution metrics
 - **THEN** the framework SHALL treat that as out of scope for this change and require a later multi-trial evaluator change
+
+#### Scenario: Future trial evaluation is added
+- **WHEN** a later change adds independent trial execution
+- **THEN** it SHALL keep trial scheduling, clean-environment reset semantics, and pass@k/pass^k aggregation separate from retry wrapper behavior
