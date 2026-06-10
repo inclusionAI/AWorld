@@ -38,10 +38,15 @@ class SuiteJudgeScorer(Scorer):
             scorer.metric_name
             for scorer in getattr(self.suite, "trajectory_scorers", tuple())
         }
+        declared_runtime_metrics = {
+            scorer.metric_name
+            for scorer in getattr(self.suite, "outcome_scorers", tuple())
+        } | set(getattr(self.suite, "reward_metrics", tuple())) | set(getattr(self.suite, "standard_metrics", tuple()))
         for metric_name, value in payload.items():
             if (
                 metric_name == "score"
                 or metric_name in declared_trajectory_metrics
+                or metric_name in declared_runtime_metrics
                 or not isinstance(value, (int, float, bool, str))
             ):
                 continue
