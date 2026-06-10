@@ -8,6 +8,7 @@ import math
 import inspect
 import os
 import re
+import tempfile
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -113,11 +114,17 @@ class TrialPolicyDef:
 class JudgeSchemaDef:
     required_fields: tuple[str, ...] = tuple()
     output_model: type[BaseModel] | None = None
+    normalizer: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
 
     def validate(self, payload: Mapping[str, Any]) -> None:
         self.validate_payload(payload)
 
     def validate_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if self.normalizer is not None:
+            payload = self.normalizer(dict(payload))
+            if not isinstance(payload, Mapping):
+                raise ValueError("judge schema normalizer must return a mapping")
+
         if self.output_model is not None:
             try:
                 model = self.output_model.model_validate(dict(payload))
@@ -318,6 +325,35 @@ class AgentJudgeBackend:
     prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None
     timeout_seconds: float | None = None
 
+    @classmethod
+    def from_agent_markdown(
+        cls,
+        path: str | Path,
+        *,
+        backend_id: str | None = None,
+        prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> "AgentJudgeBackend":
+        agent_markdown_path = Path(path).expanduser()
+        resolved_backend_id = backend_id or agent_markdown_path.stem
+
+        async def _executor(prompt: JudgePrompt, system_prompt: str) -> str:
+            if isinstance(prompt, tuple):
+                raise ValueError("agent markdown judge backend only supports text prompts")
+            from aworld.runner import Runners
+
+            agent = await load_agent_markdown(agent_markdown_path, agent_id=resolved_backend_id)
+            response = await Runners.run(input=str(prompt), agent=agent)
+            return str(getattr(response, "answer", response))
+
+        return cls(
+            backend_id=resolved_backend_id,
+            system_prompt=f"Agent loaded from {agent_markdown_path}",
+            executor=_executor,
+            prompt_builder=prompt_builder,
+            timeout_seconds=timeout_seconds,
+        )
+
     def is_available(self) -> bool:
         if self.executor is not None:
             return True
@@ -356,6 +392,92 @@ class AgentJudgeBackend:
     async def judge(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> dict[str, Any]:
         execution = await self.execute(case_input, target, suite)
         return execution.payload
+
+
+def _safe_agent_markdown_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-._") or "markdown-agent"
+
+
+def _frontmatter_scalar(value: Any, default: str) -> str:
+    text = str(value if value not in (None, "") else default)
+    return " ".join(text.splitlines()).strip()
+
+
+def _normalize_markdown_tool_list(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+    return {}
+
+
+def _materialize_agent_markdown_as_skill(
+    agent_markdown_path: Path,
+    *,
+    skills_root: Path,
+    skill_name: str,
+) -> Path:
+    from aworld.utils.skill_loader import extract_front_matter
+
+    lines = agent_markdown_path.read_text(encoding="utf-8").splitlines()
+    frontmatter, body_start = extract_front_matter(lines)
+    body = "\n".join(lines[body_start:]).strip()
+    description = _frontmatter_scalar(
+        frontmatter.get("description", frontmatter.get("desc")),
+        f"Agent loaded from {agent_markdown_path}",
+    )
+    tool_list = _normalize_markdown_tool_list(frontmatter.get("tool_list", {}))
+
+    skill_dir = skills_root / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(
+        "---\n"
+        f"name: {_frontmatter_scalar(frontmatter.get('name'), skill_name)}\n"
+        f"description: {description}\n"
+        "type: agent\n"
+        f"tool_list: {json.dumps(tool_list, ensure_ascii=False)}\n"
+        "---\n\n"
+        f"{body}\n",
+        encoding="utf-8",
+    )
+    return skill_path
+
+
+async def load_agent_markdown(path: str | Path, *, agent_id: str):
+    from aworld.config.task_loader import _load_skill_agent
+
+    agent_markdown_path = Path(path).expanduser()
+    skill_name = _safe_agent_markdown_name(agent_id)
+    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    with tempfile.TemporaryDirectory(prefix="aworld-agent-md-") as tmp_dir:
+        skills_root = Path(tmp_dir) / "skills"
+        _materialize_agent_markdown_as_skill(
+            agent_markdown_path,
+            skills_root=skills_root,
+            skill_name=skill_name,
+        )
+        return await _load_skill_agent(
+            agent_id=agent_id,
+            agent_def={
+                "skill_name": skill_name,
+                "config": {
+                    "llm_config": {
+                        "llm_model_name": os.getenv("LLM_MODEL_NAME"),
+                        "llm_provider": os.getenv("LLM_PROVIDER"),
+                        "llm_api_key": api_key,
+                        "llm_base_url": os.getenv("LLM_BASE_URL"),
+                    }
+                },
+            },
+            skills_path=skills_root,
+            global_mcp_config=None,
+        )
 
 
 @dataclass(frozen=True)
