@@ -340,6 +340,59 @@ async def test_markdown_agent_judge_backend_runs_loaded_agent_with_runners(
     assert execution.payload["dimensions"]["A1_groundedness"]["score"] == 4
 
 
+@pytest.mark.asyncio
+async def test_trajectory_log_replay_harness_populates_tool_calls_and_standard_metrics(tmp_path: Path):
+    task_id = "task_with_tool"
+    trajectory = [
+        {
+            "state": {
+                "input": {"content": "question"},
+                "messages": [{"role": "system", "content": "system"}],
+            },
+            "meta": {"step": 1, "pre_agent": "user", "agent_id": "agent"},
+            "action": {
+                "tool_calls": [
+                    {"function": {"name": "search", "arguments": "{}"}},
+                    {"function": {"name": "open", "arguments": "{\"url\":\"https://example.com\"}"}},
+                ],
+                "is_agent_finished": "False",
+            },
+        },
+        {
+            "state": {
+                "messages": [
+                    {"role": "tool", "content": "search result"},
+                    {"role": "tool", "content": "page text"},
+                ],
+            },
+            "meta": {"step": 2, "pre_agent": "agent", "agent_id": "agent"},
+            "action": {"content": "final", "is_agent_finished": "True"},
+        },
+    ]
+    log_path = tmp_path / "trajectory.log"
+    log_path.write_text(
+        repr({"task_id": task_id, "is_sub_task": False, "trajectory": json.dumps(trajectory)})
+        + "\n",
+        encoding="utf-8",
+    )
+    case = EvalCaseDef(
+        case_id=task_id,
+        input={
+            "trajectory_log": str(log_path),
+            "task_id": task_id,
+            "judge_agent_prompt": "agent.md",
+        },
+    )
+
+    state = await TrajectoryLogReplayHarness(out_dir=tmp_path).run_rollout(case=case, target={})
+
+    assert [call["name"] for call in state.tool_calls] == ["search", "open"]
+    assert state.usage == {"total_tokens": 0}
+    assert state.timing == {"duration_ms": 0}
+    assert state.standard_metrics["n_turns"] == 2
+    assert state.standard_metrics["n_tool_calls"] == 2
+
+
 def test_trajectory_step_assertion_uses_extracted_num_steps(tmp_path: Path):
     extracted_path = tmp_path / "extracted_task.json"
     extracted_path.write_text(json.dumps({"num_steps": 81}), encoding="utf-8")
@@ -433,11 +486,29 @@ class TrajectoryLogReplayHarness:
 
         final_answer = extracted.get("final_answer") or ""
         is_finished = any(step.get("is_agent_finished") for step in extracted["steps"])
+        tool_calls = [
+            dict(tool_call)
+            for step in extracted["steps"]
+            for tool_call in step.get("tool_calls", [])
+            if isinstance(tool_call, Mapping)
+        ]
+        usage = {"total_tokens": 0}
+        timing = {"duration_ms": 0}
+        standard_metrics = {
+            "n_turns": len(extracted["steps"]),
+            "n_tool_calls": len(tool_calls),
+            "n_tokens": usage["total_tokens"],
+            "duration_ms": timing["duration_ms"],
+        }
         return RolloutState(
             case_id=case.case_id,
             status="success" if is_finished and final_answer else "failed",
             answer=final_answer,
             trajectory=list(extracted["steps"]),
+            tool_calls=tool_calls,
+            usage=usage,
+            timing=timing,
+            standard_metrics=standard_metrics,
             outcome={
                 "task_id": task_id,
                 "question": extracted.get("question"),

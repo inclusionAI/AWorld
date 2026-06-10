@@ -1150,7 +1150,9 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
                         case_metrics[metric_name]["status"] = status
                     metadata = metric_result.get("metadata") or {}
                     if isinstance(metadata, Mapping) and metadata:
-                        case_metric_details[metric_name] = dict(metadata)
+                        is_judge_metric = "_judge_backend" in metadata
+                        if not is_judge_metric or metric_name == "score":
+                            case_metric_details[metric_name] = dict(metadata)
                     if case_backend_id is None and isinstance(metadata, Mapping):
                         case_backend_id = metadata.get("_judge_backend")
                 else:
