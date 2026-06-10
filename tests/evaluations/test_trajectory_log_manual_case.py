@@ -1,35 +1,25 @@
 from __future__ import annotations
 
-import ast
-import asyncio
 import json
 import os
-import re
-import tempfile
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 import pytest
-from pydantic import BaseModel, model_validator
 
-from aworld.config.task_loader import _load_skill_agent
-from aworld.evaluations.runtime_composition import RolloutState
+from aworld.evaluations.sources import AWorldTrajectoryLogSource, create_source_eval_suite
 from aworld.evaluations.substrate import (
-    EvalCaseDef,
-    EvalSuiteDef,
-    EvaluationFlowDef,
+    AgentJudgeBackend,
     GateMetricCondition,
     GatePolicyDef,
-    JudgeExecution,
-    JudgeSchemaDef,
     StateCheckGrader,
-    _coerce_judge_payload,
+    EvaluationFlowDef,
+    EvalSuiteDef,
+    load_agent_markdown,
     run_evaluation_flow,
 )
 from aworld.evaluations.report import validate_evaluator_report
-from aworld.runner import Runners
-from aworld.utils.skill_loader import extract_front_matter
+from aworld.evaluations.trajectory_judge import TrajectoryJudgeSchema
 
 
 DEFAULT_JUDGE_TIMEOUT_SECONDS = 600.0
@@ -41,48 +31,6 @@ class _FakePytestConfig:
 
     def getoption(self, name: str) -> Any:
         return self._values.get(name)
-
-
-class TrajectoryEvalJudgeOutput(BaseModel):
-    score: float
-    verdict: Literal["Excellent", "Pass", "Marginal", "Fail"]
-    A1_groundedness: int
-    A2_completeness: int
-    A3_relevance: int
-    A4_readability: int
-    B1_tool_use: int
-    B2_efficiency: int
-    B3_compliance: int
-    B4_robustness: int
-    veto_triggered: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def flatten_agent_report(cls, value: Any) -> Any:
-        if not isinstance(value, Mapping) or "dimensions" not in value:
-            return value
-        flattened = dict(value)
-        if "score" not in flattened and "weighted_score" in flattened:
-            flattened["score"] = flattened["weighted_score"]
-        dimensions = value.get("dimensions") or {}
-        for metric_name in (
-            "A1_groundedness",
-            "A2_completeness",
-            "A3_relevance",
-            "A4_readability",
-            "B1_tool_use",
-            "B2_efficiency",
-            "B3_compliance",
-            "B4_robustness",
-        ):
-            metric_payload = dimensions.get(metric_name) if isinstance(dimensions, Mapping) else None
-            if isinstance(metric_payload, Mapping) and "score" in metric_payload:
-                flattened[metric_name] = metric_payload["score"]
-        return flattened
-
-
-def _truthy_string(value: Any) -> bool:
-    return str(value).strip().lower() in {"true", "1"}
 
 
 def _manual_replay_config(pytest_config: Any) -> dict[str, Any]:
@@ -111,123 +59,6 @@ def _manual_replay_config(pytest_config: Any) -> dict[str, Any]:
         "out_dir": out_dir,
         "judge_timeout_seconds": float(judge_timeout_seconds),
     }
-
-
-def _safe_skill_name(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-._") or "markdown-agent"
-
-
-def _frontmatter_scalar(value: Any, default: str) -> str:
-    text = str(value if value not in (None, "") else default)
-    return " ".join(text.splitlines()).strip()
-
-
-def _normalize_tool_list(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        if isinstance(parsed, Mapping):
-            return dict(parsed)
-    return {}
-
-
-def _materialize_agent_markdown_as_skill(
-    agent_markdown_path: Path,
-    *,
-    skills_root: Path,
-    skill_name: str,
-) -> Path:
-    lines = agent_markdown_path.read_text(encoding="utf-8").splitlines()
-    frontmatter, body_start = extract_front_matter(lines)
-    body = "\n".join(lines[body_start:]).strip()
-    description = _frontmatter_scalar(
-        frontmatter.get("description", frontmatter.get("desc")),
-        f"Agent loaded from {agent_markdown_path}",
-    )
-    tool_list = _normalize_tool_list(frontmatter.get("tool_list", {}))
-
-    skill_dir = skills_root / skill_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    skill_path = skill_dir / "SKILL.md"
-    skill_path.write_text(
-        "---\n"
-        f"name: {_frontmatter_scalar(frontmatter.get('name'), skill_name)}\n"
-        f"description: {description}\n"
-        "type: agent\n"
-        f"tool_list: {json.dumps(tool_list, ensure_ascii=False)}\n"
-        "---\n\n"
-        f"{body}\n",
-        encoding="utf-8",
-    )
-    return skill_path
-
-
-async def _load_agent_markdown_as_aworld_agent(agent_markdown_path: Path, *, agent_id: str) -> Any:
-    skill_name = _safe_skill_name(agent_id)
-    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-    with tempfile.TemporaryDirectory(prefix="aworld-agent-md-") as tmp_dir:
-        skills_root = Path(tmp_dir) / "skills"
-        _materialize_agent_markdown_as_skill(
-            agent_markdown_path,
-            skills_root=skills_root,
-            skill_name=skill_name,
-        )
-        return await _load_skill_agent(
-            agent_id=agent_id,
-            agent_def={
-                "skill_name": skill_name,
-                "config": {
-                    "llm_config": {
-                        "llm_model_name": os.getenv("LLM_MODEL_NAME"),
-                        "llm_provider": os.getenv("LLM_PROVIDER"),
-                        "llm_api_key": api_key,
-                        "llm_base_url": os.getenv("LLM_BASE_URL"),
-                    }
-                },
-            },
-            skills_path=skills_root,
-            global_mcp_config=None,
-        )
-
-
-@dataclass(frozen=True)
-class MarkdownAgentJudgeBackend:
-    backend_id: str
-    agent_markdown_path: Path
-    prompt_builder: Any
-    timeout_seconds: float | None = None
-
-    def is_available(self) -> bool:
-        model_name = os.getenv("LLM_MODEL_NAME")
-        api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-        return self.agent_markdown_path.exists() and bool(model_name and api_key)
-
-    async def execute(self, case_input: dict[str, Any], target: dict[str, Any], suite: EvalSuiteDef) -> JudgeExecution:
-        if not self.is_available():
-            raise RuntimeError(f"judge backend '{self.backend_id}' is not available")
-
-        prompt = self.prompt_builder(case_input, target, suite)
-        if isinstance(prompt, tuple):
-            raise ValueError("MarkdownAgentJudgeBackend only supports text prompts in this manual replay test")
-
-        agent = await _load_agent_markdown_as_aworld_agent(
-            self.agent_markdown_path,
-            agent_id=self.backend_id,
-        )
-
-        async def _run_agent() -> str:
-            response = await Runners.run(input=str(prompt), agent=agent)
-            return str(getattr(response, "answer", response))
-
-        if self.timeout_seconds is not None:
-            response_text = await asyncio.wait_for(_run_agent(), timeout=self.timeout_seconds)
-        else:
-            response_text = await _run_agent()
-        return JudgeExecution(backend_id=self.backend_id, payload=_coerce_judge_payload(response_text))
 
 
 def test_manual_replay_config_requires_explicit_pytest_options(monkeypatch: pytest.MonkeyPatch):
@@ -279,7 +110,7 @@ async def test_agent_markdown_loads_as_aworld_agent_via_existing_skill_loader(
         encoding="utf-8",
     )
 
-    agent = await _load_agent_markdown_as_aworld_agent(agent_md, agent_id="custom-judge")
+    agent = await load_agent_markdown(agent_md, agent_id="custom-judge")
 
     assert agent.name() == "custom-judge"
     assert agent.desc() == "Evaluates trajectories"
@@ -323,9 +154,9 @@ async def test_markdown_agent_judge_backend_runs_loaded_agent_with_runners(
 
     monkeypatch.setattr("aworld.runner.Runners.run", fake_run)
 
-    backend = MarkdownAgentJudgeBackend(
+    backend = AgentJudgeBackend.from_agent_markdown(
+        agent_md,
         backend_id="trajectory-evaluator-agent-md",
-        agent_markdown_path=agent_md,
         prompt_builder=lambda case_input, target, suite: "judge this trajectory",
     )
     execution = await backend.execute({}, {}, object())
@@ -341,7 +172,7 @@ async def test_markdown_agent_judge_backend_runs_loaded_agent_with_runners(
 
 
 @pytest.mark.asyncio
-async def test_trajectory_log_replay_harness_populates_tool_calls_and_standard_metrics(tmp_path: Path):
+async def test_trajectory_log_source_default_adapter_populates_tool_calls_and_standard_metrics(tmp_path: Path):
     task_id = "task_with_tool"
     trajectory = [
         {
@@ -375,16 +206,11 @@ async def test_trajectory_log_replay_harness_populates_tool_calls_and_standard_m
         + "\n",
         encoding="utf-8",
     )
-    case = EvalCaseDef(
-        case_id=task_id,
-        input={
-            "trajectory_log": str(log_path),
-            "task_id": task_id,
-            "judge_agent_prompt": "agent.md",
-        },
-    )
+    source = AWorldTrajectoryLogSource(path=log_path, task_ids=[task_id], extraction_dir=tmp_path)
+    record = next(iter(source.iter_records()))
+    case = source.to_cases()[0]
 
-    state = await TrajectoryLogReplayHarness(out_dir=tmp_path).run_rollout(case=case, target={})
+    state = source.default_adapter().adapt(record=record, case=case, target={})
 
     assert [call["name"] for call in state.tool_calls] == ["search", "open"]
     assert state.usage == {"total_tokens": 0}
@@ -408,122 +234,6 @@ def _assert_report_trajectory_steps_match_extracted(result: Mapping[str, Any]) -
     extracted_path = Path(str(result["metadata"]["extracted_path"]))
     extracted = json.loads(extracted_path.read_text(encoding="utf-8"))
     assert result["state_summary"]["trajectory_steps"] == extracted["num_steps"]
-
-
-def _extract_trajectory_record(log_path: Path, task_id: str) -> dict[str, Any]:
-    target_line = None
-    with log_path.open(encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            if task_id in line:
-                target_line = line
-                break
-    if target_line is None:
-        raise AssertionError(f"task_id {task_id} not found in {log_path}")
-
-    clean = re.sub(r"\x1b\[[0-9;]*m", "", target_line).strip()
-    record = ast.literal_eval(clean)
-    trajectory = json.loads(record["trajectory"])
-
-    question = (trajectory[0].get("state", {}).get("input", {}) or {}).get("content")
-    system_prompt = ""
-    first_messages = trajectory[0].get("state", {}).get("messages", []) or []
-    if first_messages and first_messages[0].get("role") == "system":
-        system_prompt = str(first_messages[0].get("content") or "")
-
-    steps = []
-    final_answer = None
-    for item in trajectory:
-        meta = item.get("meta", {})
-        action = item.get("action") or {}
-        calls = []
-        for tool_call in action.get("tool_calls") or []:
-            function = tool_call.get("function") or {}
-            calls.append({"name": function.get("name"), "arguments": str(function.get("arguments"))})
-        finished = _truthy_string(action.get("is_agent_finished"))
-        steps.append(
-            {
-                "step": meta.get("step"),
-                "pre_agent": meta.get("pre_agent"),
-                "agent_id": meta.get("agent_id"),
-                "tool_calls": calls,
-                "assistant_content": str(action.get("content") or ""),
-                "is_agent_finished": finished,
-            }
-        )
-        if finished and action.get("content"):
-            final_answer = str(action.get("content"))
-
-    final_messages = trajectory[-1].get("state", {}).get("messages", []) or []
-    evidence = [
-        {"msg_index": index, "content": str(message.get("content") or "")}
-        for index, message in enumerate(final_messages)
-        if message.get("role") == "tool"
-    ]
-
-    return {
-        "task_id": task_id,
-        "is_sub_task": record.get("is_sub_task"),
-        "num_steps": len(trajectory),
-        "question": question,
-        "system_prompt_excerpt": system_prompt[:8000],
-        "steps": steps,
-        "final_answer": final_answer,
-        "evidence": evidence,
-    }
-
-
-class TrajectoryLogReplayHarness:
-    def __init__(self, *, out_dir: Path):
-        self.out_dir = out_dir
-
-    async def run_rollout(self, *, case: EvalCaseDef, target: Mapping[str, Any]) -> RolloutState:
-        log_path = Path(str(case.input["trajectory_log"])).expanduser()
-        task_id = str(case.input["task_id"])
-        extracted = _extract_trajectory_record(log_path, task_id)
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        extracted_path = self.out_dir / f"extracted_{task_id}.json"
-        extracted_path.write_text(json.dumps(extracted, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        final_answer = extracted.get("final_answer") or ""
-        is_finished = any(step.get("is_agent_finished") for step in extracted["steps"])
-        tool_calls = [
-            dict(tool_call)
-            for step in extracted["steps"]
-            for tool_call in step.get("tool_calls", [])
-            if isinstance(tool_call, Mapping)
-        ]
-        usage = {"total_tokens": 0}
-        timing = {"duration_ms": 0}
-        standard_metrics = {
-            "n_turns": len(extracted["steps"]),
-            "n_tool_calls": len(tool_calls),
-            "n_tokens": usage["total_tokens"],
-            "duration_ms": timing["duration_ms"],
-        }
-        return RolloutState(
-            case_id=case.case_id,
-            status="success" if is_finished and final_answer else "failed",
-            answer=final_answer,
-            trajectory=list(extracted["steps"]),
-            tool_calls=tool_calls,
-            usage=usage,
-            timing=timing,
-            standard_metrics=standard_metrics,
-            outcome={
-                "task_id": task_id,
-                "question": extracted.get("question"),
-                "evidence_blocks": len(extracted["evidence"]),
-                "num_steps": extracted["num_steps"],
-                "is_finished": is_finished,
-                "final_answer_len": len(final_answer),
-                "extracted_path": str(extracted_path),
-            },
-            metadata={
-                "trajectory_log": str(log_path),
-                "judge_agent_prompt": str(case.input["judge_agent_prompt"]),
-                "extracted_path": str(extracted_path),
-            },
-        )
 
 
 def _trajectory_judge_prompt(case_input: dict[str, Any], target: dict[str, Any], suite: EvalSuiteDef) -> str:
@@ -580,23 +290,17 @@ async def test_manual_trajectory_log_case_runs_end_to_end_for_human_replay(reque
     if not os.getenv("LLM_MODEL_NAME") or not (os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")):
         pytest.skip("real trajectory judge requires LLM_MODEL_NAME and LLM_API_KEY/OPENAI_API_KEY")
 
-    suite = EvalSuiteDef(
+    suite = create_source_eval_suite(
         suite_id="trajectory-log-manual-replay",
-        cases=[
-            EvalCaseDef(
-                case_id=task_id,
-                input={
-                    "trajectory_log": str(log_path),
-                    "task_id": task_id,
-                    "judge_agent_prompt": str(agent_prompt_path),
-                },
-            )
-        ],
-        runtime_harness=TrajectoryLogReplayHarness(out_dir=out_dir),
-        judge_schema=JudgeSchemaDef(output_model=TrajectoryEvalJudgeOutput),
-        judge_backend=MarkdownAgentJudgeBackend(
+        source=AWorldTrajectoryLogSource(
+            path=log_path,
+            task_ids=[task_id],
+            extraction_dir=out_dir,
+        ),
+        judge_schema=TrajectoryJudgeSchema.default(),
+        judge_backend=AgentJudgeBackend.from_agent_markdown(
+            agent_prompt_path,
             backend_id="trajectory-evaluator-agent-md",
-            agent_markdown_path=agent_prompt_path,
             prompt_builder=_trajectory_judge_prompt,
             timeout_seconds=judge_timeout_seconds,
         ),
