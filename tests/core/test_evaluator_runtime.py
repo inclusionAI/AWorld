@@ -175,6 +175,50 @@ def test_run_evaluator_source_cli_builds_task_flow_with_default_agent(
     assert report["automation"]["source_kind"] == "task"
 
 
+def test_task_source_gate_consumes_answer_veto_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "tasks.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question"}\n', encoding="utf-8")
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+
+    class FakeHarness:
+        pass
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._build_cli_agent_runtime_harness",
+        lambda *, agent_name: FakeHarness(),
+    )
+
+    suite = _build_source_suite(
+        kind="task",
+        input_path=input_path,
+        judge_agent_path=judge_agent,
+        task_id=None,
+        id_field="id",
+        task_field="input",
+        answer_field="answer",
+        out_dir=str(tmp_path),
+    )
+
+    payload = suite.judge_schema.validate_payload(
+        {"score": 95.0, "verdict": "Excellent", "veto_triggered": True}
+    )
+    assert payload["veto_triggered"] is True
+    pass_conditions = suite.gate_policy.normalized_conditions()[0]
+    assert any(
+        condition.metric_name == "veto_triggered"
+        and condition.op == "=="
+        and condition.threshold is False
+        for condition in pass_conditions
+    )
+    decision = suite.gate_policy.evaluate({"score": 95.0, "veto_triggered": True})
+    assert decision.status == "fail"
+    assert any(condition["metric_name"] == "veto_triggered" for condition in decision.failed_conditions)
+
+
 def test_run_evaluator_source_cli_builds_generated_trajectory_flow_with_default_agent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -319,6 +363,7 @@ def test_source_prompt_uses_zero_to_hundred_score_contract() -> None:
 
     payload = json.loads(prompt)
     assert payload["required_output_schema"]["score"] == "number, weighted score from 0 to 100"
+    assert payload["required_output_schema"]["veto_triggered"] == "boolean, true only for one-vote veto failures"
 
 
 def test_run_evaluator_source_cli_rejects_unsupported_source_kind(tmp_path: Path) -> None:

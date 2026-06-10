@@ -185,6 +185,7 @@ def _run_evaluator_hooks(
 class _SourceJudgeOutput(BaseModel):
     score: float
     verdict: str
+    veto_triggered: bool = False
 
 
 def _looks_like_aworld_trajectory_log(path: Path) -> bool:
@@ -226,7 +227,11 @@ def _build_source_prompt(case_input: dict, target: dict, suite) -> str:
             "trajectory": target.get("trajectory"),
             "tool_calls": target.get("tool_calls"),
         },
-        "required_output_schema": {"score": "number, weighted score from 0 to 100", "verdict": "string"},
+        "required_output_schema": {
+            "score": "number, weighted score from 0 to 100",
+            "verdict": "string",
+            "veto_triggered": "boolean, true only for one-vote veto failures",
+        },
         "instruction": "Evaluate the existing answer/state and return exactly one JSON object.",
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -469,6 +474,12 @@ def _build_source_suite(
             expected=True,
         ),
     )
+    answer_gate = GatePolicyDef(
+        pass_all=(
+            GateMetricCondition(metric_name="score", op=">=", threshold=70.0),
+            GateMetricCondition(metric_name="veto_triggered", op="==", threshold=False),
+        )
+    )
     if kind == "task":
         source = JsonlTaskSource(
             path=input_path,
@@ -485,7 +496,7 @@ def _build_source_suite(
                 prompt_builder=_build_source_prompt,
             ),
             judge_schema=JudgeSchemaDef(output_model=_SourceJudgeOutput),
-            gate_policy=GatePolicyDef(metric_name="score", pass_threshold=70.0),
+            gate_policy=answer_gate,
             metadata={"agent": agent_name},
         )
 
@@ -505,7 +516,7 @@ def _build_source_suite(
                 prompt_builder=_build_source_prompt,
             ),
             judge_schema=JudgeSchemaDef(output_model=_SourceJudgeOutput),
-            gate_policy=GatePolicyDef(metric_name="score", pass_threshold=70.0),
+            gate_policy=answer_gate,
         )
 
     if kind == "trajectory":
