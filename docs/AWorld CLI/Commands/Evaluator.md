@@ -12,6 +12,7 @@ Use it when you want to:
 
 - run a built-in evaluator suite such as `app-evaluator`
 - load declaration-backed evaluator suites from workspace manifests
+- evaluate existing source records such as task+answer JSONL files or AWorld trajectory logs
 - inspect which suites match a target
 - export the evaluator report schema
 - validate a saved evaluator report in automation
@@ -29,11 +30,31 @@ aworld-cli evaluator --print-report-schema
 aworld-cli evaluator --validate-report ./.aworld/evaluations/artifact.app-evaluator.json
 ```
 
+Source-backed usage:
+
+```bash
+aworld-cli evaluator run \
+  --input ./task_answers.jsonl \
+  --kind task-answer \
+  --judge-agent ./eval/answer_judge/agent.md \
+  --out-dir ./reports
+
+aworld-cli evaluator run \
+  --input ~/Documents/logs/trajectory.log \
+  --kind aworld-trajectory-log \
+  --task-id task_20260609193335 \
+  --judge-agent ./eval/trajectory_evaluator/agent.md \
+  --out-dir ./reports
+```
+
+For `task-answer` JSONL inputs, the default fields are `id`, `input`, and `answer`. Use `--id-field`, `--task-field`, and `--answer-field` only when the file uses different names.
+
 Useful options:
 
 ```bash
 aworld-cli evaluator --target ./artifact --output ./report.json
 aworld-cli evaluator --target ./artifact --interactive-approval
+aworld-cli evaluator run --input ./task_answers.jsonl --kind task-answer --judge-agent ./agent.md --output ./report.json
 ```
 
 ## Declared Suite Manifests
@@ -91,8 +112,10 @@ Current event payloads:
 
 - `evaluator.pre_discover`: `target`, `workspace_path`
 - `evaluator.post_discover`: `target`, `workspace_path`, `suite_names`
-- `evaluator.pre_run`: `target`, `suite`, `workspace_path`
-- `evaluator.post_run`: `report`, `target`, `suite`, `workspace_path`
+- `evaluator.pre_run` for target mode: `mode`, `target`, `suite`, `workspace_path`
+- `evaluator.pre_run` for source mode: `mode`, `input`, `kind`, `task_id`, `judge_agent`, `agent`, `workspace_path`, `output_path`
+- `evaluator.post_run` for target mode: `mode`, `report`, `target`, `suite`, `workspace_path`
+- `evaluator.post_run` for source mode: `mode`, `report`, `input`, `kind`, `task_id`, `judge_agent`, `agent`, `workspace_path`, `output_path`
 - `evaluator.render_summary`: `report`, `workspace_path`
 
 Hook boundaries:
@@ -121,6 +144,7 @@ Key report sections:
 - `gate`: structured `pass` / `fail` / `needs_approval` decision
 - `automation`: exit-code-oriented summary fields for scripts and CI
 - `suite_selection`: resolved/defaulted suite selection diagnostics
+- `source_selection`: source input diagnostics for `aworld-cli evaluator run`
 - `approval`: approval decision metadata when the gate requires human confirmation
 
 See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/aworld/examples/aworld_quick_start/cli/evaluator_report.example.json) for a minimal example.
@@ -129,9 +153,10 @@ See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/
 
 1. Inspect matching suites with `aworld-cli evaluator --list-suites --target ./artifact`.
 2. Run evaluation with `aworld-cli evaluator --target ./artifact`.
-3. Save or collect the emitted JSON report.
-4. Validate persisted reports with `aworld-cli evaluator --validate-report <file>`.
-5. Export the current JSON Schema with `aworld-cli evaluator --print-report-schema` when integrating with external tooling.
+3. For existing outputs, run source-backed evaluation with `aworld-cli evaluator run --input <file> --kind task-answer --judge-agent <agent.md>`.
+4. Save or collect the emitted JSON report.
+5. Validate persisted reports with `aworld-cli evaluator --validate-report <file>`.
+6. Export the current JSON Schema with `aworld-cli evaluator --print-report-schema` when integrating with external tooling.
 
 ## Exit Codes
 
@@ -147,4 +172,5 @@ See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/
 - declared suite manifests currently layer on `app-evaluator` only; they are not a generic suite authoring format yet.
 - `--print-report-schema` prints the current JSON Schema for `aworld.evaluator.report`.
 - `--validate-report` validates an existing JSON report against that schema without re-running evaluation.
+- `aworld-cli evaluator run` currently supports `task-answer` and `aworld-trajectory-log`; task-only execution sources and generic serialized-state sources are intentionally deferred until the framework provides those source kinds.
 - the CLI command is an assembly/product layer; reusable evaluator building blocks stay in `aworld/evaluations/**`.
