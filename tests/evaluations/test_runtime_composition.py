@@ -76,6 +76,45 @@ def test_state_check_grader_emits_outcome_metric():
     assert result.passed is True
 
 
+def test_state_check_grader_fails_non_numeric_comparison_without_crashing():
+    state = RolloutState(
+        case_id="case-1",
+        status="success",
+        outcome={"latency_ms": "not-a-number"},
+    )
+    grader = StateCheckGrader(
+        metric_name="latency_ok",
+        path=("latency_ms",),
+        op="<=",
+        expected=1000,
+    )
+
+    result = grader.grade(state=state, case=None, target={})
+
+    assert result.metric_name == "latency_ok"
+    assert result.value == 0.0
+    assert result.passed is False
+    assert "not comparable" in result.reason
+    assert result.metadata["actual"] == "not-a-number"
+
+
+def test_state_check_grader_rejects_unsupported_operator():
+    state = RolloutState(
+        case_id="case-1",
+        status="success",
+        outcome={"latency_ms": 10},
+    )
+    grader = StateCheckGrader(
+        metric_name="latency_ok",
+        path=("latency_ms",),
+        op="between",
+        expected=1000,
+    )
+
+    with pytest.raises(ValueError, match="unsupported state-check operator"):
+        grader.grade(state=state, case=None, target={})
+
+
 def test_scripted_user_simulator_emits_turns_in_order():
     simulator = ScriptedUserSimulator()
     state = RolloutState(case_id="case-1")
