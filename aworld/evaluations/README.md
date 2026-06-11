@@ -1,8 +1,9 @@
 # AWorld Evaluations Module
 
-The `aworld.evaluations` module provides a comprehensive framework for evaluating the performance of AI agents, language
-models, and tasks within the AWorld ecosystem. It offers flexible evaluation criteria, diverse scoring mechanisms, and a
-robust runtime system to conduct structured assessments.
+The `aworld.evaluations` module is the framework-owned evaluation substrate for AWorld. It supports both legacy
+`EvaluationConfig`-driven flows and newer suite-backed evaluator flows that can execute an agent, task, or trusted
+program callable first, then score final outcomes and normalized trajectory/process quality from a single execution
+state.
 
 ## Table of Contents
 
@@ -80,6 +81,36 @@ with input data.
 
 `EvalResult` captures the outcomes of an evaluation run, including individual case results and summary statistics.
 
+### Suite-Backed Evaluation Definitions
+
+Suite-backed evaluation adds a definition layer on top of the existing runtime skeleton:
+
+- `EvalSuiteDef`: suite identity, cases, judge schema, gate policy, trajectory scorers, toolset hints, execution spec
+- `EvalCaseDef`: input plus optional expected output and per-case runtime hints
+- `EvalHarnessDef`: reusable execution defaults for suite-backed flows
+- `EvalExecutionSpec`: runtime execution mode and target/task configuration
+- `EvalState`: normalized execution result containing final answer, completion view, trajectory, usage, timing, and errors
+
+These live under `aworld/evaluations/**`, not in `aworld-cli`, so the same substrate can be reused by framework callers,
+official CLI flows, and custom evaluation agents.
+
+Ownership is explicit:
+
+- suite and case definitions own evaluation intent: input, expected outcome, task-domain tool hints, tags, and judge/gate semantics
+- harnesses and execution specs own runtime behavior: whether execution is static, agent-backed, task-backed, or program-backed, plus task/runner configuration
+- `aworld-cli` only assembles workspace inputs into these framework objects; it does not redefine evaluator semantics
+
+Declarative JSON manifests are intentionally narrower than in-memory framework APIs. They do not accept `execution`,
+`target_ref`, `task_builder_ref`, live agent/task objects, or program callables. In-memory callers may still pass live
+AWorld agent/task instances through `EvalExecutionSpec.target_config` for compatibility, but that is not a persisted
+suite contract.
+
+`EvalState` intentionally separates:
+
+- `answer`: the final deliverable or normalized terminal answer
+- `completion`: completion-oriented view used by outcome scorers that only care about the final assistant output
+- `trajectory`: captured execution history used by process, tool-use, and efficiency scorers
+
 ## Scorers
 
 ### Scorer Registry
@@ -119,12 +150,25 @@ The module includes several pre-built scorers for common evaluation tasks:
 - **SummarizeQuality**: Assesses the quality of generated summaries
 - And more...
 
+### Execution-State Helpers
+
+`aworld.evaluations.scorers.state_extractors` provides reusable helpers for execution-backed scoring:
+
+- `get_eval_state(output)`
+- `get_completion(output)`
+- `get_assistant_messages(output)`
+- `get_messages_by_role(output, role)`
+- `get_tool_calls(output)`
+- `get_trajectory(output)`
+
+Use these helpers instead of hand-parsing raw trajectory payloads in every scorer.
+
 ## Evaluation Targets
 
 ### AworldAgentEvalTarget
 
 `AworldAgentEvalTarget` enables evaluating AWorld agents by running them on evaluation datasets and capturing their
-responses.
+responses. In execution-backed flows it returns both the final answer and a normalized `state` payload.
 
 ```python
 class AworldAgentEvalTarget(EvalTarget[dict]):
@@ -140,7 +184,52 @@ class AworldAgentEvalTarget(EvalTarget[dict]):
 ### AworldTaskEvalTarget
 
 `AworldTaskEvalTarget` provides a framework for evaluating task-based systems by building and running tasks for each
-evaluation case.
+evaluation case. In execution-backed flows it normalizes `TaskResponse` output into `EvalState`.
+
+## Execution-Backed Suite Evaluation
+
+Execution-backed suite flows reuse the existing AWorld runtime instead of introducing a parallel evaluator stack:
+
+- suite/case definitions specify what is being evaluated
+- `EvalExecutionSpec` specifies how runtime execution happens
+- `EvalTarget -> Evaluator -> EvaluateRunner` remains the core orchestration skeleton
+- scorers read normalized execution state for outcome and trajectory evaluation
+
+The current execution modes are:
+
+- `static`: judge-only evaluation with no runtime execution
+- `agent`: execute through `AworldAgentEvalTarget`
+- `task`: execute through `AworldTaskEvalTarget`
+- `program`: execute a trusted importable callable through the evaluator adapter layer and normalize the result into `EvalState`
+
+This gives AWorld a framework-native evaluator path that can assess final artifacts, structured outputs, and captured
+trajectory quality through one substrate. It is a single-shot evaluator flow: rollout-owning harnesses, user simulators,
+lifecycle hooks, child-state composition, and step-level training rewards are separate runtime-composition work.
+
+`program` and TASK builder references are trusted in-process extension points. Importing a module can execute top-level
+code, so these references should only point at evaluator code controlled by the runner or workspace owner. They are not
+sandboxed and are not exposed through declared JSON manifests.
+
+Suite-backed evaluation also supports:
+
+- typed judge schemas: Pydantic-backed validation with JSON schema export and required-field compatibility
+- composite gates: structured metric conditions with `pass`, `fail`, and `needs_approval` outcomes
+- trajectory scorers: suite-declared process metrics that lower into normal evaluator criteria and reports
+
+## Suite, Case, and Execution Mapping
+
+The evaluator v2 path is intentionally close to AWorld's existing runner model:
+
+- suite -> describes the evaluation contract and default gate/judge behavior
+- case -> provides per-row input, optional references, and case-local execution hints
+- lightweight harness / execution spec -> describes how a case becomes a runnable AWorld execution
+- eval target -> adapts the execution spec into an existing target implementation
+- evaluator / runner -> executes cases and produces normalized outputs
+- scorers -> read final answer, completion, and trajectory from `EvalState`
+
+In practice this means outcome evaluation and trajectory evaluation share one execution pipeline. A suite can score only
+the final artifact, only the captured trajectory, or both. The lightweight harness boundary selects execution defaults
+and adapters; it does not own multi-turn rollout lifecycle in this version.
 
 ## Recorder
 
@@ -164,6 +253,33 @@ class EvaluateRunner(Runner):
         """Run the evaluation."""
         # Evaluation orchestration logic
 ```
+
+`EvaluateRunner` remains the orchestration layer. Suite-backed evaluation compiles into it rather than replacing it.
+
+## Framework vs CLI
+
+`aworld.evaluations` owns evaluation semantics:
+
+- suite definitions
+- execution-backed compilation
+- normalized execution state
+- scoring helpers
+- report and declared-suite schemas
+
+`aworld-cli` owns product entrypoints:
+
+- `aworld-cli evaluator`
+- workspace suite discovery
+- report file writing
+- evaluator lifecycle hooks for peripheral CLI customization
+
+`aworld-cli evaluator` is now plugin-backed, but the reusable evaluator substrate remains framework-owned.
+
+The intended layering is:
+
+- build evaluator capabilities in `aworld/evaluations/**`
+- expose a convenient official entrypoint in `aworld-cli`
+- allow other agents or products to reuse the framework substrate without depending on the CLI command shape
 
 ## Usage Examples
 

@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld.plugins.discovery import discover_plugins
+from aworld_cli.evaluator_runtime import render_evaluator_summary, run_evaluator_cli
 from aworld_cli.builtin_plugins.memory_cli.common import append_workspace_session_log
 from aworld_cli.builtin_plugins.memory_cli.hooks import task_completed as task_completed_hook_module
 from aworld_cli.plugin_capabilities.hooks import PluginHookResult, load_plugin_hooks
@@ -36,6 +37,10 @@ def _get_builtin_memory_plugin_root() -> Path:
     )
 
 
+def _get_evaluator_like_plugin_root() -> Path:
+    return Path("tests/fixtures/plugins/evaluator_like").resolve()
+
+
 def test_load_plugin_hook_entrypoints():
     plugin_root = Path("tests/fixtures/plugins/ralph_like").resolve()
     plugin = discover_plugins([plugin_root])[0]
@@ -44,6 +49,89 @@ def test_load_plugin_hook_entrypoints():
 
     assert "stop" in hooks
     assert hooks["stop"][0].entrypoint_id == "loop-stop"
+
+
+def test_evaluator_pre_run_hook_can_annotate_runtime_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "artifact.txt"
+    target.write_text("artifact", encoding="utf-8")
+    hooks = load_plugin_hooks(discover_plugins([_get_evaluator_like_plugin_root()]))
+
+    async def fake_run_evaluation_flow(flow):
+        return {
+            "report_version": 1,
+            "suite_id": "app-evaluator",
+            "target": dict(flow.target),
+            "summary": {"app-evaluator": {"score": {"mean": 0.9}}},
+            "metrics": {"score": {"mean": 0.9}},
+            "results": [],
+            "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
+            "approval": {"required": False, "resolved": False, "approved": None},
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime._load_evaluator_hooks", lambda: hooks)
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_cli(target=str(target))
+
+    assert report["target"]["hook_tag"] == "from-pre-run"
+
+
+def test_evaluator_post_run_hook_can_capture_report_side_effect(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "artifact.txt"
+    target.write_text("artifact", encoding="utf-8")
+    hooks = load_plugin_hooks(discover_plugins([_get_evaluator_like_plugin_root()]))
+
+    async def fake_run_evaluation_flow(flow):
+        return {
+            "report_version": 1,
+            "suite_id": "app-evaluator",
+            "target": dict(flow.target),
+            "summary": {"app-evaluator": {"score": {"mean": 0.9}}},
+            "metrics": {"score": {"mean": 0.9}},
+            "results": [],
+            "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
+            "approval": {"required": False, "resolved": False, "approved": None},
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime._load_evaluator_hooks", lambda: hooks)
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    run_evaluator_cli(target=str(target))
+
+    assert (tmp_path / "hook-output.json").exists()
+
+
+def test_evaluator_render_summary_hook_can_append_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hooks = load_plugin_hooks(discover_plugins([_get_evaluator_like_plugin_root()]))
+    monkeypatch.setattr("aworld_cli.evaluator_runtime._load_evaluator_hooks", lambda: hooks)
+
+    summary = render_evaluator_summary(
+        {
+            "suite_id": "app-evaluator",
+            "gate": {"status": "pass", "value": 0.9},
+            "target": {"target_path": str(Path.cwd() / "artifact.txt")},
+        }
+    )
+
+    assert "hook-rendered" in summary
+
+
+def test_evaluator_hook_contract_is_documented_in_runtime_module() -> None:
+    content = Path("aworld-cli/src/aworld_cli/evaluator_runtime.py").read_text(encoding="utf-8")
+
+    assert "evaluator.pre_run" in content
+    assert "event payload" in content
+    assert "allowed side effects" in content
 
 
 @pytest.mark.asyncio

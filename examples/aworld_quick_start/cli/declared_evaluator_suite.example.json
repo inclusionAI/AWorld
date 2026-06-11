@@ -1,0 +1,15 @@
+{
+  "suite_id": "strict-ui",
+  "base_suite": "app-evaluator",
+  "target_kinds": ["file", "directory"],
+  "gate_policy": {
+    "metric_name": "score",
+    "pass_threshold": 0.92,
+    "approval_threshold": 0.8
+  },
+  "metadata": {
+    "owner": "qa",
+    "purpose": "release-gate"
+  },
+  "priority": 120
+}

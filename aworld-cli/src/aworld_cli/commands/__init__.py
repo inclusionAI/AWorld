@@ -13,6 +13,7 @@ Available Commands:
 - /cron: Manage scheduled tasks (tool command)
 - /dispatch: Submit task to background execution (tool command)
 - /tasks: Manage background tasks (tool command)
+- /evaluation: Run evaluator flows (tool command)
 
 Usage:
     # Import to register all commands
@@ -33,6 +34,7 @@ from . import cron_cmd
 from . import dispatch
 from . import tasks
 from . import plugins_cmd
+from . import evaluation_cmd
 
 __all__ = [
     "help_cmd",
@@ -44,4 +46,5 @@ __all__ = [
     "dispatch",
     "tasks",
     "plugins_cmd",
+    "evaluation_cmd",
 ]
