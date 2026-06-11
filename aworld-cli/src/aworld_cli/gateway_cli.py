@@ -20,7 +20,11 @@ from aworld_gateway.config import GatewayConfigLoader
 from aworld_gateway.config import GatewayConfig
 from aworld_gateway.http.artifact_service import ArtifactService
 from aworld_gateway.http.server import create_gateway_app
-from aworld_gateway.logging import configure_gateway_logging, get_gateway_logger
+from aworld_gateway.logging import (
+    GATEWAY_CONSOLE_LOG_ENV,
+    configure_gateway_logging,
+    get_gateway_logger,
+)
 from aworld_gateway.registry import ChannelRegistry
 from aworld_gateway.router import GatewayRouter, LocalCliAgentBackend
 from aworld_gateway.runtime import GatewayRuntime
@@ -190,8 +194,9 @@ def _build_artifact_service(
     )
 
 
-def _enable_aworld_console_logging_for_gateway() -> None:
-    os.environ["AWORLD_DISABLE_CONSOLE_LOG"] = "false"
+def _suppress_gateway_console_logging() -> None:
+    os.environ["AWORLD_DISABLE_CONSOLE_LOG"] = "true"
+    os.environ[GATEWAY_CONSOLE_LOG_ENV] = "false"
 
     try:
         from aworld.logs import util as log_util
@@ -199,8 +204,16 @@ def _enable_aworld_console_logging_for_gateway() -> None:
         return
 
     aworld_logger = getattr(log_util, "logger", None)
-    if aworld_logger is None or not getattr(aworld_logger, "disable_console", False):
+    if aworld_logger is None or getattr(aworld_logger, "disable_console", False):
         return
+
+    log_id = getattr(aworld_logger, "log_id", None)
+    bound_logger = getattr(aworld_logger, "_logger", None)
+    if log_id is not None and bound_logger is not None:
+        try:
+            bound_logger.remove(log_id)
+        except Exception:
+            pass
 
     file_log_config = getattr(aworld_logger, "file_log_config", None)
     if isinstance(file_log_config, dict):
@@ -211,9 +224,16 @@ def _enable_aworld_console_logging_for_gateway() -> None:
         name=getattr(aworld_logger, "name", "AWorld"),
         console_level=getattr(aworld_logger, "console_level", "INFO"),
         formatter=getattr(aworld_logger, "formater", None),
-        disable_console=False,
+        disable_console=True,
         file_log_config=file_log_config,
     )
+
+
+def _restore_env_var(name: str, previous_value: str | None) -> None:
+    if previous_value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = previous_value
 
 
 def _configure_gateway_file_logging(*, base_dir: Path) -> Path:
@@ -261,59 +281,69 @@ async def serve_gateway(
     agent_files: list[str] | None,
 ) -> None:
     resolved_base_dir = Path.cwd() if base_dir is None else Path(base_dir)
-    gateway_log_path = _configure_gateway_file_logging(base_dir=resolved_base_dir)
-    gateway_logger = get_gateway_logger("cli")
-    _enable_aworld_console_logging_for_gateway()
-    enable_quiet_gateway_boot()
-    gateway_logger.info(
-        "Gateway server boot starting "
-        f"base_dir={resolved_base_dir.resolve()} log_path={gateway_log_path}"
-    )
-
-    from aworld_cli.main import load_all_agents
-
-    await load_all_agents(
-        remote_backends=remote_backends,
-        local_dirs=local_dirs,
-        agent_files=agent_files,
-    )
-
-    config = GatewayConfigLoader(base_dir=resolved_base_dir).load_or_init()
-    artifact_service = _build_artifact_service(base_dir=resolved_base_dir, config=config)
-    router = GatewayRouter(
-        session_binding=SessionBinding(),
-        agent_resolver=AgentResolver(default_agent_id=config.default_agent_id),
-        agent_backend=LocalCliAgentBackend(),
-    )
-    runtime = GatewayRuntime(
-        config=config,
-        registry=ChannelRegistry(),
-        router=router,
-        artifact_service=artifact_service,
-    )
-
-    await runtime.start()
-    gateway_logger.info(
-        "Gateway runtime started "
-        f"host={config.gateway.host} port={config.gateway.port}"
-    )
-    telegram_adapter = runtime.get_started_channel("telegram")
-    app = create_gateway_app(
-        runtime_status=runtime.status(),
-        artifact_service=artifact_service,
-        telegram_adapter=telegram_adapter,
-        telegram_webhook_path=config.channels.telegram.webhook_path,
-    )
-    uvicorn_config = uvicorn.Config(
-        app=app,
-        host=config.gateway.host,
-        port=config.gateway.port,
-    )
-    server = uvicorn.Server(uvicorn_config)
-
+    previous_disable_console_log = os.environ.get("AWORLD_DISABLE_CONSOLE_LOG")
+    previous_gateway_console_log = os.environ.get(GATEWAY_CONSOLE_LOG_ENV)
+    gateway_log_path: Path | None = None
+    _suppress_gateway_console_logging()
     try:
-        await server.serve()
+        gateway_log_path = _configure_gateway_file_logging(base_dir=resolved_base_dir)
+        gateway_logger = get_gateway_logger("cli")
+        enable_quiet_gateway_boot()
+        gateway_logger.info(
+            "Gateway server boot starting "
+            f"base_dir={resolved_base_dir.resolve()} log_path={gateway_log_path}"
+        )
+
+        from aworld_cli.main import load_all_agents
+
+        await load_all_agents(
+            remote_backends=remote_backends,
+            local_dirs=local_dirs,
+            agent_files=agent_files,
+        )
+
+        config = GatewayConfigLoader(base_dir=resolved_base_dir).load_or_init()
+        artifact_service = _build_artifact_service(base_dir=resolved_base_dir, config=config)
+        router = GatewayRouter(
+            session_binding=SessionBinding(),
+            agent_resolver=AgentResolver(default_agent_id=config.default_agent_id),
+            agent_backend=LocalCliAgentBackend(),
+        )
+        runtime = GatewayRuntime(
+            config=config,
+            registry=ChannelRegistry(),
+            router=router,
+            artifact_service=artifact_service,
+        )
+
+        await runtime.start()
+        gateway_logger.info(
+            "Gateway runtime started "
+            f"host={config.gateway.host} port={config.gateway.port}"
+        )
+        telegram_adapter = runtime.get_started_channel("telegram")
+        app = create_gateway_app(
+            runtime_status=runtime.status(),
+            artifact_service=artifact_service,
+            telegram_adapter=telegram_adapter,
+            telegram_webhook_path=config.channels.telegram.webhook_path,
+        )
+        uvicorn_config = uvicorn.Config(
+            app=app,
+            host=config.gateway.host,
+            port=config.gateway.port,
+            log_level=str(os.getenv("AWORLD_GATEWAY_UVICORN_LOG_LEVEL") or "warning"),
+        )
+        server = uvicorn.Server(uvicorn_config)
+
+        try:
+            await server.serve()
+        finally:
+            gateway_logger.info("Gateway runtime stopping")
+            await runtime.stop()
+            gateway_logger.info("Gateway runtime stopped")
     finally:
-        gateway_logger.info("Gateway runtime stopping")
-        await runtime.stop()
-        gateway_logger.info("Gateway runtime stopped")
+        _restore_env_var("AWORLD_DISABLE_CONSOLE_LOG", previous_disable_console_log)
+        _restore_env_var(GATEWAY_CONSOLE_LOG_ENV, previous_gateway_console_log)
+        if gateway_log_path is not None:
+            configure_gateway_logging(log_path=gateway_log_path)
