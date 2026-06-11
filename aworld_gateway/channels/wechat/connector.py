@@ -127,7 +127,8 @@ async def _default_post_json(
     timeout_ms: int,
 ) -> dict[str, object]:
     request_summary = _summarize_wechat_request_payload(payload)
-    logger.info(
+    log_success = logger.debug if endpoint == EP_GET_UPDATES else logger.info
+    log_success(
         "WeChat API request "
         f"endpoint={endpoint} timeout_ms={timeout_ms}"
         f"{f' {request_summary}' if request_summary else ''}"
@@ -149,7 +150,7 @@ async def _default_post_json(
                 )
                 raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
             data = json.loads(raw)
-            logger.info(
+            log_success(
                 "WeChat API response "
                 f"endpoint={endpoint} http_status={getattr(response, 'status', 'unknown')} "
                 f"ret={data.get('ret', 'missing')} "
