@@ -17,6 +17,9 @@ def test_evaluator_report_command_doc_covers_schema_and_validation() -> None:
     assert "--kind task" in content
     assert "--kind answer" in content
     assert "--kind trajectory" in content
+    assert "--judge-agent-name" in content
+    assert "--judge-backend-ref" in content
+    assert "exactly one judge selector" in content
     assert "report_format" in content
     assert "automation" in content
     assert ".aworld/evaluators/*.json" in content

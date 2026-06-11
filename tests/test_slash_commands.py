@@ -602,9 +602,79 @@ class TestEvaluationCommand:
         assert calls["kind"] == "trajectory"
         assert calls["task_id"] == "task-1"
         assert calls["judge_agent"] == str(agent_path)
+        assert calls["judge_agent_name"] is None
+        assert calls["judge_backend_ref"] is None
         assert calls["out_dir"] == str(tmp_path)
         assert "trajectory-source-evaluator" in result
         assert "Report:" in result
+
+    @pytest.mark.asyncio
+    async def test_evaluation_accepts_judge_agent_name(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("evaluation")
+        input_path = tmp_path / "answers.jsonl"
+        calls = {}
+
+        def fake_run_evaluator_source_cli(**kwargs):
+            calls.update(kwargs)
+            return {
+                "suite_id": "answer-source-evaluator",
+                "gate": {"status": "pass"},
+                "summary": {"answer-source-evaluator": {"score": {"mean": 88.0}}},
+                "results": [],
+                "approval": {"required": False, "resolved": False, "approved": None},
+                "report_path": str(tmp_path / "report.json"),
+            }
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.evaluation_cmd.run_evaluator_source_cli",
+            fake_run_evaluator_source_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=os.getcwd(),
+                user_args=f"--input {input_path} --kind answer --judge-agent-name JudgeTeam",
+            )
+        )
+
+        assert calls["judge_agent"] is None
+        assert calls["judge_agent_name"] == "JudgeTeam"
+        assert calls["judge_backend_ref"] is None
+        assert "answer-source-evaluator" in result
+
+    @pytest.mark.asyncio
+    async def test_evaluation_accepts_judge_backend_ref(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("evaluation")
+        input_path = tmp_path / "answers.jsonl"
+        calls = {}
+
+        def fake_run_evaluator_source_cli(**kwargs):
+            calls.update(kwargs)
+            return {
+                "suite_id": "answer-source-evaluator",
+                "gate": {"status": "pass"},
+                "summary": {"answer-source-evaluator": {"score": {"mean": 88.0}}},
+                "results": [],
+                "approval": {"required": False, "resolved": False, "approved": None},
+                "report_path": str(tmp_path / "report.json"),
+            }
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.evaluation_cmd.run_evaluator_source_cli",
+            fake_run_evaluator_source_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=os.getcwd(),
+                user_args=f"--input {input_path} --kind answer --judge-backend-ref custom_judge:build_backend",
+            )
+        )
+
+        assert calls["judge_agent"] is None
+        assert calls["judge_agent_name"] is None
+        assert calls["judge_backend_ref"] == "custom_judge:build_backend"
+        assert "answer-source-evaluator" in result
 
     @pytest.mark.asyncio
     async def test_evaluation_runs_source_runtime_without_nested_event_loop(self, monkeypatch, tmp_path):

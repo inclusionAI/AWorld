@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import importlib
+import inspect
 import json
 import time
 from pathlib import Path
@@ -20,9 +22,11 @@ from aworld.evaluations.report import (
 )
 from aworld.evaluations.substrate import (
     AgentJudgeBackend,
+    CallableJudgeBackend,
     EvaluationFlowDef,
     GateMetricCondition,
     GatePolicyDef,
+    JudgeBackend,
     JudgeSchemaDef,
     StateCheckGrader,
     describe_eval_target,
@@ -165,9 +169,9 @@ def _run_evaluator_hooks(
     - `evaluator.pre_discover` event payload: `target`, `workspace_path`
     - `evaluator.post_discover` event payload: `target`, `workspace_path`, `suite_names`
     - `evaluator.pre_run` event payload for target mode: `mode=target`, `target`, `suite`, `workspace_path`
-    - `evaluator.pre_run` event payload for source mode: `mode=source`, `input`, `kind`, `task_id`, `judge_agent`, `agent`, `workspace_path`, `output_path`
+    - `evaluator.pre_run` event payload for source mode: `mode=source`, `input`, `kind`, `task_id`, judge selector fields, `agent`, `workspace_path`, `output_path`
     - `evaluator.post_run` event payload for target mode: `mode=target`, `report`, `target`, `suite`, `workspace_path`
-    - `evaluator.post_run` event payload for source mode: `mode=source`, `report`, `input`, `kind`, `task_id`, `judge_agent`, `agent`, `workspace_path`, `output_path`
+    - `evaluator.post_run` event payload for source mode: `mode=source`, `report`, `input`, `kind`, `task_id`, judge selector fields, `agent`, `workspace_path`, `output_path`
     - `evaluator.render_summary` event payload: `report`, `workspace_path`
     - mutable state: lightweight CLI assembly metadata only
     - allowed side effects: report upload, notifications, summary augmentation
@@ -251,6 +255,131 @@ def _case_source_metadata(case) -> dict[str, Any]:
     if isinstance(source_record, Mapping) and isinstance(source_record.get("metadata"), Mapping):
         return dict(source_record["metadata"])
     return {}
+
+
+def _judge_selector_count(
+    *,
+    judge_agent: str | None,
+    judge_agent_name: str | None,
+    judge_backend_ref: str | None,
+) -> int:
+    return sum(
+        1
+        for value in (judge_agent, judge_agent_name, judge_backend_ref)
+        if value is not None and str(value).strip()
+    )
+
+
+def _validate_judge_selectors(
+    *,
+    judge_agent: str | None,
+    judge_agent_name: str | None,
+    judge_backend_ref: str | None,
+) -> None:
+    if _judge_selector_count(
+        judge_agent=judge_agent,
+        judge_agent_name=judge_agent_name,
+        judge_backend_ref=judge_backend_ref,
+    ) != 1:
+        raise ValueError("exactly one judge selector is required: --judge-agent, --judge-agent-name, or --judge-backend-ref")
+
+
+def _load_ref(ref: str) -> Any:
+    module_name, separator, attr_path = ref.partition(":")
+    if not separator or not module_name or not attr_path:
+        raise ValueError(f"judge backend ref must use module:callable format: {ref}")
+    module = importlib.import_module(module_name)
+    value: Any = module
+    for attr in attr_path.split("."):
+        if not attr:
+            raise ValueError(f"judge backend ref has an empty attribute segment: {ref}")
+        value = getattr(value, attr)
+    return value
+
+
+def _can_call_without_arguments(value: Any) -> bool:
+    try:
+        signature = inspect.signature(value)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            continue
+        if parameter.default is parameter.empty:
+            return False
+    return True
+
+
+def _coerce_source_judge_backend(value: Any, *, backend_id: str) -> JudgeBackend:
+    if hasattr(value, "execute"):
+        return value
+    if callable(value):
+        return CallableJudgeBackend(backend_id=backend_id, judge=value)
+    raise ValueError("judge backend ref must resolve to a JudgeBackend-compatible object or callable")
+
+
+def _load_source_judge_backend_ref(ref: str) -> JudgeBackend:
+    value = _load_ref(ref)
+    if hasattr(value, "execute"):
+        return value
+    if callable(value) and _can_call_without_arguments(value):
+        produced = value()
+        if inspect.isawaitable(produced):
+            raise ValueError("judge backend ref factory must be synchronous")
+        return _coerce_source_judge_backend(produced, backend_id=f"judge-backend-ref:{ref}")
+    return _coerce_source_judge_backend(value, backend_id=f"judge-backend-ref:{ref}")
+
+
+def _build_cli_agent_judge_backend(*, agent_name: str, backend_id: str, prompt_builder):
+    executor_cache: dict[str, Any] = {}
+
+    async def _executor(prompt, system_prompt):
+        if isinstance(prompt, tuple):
+            raise ValueError("CLI agent judge backend only supports text prompts")
+        executor = executor_cache.get("executor")
+        if executor is None:
+            executor = await _load_cli_agent_executor(agent_name)
+            executor_cache["executor"] = executor
+        swarm = getattr(executor, "swarm", None)
+        if swarm is not None:
+            response = await Runners.run(input=str(prompt), swarm=swarm)
+        else:
+            response = await executor.chat(str(prompt))
+        return str(getattr(response, "answer", response))
+
+    return AgentJudgeBackend(
+        backend_id=backend_id,
+        system_prompt=f"CLI agent judge loaded from {agent_name}",
+        executor=_executor,
+        prompt_builder=prompt_builder,
+    )
+
+
+def _resolve_source_judge_backend(
+    *,
+    judge_agent_path: Path | None,
+    judge_agent_name: str | None,
+    judge_backend_ref: str | None,
+    file_backend_id: str,
+    named_backend_prefix: str,
+    prompt_builder,
+) -> JudgeBackend:
+    if judge_agent_path is not None:
+        return AgentJudgeBackend.from_agent_markdown(
+            judge_agent_path,
+            backend_id=file_backend_id,
+            prompt_builder=prompt_builder,
+        )
+    if judge_agent_name is not None and str(judge_agent_name).strip():
+        resolved_name = str(judge_agent_name).strip()
+        return _build_cli_agent_judge_backend(
+            agent_name=resolved_name,
+            backend_id=f"{named_backend_prefix}:{resolved_name}",
+            prompt_builder=prompt_builder,
+        )
+    if judge_backend_ref is not None and str(judge_backend_ref).strip():
+        return _load_source_judge_backend_ref(str(judge_backend_ref).strip())
+    raise ValueError("exactly one judge selector is required: --judge-agent, --judge-agent-name, or --judge-backend-ref")
 
 
 class _CliAgentRuntimeHarness:
@@ -440,7 +569,9 @@ def _build_source_suite(
     *,
     kind: str,
     input_path: Path,
-    judge_agent_path: Path,
+    judge_agent_path: Path | None,
+    judge_agent_name: str | None = None,
+    judge_backend_ref: str | None = None,
     task_id: str | None,
     id_field: str,
     task_field: str,
@@ -486,15 +617,19 @@ def _build_source_suite(
             id_field=id_field,
             input_field=task_field,
         )
+        judge_backend = _resolve_source_judge_backend(
+            judge_agent_path=judge_agent_path,
+            judge_agent_name=judge_agent_name,
+            judge_backend_ref=judge_backend_ref,
+            file_backend_id="source-agent-md",
+            named_backend_prefix="source-agent",
+            prompt_builder=_build_source_prompt,
+        )
         return create_source_eval_suite(
             suite_id="task-source-evaluator",
             source=source,
             runtime_harness=_build_cli_agent_runtime_harness(agent_name=agent_name),
-            judge_backend=AgentJudgeBackend.from_agent_markdown(
-                judge_agent_path,
-                backend_id="source-agent-md",
-                prompt_builder=_build_source_prompt,
-            ),
+            judge_backend=judge_backend,
             judge_schema=JudgeSchemaDef(output_model=_SourceJudgeOutput),
             gate_policy=answer_gate,
             metadata={"agent": agent_name},
@@ -507,14 +642,18 @@ def _build_source_suite(
             input_field=task_field,
             answer_field=answer_field,
         )
+        judge_backend = _resolve_source_judge_backend(
+            judge_agent_path=judge_agent_path,
+            judge_agent_name=judge_agent_name,
+            judge_backend_ref=judge_backend_ref,
+            file_backend_id="source-agent-md",
+            named_backend_prefix="source-agent",
+            prompt_builder=_build_source_prompt,
+        )
         return create_source_eval_suite(
             suite_id="answer-source-evaluator",
             source=source,
-            judge_backend=AgentJudgeBackend.from_agent_markdown(
-                judge_agent_path,
-                backend_id="source-agent-md",
-                prompt_builder=_build_source_prompt,
-            ),
+            judge_backend=judge_backend,
             judge_schema=JudgeSchemaDef(output_model=_SourceJudgeOutput),
             gate_policy=answer_gate,
         )
@@ -534,15 +673,19 @@ def _build_source_suite(
                 input_field=task_field,
             )
             runtime_harness = _build_cli_agent_runtime_harness(agent_name=agent_name)
+        judge_backend = _resolve_source_judge_backend(
+            judge_agent_path=judge_agent_path,
+            judge_agent_name=judge_agent_name,
+            judge_backend_ref=judge_backend_ref,
+            file_backend_id="trajectory-evaluator-agent-md",
+            named_backend_prefix="trajectory-evaluator-agent",
+            prompt_builder=_build_trajectory_prompt,
+        )
         return create_source_eval_suite(
             suite_id="trajectory-source-evaluator",
             source=source,
             runtime_harness=runtime_harness,
-            judge_backend=AgentJudgeBackend.from_agent_markdown(
-                judge_agent_path,
-                backend_id="trajectory-evaluator-agent-md",
-                prompt_builder=_build_trajectory_prompt,
-            ),
+            judge_backend=judge_backend,
             judge_schema=TrajectoryJudgeSchema.default(),
             outcome_scorers=trajectory_outcome_scorers,
             gate_policy=trajectory_gate,
@@ -556,7 +699,9 @@ def run_evaluator_source_cli(
     *,
     input: str,
     kind: str,
-    judge_agent: str,
+    judge_agent: str | None = None,
+    judge_agent_name: str | None = None,
+    judge_backend_ref: str | None = None,
     out_dir: str | None = None,
     output: str | None = None,
     task_id: str | None = None,
@@ -571,8 +716,13 @@ def run_evaluator_source_cli(
     input_path = Path(input).expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"source input does not exist: {input_path}")
-    judge_agent_path = Path(judge_agent).expanduser().resolve()
-    if not judge_agent_path.exists():
+    _validate_judge_selectors(
+        judge_agent=judge_agent,
+        judge_agent_name=judge_agent_name,
+        judge_backend_ref=judge_backend_ref,
+    )
+    judge_agent_path = Path(judge_agent).expanduser().resolve() if judge_agent else None
+    if judge_agent_path is not None and not judge_agent_path.exists():
         raise FileNotFoundError(f"judge agent does not exist: {judge_agent_path}")
 
     workspace_path = str(input_path.parent if input_path.is_file() else input_path)
@@ -581,7 +731,9 @@ def run_evaluator_source_cli(
         "input": str(input_path),
         "kind": kind,
         "task_id": task_id,
-        "judge_agent": str(judge_agent_path),
+        "judge_agent": str(judge_agent_path) if judge_agent_path is not None else None,
+        "judge_agent_name": judge_agent_name,
+        "judge_backend_ref": judge_backend_ref,
         "agent": agent,
         "workspace_path": workspace_path,
         "output_path": str(Path(output).expanduser().resolve()) if output else None,
@@ -595,7 +747,9 @@ def run_evaluator_source_cli(
             "input": str(input_path),
             "kind": kind,
             "task_id": task_id,
-            "judge_agent": str(judge_agent_path),
+            "judge_agent": str(judge_agent_path) if judge_agent_path is not None else None,
+            "judge_agent_name": judge_agent_name,
+            "judge_backend_ref": judge_backend_ref,
             "agent": agent,
             "interactive_approval": interactive_approval,
         },
@@ -604,6 +758,8 @@ def run_evaluator_source_cli(
         kind=kind,
         input_path=input_path,
         judge_agent_path=judge_agent_path,
+        judge_agent_name=judge_agent_name,
+        judge_backend_ref=judge_backend_ref,
         task_id=task_id,
         id_field=id_field,
         task_field=task_field,
@@ -618,11 +774,24 @@ def run_evaluator_source_cli(
         "target_path": str(input_path),
         "source_kind": kind,
         "task_id": task_id,
-        "judge_agent": str(judge_agent_path),
+        "judge_agent": str(judge_agent_path) if judge_agent_path is not None else None,
+        "judge_agent_name": judge_agent_name,
+        "judge_backend_ref": judge_backend_ref,
         "agent": agent_name if executes_agent else agent,
     }
     for key, value in hook_state.items():
-        if key not in {"mode", "input", "kind", "task_id", "judge_agent", "agent", "interactive_approval", "summary_suffix"}:
+        if key not in {
+            "mode",
+            "input",
+            "kind",
+            "task_id",
+            "judge_agent",
+            "judge_agent_name",
+            "judge_backend_ref",
+            "agent",
+            "interactive_approval",
+            "summary_suffix",
+        }:
             target_info[key] = value
     flow = EvaluationFlowDef(
         target=target_info,
@@ -647,7 +816,9 @@ def run_evaluator_source_cli(
         "input": str(input_path),
         "kind": kind,
         "task_id": task_id,
-        "judge_agent": str(judge_agent_path),
+        "judge_agent": str(judge_agent_path) if judge_agent_path is not None else None,
+        "judge_agent_name": judge_agent_name,
+        "judge_backend_ref": judge_backend_ref,
         "agent": agent_name if executes_agent else agent,
     }
     report["automation"] = _build_automation_summary(report)
