@@ -15,6 +15,17 @@ from aworld_gateway.config import WechatChannelConfig
 from aworld_gateway.types import OutboundEnvelope
 
 
+@pytest.fixture(autouse=True)
+def _enable_gateway_log_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.logging import configure_gateway_logging
+
+    monkeypatch.setenv("AWORLD_GATEWAY_CONSOLE_LOG", "true")
+    configure_gateway_logging(log_path=tmp_path / "gateway.log")
+
+
 class _FakeRouter:
     def __init__(self, *, response_text: str | None = None) -> None:
         self.calls: list[tuple[object, str | None, object | None]] = []
@@ -1559,6 +1570,64 @@ async def test_default_get_updates_returns_empty_payload_on_timeout() -> None:
     )
 
     assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-1"}
+
+
+@pytest.mark.asyncio
+async def test_default_get_updates_success_logs_at_debug(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import _default_get_updates
+    from aworld_gateway.logging import configure_gateway_logging
+
+    monkeypatch.setenv("AWORLD_GATEWAY_CONSOLE_LOG", "true")
+    configure_gateway_logging(log_path=tmp_path / "gateway.log")
+
+    class _FakeResponse:
+        ok = True
+        status = 200
+
+        async def text(self) -> str:
+            return '{"ret":0,"msgs":[],"get_updates_buf":"buf-2"}'
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSession:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    result = await _default_get_updates(
+        session=_FakeSession(),
+        base_url="ilink.example.test",
+        token="wx-token",
+        sync_buf="buf-1",
+        timeout_ms=1234,
+    )
+
+    assert result["get_updates_buf"] == "buf-2"
+    assert "WeChat API request endpoint=ilink/bot/getupdates" not in caplog.text
+    assert "WeChat API response endpoint=ilink/bot/getupdates" not in caplog.text
+
+    caplog.clear()
+    caplog.set_level(logging.DEBUG, logger="aworld.gateway")
+
+    await _default_get_updates(
+        session=_FakeSession(),
+        base_url="ilink.example.test",
+        token="wx-token",
+        sync_buf="buf-1",
+        timeout_ms=1234,
+    )
+
+    assert "WeChat API request endpoint=ilink/bot/getupdates" in caplog.text
+    assert "WeChat API response endpoint=ilink/bot/getupdates" in caplog.text
 
 
 @pytest.mark.asyncio
