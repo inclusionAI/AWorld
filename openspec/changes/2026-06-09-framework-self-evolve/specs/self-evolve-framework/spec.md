@@ -5,6 +5,14 @@
 AWorld framework MUST own the reusable self-evolve capability for optimizing
 agent-facing harness artifacts.
 
+#### Scenario: Existing train/evolve remains separate
+
+- **WHEN** a caller uses `Runners.evolve(...)` or `train.evolve.EvolutionRunner`
+- **THEN** AWorld MUST continue to treat that as the existing training-oriented
+  evolution pipeline
+- **AND** framework self-evolve MUST use distinct `SelfEvolve*` names and
+  `.aworld/self_evolve/` artifacts for proposal-only harness optimization
+
 #### Scenario: SDK caller invokes self-evolve without aworld-cli
 
 - **WHEN** a Python caller constructs a self-evolve run through framework APIs
@@ -30,23 +38,32 @@ Agents MUST NOT become self-evolving unless explicitly configured.
 - **THEN** self-evolve eligibility MUST be disabled
 - **AND** task execution MUST behave as it did before this capability
 
-#### Scenario: Agent opts into optimization eligibility
+#### Scenario: Agent opts into self-evolve mode
 
-- **WHEN** an agent config sets an explicit optimize flag such as
-  `optimize=True`
-- **THEN** the agent MAY be considered eligible for self-evolve workflows
-- **AND** candidate application MUST still follow the self-evolve mode, gates,
-  and apply policy
+- **WHEN** an agent config sets `self_evolve_config.mode` to `offline`,
+  `shadow`, or `online`
+- **THEN** the agent MAY be considered opted into the corresponding
+  self-evolve workflow
+- **AND** phase-1 candidates MUST remain proposal-only unless a later change
+  introduces an explicit apply policy
 
-### Requirement: Agent self-evolve configuration MUST separate eligibility from execution mode
+### Requirement: Agent self-evolve configuration MUST use mode as the opt-in surface
 
-AWorld MUST model whether an agent is eligible for optimization separately from
-how self-evolve runs are executed.
+AWorld MUST model self-evolve opt-in through `SelfEvolveConfig.mode`.
+`SelfEvolveConfig.mode` MUST include `off`, `offline`, `shadow`, and `online`.
+AWorld MUST NOT require a separate `AgentConfig.optimize` or `enabled` flag for
+phase 1.
 
-#### Scenario: Optimize eligibility is true but self-evolve mode is offline
+#### Scenario: Self-evolve mode is off
 
-- **WHEN** an agent has optimize eligibility enabled
-- **AND** its self-evolve mode is `offline`
+- **WHEN** an agent's self-evolve mode is `off`
+- **THEN** normal task execution MUST NOT enqueue self-evolve work
+- **AND** explicit optimize APIs MUST treat the agent as disabled unless the
+  caller overrides the mode for that run
+
+#### Scenario: Self-evolve mode is offline
+
+- **WHEN** an agent's self-evolve mode is `offline`
 - **THEN** normal task execution MUST NOT persistently mutate harness artifacts
 - **AND** self-evolve MUST run only through explicit framework or CLI optimize
   invocations
@@ -54,15 +71,81 @@ how self-evolve runs are executed.
 #### Scenario: Self-evolve mode is shadow
 
 - **WHEN** self-evolve mode is `shadow`
-- **THEN** AWorld MAY collect diagnostics or generate candidate proposals
+- **THEN** AWorld MAY asynchronously collect diagnostics or generate candidate
+  proposals after an agent run produces a trajectory
 - **AND** it MUST NOT apply those candidates to active harness artifacts
 
 #### Scenario: Self-evolve mode is online
 
 - **WHEN** self-evolve mode is `online`
-- **THEN** AWorld MAY perform bounded task-local repair or optimization actions
-- **AND** persistent harness mutation MUST still require passing gates and an
-  explicit apply policy
+- **THEN** AWorld MAY asynchronously perform bounded optimization actions after
+  an agent run produces a trajectory
+- **AND** phase-1 online mode MUST still emit proposal and diff artifacts only
+- **AND** online self-evolve MUST NOT change the result of the task that already
+  completed
+
+### Requirement: Post-run self-evolve MUST be asynchronous and best-effort
+
+When an opted-in agent completes a task with a usable trajectory, AWorld MUST
+support enqueueing a background self-evolve job. That enqueue path MUST be
+lightweight and MUST NOT affect the main task result.
+
+#### Scenario: Post-run enqueue succeeds
+
+- **WHEN** an agent task completes
+- **AND** `SelfEvolveConfig.mode` is `shadow` or `online`
+- **AND** a trajectory is available
+- **THEN** AWorld MUST be able to enqueue a background self-evolve job
+- **AND** the task response MUST be returned without waiting for candidate
+  generation, evaluation, gates, or artifact writing
+
+#### Scenario: Post-run enqueue fails
+
+- **WHEN** post-run self-evolve enqueue fails
+- **THEN** AWorld MUST NOT fail the completed task
+- **AND** it SHOULD record a diagnostic or warning for the enqueue failure
+
+#### Scenario: Background self-evolve job fails
+
+- **WHEN** background self-evolve fails after creating a run
+- **THEN** AWorld MUST persist the failure reason in self-evolve artifacts
+- **AND** it MUST NOT mutate active runtime behavior
+
+#### Scenario: Short-lived process enqueues post-run self-evolve
+
+- **WHEN** post-run self-evolve is enqueued from a process that may exit before
+  background work completes
+- **THEN** AWorld MUST persist a durable pending job before enqueue returns
+- **AND** it MUST NOT rely only on an in-memory fire-and-forget task
+
+### Requirement: Self-evolve MUST infer targets from trajectory evidence in phase 1
+
+When a self-evolve run is task-driven or post-run trajectory-driven, AWorld MUST
+analyze the trajectory before candidate generation and produce an auditable
+target selection report.
+
+#### Scenario: Trajectory evidence selects a target
+
+- **WHEN** a trajectory contains sufficient evidence that a skill, prompt
+  section, tool description, whitelisted config knob, or agent-produced
+  workspace artifact is the likely improvement target
+- **THEN** AWorld MUST select that target through a framework credit-assignment
+  policy
+- **AND** the run artifacts MUST record the evidence references and confidence
+  score
+
+#### Scenario: Trajectory evidence is insufficient
+
+- **WHEN** trajectory evidence is ambiguous or below confidence threshold
+- **THEN** AWorld MUST record a `no_target` diagnostic
+- **AND** it MUST avoid speculative candidate generation
+
+#### Scenario: Caller supplies an explicit target
+
+- **WHEN** a CLI or SDK caller provides an explicit target
+- **THEN** AWorld MAY bypass target inference
+- **AND** it SHOULD still record trajectory evidence when a trajectory source is
+  supplied
 
 ### Requirement: Self-evolve MUST optimize explicit target types
 
@@ -97,17 +180,37 @@ contract.
   config fields
 - **AND** it MUST NOT mutate arbitrary config or secrets
 
-### Requirement: Phase-1 self-evolve MUST NOT include arbitrary code evolution
+#### Scenario: Workspace-local artifact target is selected
 
-The first self-evolve implementation phase MUST optimize text harness artifacts
-and selected config knobs only.
+- **WHEN** a self-evolve run targets code or files produced by agent task
+  execution
+- **THEN** AWorld MUST verify that the path is workspace-local and outside
+  framework, `aworld-cli`, runtime, shared infrastructure, package metadata,
+  secret/config paths, and AWorld product logic
+- **AND** candidate evaluation MUST run in an isolated candidate workspace or
+  overlay before proposal and diff artifacts are selected
 
-#### Scenario: User requests arbitrary code evolution
+### Requirement: Phase-1 self-evolve MUST NOT include framework or runtime code evolution
 
-- **WHEN** a self-evolve request targets arbitrary framework or tool source code
+The first self-evolve implementation phase MUST optimize text harness artifacts,
+selected config knobs, and isolated agent-produced workspace artifacts only.
+
+#### Scenario: User requests framework or runtime code evolution
+
+- **WHEN** a self-evolve request targets framework source, `aworld-cli` source,
+  runtime source, shared infrastructure, package metadata, secret/config paths,
+  or AWorld product logic
 - **THEN** AWorld MUST reject or mark the request unsupported for phase 1
 - **AND** it SHOULD explain that code evolution requires a later change with
   stronger deterministic tests and review gates
+
+#### Scenario: Candidate diff touches protected source paths
+
+- **WHEN** a candidate diff touches protected framework, `aworld-cli`, runtime,
+  shared infrastructure, package metadata, secret/config paths, or AWorld
+  product logic
+- **THEN** AWorld MUST fail safety gates for that candidate
+- **AND** it MUST NOT apply that candidate automatically
 
 ### Requirement: Self-evolve MUST use a pluggable evaluation contract
 
@@ -134,6 +237,32 @@ interface rather than depending directly on a single evaluator agent.
 - **THEN** AWorld MAY include that signal in the evaluation result
 - **AND** self-evolve MUST still allow additional objective scorers and gates
 
+### Requirement: Self-evolve eval sources MUST be pluggable
+
+Self-evolve MUST NOT depend on a hard-coded trajectory log path. The current
+run trajectory is the default post-run source, and external trajectory logs,
+sessions, jsonl datasets, and batch configs are optional explicit sources.
+
+#### Scenario: Post-run self-evolve uses current trajectory
+
+- **WHEN** self-evolve is triggered after an agent run
+- **THEN** AWorld MUST use the current run trajectory as the default
+  credit-assignment, evaluation, and diagnostic source
+- **AND** it MUST NOT require any external trajectory log file
+
+#### Scenario: External trajectory log is supplied
+
+- **WHEN** a caller supplies a trajectory log path through API or CLI
+- **THEN** AWorld MAY use that path as an additional evaluation source
+- **AND** the source identity MUST be recorded in run artifacts
+
+#### Scenario: No sufficient eval source is available
+
+- **WHEN** available evaluation sources are insufficient for reliable
+  candidate evaluation
+- **THEN** AWorld MUST record diagnostics
+- **AND** it SHOULD avoid generating or applying candidates
+
 ### Requirement: Baseline and candidate evaluation MUST be comparable
 
 AWorld MUST evaluate the baseline and all candidates under the same dataset,
@@ -145,7 +274,22 @@ exception.
 - **WHEN** AWorld selects the best candidate
 - **THEN** it MUST compare candidate metrics against baseline metrics produced
   from the same evaluation policy
-- **AND** it MUST persist both metric sets in the evolution run artifacts
+- **AND** it MUST persist both metric sets in the self-evolve run artifacts
+
+#### Scenario: Candidate is marked verified
+
+- **WHEN** a candidate is marked as a verified improvement
+- **THEN** candidate selection MUST have used validation metrics
+- **AND** pass/fail gates MUST have used optimizer-held-out test metrics when at
+  least the configured minimum eval case count is available
+- **AND** the optimizer MUST NOT have received held-out test cases or held-out
+  judge outputs during candidate generation
+
+#### Scenario: Eval case count is too low
+
+- **WHEN** there are too few evaluation cases for the configured held-out gate
+- **THEN** AWorld MAY still persist a proposal and diff
+- **AND** it MUST mark confidence as limited rather than verified
 
 ### Requirement: Self-evolve MUST preserve run artifacts and lineage
 
@@ -158,6 +302,10 @@ review the optimization.
 - **THEN** AWorld MUST persist run metadata, target identity, target
   fingerprint, dataset identity, optimizer policy, baseline metrics, candidate
   metrics, gate results, diagnostics, diffs, and selected candidate state
+- **AND** it MUST persist target selection reports and trajectory evidence for
+  inferred targets
+- **AND** it MUST persist whether the run came from asynchronous post-run
+  enqueue, explicit SDK/API invocation, or CLI invocation
 - **AND** it MUST write a human-readable report
 
 #### Scenario: A self-evolve run fails
@@ -166,10 +314,10 @@ review the optimization.
 - **THEN** AWorld MUST persist a failed run record with the failure reason
 - **AND** it MUST NOT silently discard diagnostics needed for debugging
 
-### Requirement: Proposal-only MUST be the default apply policy
+### Requirement: Proposal-only MUST be the phase-1 apply policy
 
-Self-evolve MUST generate reviewable proposals by default and MUST NOT mutate
-target artifacts unless an explicit apply policy allows it.
+Self-evolve MUST generate reviewable proposals and diffs in phase 1 and MUST
+NOT mutate target artifacts.
 
 #### Scenario: Apply policy is omitted
 
@@ -177,12 +325,13 @@ target artifacts unless an explicit apply policy allows it.
 - **THEN** AWorld MUST use proposal-only behavior
 - **AND** target files or active runtime harness artifacts MUST remain unchanged
 
-#### Scenario: Apply policy writes a candidate
+#### Scenario: Write or branch application is requested
 
 - **WHEN** a self-evolve run is configured to write or branch a selected
   candidate
-- **THEN** AWorld MUST apply only candidates that pass required gates
-- **AND** it MUST record the applied candidate id and apply outcome
+- **THEN** AWorld MUST reject the apply policy as unsupported in phase 1
+- **AND** it MUST preserve proposal and diff artifacts for human review when
+  available
 
 ### Requirement: Candidate generation MUST be optimizer-pluggable
 
@@ -224,3 +373,39 @@ AWorld MUST validate candidates before selecting or applying them.
 - **WHEN** a candidate breaks required target formatting, frontmatter, schema,
   or token limits
 - **THEN** AWorld MUST reject the candidate before application
+
+#### Scenario: Candidate touches protected paths
+
+- **WHEN** a candidate attempts to modify framework, `aworld-cli`, runtime,
+  shared infrastructure, package metadata, secret/config paths, or AWorld
+  product logic
+- **THEN** AWorld MUST mark the candidate as gated out
+- **AND** it MUST NOT apply the candidate
+
+#### Scenario: Run budget is exhausted
+
+- **WHEN** candidate generation, evaluation, judge repetition, or verification
+  would exceed the configured run token or cost budget
+- **THEN** AWorld MUST stop the run or skip the remaining work
+- **AND** it MUST persist the budget stopping reason
+
+### Requirement: Self-evolve MUST stop bounded runs
+
+AWorld MUST prevent unbounded self-evolve loops.
+
+#### Scenario: Maximum iterations reached
+
+- **WHEN** a self-evolve run reaches its configured maximum iterations
+- **THEN** AWorld MUST stop candidate generation for that run
+- **AND** it MUST persist the stopping reason
+
+#### Scenario: Improvement stalls
+
+- **WHEN** candidates fail to meet the configured minimum improvement threshold
+- **THEN** AWorld MUST stop or mark the run as having no passing candidate
+
+#### Scenario: Pending proposal already exists
+
+- **WHEN** the same agent and target already have a pending proposal
+- **THEN** AWorld SHOULD avoid enqueueing duplicate background self-evolve work
+- **AND** it SHOULD record a cooldown or duplicate-suppression diagnostic
