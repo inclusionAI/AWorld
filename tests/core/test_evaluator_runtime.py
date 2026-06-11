@@ -29,6 +29,10 @@ from aworld_cli.evaluator_runtime import (
 from aworld_cli.evaluator_rendering import render_evaluator_summary
 
 
+def _write_answer_source(path: Path) -> None:
+    path.write_text('{"id":"case-1","input":"question","answer":"existing"}\n', encoding="utf-8")
+
+
 @pytest.fixture(autouse=True)
 def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
@@ -83,7 +87,7 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
     tmp_path: Path,
 ) -> None:
     input_path = tmp_path / "answers.jsonl"
-    input_path.write_text('{"id":"case-1","input":"question","answer":"existing"}\n', encoding="utf-8")
+    _write_answer_source(input_path)
     judge_agent = tmp_path / "agent.md"
     judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
     output = tmp_path / "report.json"
@@ -119,6 +123,144 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
     assert report["source_selection"]["kind"] == "answer"
     assert report["automation"]["source_kind"] == "answer"
     assert output.exists()
+
+
+def test_run_evaluator_source_cli_supports_cli_judge_agent_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    captured = {}
+
+    class FakeExecutor:
+        async def chat(self, prompt):
+            captured["prompt"] = prompt
+            return '{"score": 91, "verdict": "Pass", "veto_triggered": false}'
+
+    async def fake_load_cli_agent_executor(agent_name):
+        captured["agent_name"] = agent_name
+        return FakeExecutor()
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._load_cli_agent_executor",
+        fake_load_cli_agent_executor,
+    )
+
+    async def fake_run_evaluation_flow(flow):
+        captured["flow"] = flow
+        execution = await flow.suite.judge_backend.execute(
+            flow.suite.cases[0].input,
+            {"answer": "existing"},
+            flow.suite,
+        )
+        return {
+            "report_version": 1,
+            "suite_id": "answer-source-evaluator",
+            "judge_backend": {"backend_id": execution.backend_id},
+            "summary": {"answer-source-evaluator": {"score": {"mean": execution.payload["score"]}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": execution.payload["score"]},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="answer",
+        judge_agent_name="JudgeTeam",
+        output=str(tmp_path / "report.json"),
+    )
+
+    assert captured["agent_name"] == "JudgeTeam"
+    assert captured["flow"].suite.judge_backend.backend_id == "source-agent:JudgeTeam"
+    assert report["judge_backend"]["backend_id"] == "source-agent:JudgeTeam"
+    assert report["source_selection"]["judge_agent_name"] == "JudgeTeam"
+    assert report["source_selection"]["judge_agent"] is None
+
+
+def test_run_evaluator_source_cli_supports_judge_backend_ref(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    module_path = tmp_path / "custom_judge.py"
+    module_path.write_text(
+        "\n".join(
+            [
+                "from aworld.evaluations.substrate import CallableJudgeBackend",
+                "",
+                "async def judge(case_input, target):",
+                "    return {'score': 82, 'verdict': 'Pass', 'veto_triggered': False}",
+                "",
+                "def build_backend():",
+                "    return CallableJudgeBackend(backend_id='custom-backend', judge=judge)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    captured = {}
+
+    async def fake_run_evaluation_flow(flow):
+        captured["flow"] = flow
+        execution = await flow.suite.judge_backend.execute(
+            flow.suite.cases[0].input,
+            {"answer": "existing"},
+            flow.suite,
+        )
+        return {
+            "report_version": 1,
+            "suite_id": "answer-source-evaluator",
+            "judge_backend": {"backend_id": execution.backend_id},
+            "summary": {"answer-source-evaluator": {"score": {"mean": execution.payload["score"]}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": execution.payload["score"]},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="answer",
+        judge_backend_ref="custom_judge:build_backend",
+        output=str(tmp_path / "report.json"),
+    )
+
+    assert captured["flow"].suite.judge_backend.backend_id == "custom-backend"
+    assert report["judge_backend"]["backend_id"] == "custom-backend"
+    assert report["source_selection"]["judge_backend_ref"] == "custom_judge:build_backend"
+
+
+def test_run_evaluator_source_cli_rejects_missing_judge_selector(tmp_path: Path) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+
+    with pytest.raises(ValueError, match="exactly one judge selector"):
+        run_evaluator_source_cli(
+            input=str(input_path),
+            kind="answer",
+            output=str(tmp_path / "report.json"),
+        )
+
+
+def test_run_evaluator_source_cli_rejects_multiple_judge_selectors(tmp_path: Path) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly one judge selector"):
+        run_evaluator_source_cli(
+            input=str(input_path),
+            kind="answer",
+            judge_agent=str(judge_agent),
+            judge_agent_name="JudgeTeam",
+            output=str(tmp_path / "report.json"),
+        )
 
 
 def test_run_evaluator_source_cli_builds_task_flow_with_default_agent(
