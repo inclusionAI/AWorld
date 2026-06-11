@@ -1,0 +1,33 @@
+{
+  "id": "evaluator-like",
+  "name": "evaluator-like",
+  "version": "1.0.0",
+  "entrypoints": {
+    "hooks": [
+      {
+        "id": "evaluator-pre-run",
+        "target": "hooks/pre_run.py",
+        "scope": "workspace",
+        "metadata": {
+          "hook_point": "evaluator.pre_run"
+        }
+      },
+      {
+        "id": "evaluator-post-run",
+        "target": "hooks/post_run.py",
+        "scope": "workspace",
+        "metadata": {
+          "hook_point": "evaluator.post_run"
+        }
+      },
+      {
+        "id": "evaluator-render-summary",
+        "target": "hooks/render_summary.py",
+        "scope": "workspace",
+        "metadata": {
+          "hook_point": "evaluator.render_summary"
+        }
+      }
+    ]
+  }
+}

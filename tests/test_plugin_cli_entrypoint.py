@@ -69,6 +69,17 @@ def test_interactive_command_is_registered_via_plugin_registry():
     assert command is not None
 
 
+def test_evaluator_command_is_registered_via_plugin_registry():
+    from aworld_cli import main as main_module
+    from aworld_cli.core.plugin_manager import get_builtin_plugin_roots
+
+    registry = main_module._build_top_level_command_registry()
+    command = registry.get("evaluator")
+
+    assert command is not None
+    assert any(path.name == "evaluator_cli" for path in get_builtin_plugin_roots())
+
+
 def test_acp_command_dispatches_via_plugin_registry(capsys):
     from aworld_cli import main as main_module
 
