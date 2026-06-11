@@ -20,9 +20,8 @@ This follows the desired positioning:
 - agents can opt in through disabled-by-default configuration
 - opted-in agents can enqueue asynchronous post-run self-evolve work after a
   trajectory is produced
-- CLI can enable the feature for the built-in AWorld main agent
-- CLI can provide one generic manual/debug command to optimize a specified task
-  or target
+- CLI provides one generic manual/debug command that invokes the framework
+  capability for a specified task or target
 
 ## Goals / Non-Goals
 
@@ -36,7 +35,6 @@ This follows the desired positioning:
 - Make trajectory-driven credit assignment a phase-1 core capability: the
   framework must inspect the trajectory, choose an evidence-backed target, and
   either produce a proposal/diff or record why no reliable target exists.
-- Allow CLI AWorld main agent to enable self-evolve through config or env.
 - Provide a CLI command that can optimize a specified task, target, dataset, or
   prior session as a manual/debug entrypoint.
 - Support phase-1 optimization targets:
@@ -49,9 +47,12 @@ This follows the desired positioning:
 - Reuse existing AWorld evaluation, trajectory, and Ralph verification
   capabilities instead of introducing a parallel evaluation stack.
 - Store every self-evolve run as an auditable artifact with baseline/candidate
-  metrics, diff, diagnostics, and approval state.
-- Support proposal-only runs that emit report and diff artifacts, without
-  phase-1 write or branch application.
+  metrics, diff, diagnostics, apply state, acceptance state, and rejection or
+  rollback state.
+- Support proposal-only runs that emit report and diff artifacts.
+- Support at least one explicit automatic evolve mode: `online` must apply a
+  verified candidate for allowlisted targets after gates and post-apply
+  re-evaluation pass.
 
 **Non-Goals**
 
@@ -93,9 +94,9 @@ This change MUST NOT overload those assets. The boundary is:
 
 - existing `train.evolve`: model/data/tool-synthesis training workflows,
   including dependencies such as `transformers`, `verl`, and `AgentTrainer`
-- new `aworld.self_evolve`: proposal-only harness optimization for skills,
-  prompt sections, tool descriptions, whitelisted config knobs, and
-  agent-produced workspace artifacts
+- new `aworld.self_evolve`: controlled harness optimization for skills, prompt
+  sections, tool descriptions, whitelisted config knobs, and agent-produced
+  workspace artifacts, with proposal-only and verified-auto-apply policies
 
 Naming follows that boundary:
 
@@ -186,8 +187,8 @@ Patterns to adopt:
 - **Held-out discipline:** trainable failure cases may be shown to the mutator,
   while held-out cases remain hidden for final gates.
 - **Lineage artifacts:** optimization should persist candidate ancestry,
-  failure cases, metrics, and reports so humans can audit how a candidate was
-  produced.
+  failure cases, metrics, and reports so applied changes can be audited without
+  requiring approval in the online path.
 - **Provenance and trust gates:** generated or externally sourced artifacts need
   explicit provenance, protected target lists, and security/content scans before
   they can be trusted even as proposals.
@@ -221,7 +222,8 @@ class SelfEvolveJudgeConfig(BaseConfig):
 
 class SelfEvolveConfig(BaseConfig):
     mode: Literal["off", "offline", "shadow", "online"] = "off"
-    apply_policy: Literal["proposal"] = "proposal"
+    apply_policy: Literal["proposal", "auto_verified"] = "proposal"
+    auto_apply_target_types: list[str] = ["skills"]
     target_types: list[str] = [
         "skills",
         "prompt_sections",
@@ -254,20 +256,21 @@ Semantics:
   post-run self-evolve job that can generate diagnostics or proposals, but
   candidates are not applied.
 - `mode="online"`: successful agent task completion may enqueue asynchronous
-  self-evolve work that generates reviewable proposals and diffs. Phase 1 does
-  not apply candidates automatically and must not affect the already-completed
-  task.
-- In phase 1, `online` is intentionally equivalent to `shadow` for persistent
-  application. It is reserved for the later controlled apply loop; both modes
-  still produce proposal-only artifacts.
+  self-evolve work. When `apply_policy="auto_verified"`, the runner must apply a
+  candidate automatically only after it passes all verification, regression,
+  protected-path, budget, and post-apply re-evaluation gates. The completed task
+  result MUST NOT change retroactively.
+- Phase-1 automatic apply should start with a narrow allowlist, such as
+  `SkillTextTarget` only. Other targets may still produce proposals until their
+  target-specific apply policy is implemented and verified.
 
 Why:
 
 - Self-evolve changes harness artifacts and must be opt-in.
 - A separate `optimize` or `enabled` flag would duplicate `mode="off"` and
   create contradictory states such as `optimize=False` with `mode="shadow"`.
-- Keeping `online` proposal-only in phase 1 avoids a misleading partial closed
-  loop while preserving the future config shape.
+- `shadow` keeps the review-only workflow. `online` is the real controlled
+  self-evolve mode and must close the loop for at least one allowlisted target.
 
 ### Decision: Post-run self-evolve is asynchronous and best-effort
 
@@ -514,7 +517,7 @@ Evaluation discipline:
 - LLM-judge-only improvements MUST remain limited-confidence even when repeated
   judgments agree. A verified improvement MUST include at least one
   deterministic signal, such as command verification, exact/objective scoring,
-  or an approved regression benchmark.
+  or a configured regression benchmark.
 - `min_improvement` applies to the held-out gate, not to training/source cases
 
 Global harness-text target discipline:
@@ -623,7 +626,8 @@ Why:
 - Some tasks produce workspace-local code or files; optimizing those outputs is
   useful when the trajectory shows artifact-level failures.
 - Framework and runtime code evolution needs stronger deterministic tests and a
-  stricter review model than phase 1 should provide.
+  stricter deterministic review model than the first online apply slice should
+  carry.
 
 Workspace-local code targets MUST be evaluated in an isolated candidate
 workspace or overlay. Any candidate diff touching framework, `aworld-cli`,
@@ -667,26 +671,71 @@ Why:
 - Self-evolve should be explainable and reversible.
 - Future CLI and UI surfaces need stable data to display.
 
-### Decision: Application is separate from proposal
+### Decision: Application policy is explicit
 
-Phase-1 self-evolve should support this apply mode:
+Phase-1 self-evolve should support these apply policies:
 
 - `proposal`: generate report, candidate files, and reviewable diffs only
+- `auto_verified`: for `mode="online"` only, automatically apply the selected
+  candidate when every verification, regression, protected-path, budget,
+  provenance, and post-apply re-evaluation gate passes
 
 Default mode MUST be `proposal`.
 
+Initial automatic apply scope:
+
+- The first automatic apply slice should be `SkillTextTarget` only.
+- `PromptSectionTarget`, `ToolDescriptionTarget`, `AgentConfigTarget`, and
+  `WorkspaceArtifactTarget` may remain proposal-only until their regression
+  benchmarks and apply/rollback mechanics are proven.
+- Framework source, CLI source, runtime source, package metadata,
+  `aworld-skills/app_evaluator/SKILL.md`, secrets/config paths, and AWorld
+  product logic remain protected and ineligible for automatic apply.
+
 Why:
 
-- Candidate generation is useful even before automatic application is trusted.
-- Human review should happen before any persistent target mutation.
+- Candidate generation is useful in `shadow` even before automatic application
+  is trusted.
+- `online` must provide real self-evolution for a narrow, verified path rather
+  than only accumulating proposals.
+- Automatic application must be explicit, allowlisted, gate-driven, auditable,
+  reversible, and unattended once enabled.
 
-### Decision: Closed-loop self-evolution is a later apply phase
+### Decision: Online mode closes a narrow unattended self-evolution loop
 
-Phase 1 should not be described as persistent autonomous self-evolution. It
-delivers the reviewable proposal side of the loop. A later change should define
-the controlled application loop:
+Phase 1 should include a narrow automatic self-evolution loop for at least one
+allowlisted target. The controlled loop is:
 
-1. apply an approved candidate in an isolated branch or managed workspace
+1. select a target from trajectory evidence or an explicit request
+2. generate and evaluate candidates against validation data
+3. gate the selected candidate with held-out evaluation, deterministic/objective
+   signal, global regression benchmark, protected-path checks, and budget checks
+4. apply the candidate in an isolated branch, overlay, or managed workspace
+   depending on target policy
+5. re-run held-out evaluation and global regression benchmarks after apply
+6. accept the change only if post-apply metrics still pass gates
+7. record lineage from candidate proposal to applied version
+8. roll back automatically or mark the candidate rejected when post-apply
+   metrics regress
+
+This loop MUST be unattended after the operator enables `online` mode and
+`apply_policy="auto_verified"`. It MUST NOT wait for human review, approval,
+confirmation, or intervention between candidate selection and application.
+
+Later phases may broaden automatic apply to more target types, but broad
+application is not required to prove the initial online mode.
+
+Why:
+
+- The user's intended value is `propose -> apply -> measure -> accept/rollback`.
+- Keeping automatic apply narrow avoids confusing "can evolve safely" with
+  "can rewrite any harness artifact".
+
+### Decision: Broader apply and product-code evolution remain later phases
+
+Later changes may define broader application modes:
+
+1. apply a verified candidate in a persistent branch or managed workspace
 2. re-run held-out evaluation and global regression benchmarks after apply
 3. accept the change only if post-apply metrics still pass gates
 4. record lineage from proposal to applied version
@@ -695,9 +744,8 @@ the controlled application loop:
 
 Why:
 
-- The user's intended value is `propose -> apply -> measure -> accept/rollback`.
-- Phase 1 intentionally avoids persistent mutation; documenting the later loop
-  keeps the safety tradeoff explicit.
+- Framework, CLI, runtime, and broad workspace code evolution need stronger
+  tests and review gates than the first online apply slice should carry.
 
 ### Decision: Self-evolve has bounded stopping conditions
 
@@ -734,8 +782,8 @@ Why:
 
 ### Decision: CLI invokes framework self-evolve
 
-`aworld-cli` should provide a single top-level command, backed by framework
-APIs:
+`aworld-cli` should provide exactly one phase-1 entrypoint for self-evolve: a
+single top-level command backed by framework APIs:
 
 ```bash
 aworld-cli optimize \
@@ -744,7 +792,7 @@ aworld-cli optimize \
   --target skill:demo \
   --dataset evals/ui_apps.jsonl \
   --iterations 5 \
-  --apply proposal
+  --apply auto_verified
 ```
 
 The command should remain generic. Different optimization surfaces are selected
@@ -772,6 +820,8 @@ Why:
 - CLI users need a direct way to optimize a specified task or target and to
   debug the same framework path used by asynchronous post-run jobs.
 - The command should not own the optimizer logic.
+- The CLI should not own self-evolve scheduler, evaluator, optimizer, target
+  inference, durable artifacts, or agent opt-in semantics.
 
 Registration:
 
@@ -782,28 +832,32 @@ Registration:
   `register_builtin_top_level_commands` is currently a no-op stub and should
   not be treated as the registration mechanism.
 
-### Decision: Built-in AWorld main agent can opt in through config
+### Decision: CLI does not own agent opt-in
 
-The CLI-built AWorld main agent may enable self-evolve through env/config, such
-as:
-
-- `AWORLD_SELF_EVOLVE_MODE=off|offline|shadow|online`
-
-Default behavior remains off.
+Agent opt-in belongs to framework `AgentConfig.self_evolve_config`. CLI may
+load or pass normal framework agent configuration when invoking
+`aworld-cli optimize`, but phase 1 should not add a separate CLI-owned
+self-evolve mode for the built-in AWorld main agent.
 
 Why:
 
-- Product users can enable self-evolve for the main agent without affecting SDK
-  agents or unrelated CLI sessions.
+- The self-evolve core must remain usable from the framework SDK without CLI
+  internals.
+- Keeping CLI to one command prevents product UX from becoming the owner of
+  framework learning semantics.
 
 ## Resolved Phase-1 Decisions
 
 - The first CLI surface is a single generic `aworld-cli optimize` command. It
   supports `skill:<name>`, `prompt:<section>`, and `tool:<tool-name>` target
-  forms through `--target`, plus approved task-driven target inference.
-- Phase 1 stops at proposal and diff artifacts. It does not perform write,
-  branch, merge, or commit application, so it produces self-evolve proposals
-  rather than a persistent self-modifying loop.
+  forms through `--target`, plus configured task-driven target inference.
+- `aworld-cli optimize` is the only CLI entrypoint in phase 1. Interactive
+  slash commands, CLI-owned env modes, scheduler ownership, evaluator logic, and
+  target inference remain out of CLI scope.
+- Default and `shadow` runs stop at proposal and diff artifacts.
+- `online` with `apply_policy="auto_verified"` must support automatic
+  apply/re-evaluate/accept-or-rollback for at least one allowlisted target type,
+  initially `SkillTextTarget`.
 - Workspace-local code/file targets are limited to artifacts produced by the
   agent during task execution. Self-evolve candidates MUST NOT change AWorld
   framework or `aworld-cli` product logic.
