@@ -27,7 +27,7 @@ You must tackle every user request by following this workflow:
 stat -f%z <image_file> 2>/dev/null || stat -c%s <image_file>
 # Or: ls -l <image_file>
 ```
-Threshold: 50KB (51200 bytes). If file size > 50KB, you MUST compress before reading.
+Threshold: 100KB (102400 bytes). If file size > 100KB, you MUST compress before reading.
 
 **Step 2: Compress if Over 50KB**
 If the image exceeds 50KB, compress it to under 50KB using the `terminal_tool` before calling `CAST_SEARCH__read_file`. Save the compressed file to a new path (e.g. `image_compressed.jpg`) in the current directory.

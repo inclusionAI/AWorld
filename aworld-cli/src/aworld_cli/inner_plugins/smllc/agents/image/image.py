@@ -81,12 +81,14 @@ Important routing rule:
   When the user says "把这只猫改成黄色", reuse the image already present in context and call:
   {"image_urls": ["<image-from-context>"], "output_path": "./output/edit.png"}
   Supported keys:
-  - size: Image size (e.g., "1024x1024", "1024x768", "768x1024")
+  - size: Image size (e.g., "1024x1024", "1024x768", "768x1024", or "auto" for GPT Image)
   - output_format: Output format (png, jpeg, webp), default: "png"
   - response_format: `url` or `b64_json`. Default behavior prefers `url` so the caller can receive a remote download link in the tool result.
+  - quality / moderation / background: GPT Image backend only (`ant_gpt_image`). quality: auto|low|medium|high; moderation: auto|low; background: auto|opaque
   - negative_prompt: Negative prompt to exclude from generation
   - seed: Random seed for reproducible generation
-  - image_urls / image_url / input_image / input_images / reference_images: Input image(s) for edit models. Remote HTTP/HTTPS URLs will be sent as the `url` field. Local file paths will be read and base64-encoded into the `image` field. `data:image/...` inputs will be normalized to base64 and sent as the `image` field.
+  - image_urls / image_url / input_image / input_images / reference_images: Input image(s) for edit models. Remote HTTP/HTTPS URLs will be downloaded and uploaded as files for GPT Image, or sent as the `url` field for Qwen-style backends. Local file paths are read and uploaded as files. `data:image/...` inputs are decoded and uploaded as files.
+  - mask / mask_url / mask_path: Optional mask image for GPT Image edit requests (multipart upload).
   - guidance_scale / num_inference_steps / strength / watermark / prompt_extend / n: Extra parameters forwarded to compatible edit models when accepted by the backend.
   - output_path: Output file path (optional, auto-generated if not provided)
 
@@ -97,10 +99,11 @@ Expected tool result fields:
 - `image_format`, `image_size_bytes`, `usage`
 
 Current behavior:
-- Text-to-image uses JSON `POST /v1/images/generations`
-- Image edits use multipart/form-data `POST /v1/images/edits`
-- The agent prefers `response_format=url` by default so upstream callers such as `Aworld` can receive the remote image link.
-- For edits, remote images use the `url` parameter; local images and `data:image/...` inputs use the `image` parameter with base64 content
+- Default backend (`llm_provider=image`, env `TEXT_TO_IMAGE_PROVIDER=image`): text-to-image uses JSON `POST /v1/images/generations`; single-image edits use multipart `POST /v1/images/edits`.
+- Kling backend (`llm_provider=kling_image`, env `TEXT_TO_IMAGE_PROVIDER=kling_image`): async task API — `POST /v1/images/generations` (text or one reference image) or `POST /v1/images/multi-image2image` (two or more reference images), then poll until images are ready.
+- GPT Image backend (`llm_provider=ant_gpt_image`, env `TEXT_TO_IMAGE_PROVIDER=ant_gpt_image`): Ant MatrixCube gateway — JSON `POST /v1/genericCall` with `method=/images/generations`; edits use multipart `POST /v1/genericCall` with `method=/images/edits`, `image`, `quality`, optional `mask`.
+- The agent prefers `response_format=url` by default for Qwen/Kling so upstream callers such as `Aworld` can receive the remote image link; GPT Image defaults to `b64_json`.
+- For the default Qwen-style backend, edits use `url`/`image` as above; Kling accepts URLs or raw base64 for reference images; GPT Image downloads URLs and uploads them as multipart files.
 """
 )
 def build_image_swarm():
@@ -110,11 +113,20 @@ def build_image_swarm():
     env_skills_dir = Path(os.path.expanduser(os.environ.get("SKILLS_PATH"))).resolve()
     skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
+    text_to_image_provider = os.environ.get(
+        "TEXT_TO_IMAGE_PROVIDER",
+        os.environ.get("IMAGE_PROVIDER", "image"),
+    )
+    default_response_format = os.environ.get(
+        "IMAGE_RESPONSE_FORMAT",
+        "b64_json" if text_to_image_provider == "ant_gpt_image" else "url",
+    )
+
     # Create Agent configuration (TEXT_TO_IMAGE_* as base image config)
     agent_config = AgentConfig(
         llm_config=ModelConfig(
             llm_model_name=os.environ.get("TEXT_TO_IMAGE_MODEL_NAME", os.environ.get("IMAGE_MODEL_NAME", "")),
-            llm_provider=os.environ.get("TEXT_TO_IMAGE_PROVIDER", os.environ.get("IMAGE_PROVIDER", "image")),
+            llm_provider=text_to_image_provider,
             llm_api_key=os.environ.get("TEXT_TO_IMAGE_API_KEY", os.environ.get("IMAGE_API_KEY")),
             llm_base_url=os.environ.get("TEXT_TO_IMAGE_BASE_URL", os.environ.get("IMAGE_BASE_URL")),
             llm_temperature=float(os.environ.get("TEXT_TO_IMAGE_TEMPERATURE", os.environ.get("IMAGE_TEMPERATURE", "0.1"))),
@@ -141,7 +153,7 @@ def build_image_swarm():
         name="image_generator",
         desc="An intelligent assistant for generating images from text prompts.",
         conf=agent_config,
-        default_response_format=os.environ.get("IMAGE_RESPONSE_FORMAT", "url"),
+        default_response_format=default_response_format,
         system_prompt=_system_prompt,
         mcp_servers=mcp_servers,
         mcp_config=mcp_config,
