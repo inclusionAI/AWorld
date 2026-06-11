@@ -7,10 +7,10 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
@@ -187,6 +187,37 @@ class MetaLearningConfig(BaseConfig):
         description="Base path for storing trajectory data. Defaults to './' or TRAJ_STORAGE_BASE_PATH env var"
     )
 
+
+class SelfEvolveJudgeConfig(BaseConfig):
+    """Judge selection for framework-owned self-evolve evaluation."""
+
+    mode: Literal["trajectory", "agent_md", "custom_agent", "disabled"] = "trajectory"
+    agent_path: Optional[str] = None
+    agent_id: Optional[str] = None
+
+
+class SelfEvolveConfig(BaseConfig):
+    """Disabled-by-default self-evolve configuration for harness optimization."""
+
+    mode: Literal["off", "offline", "shadow", "online"] = "off"
+    apply_policy: Literal["proposal", "auto_verified"] = "proposal"
+    max_run_tokens: int = 100000
+    max_run_cost_usd: Optional[float] = None
+    min_eval_cases: int = 1
+    judge_repetitions: int = 1
+    cooldown_seconds: int = 0
+    requires_post_apply_reevaluation: bool = True
+    judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
+
+    @model_validator(mode="after")
+    def validate_apply_policy(self) -> "SelfEvolveConfig":
+        if self.mode == "online" and self.apply_policy != "auto_verified":
+            raise ValueError("online self-evolve requires apply_policy='auto_verified'")
+        if self.apply_policy == "auto_verified" and not self.requires_post_apply_reevaluation:
+            raise ValueError("auto_verified self-evolve requires post-apply re-evaluation")
+        return self
+
+
 class SummaryPromptConfig(BaseConfig):
     """Configuration for summary prompt templates."""
     
@@ -297,6 +328,7 @@ class AgentConfig(BaseConfig):
     # None means no limit (all parallel), positive integer limits batch size
     concurrent_batch_size: Optional[int] = None
     meta_learning_config: MetaLearningConfig = MetaLearningConfig()
+    self_evolve_config: SelfEvolveConfig = Field(default_factory=SelfEvolveConfig)
     ext: dict = {}
 
     def __init__(self, **kwargs):

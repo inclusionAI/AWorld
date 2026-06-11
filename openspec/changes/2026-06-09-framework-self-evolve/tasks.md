@@ -88,32 +88,32 @@
 
 ## 2. Framework Configuration
 
-- [ ] 2.1 Add `SelfEvolveConfig` to framework config models.
-- [ ] 2.2 Add `AgentConfig.self_evolve_config` with `mode="off"` disabled
+- [x] 2.1 Add `SelfEvolveConfig` to framework config models.
+- [x] 2.2 Add `AgentConfig.self_evolve_config` with `mode="off"` disabled
   defaults and no separate `enabled` or `optimize` flag.
-- [ ] 2.3 Add run budget config fields for max tokens, optional max cost, min
+- [x] 2.3 Add run budget config fields for max tokens, optional max cost, min
   eval cases, judge repetitions, and cooldown.
-- [ ] 2.4 Add tests proving existing agent config construction remains backward
+- [x] 2.4 Add tests proving existing agent config construction remains backward
   compatible.
-- [ ] 2.5 Add tests proving unknown extra model config kwargs still flow through
+- [x] 2.5 Add tests proving unknown extra model config kwargs still flow through
   existing `llm_config.ext_config` behavior.
-- [ ] 2.6 Add tests for mode semantics: `off`, `offline`, `shadow`, and
+- [x] 2.6 Add tests for mode semantics: `off`, `offline`, `shadow`, and
   `online`.
-- [ ] 2.7 Add tests proving `online` requires explicit verified apply policy and
+- [x] 2.7 Add tests proving `online` requires explicit verified apply policy and
   does not apply candidates without passing all gates.
-- [ ] 2.8 Add judge config tests for default trajectory judge, `agent.md`,
+- [x] 2.8 Add judge config tests for default trajectory judge, `agent.md`,
   custom agent, and disabled judge modes.
 
 ## 3. Self-Evolve Core Package
 
-- [ ] 3.1 Create `aworld/self_evolve/` with stable public imports.
-- [ ] 3.2 Define target interfaces and phase-1 target types.
+- [x] 3.1 Create `aworld/self_evolve/` with stable public imports.
+- [x] 3.2 Define target interfaces and phase-1 target types.
 - [ ] 3.3 Define candidate variant, run, metric, diagnostic, and gate result
   models.
 - [ ] 3.4 Define optimizer and evaluation backend protocols.
-- [ ] 3.5 Define persistent run artifact storage under `.aworld/self_evolve/`.
+- [x] 3.5 Define persistent run artifact storage under `.aworld/self_evolve/`.
 - [ ] 3.6 Define async trigger/run-context models for post-run enqueue.
-- [ ] 3.7 Define `SelfEvolveRun` naming that does not conflict with existing
+- [x] 3.7 Define `SelfEvolveRun` naming that does not conflict with existing
   `train.evolve.EvolutionRunner` / `EvolutionConfig`.
 - [ ] 3.8 Define trace pack, dataset recipe, target provenance, and optimizer
   lineage models.
