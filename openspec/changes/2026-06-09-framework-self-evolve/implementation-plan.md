@@ -29,7 +29,9 @@ proposal-only harness optimization. CLI adds a single generic
 `aworld-cli optimize` command as a thin manual/debug caller of the same
 framework API, with extension through options and `--target <type>:<id>` forms
 rather than new subcommands. Persistent application defaults to proposal and
-diff artifacts only.
+diff artifacts only. `aworld-skills/app_evaluator/SKILL.md` is not part of the
+new subsystem and must remain protected from target inference and candidate
+mutation.
 
 **Tech Stack:** Python 3.10+, Pydantic config models, dataclasses or Pydantic
 models for internal run records, existing `aworld.evaluations`, existing
@@ -46,6 +48,8 @@ trajectory infrastructure, existing `aworld-cli` top-level command pattern,
 - `aworld/self_evolve/config.py`
 - `aworld/self_evolve/types.py`
 - `aworld/self_evolve/targets.py`
+- `aworld/self_evolve/provenance.py`
+- `aworld/self_evolve/trace_pack.py`
 - `aworld/self_evolve/credit_assignment.py`
 - `aworld/self_evolve/datasets.py`
 - `aworld/self_evolve/optimizers/__init__.py`
@@ -53,6 +57,7 @@ trajectory infrastructure, existing `aworld-cli` top-level command pattern,
 - `aworld/self_evolve/optimizers/llm_mutator.py`
 - `aworld/self_evolve/optimizers/dspy_adapter.py`
 - `aworld/self_evolve/evaluation.py`
+- `aworld/self_evolve/judge.py`
 - `aworld/self_evolve/gates.py`
 - `aworld/self_evolve/scheduler.py`
 - `aworld/self_evolve/store.py`
@@ -66,6 +71,8 @@ trajectory infrastructure, existing `aworld-cli` top-level command pattern,
 - `aworld/evaluations/` only for narrow backend integration if needed
 - `aworld/dataset/` only for reuse helpers if needed
 - `aworld/skills/` only for skill target loading/apply seams if needed
+- Do not modify `aworld-skills/app_evaluator/SKILL.md` or build the subsystem
+  by extending that skill.
 
 ### New CLI files
 
@@ -83,10 +90,13 @@ trajectory infrastructure, existing `aworld-cli` top-level command pattern,
 
 - `tests/self_evolve/test_config.py`
 - `tests/self_evolve/test_targets.py`
+- `tests/self_evolve/test_provenance.py`
+- `tests/self_evolve/test_trace_pack.py`
 - `tests/self_evolve/test_credit_assignment.py`
 - `tests/self_evolve/test_store.py`
 - `tests/self_evolve/test_runner.py`
 - `tests/self_evolve/test_evaluation_backend.py`
+- `tests/self_evolve/test_judge.py`
 - `tests/self_evolve/test_scheduler.py`
 - `tests/cli/test_optimize_command.py`
 
@@ -108,6 +118,9 @@ Cover:
 - no separate `enabled` or `optimize` flag is required for disabled defaults
 - run budget fields parse: max tokens, optional max cost, min eval cases, judge
   repetitions, and cooldown
+- judge config parses default trajectory judge, explicit `agent.md`, custom
+  agent, and disabled judge modes
+- `online` remains proposal-only in phase 1 and does not imply automatic apply
 - old config fields still parse
 - unknown model kwargs still enter `llm_config.ext_config`
 
@@ -133,8 +146,10 @@ Expected: PASS
 
 - Create: `aworld/self_evolve/__init__.py`
 - Create: `aworld/self_evolve/types.py`
+- Create: `aworld/self_evolve/provenance.py`
 - Create: `aworld/self_evolve/store.py`
 - Test: `tests/self_evolve/test_store.py`
+- Test: `tests/self_evolve/test_provenance.py`
 
 - [ ] **Step 1: Define run record models**
 
@@ -146,14 +161,24 @@ Define:
 - `EvaluationSummary`
 - `GateResult`
 - `SelfEvolveRunStatus`
+- `TargetProvenance`
+- `OptimizerLineage`
+- `DatasetRecipe`
 
-- [ ] **Step 2: Implement filesystem store**
+- [ ] **Step 2: Implement provenance sidecar models**
+
+Track target source kind, write origin, trust level, protected status, and
+reason without writing those operational fields into target files such as
+`SKILL.md`.
+
+- [ ] **Step 3: Implement filesystem store**
 
 Persist run artifacts under `.aworld/self_evolve/<run_id>/`.
 
-- [ ] **Step 3: Test artifact persistence**
+- [ ] **Step 4: Test artifact persistence**
 
-Cover run creation, candidate file writing, report writing, and stable paths.
+Cover run creation, candidate file writing, report writing, stable paths,
+dataset recipe persistence, target provenance, and optimizer lineage.
 
 ---
 
@@ -198,29 +223,53 @@ non-mutation.
 **Files:**
 
 - Create: `aworld/self_evolve/credit_assignment.py`
+- Create: `aworld/self_evolve/trace_pack.py`
+- Test: `tests/self_evolve/test_trace_pack.py`
 - Test: `tests/self_evolve/test_credit_assignment.py`
 
-- [ ] **Step 1: Define selection report models**
+- [ ] **Step 0: Run a credit-assignment spike on real trajectories**
+
+Before building the full optimization pipeline, collect a small fixture set of
+real trajectories with manually labeled likely targets and `no_target` cases.
+Measure whether deterministic signals plus optional LLM diagnosis can correctly
+distinguish skill, prompt-section, tool-description, config, workspace-artifact,
+and insufficient-signal outcomes. Do not expand candidate generation until this
+spike produces acceptable precision/recall for target selection.
+
+- [ ] **Step 1: Add trace pack normalization**
+
+Normalize current trajectories, prior sessions, and trajectory logs into a
+bounded `TracePack` that preserves task input, first/final turns, tool calls,
+tool results, failed arguments, verification output, LLM usage/cost metadata,
+generated artifact references, and evidence ids.
+
+- [ ] **Step 2: Test trace pack compression**
+
+Cover preservation of first/final turns, middle-turn summarization, evidence id
+stability, and budget enforcement.
+
+- [ ] **Step 3: Define selection report models**
 
 Define `TargetSelectionReport` with selected target id, confidence, evidence
 step refs, failure category, and `no_target` diagnostics.
 
-- [ ] **Step 2: Build target inventory**
+- [ ] **Step 4: Build target inventory**
 
 Inventory supported phase-1 targets: skills, prompt sections, tool
-descriptions, whitelisted config knobs, and protected workspace artifacts.
+descriptions, whitelisted config knobs, and agent-produced workspace artifacts,
+including provenance/trust metadata and protected status.
 
-- [ ] **Step 3: Implement deterministic signal extraction**
+- [ ] **Step 5: Implement deterministic signal extraction**
 
 Use trajectory validators, tool call errors, repeated actions, LLM call
 metadata, generated artifact references, and task status.
 
-- [ ] **Step 4: Add optional LLM-assisted diagnosis**
+- [ ] **Step 6: Add optional LLM-assisted diagnosis**
 
 The LLM diagnosis must cite trajectory evidence and may return `no_target` when
 confidence is below policy.
 
-- [ ] **Step 5: Test target inference**
+- [ ] **Step 7: Test target inference**
 
 Cover inferred skill, prompt-section, tool-description, workspace-artifact, and
 insufficient-signal `no_target` cases.
@@ -248,12 +297,18 @@ Load task/evaluation cases from jsonl.
 
 Compute dataset fingerprint and deterministic train/validation/test split.
 
-- [ ] **Step 4: Add current trajectory, session, and trajectory-log mining
+- [ ] **Step 4: Add dataset recipe persistence**
+
+Persist source selection, filters, split seed, synthetic generation policy, and
+holdout policy. Store trainable failure cases separately from held-out failure
+cases so optimizers cannot see final gate data.
+
+- [ ] **Step 5: Add current trajectory, session, and trajectory-log mining
 interfaces**
 
 Expose interfaces that can feed phase-1 credit assignment and evaluation.
 
-- [ ] **Step 5: Add fixture-backed trajectory source tests**
+- [ ] **Step 6: Add fixture-backed trajectory source tests**
 
 Use a checked-in or temporary trajectory log sample. Do not hard-code
 `~/Documents/logs/trajectory.log` into product behavior.
@@ -265,7 +320,9 @@ Use a checked-in or temporary trajectory log sample. Do not hard-code
 **Files:**
 
 - Create: `aworld/self_evolve/evaluation.py`
+- Create: `aworld/self_evolve/judge.py`
 - Test: `tests/self_evolve/test_evaluation_backend.py`
+- Test: `tests/self_evolve/test_judge.py`
 
 - [ ] **Step 1: Define backend protocol**
 
@@ -279,20 +336,41 @@ Wrap existing `EvaluateRunner` where possible.
 
 Support deterministic shell/pytest-style verification commands as one signal.
 
-- [ ] **Step 4: Test baseline/candidate parity**
+- [ ] **Step 4: Add configurable judge backend**
+
+Support:
+
+- default self-evolve trajectory judge using `TracePack`, target-selection
+  report, baseline/candidate outputs, and scorer diagnostics
+- explicit `agent.md` judge loaded through the approved agent-loading path
+- custom judge agent or registered agent name
+- disabled judge mode for deterministic-only runs
+
+Persist judge prompts, compact inputs, outputs, and verdict metadata in run
+artifacts.
+
+- [ ] **Step 5: Test baseline/candidate parity**
 
 Ensure baseline and candidate run against identical dataset and policy.
 
-- [ ] **Step 5: Test optional external trajectory source behavior**
+- [ ] **Step 6: Test optional external trajectory source behavior**
 
 Ensure a trajectory log can be supplied explicitly, and ensure default post-run
 self-evolve does not require one.
 
-- [ ] **Step 6: Enforce held-out evaluation discipline**
+- [ ] **Step 7: Enforce held-out evaluation discipline**
 
 Candidate ranking uses validation metrics. Verified pass/fail gates use
 optimizer-held-out test metrics when at least `min_eval_cases` exist. Too few
 cases may still produce proposals, but they must be marked limited-confidence.
+Single-trajectory post-run jobs usually fall into this limited-confidence path
+unless an additional dataset/session/batch source is configured.
+
+- [ ] **Step 8: Enforce verified signal discipline**
+
+Judge-only improvements must remain limited-confidence. Verified improvements
+require at least one deterministic signal, such as command verification,
+exact/objective scoring, or an approved regression benchmark.
 
 ---
 
@@ -309,24 +387,43 @@ cases may still produce proposals, but they must be marked limited-confidence.
 
 Add `CandidateOptimizer.propose(...)`.
 
-- [ ] **Step 2: Implement LLM mutator fallback**
+- [ ] **Step 2: Implement trace-reflective LLM mutator fallback**
 
-Use existing model config surfaces to propose candidate text variants.
+Use existing model config surfaces to propose candidate text variants from
+trace packs, scorer feedback, validation failures, and trainable failure cases.
 
-- [ ] **Step 3: Implement workspace-local artifact candidate guardrails**
+- [ ] **Step 3: Implement optional DSPy adapters**
+
+Add optional `DSPyGEPAOptimizer` and `DSPyMIPROOptimizer` selection paths behind
+dependency checks. GEPA should be the preferred trace-reflective text optimizer
+when installed; MIPRO should be a fallback for instruction text and few-shot
+examples when enough examples exist.
+
+- [ ] **Step 4: Keep Darwinian/code evolution external**
+
+Represent Darwinian/code evolution as a future external CLI/subprocess adapter
+only. Do not import AGPL libraries into AWorld core.
+
+- [ ] **Step 5: Implement workspace-local artifact candidate guardrails**
 
 Generate candidates only for workspace-local code/files produced by agent task
 execution, never for AWorld or `aworld-cli` product logic, and only through
 isolated candidate workspace evaluation.
 
-- [ ] **Step 4: Implement optional DSPy adapter guard**
+- [ ] **Step 6: Implement optional dependency guards**
 
-If DSPy is unavailable, fail only when adapter is selected.
+If DSPy or future external optimizer dependencies are unavailable, fail only
+when that adapter is selected.
 
-- [ ] **Step 5: Prevent held-out leakage**
+- [ ] **Step 7: Prevent held-out leakage**
 
 Ensure optimizers receive only training/source cases, validation feedback, and
 trajectory diagnostics, never held-out test cases or held-out judge outputs.
+
+- [ ] **Step 8: Persist optimizer lineage**
+
+Record parent candidate ids, mutation rationale, backend name/version, trainable
+failure-case ids used, and candidate ancestry in run artifacts.
 
 ---
 
@@ -351,6 +448,12 @@ Reject candidates that touch framework, `aworld-cli`, runtime, shared
 infrastructure, package metadata, secret/config paths, or any AWorld product
 logic.
 
+- [ ] **Step 5A: Add app_evaluator protection**
+
+Reject candidates and inferred targets that would modify
+`aworld-skills/app_evaluator/SKILL.md`. The skill may only be used as an
+explicitly configured read-only scorer/fixture.
+
 - [ ] **Step 6: Add stopping condition gates**
 
 Cover max iterations, no meaningful improvement, pending proposal duplicate
@@ -365,6 +468,23 @@ baseline/candidate evaluation, judge repetitions, and verification.
 
 Only mark a candidate as verified when it passes held-out test evaluation under
 the configured minimum improvement and variance policy.
+
+- [ ] **Step 9: Add trust and provenance gates**
+
+Reject or downgrade candidates from generated, external, or protected targets
+unless their trust policy, content scan, and protected-path checks pass.
+
+- [ ] **Step 10: Add global target regression benchmark gates**
+
+For `SkillTextTarget`, `PromptSectionTarget`, and `ToolDescriptionTarget`, a
+candidate cannot be marked verified unless it passes a configured regression
+benchmark or equivalent objective regression suite independent from the source
+trajectory.
+
+- [ ] **Step 11: Add judge-only limited-confidence gate**
+
+If all positive signal comes from LLM judge output, persist the proposal but do
+not mark it verified.
 
 ---
 
@@ -455,6 +575,8 @@ Cover:
 - `aworld-cli optimize --target skill:demo --dataset eval.jsonl`
 - `aworld-cli optimize --target prompt:system --dataset eval.jsonl`
 - `aworld-cli optimize --target tool:browser --dataset eval.jsonl`
+- command registration uses the existing built-in plugin manifest and
+  `cli_commands/` entrypoint path, not `register_builtin_top_level_commands`
 - all target forms are parsed by the same generic command path
 - `--task`
 - `--from-session`
@@ -465,6 +587,7 @@ Cover:
 - no external trajectory path is required unless `--from-trajectory` is passed
 - `--task` without `--target` invokes framework target inference, not CLI-owned
   target selection
+- `skill:app_evaluator` is not used as a default target in tests or examples
 
 - [ ] **Step 2: Implement command as thin framework caller**
 
@@ -515,6 +638,21 @@ task result.
 - [ ] **Step 4: Document CLI usage**
 
 - [ ] **Step 5: Add toy trajectory-driven optimization example**
+
+- [ ] **Step 6: Document app_evaluator boundary**
+
+State that `aworld-skills/app_evaluator/SKILL.md` is independent from the new
+self-evolve subsystem and protected from mutation.
+
+- [ ] **Step 7: Document configurable judge behavior**
+
+Show the default self-evolve trajectory judge and examples for an explicit
+`agent.md` judge and a custom registered judge agent.
+
+- [ ] **Step 8: Document phase-2 closed-loop roadmap**
+
+Explain that phase 1 is proposal-only and that the later closed loop is
+`apply -> re-evaluate -> accept/rollback`.
 
 ---
 

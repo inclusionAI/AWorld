@@ -9,6 +9,15 @@ asynchronous post-run self-evolve jobs, and it MUST extend behavior through
 options and `--target <type>:<id>` forms rather than separate target-specific
 commands.
 
+#### Scenario: Optimize command is registered
+
+- **WHEN** `aworld-cli` discovers built-in CLI commands
+- **THEN** the optimize command MUST be exposed through the existing
+  `builtin_plugins/*_cli/.aworld-plugin/plugin.json` and `cli_commands/`
+  entrypoint pattern
+- **AND** the implementation MUST NOT rely on
+  `register_builtin_top_level_commands` as the registration mechanism
+
 #### Scenario: User optimizes a skill target from a dataset
 
 - **WHEN** the user runs `aworld-cli optimize --target skill:<name> --dataset <path>`
@@ -71,10 +80,11 @@ default.
   `SelfEvolveConfig.mode`
 - **AND** omitted env/config MUST keep mode `off`
 
-### Requirement: CLI self-evolve command MUST support explicit target forms
+### Requirement: CLI self-evolve command MUST support first-version explicit target forms
 
-CLI MUST provide stable target syntax that maps to framework target types. All
-target forms MUST be parsed by the same generic `aworld-cli optimize` command.
+CLI MUST provide stable first-version target syntax for skill text, prompt
+sections, and tool descriptions. All target forms MUST be parsed by the same
+generic `aworld-cli optimize` command.
 
 #### Scenario: Target is a skill
 
@@ -91,11 +101,11 @@ target forms MUST be parsed by the same generic `aworld-cli optimize` command.
 - **WHEN** `--target tool:<tool-name>` is provided
 - **THEN** CLI MUST map it to the framework tool description target resolver
 
-#### Scenario: Target is an agent config field
+#### Scenario: Target is an agent config field in a later extension
 
 - **WHEN** `--target agent-config:<field>` is provided
-- **THEN** CLI MUST map it to the framework agent config target resolver
-- **AND** framework gates MUST enforce field allowlisting
+- **THEN** CLI MAY map it to the framework agent config target resolver
+- **AND** if supported, framework gates MUST enforce field allowlisting
 
 ### Requirement: CLI self-evolve output MUST be actionable and auditable
 

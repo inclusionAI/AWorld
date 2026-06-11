@@ -60,6 +60,9 @@ This follows the desired positioning:
   `train.evolve.EvolutionRunner` training pipeline.
 - Do not make self-evolve run automatically for all agents.
 - Do not bind self-evolve to the current UI `app_evaluator` skill.
+- Do not modify, replace, or implicitly optimize
+  `aworld-skills/app_evaluator/SKILL.md`; that existing skill remains a
+  separate app-evaluation capability.
 - Do not require a specific optimizer such as DSPy/GEPA for the framework
   contract.
 - Do not include framework, CLI core, runtime, shared infrastructure, package
@@ -82,8 +85,9 @@ The repository already has an `evolve` concept:
 - `train.evolve.EvolutionConfig` configures a training-oriented pipeline.
 - `EvolutionPipelineAgent` plans tool synthesis, data synthesis, training, and
   evaluation.
-- `AgentConfig.meta_learning_config` and `ModelConfig.optimization_config`
-  already describe adjacent learning/optimization surfaces.
+- `AgentConfig.meta_learning_config` and
+  `ContextRuleConfig.optimization_config` already describe adjacent
+  learning/optimization surfaces.
 
 This change MUST NOT overload those assets. The boundary is:
 
@@ -106,6 +110,32 @@ capability has different safety, storage, and apply semantics from
 `AgentConfig.optimize` flag; `SelfEvolveConfig.mode="off"` is the disabled
 state and any other mode is the explicit opt-in.
 
+### Decision: app_evaluator remains independent
+
+The existing `aworld-skills/app_evaluator/SKILL.md` capability MUST remain
+independent from this change. Self-evolve should build a complete new subsystem
+under `aworld.self_evolve` instead of evolving the app-evaluator skill into the
+new framework feature.
+
+Rules:
+
+- `aworld-skills/app_evaluator/SKILL.md` is a protected path for phase 1.
+- It MUST NOT be selected as a default self-evolve target.
+- It MUST NOT be modified by generated candidates, proposal application, or
+  framework wiring.
+- It MAY be used only as an optional read-only scorer or fixture in UI/app
+  evaluation scenarios, and only when explicitly configured.
+- Self-evolve evaluation MUST remain based on framework contracts such as
+  `EvaluationBackend`, `Scorer`, trajectory scorers, deterministic verification,
+  and held-out gates, not on app_evaluator-specific behavior.
+
+Why:
+
+- `app_evaluator` is an existing skill-level capability with its own behavior
+  and users.
+- Self-evolve should be a reusable framework subsystem, not a hidden extension
+  of one evaluator skill.
+
 ### Decision: Framework owns the self-evolve core
 
 The new capability should live under a framework package such as:
@@ -118,10 +148,13 @@ Recommended submodules:
 - `targets.py`: optimization target interfaces and built-in target types
 - `datasets.py`: dataset builders from jsonl, batch config, session logs, and
   trajectory artifacts
+- `trace_pack.py`: trajectory normalization, compression, and evidence packing
 - `credit_assignment.py`: trajectory analysis and target selection
 - `optimizers/`: pluggable candidate generators
 - `evaluation.py`: baseline/candidate evaluation orchestration
 - `gates.py`: constraints and benchmark gates
+- `provenance.py`: target/source provenance, protected target registry, and
+  trust metadata
 - `scheduler.py`: best-effort asynchronous post-run enqueue and worker control
 - `store.py`: self-evolve run artifact persistence
 - `runner.py`: `SelfEvolveRunner`
@@ -132,6 +165,47 @@ Why:
   or future services.
 - CLI-specific UX should not leak into framework contracts.
 
+### Decision: Absorb Hermes self-evolution ideas as framework contracts, not as a dependency
+
+The Hermes Agent self-evolution plan and local Hermes implementation contain
+useful patterns, but AWorld should absorb them into a native framework
+subsystem instead of depending on Hermes code or copying its repository shape.
+
+Patterns to adopt:
+
+- **External-supervisor discipline:** the optimizer must operate on explicit
+  targets and run artifacts instead of modifying the live agent path.
+- **Tiered target maturity:** start with text harness artifacts, then tool
+  descriptions and prompt sections, and keep code evolution behind stronger
+  isolated evaluation.
+- **Trace-reflective optimization:** traces are not just logs; they are
+  evidence for failure diagnosis and candidate mutation.
+- **Organism/evaluator/mutator model:** a target baseline plus candidate
+  variants form the organism, evaluation backends are the evaluator, and
+  optimizers are mutators.
+- **Held-out discipline:** trainable failure cases may be shown to the mutator,
+  while held-out cases remain hidden for final gates.
+- **Lineage artifacts:** optimization should persist candidate ancestry,
+  failure cases, metrics, and reports so humans can audit how a candidate was
+  produced.
+- **Provenance and trust gates:** generated or externally sourced artifacts need
+  explicit provenance, protected target lists, and security/content scans before
+  they can be trusted even as proposals.
+
+Patterns not to adopt in phase 1:
+
+- automatic PR creation or branch application
+- live mutation of active runtime harnesses
+- importing AGPL code evolution libraries into AWorld core
+- using a single evaluator skill as the framework's correctness mechanism
+
+Why:
+
+- The useful part is the loop architecture and safety discipline, not the exact
+  implementation packaging.
+- AWorld already has `EvaluateRunner`, trajectory capture, scorers, Ralph, and
+  CLI hooks; the design should compose those native assets.
+
 ### Decision: Agent opt-in is explicit and disabled by default
 
 `AgentConfig` should gain one disabled-by-default self-evolve surface.
@@ -140,6 +214,11 @@ Why:
 Recommended shape:
 
 ```python
+class SelfEvolveJudgeConfig(BaseConfig):
+    kind: Literal["default_trajectory", "agent_md", "custom_agent", "none"] = "default_trajectory"
+    agent_path: Optional[str] = None
+    agent_name: Optional[str] = None
+
 class SelfEvolveConfig(BaseConfig):
     mode: Literal["off", "offline", "shadow", "online"] = "off"
     apply_policy: Literal["proposal"] = "proposal"
@@ -151,6 +230,9 @@ class SelfEvolveConfig(BaseConfig):
         "workspace_artifacts",
     ]
     eval_sources: list[SelfEvolveEvalSourceConfig] = []
+    judge: SelfEvolveJudgeConfig = SelfEvolveJudgeConfig()
+    require_deterministic_signal_for_verified: bool = True
+    regression_benchmarks: list[str] = []
     max_iterations: int = 3
     min_improvement: float = 0.03
     min_eval_cases: int = 30
@@ -175,12 +257,17 @@ Semantics:
   self-evolve work that generates reviewable proposals and diffs. Phase 1 does
   not apply candidates automatically and must not affect the already-completed
   task.
+- In phase 1, `online` is intentionally equivalent to `shadow` for persistent
+  application. It is reserved for the later controlled apply loop; both modes
+  still produce proposal-only artifacts.
 
 Why:
 
 - Self-evolve changes harness artifacts and must be opt-in.
 - A separate `optimize` or `enabled` flag would duplicate `mode="off"` and
   create contradictory states such as `optimize=False` with `mode="shadow"`.
+- Keeping `online` proposal-only in phase 1 avoids a misleading partial closed
+  loop while preserving the future config shape.
 
 ### Decision: Post-run self-evolve is asynchronous and best-effort
 
@@ -253,6 +340,34 @@ External files such as `~/Documents/logs/trajectory.log` MAY be used as local
 tests or explicit `--from-trajectory` input, but MUST NOT be required by the
 self-evolve feature.
 
+### Decision: Trajectory evidence is normalized before credit assignment
+
+Self-evolve should not feed raw, oversized, provider-specific trajectory blobs
+directly into credit assignment or optimizers. A `TracePack` stage should
+normalize and compress trajectory evidence while preserving optimization signal.
+
+Trace packs MUST preserve:
+
+- task input, final answer, status, and error summary
+- first turns that define the task, system context, and initial tool inventory
+- final turns that show failure, completion, or verification state
+- tool calls, tool results, exit codes, and failed tool arguments
+- LLM call summaries, usage/cost metadata, and reasoning/tool-selection evidence
+- generated artifact references and workspace paths
+- scorer findings and deterministic verification outputs
+
+Trace packs MAY summarize middle turns when needed for budget, but summaries
+must include evidence references so target selection reports can cite specific
+steps.
+
+Why:
+
+- Hermes' trajectory compression pattern preserves first and final turns while
+  summarizing middle context; that is a good fit for AWorld's run budget and
+  evidence-citation needs.
+- GEPA-style reflective optimization depends on traces being compact enough for
+  an LLM while still carrying failure signal.
+
 ### Decision: Phase 1 includes trajectory credit assignment
 
 The phase-1 loop is not complete unless a trajectory can drive target
@@ -297,6 +412,39 @@ analysis:
 Explicit CLI/API targets bypass target inference, but the runner should still
 record trajectory evidence when a trajectory source is available.
 
+### Decision: Targets use provenance and trust metadata
+
+Every optimization target should carry provenance metadata in addition to its
+identity and fingerprint.
+
+Recommended fields:
+
+- source kind: bundled framework, CLI product, user workspace, generated
+  artifact, external registry, or test fixture
+- write origin: foreground user request, agent-produced artifact, background
+  self-evolve job, or imported fixture
+- trust level: framework-owned, user-owned, generated, external trusted,
+  external community
+- protected status and reason
+
+Phase-1 behavior:
+
+- framework, CLI product, runtime, secrets/config, package metadata, and
+  `aworld-skills/app_evaluator/SKILL.md` are protected
+- externally sourced skill or prompt artifacts require static security/content
+  scan before becoming candidates
+- generated workspace artifacts are eligible only when trajectory evidence shows
+  the agent produced them during the task
+- user-authored foreground artifacts must not be silently treated as
+  self-evolve-managed artifacts
+
+Why:
+
+- Hermes separates usage/provenance sidecars from `SKILL.md`; AWorld should use
+  the same idea for self-evolve metadata instead of polluting target files.
+- Provenance makes it possible to build automatic curation later without
+  confusing user-authored content with background-generated content.
+
 ### Decision: Evaluation is a contract, not a single evaluator agent
 
 Self-evolve MUST depend on a pluggable evaluation contract.
@@ -321,11 +469,32 @@ Default backends may use:
 - `Scorer`
 - trajectory validators
 - LLM-as-judge scorers
+- a self-evolve-owned trajectory judge
+- user-specified judge agents loaded from `agent.md` or custom agent
+  definitions
 - Ralph verification commands
 - external benchmark commands
 
-The built-in evaluator agent and `app_evaluator` skill can be optional scorers
-for UI/app use cases, but MUST NOT be the only correctness signal.
+The built-in evaluator agent and `app_evaluator` skill can be optional read-only
+scorers for UI/app use cases, but MUST NOT be the only correctness signal and
+MUST NOT be mutated by self-evolve.
+
+Judge configuration:
+
+- default: `default_trajectory`, a self-evolve-owned judge that reads trace
+  packs, target-selection reports, baseline/candidate outputs, and scorer
+  diagnostics
+- `agent_md`: load a user-specified judge from an explicit `agent.md` path
+- `custom_agent`: use a caller-specified agent definition or registered agent
+  name
+- `none`: disable LLM judge signals for runs that rely only on deterministic
+  evaluation
+
+User-supplied judges are evaluation signals, not optimization owners. They MUST
+receive compact trace packs and candidate outputs through the evaluation
+contract, and their findings MUST be persisted as judge artifacts. They MUST NOT
+receive held-out judge outputs from earlier candidates and MUST NOT be the only
+gate for a verified improvement.
 
 Evaluation discipline:
 
@@ -333,12 +502,30 @@ Evaluation discipline:
 - candidate ranking uses validation metrics
 - pass/fail gates use optimizer-held-out test metrics when at least
   `min_eval_cases` are available
+- single-trajectory post-run jobs usually have too few cases for held-out
+  verification; they may produce proposals and target-selection diagnostics,
+  but they should be marked limited-confidence unless additional dataset,
+  session, batch, or benchmark sources are attached
 - if there are too few cases for a meaningful held-out gate, the run may still
   produce diagnostics and proposal diffs, but MUST mark the candidate confidence
   as limited and MUST NOT label the candidate as verified
 - LLM-as-judge metrics SHOULD use fixed prompts, fixed seeds when supported,
   and repeated judgments (`judge_repetitions`) when used as a gate signal
+- LLM-judge-only improvements MUST remain limited-confidence even when repeated
+  judgments agree. A verified improvement MUST include at least one
+  deterministic signal, such as command verification, exact/objective scoring,
+  or an approved regression benchmark.
 - `min_improvement` applies to the held-out gate, not to training/source cases
+
+Global harness-text target discipline:
+
+- `SkillTextTarget`, `PromptSectionTarget`, and `ToolDescriptionTarget` are
+  shared across tasks, so a single trajectory is not sufficient to prove a
+  global behavior improvement.
+- Verified candidates for global targets MUST pass configured regression
+  benchmarks that are independent from the source trajectory or source task.
+- If no regression benchmark is configured for a global target, candidates may
+  still be persisted as proposals, but MUST remain limited-confidence.
 
 Why:
 
@@ -365,20 +552,49 @@ class CandidateOptimizer(Protocol):
 
 Phase-1 optimizer backends:
 
-- `LLMMutatorOptimizer`: low-dependency fallback, uses an LLM to propose
+- `TraceReflectiveMutator`: low-dependency fallback, uses an LLM to propose
   candidate text changes from traces and scorer feedback.
-- `DSPyOptimizer`: optional integration for GEPA/MIPROv2 when dependencies are
-  installed.
+- `DSPyGEPAOptimizer`: optional primary adapter for trace-reflective prompt,
+  skill, and tool-description optimization when dependencies are installed.
+- `DSPyMIPROOptimizer`: optional fallback for instruction text and few-shot
+  examples when enough examples exist.
+- `DarwinianExternalOptimizer`: future external CLI/subprocess adapter for
+  workspace-local code artifacts only; never import AGPL code into AWorld core.
 
 Why:
 
 - AWorld can ship the abstraction without forcing DSPy as a hard dependency.
 - GEPA-style reflective trace optimization remains possible as an optional
   engine.
+- Different target types need different search strategies, but they should all
+  plug into the same candidate/evaluation/gate contracts.
 
 The optimizer MUST NOT inspect held-out test cases or held-out judge outputs
 while proposing candidates. This prevents the LLM mutator from optimizing
 directly against the final gate.
+
+### Decision: Dataset recipes are first-class artifacts
+
+Self-evolve should persist how an evaluation dataset was built, not only the
+resulting cases. A `DatasetRecipe` should describe source selection, filters,
+splits, synthetic generation policy, and holdout policy.
+
+Recipe sources may include:
+
+- current trajectory
+- session/task history
+- explicit jsonl golden cases
+- batch configs
+- synthetic cases derived from observed failure categories
+
+Artifacts should include trainable failure cases and held-out failure cases
+separately. Mutators may see trainable failure cases; gates use held-out cases.
+
+Why:
+
+- Hermes' plan treats session mining, synthetic/golden sources, and train/val/
+  test split as core infrastructure. AWorld needs the same reproducibility for
+  auditable self-evolve runs.
 
 ### Decision: Phase 1 optimizes harness text plus isolated agent-produced workspace artifacts
 
@@ -431,9 +647,12 @@ example:
 Artifacts MUST include:
 
 - target identity and version fingerprint
+- target provenance and trust metadata
 - target selection report and trajectory evidence, for inferred targets
 - dataset identity and split information
+- dataset recipe and source filters
 - optimizer backend and policy
+- optimizer lineage, parent candidate ids, and mutation rationale
 - baseline metrics
 - candidate metrics
 - constraint/gate results
@@ -460,6 +679,25 @@ Why:
 
 - Candidate generation is useful even before automatic application is trusted.
 - Human review should happen before any persistent target mutation.
+
+### Decision: Closed-loop self-evolution is a later apply phase
+
+Phase 1 should not be described as persistent autonomous self-evolution. It
+delivers the reviewable proposal side of the loop. A later change should define
+the controlled application loop:
+
+1. apply an approved candidate in an isolated branch or managed workspace
+2. re-run held-out evaluation and global regression benchmarks after apply
+3. accept the change only if post-apply metrics still pass gates
+4. record lineage from proposal to applied version
+5. roll back automatically or mark the candidate rejected when post-apply
+   metrics regress
+
+Why:
+
+- The user's intended value is `propose -> apply -> measure -> accept/rollback`.
+- Phase 1 intentionally avoids persistent mutation; documenting the later loop
+  keeps the safety tradeoff explicit.
 
 ### Decision: Self-evolve has bounded stopping conditions
 
@@ -503,7 +741,7 @@ APIs:
 aworld-cli optimize \
   --agent Aworld \
   --task "..." \
-  --target skill:app_evaluator \
+  --target skill:demo \
   --dataset evals/ui_apps.jsonl \
   --iterations 5 \
   --apply proposal
@@ -511,13 +749,16 @@ aworld-cli optimize \
 
 The command should remain generic. Different optimization surfaces are selected
 through an extensible `--target <type>:<id>` scheme rather than separate CLI
-commands. Supported target forms should include:
+commands. The first stable explicit target forms should include:
 
 - `skill:<name>`
 - `prompt:<section>`
 - `tool:<tool-name>`
-- `agent-config:<field>`
-- `task` for a task-driven target inference flow
+
+The framework target model may also support agent-config and task-driven
+inference surfaces, but the first CLI version should avoid separate
+target-specific commands and should not require additional explicit target
+forms beyond `skill`, `prompt`, and `tool`.
 
 Optional source forms:
 
@@ -531,6 +772,15 @@ Why:
 - CLI users need a direct way to optimize a specified task or target and to
   debug the same framework path used by asynchronous post-run jobs.
 - The command should not own the optimizer logic.
+
+Registration:
+
+- The command should follow the existing built-in plugin pattern under
+  `aworld-cli/src/aworld_cli/builtin_plugins/*_cli/`, with a plugin manifest
+  exposing a `cli_commands` entrypoint.
+- A command class may live under `aworld_cli.top_level_commands` for reuse, but
+  `register_builtin_top_level_commands` is currently a no-op stub and should
+  not be treated as the registration mechanism.
 
 ### Decision: Built-in AWorld main agent can opt in through config
 
@@ -557,6 +807,8 @@ Why:
 - Workspace-local code/file targets are limited to artifacts produced by the
   agent during task execution. Self-evolve candidates MUST NOT change AWorld
   framework or `aworld-cli` product logic.
+- `aworld-skills/app_evaluator/SKILL.md` remains protected and independent; it
+  is not a default target and is not modified by this change.
 - Trajectory-driven credit assignment is in phase 1: task-driven or post-run
   optimize must identify a target from trajectory evidence or record `no_target`
   before candidate generation.

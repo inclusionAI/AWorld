@@ -30,6 +30,12 @@ failure or inefficiency, propose safe harness improvements, evaluate candidates,
 and persist reviewable proposal/diff artifacts without blocking or changing the
 original task result.
 
+Phase 1 is deliberately a proposal generator, not a fully closed self-modifying
+loop. It closes the `trajectory -> target -> proposal/diff` part of the loop
+and leaves persistent application to human review. A later phase must add the
+controlled `apply -> re-evaluate -> accept/rollback` loop before AWorld can
+claim persistent autonomous self-evolution.
+
 This proposal is intentionally separate from existing `train.evolve` assets.
 Existing evolve code owns model/data/tool-synthesis training and may continue to
 use names such as `EvolutionRunner` and `EvolutionConfig`. This change owns
@@ -41,14 +47,22 @@ stored separately under `.aworld/self_evolve/`.
 - Add a framework-owned self-evolve module that manages optimization targets,
   trajectory credit assignment, datasets, candidate generation, evaluation,
   gates, and run artifacts.
+- Add trace packaging, target provenance, dataset recipes, and optimizer
+  lineage as first-class framework concepts.
 - Add an explicit agent-level opt-in surface, `AgentConfig.self_evolve_config`
   with `SelfEvolveConfig.mode`, with self-evolve disabled by default.
 - Add an asynchronous post-run trigger path that can enqueue trajectory-driven
   self-evolve work after agent execution, without blocking the main task flow.
 - Define a stable evaluation contract for self-evolve so the capability depends
   on an evaluation interface rather than one specific evaluator agent.
+- Allow LLM-judge behavior to be configured. The default judge should be a
+  self-evolve-owned trajectory judge, while users may supply an `agent.md` or a
+  custom agent as an additional judge signal.
 - Reuse existing `aworld.evaluations`, trajectory, `llm_calls`, and Ralph
   verification capabilities as default evaluation and repair backends.
+- Absorb the useful architecture from Hermes self-evolution work: trace-
+  reflective optimization, organism/evaluator/mutator separation, trainable vs
+  held-out failure cases, lineage artifacts, and trust/provenance guardrails.
 - Add framework target types for phase 1:
   - skill text / `SKILL.md`
   - prompt sections
@@ -56,6 +70,9 @@ stored separately under `.aworld/self_evolve/`.
   - agent config / harness knobs
   - workspace-local code or files, only when they are produced by agent task
     execution and validated in an isolated candidate workspace
+- Keep `aworld-skills/app_evaluator/SKILL.md` and the existing app-evaluator
+  workflow out of scope for candidate mutation. Self-evolve must be a new
+  complete framework subsystem, not an upgrade or rewrite of that skill.
 - Defer framework, `aworld-cli`, and runtime source-code evolution to a later
   phase.
 - Add CLI product surfaces to invoke the framework capability:
@@ -80,8 +97,12 @@ stored separately under `.aworld/self_evolve/`.
   artifacts as explicit optimization targets.
 - `self-evolve-evaluation-contract`: AWorld can evaluate baseline and candidate
   variants through a pluggable evaluation interface.
+- `self-evolve-judge-contract`: AWorld can run a default trajectory-aware judge
+  or a user-specified `agent.md`/custom judge agent as an evaluation signal.
 - `self-evolve-run-artifacts`: AWorld can persist lineage, metrics, diffs,
   diagnostics, and candidate approval state for each self-evolve run.
+- `self-evolve-provenance`: AWorld can track target source, trust, and protected
+  status separately from target content.
 
 ### Modified Capabilities
 
@@ -116,11 +137,23 @@ stored separately under `.aworld/self_evolve/`.
   - phase-1 runs MUST stop at proposal and diff artifacts
   - framework, `aworld-cli`, and runtime source-code evolution MUST NOT be part
     of phase 1
+  - `aworld-skills/app_evaluator/SKILL.md` MUST NOT be modified by this change
+    or selected as a default self-evolve target
   - workspace-local task artifact optimization MUST run in isolation and MUST
     produce proposal and diff artifacts only in phase 1
   - self-evolve candidates MUST NOT modify AWorld framework or `aworld-cli`
     product logic
   - candidate selection MUST use validation data, while pass/fail gates MUST use
     optimizer-held-out evaluation data when enough cases are available
+  - single-trajectory post-run jobs usually lack enough held-out cases and MUST
+    produce limited-confidence proposals unless additional eval sources are
+    supplied
+  - global harness-text targets MUST pass configured regression benchmarks
+    before a candidate can be considered verified
+  - judge-only improvements MUST remain limited-confidence; verified
+    improvements MUST include at least one deterministic signal such as command
+    verification or an approved objective scorer
   - every run MUST enforce a token/cost budget ceiling
+  - optimizers MUST receive compact trace packs and trainable failure cases,
+    not raw unbounded trajectories or held-out gate data
   - evaluator-agent-only loops MUST NOT be the only correctness signal

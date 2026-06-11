@@ -27,6 +27,13 @@
   not a placeholder.
 - [x] 1.13 Confirm opt-in uses `SelfEvolveConfig.mode`; no separate
   `AgentConfig.optimize` flag is added.
+- [x] 1.14 Confirm `aworld-skills/app_evaluator/SKILL.md` remains independent
+  and protected; self-evolve is a new complete framework subsystem, not an
+  app_evaluator upgrade.
+- [x] 1.15 Confirm phase 1 is proposal-only and does not claim the persistent
+  `apply -> re-evaluate -> accept/rollback` self-evolution loop.
+- [x] 1.16 Confirm LLM judge behavior is configurable: default self-evolve
+  trajectory judge, explicit `agent.md` judge, or custom judge agent.
 
 ## 2. Framework Configuration
 
@@ -41,6 +48,10 @@
   existing `llm_config.ext_config` behavior.
 - [ ] 2.6 Add tests for mode semantics: `off`, `offline`, `shadow`, and
   `online`.
+- [ ] 2.7 Add tests proving phase-1 `online` remains proposal-only and does not
+  imply automatic apply.
+- [ ] 2.8 Add judge config tests for default trajectory judge, `agent.md`,
+  custom agent, and disabled judge modes.
 
 ## 3. Self-Evolve Core Package
 
@@ -53,6 +64,8 @@
 - [ ] 3.6 Define async trigger/run-context models for post-run enqueue.
 - [ ] 3.7 Define `SelfEvolveRun` naming that does not conflict with existing
   `train.evolve.EvolutionRunner` / `EvolutionConfig`.
+- [ ] 3.8 Define trace pack, dataset recipe, target provenance, and optimizer
+  lineage models.
 
 ## 4. Evaluation Integration
 
@@ -61,15 +74,19 @@
 - [ ] 4.2 Add support for objective command verification as an evaluation signal.
 - [ ] 4.3 Add support for trajectory quality scoring as an evaluation signal.
 - [ ] 4.4 Add support for cost and latency metrics.
-- [ ] 4.5 Add regression tests proving baseline and candidate variants are
+- [ ] 4.5 Add configurable judge support for the default self-evolve trajectory
+  judge, explicit `agent.md` judges, and custom judge agents.
+- [ ] 4.6 Add regression tests proving baseline and candidate variants are
   evaluated through the same dataset and scorer policy.
-- [ ] 4.6 Add tests proving optional trajectory-log sources are accepted when
+- [ ] 4.7 Add tests proving optional trajectory-log sources are accepted when
   configured but not required by default.
-- [ ] 4.7 Add held-out evaluation discipline: select candidates on validation
+- [ ] 4.8 Add held-out evaluation discipline: select candidates on validation
   metrics and gate verification on optimizer-held-out test metrics when enough
   cases are available.
-- [ ] 4.8 Add tests for insufficient eval cases producing limited-confidence
+- [ ] 4.9 Add tests for insufficient eval cases producing limited-confidence
   proposals rather than verified candidates.
+- [ ] 4.10 Add tests proving judge-only improvements remain limited-confidence
+  and verified candidates require a deterministic/objective signal.
 
 ## 5. Dataset Builders
 
@@ -81,25 +98,35 @@
 - [ ] 5.5 Add tests for dataset identity and split reproducibility.
 - [ ] 5.6 Add a fixture-backed test that can use a trajectory log sample, without
   hard-coding `~/Documents/logs/trajectory.log` into product behavior.
+- [ ] 5.7 Add dataset recipe persistence with source filters, synthetic
+  generation policy, and trainable vs held-out failure-case separation.
+- [ ] 5.8 Add tests proving single-trajectory post-run sources cannot produce a
+  verified candidate unless additional eval sources satisfy held-out gates.
 
 ## 6. Trajectory Credit Assignment
 
+- [ ] 6.0 Run a credit-assignment spike on real trajectory fixtures with manual
+  target labels before expanding the full optimizer pipeline.
 - [ ] 6.1 Add `TrajectoryCreditAssigner` and `TargetSelectionReport` models.
-- [ ] 6.2 Build target inventory for skill, prompt-section, tool-description,
+- [ ] 6.2 Add `TracePack` normalization/compression before credit assignment.
+- [ ] 6.3 Build target inventory for skill, prompt-section, tool-description,
   whitelisted config, and agent-produced workspace artifact targets.
-- [ ] 6.3 Implement deterministic trajectory signal extraction using
+- [ ] 6.4 Implement deterministic trajectory signal extraction using
   trajectory scorers, tool call failures, repeated actions, LLM calls, and
   generated artifact references.
-- [ ] 6.4 Add optional LLM-assisted diagnosis that cites trajectory evidence and
+- [ ] 6.5 Add optional LLM-assisted diagnosis that cites trajectory evidence and
   can return `no_target` on low confidence.
-- [ ] 6.5 Add tests proving `--task` / current trajectory can infer skill,
+- [ ] 6.6 Add tests proving `--task` / current trajectory can infer skill,
   prompt, or tool-description targets, and can decline when evidence is
   insufficient.
+- [ ] 6.7 Add target provenance and trust metadata to target inventory.
 
 ## 7. Candidate Generation
 
-- [ ] 7.1 Add a low-dependency LLM mutator optimizer for text targets.
-- [ ] 7.2 Add an optional DSPy/GEPA optimizer adapter behind dependency checks.
+- [ ] 7.1 Add a low-dependency trace-reflective LLM mutator optimizer for text
+  targets.
+- [ ] 7.2 Add optional DSPy GEPA and MIPRO optimizer adapters behind dependency
+  checks.
 - [ ] 7.3 Add candidate fingerprinting and target version fingerprinting.
 - [ ] 7.4 Add constraints for skill markdown/frontmatter, prompt section format,
   tool schema description, token limits, and no-op candidate filtering.
@@ -110,6 +137,10 @@
   evaluation.
 - [ ] 7.7 Ensure optimizers cannot inspect held-out test cases or held-out judge
   outputs.
+- [ ] 7.8 Add optimizer lineage tracking with parent candidate ids, mutation
+  rationale, and trainable failure cases used.
+- [ ] 7.9 Keep Darwinian/code evolution as a future external CLI adapter only;
+  do not import AGPL code into AWorld core.
 
 ## 8. Gates And Apply Policy
 
@@ -123,11 +154,18 @@
 - [ ] 8.7 Add protected-path gates for framework, `aworld-cli`, runtime, shared
   infrastructure, package metadata, secret/config paths, and AWorld product
   logic.
+- [ ] 8.7A Add protected-path gates for `aworld-skills/app_evaluator/SKILL.md`
+  so it cannot be selected as a default target or mutated by candidates.
 - [ ] 8.8 Add stopping conditions for max iterations, stalled improvement,
   pending proposal duplicate suppression, and cooldown.
 - [ ] 8.9 Add whole-run token and cost budget gates.
 - [ ] 8.10 Add held-out verification gates for candidates that claim verified
   improvement.
+- [ ] 8.11 Add trust/provenance gates for generated, external, and protected
+  targets.
+- [ ] 8.12 Add global regression benchmark gates for skill, prompt-section, and
+  tool-description targets.
+- [ ] 8.13 Add judge-only limited-confidence gates.
 
 ## 9. Framework Runner
 
@@ -169,12 +207,14 @@
   through as an explicit eval source.
 - [ ] 10.7 Add CLI tests proving `--task` can invoke framework target inference
   through the same command path.
+- [ ] 10.8 Add CLI tests proving command discovery uses the built-in plugin
+  manifest/`cli_commands` path.
 
 ## 11. Documentation And Examples
 
 - [ ] 11.1 Document framework self-evolve concepts and safety model.
 - [ ] 11.2 Document `SelfEvolveConfig.mode` opt-in and its distinction from
-  `meta_learning_config`, `ModelConfig.optimization_config`, and
+  `meta_learning_config`, `ContextRuleConfig.optimization_config`, and
   `train.evolve`.
 - [ ] 11.3 Document CLI `optimize` usage.
 - [ ] 11.4 Add a minimal example that uses a toy trajectory to infer and
@@ -183,3 +223,12 @@
   deferred while agent-produced workspace artifacts remain isolated and gated.
 - [ ] 11.6 Document that phase 1 produces self-evolve proposals; the persistent
   self-modifying loop remains a future apply phase.
+- [ ] 11.7 Document that `aworld-skills/app_evaluator/SKILL.md` is not part of
+  the new self-evolve subsystem and may only be used as an explicitly
+  configured read-only scorer/fixture.
+- [ ] 11.8 Document which Hermes/GEPA/Darwinian patterns were adopted as
+  framework contracts and which remain future adapters.
+- [ ] 11.9 Document configurable LLM judge behavior and examples for default
+  trajectory judge, `agent.md`, and custom judge agents.
+- [ ] 11.10 Document phase-2 closed-loop roadmap:
+  `apply -> re-evaluate -> accept/rollback`.
