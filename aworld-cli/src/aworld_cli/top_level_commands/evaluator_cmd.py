@@ -45,6 +45,8 @@ class EvaluatorTopLevelCommand:
         parser.add_argument("--input", type=str)
         parser.add_argument("--kind", type=str)
         parser.add_argument("--judge-agent", type=str)
+        parser.add_argument("--judge-agent-name", type=str)
+        parser.add_argument("--judge-backend-ref", type=str)
         parser.add_argument("--out-dir", type=str)
         parser.add_argument("--task-id", type=str)
         parser.add_argument("--agent", type=str)
@@ -68,14 +70,21 @@ class EvaluatorTopLevelCommand:
             if not getattr(args, "kind", None):
                 print("Evaluator error: --kind is required with --input")
                 return 1
-            if not getattr(args, "judge_agent", None):
-                print("Evaluator error: --judge-agent is required with --input")
+            judge_selectors = [
+                getattr(args, "judge_agent", None),
+                getattr(args, "judge_agent_name", None),
+                getattr(args, "judge_backend_ref", None),
+            ]
+            if sum(1 for value in judge_selectors if value) != 1:
+                print("Evaluator error: exactly one of --judge-agent, --judge-agent-name, or --judge-backend-ref is required with --input")
                 return 1
             try:
                 report = run_evaluator_source_cli(
                     input=args.input,
                     kind=args.kind,
                     judge_agent=args.judge_agent,
+                    judge_agent_name=args.judge_agent_name,
+                    judge_backend_ref=args.judge_backend_ref,
                     out_dir=args.out_dir,
                     output=args.output,
                     task_id=args.task_id,
@@ -94,6 +103,8 @@ class EvaluatorTopLevelCommand:
         source_only_args = (
             ("kind", "--kind"),
             ("judge_agent", "--judge-agent"),
+            ("judge_agent_name", "--judge-agent-name"),
+            ("judge_backend_ref", "--judge-backend-ref"),
             ("out_dir", "--out-dir"),
             ("task_id", "--task-id"),
             ("agent", "--agent"),

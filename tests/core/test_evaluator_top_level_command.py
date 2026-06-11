@@ -122,6 +122,96 @@ def test_maybe_dispatch_top_level_command_runs_source_evaluator_command(
     assert "pass" in output
 
 
+def test_maybe_dispatch_top_level_command_accepts_judge_agent_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question","answer":"answer"}\n', encoding="utf-8")
+    calls = {}
+
+    def fake_run_evaluator_source_cli(**kwargs):
+        calls.update(kwargs)
+        return {
+            "suite_id": "answer-source-evaluator",
+            "gate": {"status": "pass"},
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_source_cli",
+        fake_run_evaluator_source_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "evaluator",
+            "--input",
+            str(input_path),
+            "--kind",
+            "answer",
+            "--judge-agent-name",
+            "JudgeTeam",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert handled is True
+    assert calls["judge_agent"] is None
+    assert calls["judge_agent_name"] == "JudgeTeam"
+    assert calls["judge_backend_ref"] is None
+    assert "answer-source-evaluator" in output
+
+
+def test_maybe_dispatch_top_level_command_accepts_judge_backend_ref(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    input_path.write_text('{"id":"case-1","input":"question","answer":"answer"}\n', encoding="utf-8")
+    calls = {}
+
+    def fake_run_evaluator_source_cli(**kwargs):
+        calls.update(kwargs)
+        return {
+            "suite_id": "answer-source-evaluator",
+            "gate": {"status": "pass"},
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_source_cli",
+        fake_run_evaluator_source_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "evaluator",
+            "--input",
+            str(input_path),
+            "--kind",
+            "answer",
+            "--judge-backend-ref",
+            "custom_judge:build_backend",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert handled is True
+    assert calls["judge_agent"] is None
+    assert calls["judge_agent_name"] is None
+    assert calls["judge_backend_ref"] == "custom_judge:build_backend"
+    assert "answer-source-evaluator" in output
+
+
 def test_maybe_dispatch_top_level_command_runs_task_source_with_default_agent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -277,7 +367,7 @@ def test_evaluator_source_run_rejects_other_target_mode_arguments(
     assert expected in output
 
 
-def test_evaluator_source_mode_requires_kind_and_judge_agent(
+def test_evaluator_source_mode_requires_kind_and_judge_selector(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -293,6 +383,8 @@ def test_evaluator_source_mode_requires_kind_and_judge_agent(
             input="answers.jsonl",
             kind=None,
             judge_agent=None,
+            judge_agent_name=None,
+            judge_backend_ref=None,
             out_dir=None,
             output=None,
             task_id=None,
@@ -311,6 +403,44 @@ def test_evaluator_source_mode_requires_kind_and_judge_agent(
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "--kind is required with --input" in output
+
+
+def test_evaluator_source_mode_requires_one_judge_selector(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.evaluator_cmd.run_evaluator_source_cli",
+        lambda **kwargs: pytest.fail("source runtime should not be called"),
+    )
+
+    exit_code = EvaluatorTopLevelCommand().run(
+        SimpleNamespace(
+            target=None,
+            suite=None,
+            input="answers.jsonl",
+            kind="answer",
+            judge_agent=None,
+            judge_agent_name=None,
+            judge_backend_ref=None,
+            out_dir=None,
+            output=None,
+            task_id=None,
+            agent=None,
+            id_field="id",
+            task_field="input",
+            answer_field="answer",
+            interactive_approval=False,
+            list_suites=False,
+            print_report_schema=False,
+            validate_report=None,
+        ),
+        TopLevelCommandContext(cwd="/tmp"),
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "exactly one of --judge-agent, --judge-agent-name, or --judge-backend-ref is required" in output
 
 
 def test_evaluator_command_returns_nonzero_for_unresolved_approval(
