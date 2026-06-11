@@ -1,23 +1,33 @@
 ## 0. Credit-Assignment Spike Gate
 
-- [ ] 0.1 Collect real trajectory fixtures covering skill, prompt-section,
+- [x] 0.1 Collect real trajectory fixtures covering skill, prompt-section,
   tool-description, config, workspace-artifact, success, and ambiguous
   `no_target` outcomes.
-- [ ] 0.1A Use `~/Documents/logs/trajectory.log` as the initial source for
+- [x] 0.1A Use `~/Documents/logs/trajectory.log` as the initial source for
   task records, then commit sanitized/generated fixture cases rather than making
   tests depend on the developer-local path.
-- [ ] 0.2 Add manual labels for expected target/no-target decisions, rationale,
+- [x] 0.2 Add manual labels for expected target/no-target decisions, rationale,
   and evidence step ids.
-- [ ] 0.3 Measure deterministic signals plus optional LLM-assisted diagnosis for
+- [x] 0.3 Measure deterministic signals plus optional LLM-assisted diagnosis for
   target-selection precision/recall and `no_target` rejection.
-- [ ] 0.3A Seed the first regression benchmark dataset from task records in
+- [x] 0.3A Seed the first regression benchmark dataset from task records in
   `~/Documents/logs/trajectory.log`, including source fingerprint, extraction
   filters, split seed, and train/validation/held-out case ids.
-- [ ] 0.4 Make the go/no-go decision explicit before building candidate
+- [x] 0.4 Make the go/no-go decision explicit before building candidate
   generation, async scheduling, broad provenance, non-skill targets, DSPy
   adapters, or online automatic apply.
-- [ ] 0.5 If the spike fails, limit phase 1 to diagnostics and explicit-target
+- [x] 0.5 If the spike fails, limit phase 1 to diagnostics and explicit-target
   proposal experiments until the credit-assignment approach is improved.
+
+  2026-06-11 update: the initial seed from `~/Documents/logs/trajectory.log`
+  was supplemented with minimized historical trajectory records to cover skill,
+  prompt-section, tool-description, config, workspace-artifact, success, and
+  ambiguous `no_target` cases. The spike report is
+  `tests/self_evolve/fixtures/credit_assignment_cases/spike_report.json` and
+  records a `go` decision for the minimized phase-0 benchmark. The next work may
+  start the phase-1a explicit-target proposal-only slice; async scheduling,
+  broad provenance expansion, DSPy adapters, non-skill target expansion, and
+  online automatic apply remain deferred until phase-1a proves useful.
 
 ## 1. Scope Freeze
 
