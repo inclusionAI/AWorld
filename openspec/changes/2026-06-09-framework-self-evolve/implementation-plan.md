@@ -175,7 +175,7 @@ remain deferred.
 - Modify: `aworld/config/conf.py`
 - Test: `tests/self_evolve/test_config.py`
 
-- [ ] **Step 1: Write config tests**
+- [x] **Step 1: Write config tests**
 
 Cover:
 
@@ -191,11 +191,11 @@ Cover:
 - old config fields still parse
 - unknown model kwargs still enter `llm_config.ext_config`
 
-- [ ] **Step 2: Add config models**
+- [x] **Step 2: Add config models**
 
 Add `SelfEvolveConfig` and fields on `AgentConfig`.
 
-- [ ] **Step 3: Run config tests**
+- [x] **Step 3: Run config tests**
 
 Run:
 
@@ -218,7 +218,7 @@ Expected: PASS
 - Test: `tests/self_evolve/test_store.py`
 - Test: `tests/self_evolve/test_provenance.py`
 
-- [ ] **Step 1: Define run record models**
+- [x] **Step 1: Define run record models**
 
 Define:
 
@@ -232,17 +232,17 @@ Define:
 - `OptimizerLineage`
 - `DatasetRecipe`
 
-- [ ] **Step 2: Implement provenance sidecar models**
+- [x] **Step 2: Implement provenance sidecar models**
 
 Track target source kind, write origin, trust level, protected status, and
 reason without writing those operational fields into target files such as
 `SKILL.md`.
 
-- [ ] **Step 3: Implement filesystem store**
+- [x] **Step 3: Implement filesystem store**
 
 Persist run artifacts under `.aworld/self_evolve/<run_id>/`.
 
-- [ ] **Step 4: Test artifact persistence**
+- [x] **Step 4: Test artifact persistence**
 
 Cover run creation, candidate file writing, report writing, stable paths,
 dataset recipe persistence, target provenance, and optimizer lineage.
@@ -256,7 +256,7 @@ dataset recipe persistence, target provenance, and optimizer lineage.
 - Create: `aworld/self_evolve/targets.py`
 - Test: `tests/self_evolve/test_targets.py`
 
-- [ ] **Step 1: Define `SelfEvolveTarget` protocol**
+- [x] **Step 1: Define `SelfEvolveTarget` protocol**
 
 Required operations:
 
@@ -268,7 +268,7 @@ Required operations:
 - expose target-specific apply/rollback hooks only when the target is
   allowlisted for `auto_verified`
 
-- [ ] **Step 2: Implement phase-1 targets**
+- [x] **Step 2: Implement phase-1 targets**
 
 Implement at least:
 
@@ -280,7 +280,7 @@ Implement at least:
 
 Only `SkillTextTarget` must be fully runnable in the first implementation slice.
 
-- [ ] **Step 3: Test skill target behavior**
+- [x] **Step 3: Test skill target behavior**
 
 Cover loading `SKILL.md`, fingerprinting, diff rendering, proposal-only
 non-mutation, and the allowlisted `auto_verified` apply/rollback path.
