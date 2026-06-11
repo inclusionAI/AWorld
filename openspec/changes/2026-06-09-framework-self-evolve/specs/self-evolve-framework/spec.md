@@ -11,7 +11,7 @@ agent-facing harness artifacts.
 - **THEN** AWorld MUST continue to treat that as the existing training-oriented
   evolution pipeline
 - **AND** framework self-evolve MUST use distinct `SelfEvolve*` names and
-  `.aworld/self_evolve/` artifacts for proposal-only harness optimization
+  `.aworld/self_evolve/` artifacts for controlled harness optimization
 
 #### Scenario: SDK caller invokes self-evolve without aworld-cli
 
@@ -44,8 +44,8 @@ Agents MUST NOT become self-evolving unless explicitly configured.
   `shadow`, or `online`
 - **THEN** the agent MAY be considered opted into the corresponding
   self-evolve workflow
-- **AND** phase-1 candidates MUST remain proposal-only unless a later change
-  introduces an explicit apply policy
+- **AND** automatic application MUST occur only when `online` mode and an
+  explicit verified apply policy are configured
 
 ### Requirement: Agent self-evolve configuration MUST use mode as the opt-in surface
 
@@ -80,11 +80,12 @@ phase 1.
 - **WHEN** self-evolve mode is `online`
 - **THEN** AWorld MAY asynchronously perform bounded optimization actions after
   an agent run produces a trajectory
-- **AND** phase-1 online mode MUST still emit proposal and diff artifacts only
+- **AND** online mode MUST support controlled automatic application for at least
+  one allowlisted target type when verified apply policy is enabled
 - **AND** online self-evolve MUST NOT change the result of the task that already
   completed
-- **AND** phase-1 online mode MUST be treated as proposal-only and equivalent to
-  shadow mode for persistent application
+- **AND** online apply MUST re-evaluate after application and roll back or mark
+  the candidate rejected when post-apply metrics regress
 
 ### Requirement: Post-run self-evolve MUST be asynchronous and best-effort
 
@@ -234,7 +235,7 @@ protected artifacts.
 - **THEN** AWorld MUST verify from trajectory/provenance evidence that the
   artifact was produced by the agent during task execution
 - **AND** it MUST reject user-authored foreground files unless the caller
-  explicitly targets them under an approved policy
+  explicitly targets them under a configured policy
 
 #### Scenario: Existing app evaluator skill is encountered
 
@@ -316,7 +317,7 @@ custom agent as an additional judge signal.
 #### Scenario: User supplies an agent.md judge
 
 - **WHEN** a caller configures a judge with an `agent.md` path
-- **THEN** AWorld MUST load that agent through the approved agent-loading path
+- **THEN** AWorld MUST load that agent through the configured agent-loading path
 - **AND** it MUST run the judge as an evaluation signal
 - **AND** the judge output MUST be persisted in run artifacts
 
@@ -411,7 +412,7 @@ exception.
 - **AND** the optimizer MUST NOT have received held-out test cases or held-out
   judge outputs during candidate generation
 - **AND** at least one deterministic signal, command verification, exact or
-  objective scorer, or approved regression benchmark MUST support the
+  objective scorer, or configured regression benchmark MUST support the
   improvement
 
 #### Scenario: Eval case count is too low
@@ -454,10 +455,10 @@ review the optimization.
 - **THEN** AWorld MUST persist a failed run record with the failure reason
 - **AND** it MUST NOT silently discard diagnostics needed for debugging
 
-### Requirement: Proposal-only MUST be the phase-1 apply policy
+### Requirement: Proposal-only MUST be the default apply policy
 
-Self-evolve MUST generate reviewable proposals and diffs in phase 1 and MUST
-NOT mutate target artifacts.
+Self-evolve MUST generate reviewable proposals and diffs by default. Persistent
+target mutation MUST require an explicit verified apply policy.
 
 #### Scenario: Apply policy is omitted
 
@@ -465,12 +466,33 @@ NOT mutate target artifacts.
 - **THEN** AWorld MUST use proposal-only behavior
 - **AND** target files or active runtime harness artifacts MUST remain unchanged
 
-#### Scenario: Write or branch application is requested
+#### Scenario: Online verified application is configured
 
-- **WHEN** a self-evolve run is configured to write or branch a selected
-  candidate
-- **THEN** AWorld MUST reject the apply policy as unsupported in phase 1
-- **AND** it MUST preserve proposal and diff artifacts for human review when
+- **WHEN** a self-evolve run is configured with `mode="online"` and
+  `apply_policy="auto_verified"`
+- **AND** the selected candidate targets an allowlisted target type
+- **AND** all verification, regression, protected-path, provenance, budget, and
+  post-apply re-evaluation gates pass
+- **THEN** AWorld MUST automatically apply and accept the candidate without
+  requiring human review, approval, confirmation, or intervention
+- **AND** it MUST persist the applied diff, post-apply metrics, lineage, and
+  acceptance decision
+
+#### Scenario: Online verified application fails post-apply gates
+
+- **WHEN** a candidate is applied under `auto_verified`
+- **AND** post-apply metrics regress or required gates fail
+- **THEN** AWorld MUST roll back the candidate or mark it rejected according to
+  the target apply policy
+- **AND** it MUST persist rollback or rejection diagnostics
+
+#### Scenario: Non-allowlisted application is requested
+
+- **WHEN** a self-evolve run requests automatic application for a target type
+  that is not allowlisted for auto-apply
+- **THEN** AWorld MUST fall back to proposal-only behavior or reject the apply
+  policy with diagnostics
+- **AND** it MUST preserve proposal and diff artifacts for optional review when
   available
 
 ### Requirement: Candidate generation MUST be optimizer-pluggable
@@ -536,6 +558,15 @@ AWorld MUST validate candidates before selecting or applying them.
 - **THEN** AWorld MUST mark the candidate as not passing gates
 - **AND** it MUST NOT apply that candidate automatically
 
+#### Scenario: Candidate is automatically applied
+
+- **WHEN** AWorld automatically applies a verified candidate
+- **THEN** the candidate MUST have passed held-out gates, deterministic or
+  objective signal requirements, regression benchmarks for global targets,
+  protected-path gates, trust/provenance gates, and run budget gates
+- **AND** AWorld MUST re-run required gates after application before accepting
+  the change
+
 #### Scenario: Candidate regresses cost or latency beyond policy
 
 - **WHEN** a candidate exceeds configured cost or latency regression limits
@@ -569,7 +600,7 @@ AWorld MUST validate candidates before selecting or applying them.
   description
 - **AND** no regression benchmark is configured for that target
 - **THEN** AWorld MUST NOT mark the candidate as verified
-- **AND** it MAY still emit proposal and diff artifacts for review
+- **AND** it MAY still emit proposal and diff artifacts for optional review
 
 #### Scenario: Run budget is exhausted
 

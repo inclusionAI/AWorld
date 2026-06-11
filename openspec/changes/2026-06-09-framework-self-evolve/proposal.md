@@ -19,7 +19,7 @@ capability. Current improvement behavior is mostly task-local or prompt-driven:
 - traces and trajectories are recorded, but not systematically converted into
   candidate harness changes
 - existing `train.evolve` focuses on evolution/training workflows, not
-  proposal-only harness text improvements
+  controlled harness improvements
 
 The target is to make self-evolution a first-class AWorld framework capability,
 not only an `aworld-cli` workflow. AWorld should be able to run controlled
@@ -27,19 +27,16 @@ optimization loops after an agent run has produced a trajectory. In phase 1,
 the loop MUST include trajectory-driven credit assignment: analyze trajectory
 quality, identify which harness target is most likely responsible for the
 failure or inefficiency, propose safe harness improvements, evaluate candidates,
-and persist reviewable proposal/diff artifacts without blocking or changing the
-original task result.
+and either persist reviewable proposal/diff artifacts or, in an explicitly
+enabled online mode, apply a verified candidate through a controlled
+`apply -> re-evaluate -> accept/rollback` loop. Automatic application MUST be
+limited to allowlisted targets and MUST NOT affect the task that already
+completed.
 
-Phase 1 is deliberately a proposal generator, not a fully closed self-modifying
-loop. It closes the `trajectory -> target -> proposal/diff` part of the loop
-and leaves persistent application to human review. A later phase must add the
-controlled `apply -> re-evaluate -> accept/rollback` loop before AWorld can
-claim persistent autonomous self-evolution.
-
-This proposal is intentionally separate from existing `train.evolve` assets.
+This proposal is intentionally separate from existing `train/evolve` assets.
 Existing evolve code owns model/data/tool-synthesis training and may continue to
 use names such as `EvolutionRunner` and `EvolutionConfig`. This change owns
-proposal-only harness optimization under `aworld.self_evolve`, with artifacts
+controlled harness optimization under `aworld.self_evolve`, with artifacts
 stored separately under `.aworld/self_evolve/`.
 
 ## What Changes
@@ -75,13 +72,18 @@ stored separately under `.aworld/self_evolve/`.
   complete framework subsystem, not an upgrade or rewrite of that skill.
 - Defer framework, `aworld-cli`, and runtime source-code evolution to a later
   phase.
-- Add CLI product surfaces to invoke the framework capability:
+- Add one CLI product surface to invoke the framework capability:
   - a single top-level `aworld-cli optimize` command with extensible options
     and target forms
-  - optional interactive `/optimize` command
-  - optional enablement for the built-in AWorld main agent
-- Persist self-evolve run metadata, candidate diffs, metrics, diagnostics, and
-  approval state under a workspace-scoped `.aworld/self_evolve/` location.
+  - no CLI-owned optimization loop, scheduler, evaluator, or agent opt-in
+    semantics
+- Persist self-evolve run metadata, candidate diffs, metrics, diagnostics, apply
+  state, acceptance state, and rejection/rollback state under a
+  workspace-scoped `.aworld/self_evolve/` location.
+- Add at least one real automatic evolve mode: `online` with a verified apply
+  policy. This mode must apply eligible allowlisted candidates after gates and
+  post-apply re-evaluation pass without human approval; otherwise it must fall
+  back to a proposal or rejected state.
 
 ## Capabilities
 
@@ -100,7 +102,8 @@ stored separately under `.aworld/self_evolve/`.
 - `self-evolve-judge-contract`: AWorld can run a default trajectory-aware judge
   or a user-specified `agent.md`/custom judge agent as an evaluation signal.
 - `self-evolve-run-artifacts`: AWorld can persist lineage, metrics, diffs,
-  diagnostics, and candidate approval state for each self-evolve run.
+  diagnostics, apply state, acceptance state, and rejection/rollback state for
+  each self-evolve run.
 - `self-evolve-provenance`: AWorld can track target source, trust, and protected
   status separately from target content.
 
@@ -126,21 +129,26 @@ stored separately under `.aworld/self_evolve/`.
 - Affected CLI areas:
   - `aworld-cli/src/aworld_cli/top_level_commands/`
   - `aworld-cli/src/aworld_cli/builtin_plugins/`
-  - `aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py`
-  - `aworld-cli/src/aworld_cli/executors/`
-  - `aworld-cli/src/aworld_cli/memory/`
 - Safety constraints:
   - self-evolve MUST be off by default
   - post-run self-evolve MUST be asynchronous and MUST NOT affect the completed
     task result
   - candidate generation MUST NOT directly mutate active runtime behavior
-  - phase-1 runs MUST stop at proposal and diff artifacts
+  - default and shadow runs MUST stop at proposal and diff artifacts
+  - online runs MUST automatically apply verified candidates for allowlisted
+    targets when held-out, deterministic/objective, regression, budget,
+    protected-path, and post-apply re-evaluation gates pass
+  - online automatic apply MUST be unattended and MUST NOT require human review,
+    approval, confirmation, or intervention
+  - automatic online apply MUST support rollback or mark the candidate rejected
+    if post-apply metrics regress
   - framework, `aworld-cli`, and runtime source-code evolution MUST NOT be part
     of phase 1
   - `aworld-skills/app_evaluator/SKILL.md` MUST NOT be modified by this change
     or selected as a default self-evolve target
   - workspace-local task artifact optimization MUST run in isolation and MUST
-    produce proposal and diff artifacts only in phase 1
+    produce proposal and diff artifacts only in phase 1 unless a later target
+    policy explicitly allows auto-apply
   - self-evolve candidates MUST NOT modify AWorld framework or `aworld-cli`
     product logic
   - candidate selection MUST use validation data, while pass/fail gates MUST use
@@ -152,7 +160,7 @@ stored separately under `.aworld/self_evolve/`.
     before a candidate can be considered verified
   - judge-only improvements MUST remain limited-confidence; verified
     improvements MUST include at least one deterministic signal such as command
-    verification or an approved objective scorer
+    verification or a configured objective scorer
   - every run MUST enforce a token/cost budget ceiling
   - optimizers MUST receive compact trace packs and trainable failure cases,
     not raw unbounded trajectories or held-out gate data

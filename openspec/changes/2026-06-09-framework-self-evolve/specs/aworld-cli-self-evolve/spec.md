@@ -2,12 +2,13 @@
 
 ### Requirement: aworld-cli MUST expose a command to invoke framework self-evolve
 
-`aworld-cli` MUST provide one user-facing manual/debug command that invokes the
-framework self-evolve capability for a specified target, task, dataset, or
-previous run source. The command MUST reuse the same framework path as
-asynchronous post-run self-evolve jobs, and it MUST extend behavior through
+`aworld-cli` MUST provide exactly one phase-1 user-facing manual/debug command
+that invokes the framework self-evolve capability for a specified target, task,
+dataset, or previous run source. The command MUST reuse the same framework path
+as asynchronous post-run self-evolve jobs, and it MUST extend behavior through
 options and `--target <type>:<id>` forms rather than separate target-specific
-commands.
+commands. CLI MUST NOT own scheduler, evaluator, optimizer, target inference,
+durable artifacts, or agent opt-in semantics.
 
 #### Scenario: Optimize command is registered
 
@@ -46,7 +47,9 @@ commands.
 
 ### Requirement: aworld-cli optimize MUST default to proposal-only application
 
-CLI self-evolve runs MUST NOT write candidate changes by default.
+CLI self-evolve runs MUST NOT write candidate changes by default. If a caller
+requests `auto_verified`, CLI MUST pass the policy to framework APIs and MUST
+NOT implement apply logic itself.
 
 #### Scenario: User omits apply mode
 
@@ -58,27 +61,37 @@ CLI self-evolve runs MUST NOT write candidate changes by default.
 
 - **WHEN** the user passes `--apply write` or `--apply branch`
 - **THEN** CLI MUST reject the request as unsupported in phase 1
-- **AND** CLI MUST explain that phase 1 only emits proposal and diff artifacts
+- **AND** CLI MUST explain that phase 1 supports `proposal` by default and
+  framework-gated `auto_verified` for allowlisted targets
 
-### Requirement: Built-in AWorld main agent MUST support explicit self-evolve opt-in configuration
+#### Scenario: User requests verified automatic application
 
-The built-in `Aworld` main agent in `aworld-cli` MUST support explicit
-self-evolve opt-in through environment or config flags, while remaining off by
-default.
+- **WHEN** the user passes `--apply auto_verified`
+- **THEN** CLI MUST delegate the apply policy to framework self-evolve APIs
+- **AND** framework gates MUST decide whether to apply, fall back to proposal, or
+  reject the request
+- **AND** CLI MUST report the framework apply status from run artifacts
 
-#### Scenario: No self-evolve environment or config is set
+### Requirement: aworld-cli MUST NOT add separate self-evolve agent opt-in semantics
 
-- **WHEN** `aworld-cli` builds the default `Aworld` main agent
-- **THEN** the agent MUST have self-evolve disabled by default
-- **AND** existing task behavior MUST remain unchanged
+Agent opt-in MUST remain a framework `AgentConfig.self_evolve_config` concern.
+CLI MAY pass normal framework configuration into `aworld-cli optimize`, but it
+MUST NOT create a second CLI-owned self-evolve mode for the built-in AWorld main
+agent.
 
-#### Scenario: Self-evolve environment variables are set
+#### Scenario: CLI builds or loads an agent for optimize
 
-- **WHEN** `AWORLD_SELF_EVOLVE_MODE` or an equivalent approved config is set to
-  `offline`, `shadow`, or `online`
-- **THEN** CLI MAY construct the built-in `Aworld` agent with the corresponding
-  `SelfEvolveConfig.mode`
-- **AND** omitted env/config MUST keep mode `off`
+- **WHEN** `aworld-cli optimize` needs agent configuration
+- **THEN** CLI MUST rely on framework agent configuration semantics
+- **AND** CLI MUST NOT reinterpret self-evolve mode independently of framework
+  config
+
+#### Scenario: User wants post-run self-evolve behavior
+
+- **WHEN** a user wants asynchronous post-run self-evolve
+- **THEN** that behavior MUST be configured through framework agent config and
+  framework scheduler APIs
+- **AND** CLI MUST remain only a manual/debug invocation entrypoint
 
 ### Requirement: CLI self-evolve command MUST support first-version explicit target forms
 
@@ -128,14 +141,12 @@ self-evolve run.
 - **THEN** CLI MUST print the failed run id or report path if available
 - **AND** framework artifacts MUST contain the failure reason
 
-### Requirement: Optional interactive `/optimize` MUST reuse the same framework command path
+### Requirement: CLI phase 1 MUST NOT add additional self-evolve entrypoints
 
-If interactive `/optimize` is added, it MUST call the same framework self-evolve
-APIs as the top-level CLI command.
+Phase 1 CLI exposure MUST stay limited to `aworld-cli optimize`.
 
-#### Scenario: User runs `/optimize last-task`
+#### Scenario: Interactive slash command is considered
 
-- **WHEN** interactive mode receives `/optimize last-task`
-- **THEN** CLI MUST resolve the last task/session source
-- **AND** it MUST invoke framework self-evolve with that source
-- **AND** it MUST not implement a separate optimization algorithm
+- **WHEN** an interactive `/optimize` command is requested during phase 1
+- **THEN** it MUST be deferred or treated as a later CLI UX change
+- **AND** it MUST NOT become a second phase-1 entrypoint for self-evolve

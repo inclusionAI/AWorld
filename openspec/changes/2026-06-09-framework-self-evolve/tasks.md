@@ -5,7 +5,8 @@
 - [x] 1.2 Confirm self-evolve is disabled by default for all agents.
 - [x] 1.3 Confirm phase 1 excludes framework/runtime/CLI source-code evolution
   while allowing isolated agent-produced workspace artifact optimization.
-- [x] 1.4 Confirm the default apply mode is proposal-only.
+- [x] 1.4 Confirm the default apply mode is proposal-only, while `online` with
+  verified apply policy can automatically evolve allowlisted targets.
 - [x] 1.5 Confirm evaluation is a pluggable contract, not a hard dependency on
   the built-in evaluator agent.
 - [x] 1.6 Confirm post-run self-evolve is asynchronous and must not affect the
@@ -15,14 +16,15 @@
 - [x] 1.8 Confirm phase-1 CLI uses one generic `aworld-cli optimize` command
   whose `--target` option supports skill, prompt-section, and tool-description
   target forms.
-- [x] 1.9 Confirm phase 1 stops at proposal + diff artifacts, with no write,
-  branch, merge, or commit application.
+- [x] 1.9 Confirm phase 1 includes at least one controlled automatic evolve
+  mode: `online` can apply verified candidates for allowlisted targets after
+  post-apply re-evaluation.
 - [x] 1.10 Confirm workspace-local code/file targets are limited to artifacts
   produced by agent task execution and must not touch AWorld or `aworld-cli`
   product logic.
 - [x] 1.11 Confirm existing `Runners.evolve(...)` / `train.evolve` remains the
   training-oriented evolution pipeline, while `aworld.self_evolve` owns
-  proposal-only harness optimization.
+  controlled harness optimization.
 - [x] 1.12 Confirm trajectory-driven credit assignment is a phase-1 core loop,
   not a placeholder.
 - [x] 1.13 Confirm opt-in uses `SelfEvolveConfig.mode`; no separate
@@ -30,10 +32,15 @@
 - [x] 1.14 Confirm `aworld-skills/app_evaluator/SKILL.md` remains independent
   and protected; self-evolve is a new complete framework subsystem, not an
   app_evaluator upgrade.
-- [x] 1.15 Confirm phase 1 is proposal-only and does not claim the persistent
-  `apply -> re-evaluate -> accept/rollback` self-evolution loop.
+- [x] 1.15 Confirm `shadow` is proposal-only and `online` closes a narrow
+  `apply -> re-evaluate -> accept/rollback` loop for allowlisted targets.
+- [x] 1.15A Confirm `online` + `auto_verified` is unattended after enablement:
+  no human review, approval, confirmation, or intervention is required.
 - [x] 1.16 Confirm LLM judge behavior is configurable: default self-evolve
   trajectory judge, explicit `agent.md` judge, or custom judge agent.
+- [x] 1.17 Confirm `aworld-cli optimize` is the only phase-1 CLI entrypoint and
+  CLI must not own scheduler, evaluator, optimizer, target inference, durable
+  artifacts, or agent opt-in semantics.
 
 ## 2. Framework Configuration
 
@@ -48,8 +55,8 @@
   existing `llm_config.ext_config` behavior.
 - [ ] 2.6 Add tests for mode semantics: `off`, `offline`, `shadow`, and
   `online`.
-- [ ] 2.7 Add tests proving phase-1 `online` remains proposal-only and does not
-  imply automatic apply.
+- [ ] 2.7 Add tests proving `online` requires explicit verified apply policy and
+  does not apply candidates without passing all gates.
 - [ ] 2.8 Add judge config tests for default trajectory judge, `agent.md`,
   custom agent, and disabled judge modes.
 
@@ -147,9 +154,9 @@
 - [ ] 8.1 Add gate policy for minimum score improvement.
 - [ ] 8.2 Add gate policy for maximum cost/latency regression.
 - [ ] 8.3 Add gate policy for required deterministic verification commands.
-- [ ] 8.4 Add proposal-only apply mode.
-- [ ] 8.5 Reject write, branch, merge, and commit application modes as
-  unsupported in phase 1.
+- [ ] 8.4 Add proposal-only apply mode as the default.
+- [ ] 8.5 Add `auto_verified` apply mode for `online` and allowlisted targets.
+- [ ] 8.5A Ensure `auto_verified` is gate-driven and unattended after enablement.
 - [ ] 8.6 Ensure proposal mode writes report, candidate files, and diffs only.
 - [ ] 8.7 Add protected-path gates for framework, `aworld-cli`, runtime, shared
   infrastructure, package metadata, secret/config paths, and AWorld product
@@ -166,6 +173,8 @@
 - [ ] 8.12 Add global regression benchmark gates for skill, prompt-section, and
   tool-description targets.
 - [ ] 8.13 Add judge-only limited-confidence gates.
+- [ ] 8.14 Add post-apply re-evaluation and rollback/rejection gates for
+  `auto_verified`.
 
 ## 9. Framework Runner
 
@@ -174,7 +183,7 @@
   generation, candidate eval, gates, and artifact persistence.
 - [ ] 9.2 Add a Python API entry point for SDK use.
 - [ ] 9.3 Ensure active runtime behavior is not mutated during proposal-only
-  runs.
+  runs or during the task that triggered an online evolve job.
 - [ ] 9.4 Add targeted tests for a local fake target and fake optimizer.
 - [ ] 9.5 Add tests proving async post-run enqueue failures do not fail or delay
   the completed task response.
@@ -197,10 +206,10 @@
 - [ ] 10.2 Support `--agent`, `--task`, `--target`, `--dataset`,
   `--from-session`, `--from-trajectory`, `--batch-config`, `--iterations`, and
   `--apply`.
-- [ ] 10.3 Add optional interactive `/optimize` command if the interactive
-  command surface is in scope for phase 1.
-- [ ] 10.4 Add env/config wiring so the built-in AWorld main agent can opt into
-  self-evolve mode.
+- [ ] 10.3 Do not add interactive `/optimize` or other extra phase-1 CLI
+  entrypoints.
+- [ ] 10.4 Do not add CLI-owned env/config wiring for built-in AWorld main agent
+  self-evolve mode; use framework agent config semantics only.
 - [ ] 10.5 Add command tests proving CLI invokes framework APIs rather than
   owning self-evolve logic.
 - [ ] 10.6 Add CLI tests proving `--from-trajectory` is optional and passed
@@ -209,6 +218,8 @@
   through the same command path.
 - [ ] 10.8 Add CLI tests proving command discovery uses the built-in plugin
   manifest/`cli_commands` path.
+- [ ] 10.9 Add CLI tests proving CLI does not own scheduler, evaluator,
+  optimizer, target inference, durable artifacts, or agent opt-in semantics.
 
 ## 11. Documentation And Examples
 
@@ -221,8 +232,8 @@
   propose a target improvement, with optional jsonl eval cases.
 - [ ] 11.5 Add a note explaining why framework/runtime/CLI logic evolution is
   deferred while agent-produced workspace artifacts remain isolated and gated.
-- [ ] 11.6 Document that phase 1 produces self-evolve proposals; the persistent
-  self-modifying loop remains a future apply phase.
+- [ ] 11.6 Document that phase 1 has two modes: proposal-only `shadow` and
+  controlled automatic `online` for allowlisted verified targets.
 - [ ] 11.7 Document that `aworld-skills/app_evaluator/SKILL.md` is not part of
   the new self-evolve subsystem and may only be used as an explicitly
   configured read-only scorer/fixture.
@@ -230,5 +241,8 @@
   framework contracts and which remain future adapters.
 - [ ] 11.9 Document configurable LLM judge behavior and examples for default
   trajectory judge, `agent.md`, and custom judge agents.
-- [ ] 11.10 Document phase-2 closed-loop roadmap:
-  `apply -> re-evaluate -> accept/rollback`.
+- [ ] 11.10 Document the online closed-loop path:
+  `apply -> re-evaluate -> accept/rollback`, and note which broader targets are
+  deferred to later phases.
+- [ ] 11.11 Document that online automatic mode is unattended after enablement
+  and does not wait for human review or approval.

@@ -10,10 +10,11 @@ capability that can asynchronously optimize agent-facing harness artifacts after
 an opted-in agent run produces a trajectory. Phase 1 covers skills, prompt
 sections, tool descriptions, selected agent config knobs, and isolated
 workspace-local code/files produced by agent task execution, while preventing
-framework/runtime/CLI product logic changes and letting `aworld-cli` expose
-manual/debug command surfaces. Phase 1 must close the trajectory-driven loop by
+framework/runtime/CLI product logic changes and letting `aworld-cli` expose one
+manual/debug command entrypoint. Phase 1 must close the trajectory-driven loop by
 selecting an optimization target from trajectory evidence before proposing
-candidate diffs.
+candidate diffs, and `online` mode must support at least one controlled
+automatic evolve path for allowlisted verified targets.
 
 **Architecture:** Add `aworld/self_evolve/` as the framework core. The core
 models optimization targets, trajectory credit assignment, eval sources,
@@ -25,13 +26,16 @@ reuses existing `EvaluateRunner`, trajectory / `llm_calls`, trajectory scorers,
 and Ralph verification as backends. Existing `Runners.evolve(...)` /
 `train.evolve.EvolutionRunner` remains the training-oriented evolution pipeline;
 this feature uses `aworld.self_evolve` and `.aworld/self_evolve/` for
-proposal-only harness optimization. CLI adds a single generic
+controlled harness optimization. CLI adds a single generic
 `aworld-cli optimize` command as a thin manual/debug caller of the same
 framework API, with extension through options and `--target <type>:<id>` forms
-rather than new subcommands. Persistent application defaults to proposal and
-diff artifacts only. `aworld-skills/app_evaluator/SKILL.md` is not part of the
-new subsystem and must remain protected from target inference and candidate
-mutation.
+rather than new subcommands or slash-command entrypoints. CLI does not own
+scheduler, evaluator, optimizer, target inference, durable artifacts, or agent
+opt-in semantics. Persistent application defaults to proposal and diff
+artifacts, while `online` plus `auto_verified` can apply allowlisted verified
+candidates after post-apply re-evaluation. `aworld-skills/app_evaluator/SKILL.md`
+is not part of the new subsystem and must remain protected from target inference
+and candidate mutation.
 
 **Tech Stack:** Python 3.10+, Pydantic config models, dataclasses or Pydantic
 models for internal run records, existing `aworld.evaluations`, existing
@@ -82,9 +86,8 @@ trajectory infrastructure, existing `aworld-cli` top-level command pattern,
 
 ### CLI files to modify
 
-- `aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py`
-- top-level command registration surface if explicit registration is required
-- interactive command surface only if `/optimize` is accepted for phase 1
+- top-level command registration surface only if explicit registration is
+  required for the single `aworld-cli optimize` entrypoint
 
 ### New tests
 
@@ -120,7 +123,8 @@ Cover:
   repetitions, and cooldown
 - judge config parses default trajectory judge, explicit `agent.md`, custom
   agent, and disabled judge modes
-- `online` remains proposal-only in phase 1 and does not imply automatic apply
+- `online` requires explicit `auto_verified` apply policy and cannot apply
+  candidates unless all gates and post-apply re-evaluation pass
 - old config fields still parse
 - unknown model kwargs still enter `llm_config.ext_config`
 
@@ -197,7 +201,9 @@ Required operations:
 - load current content
 - fingerprint current content
 - render candidate diff
-- reject write/branch application while preserving proposal and diff artifacts
+- preserve proposal and diff artifacts
+- expose target-specific apply/rollback hooks only when the target is
+  allowlisted for `auto_verified`
 
 - [ ] **Step 2: Implement phase-1 targets**
 
@@ -213,8 +219,8 @@ Only `SkillTextTarget` must be fully runnable in the first implementation slice.
 
 - [ ] **Step 3: Test skill target behavior**
 
-Cover loading `SKILL.md`, fingerprinting, diff rendering, and proposal-only
-non-mutation.
+Cover loading `SKILL.md`, fingerprinting, diff rendering, proposal-only
+non-mutation, and the allowlisted `auto_verified` apply/rollback path.
 
 ---
 
@@ -342,7 +348,7 @@ Support:
 
 - default self-evolve trajectory judge using `TracePack`, target-selection
   report, baseline/candidate outputs, and scorer diagnostics
-- explicit `agent.md` judge loaded through the approved agent-loading path
+- explicit `agent.md` judge loaded through the configured agent-loading path
 - custom judge agent or registered agent name
 - disabled judge mode for deterministic-only runs
 
@@ -370,7 +376,7 @@ unless an additional dataset/session/batch source is configured.
 
 Judge-only improvements must remain limited-confidence. Verified improvements
 require at least one deterministic signal, such as command verification,
-exact/objective scoring, or an approved regression benchmark.
+exact/objective scoring, or a configured regression benchmark.
 
 ---
 
@@ -486,6 +492,14 @@ trajectory.
 If all positive signal comes from LLM judge output, persist the proposal but do
 not mark it verified.
 
+- [ ] **Step 12: Add post-apply re-evaluation and rollback gates**
+
+For `auto_verified`, re-run required gates after application. Accept only when
+post-apply metrics still pass; otherwise roll back or mark rejected according to
+the target apply policy. This path must be unattended after `online` and
+`auto_verified` are enabled; it must not pause for human review, approval,
+confirmation, or intervention.
+
 ---
 
 ## Task 9: Add SelfEvolveRunner
@@ -510,11 +524,21 @@ Flow:
 7. evaluate candidates
 8. run gates
 9. persist artifacts and target selection report
-10. preserve proposal/diff artifacts without applying selected candidate
+10. if apply policy is `proposal`, preserve proposal/diff artifacts without
+    applying selected candidate
+11. if apply policy is `auto_verified`, apply only allowlisted verified
+    candidates, re-run post-apply gates, then accept or roll back/reject
 
 - [ ] **Step 3: Verify proposal-only does not mutate target**
 
-- [ ] **Step 4: Verify bounded stopping conditions**
+- [ ] **Step 4: Verify online auto-evolve apply path**
+
+Cover a fake allowlisted `SkillTextTarget` candidate that passes gates, applies,
+persists post-apply metrics, and is accepted. Cover a post-apply regression that
+rolls back or marks the candidate rejected. Cover that no human approval callback
+is required in the successful path.
+
+- [ ] **Step 5: Verify bounded stopping conditions**
 
 Cover max iterations, no candidate improvement, and duplicate pending proposal.
 
@@ -583,6 +607,8 @@ Cover:
 - `--from-trajectory`
 - `--batch-config`
 - `--apply proposal`
+- `--apply auto_verified` is passed to framework APIs and never implemented in
+  CLI code
 - `--apply write` and `--apply branch` are rejected as unsupported in phase 1
 - no external trajectory path is required unless `--from-trajectory` is passed
 - `--task` without `--target` invokes framework target inference, not CLI-owned
@@ -599,23 +625,21 @@ commands.
 
 ---
 
-## Task 12: Wire Built-In AWorld Main Agent Opt-In
+## Task 12: Keep CLI Out Of Agent Opt-In Ownership
 
 **Files:**
 
-- Modify: `aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py`
-- Test: targeted CLI agent config test if one exists, otherwise a narrow unit
-  test for config construction helper
+- Test: `tests/cli/test_optimize_command.py`
 
-- [ ] **Step 1: Add env/config parsing**
+- [ ] **Step 1: Add no-CLI-mode tests**
 
-Support:
+Verify `aworld-cli optimize` does not define a separate CLI-owned self-evolve
+mode for the built-in AWorld main agent.
 
-- `AWORLD_SELF_EVOLVE_MODE=off|offline|shadow|online`
+- [ ] **Step 2: Pass through framework config only**
 
-- [ ] **Step 2: Keep defaults off**
-
-Verify no env means `SelfEvolveConfig.mode == "off"`.
+If optimize needs agent config, use framework `AgentConfig.self_evolve_config`
+semantics without reinterpreting mode in CLI code.
 
 ---
 
@@ -637,6 +661,10 @@ task result.
 
 - [ ] **Step 4: Document CLI usage**
 
+State that `aworld-cli optimize` is the only phase-1 CLI entrypoint and that CLI
+invokes framework self-evolve APIs without owning scheduler, evaluator,
+optimizer, target inference, or agent opt-in logic.
+
 - [ ] **Step 5: Add toy trajectory-driven optimization example**
 
 - [ ] **Step 6: Document app_evaluator boundary**
@@ -649,10 +677,12 @@ self-evolve subsystem and protected from mutation.
 Show the default self-evolve trajectory judge and examples for an explicit
 `agent.md` judge and a custom registered judge agent.
 
-- [ ] **Step 8: Document phase-2 closed-loop roadmap**
+- [ ] **Step 8: Document online closed-loop behavior**
 
-Explain that phase 1 is proposal-only and that the later closed loop is
-`apply -> re-evaluate -> accept/rollback`.
+Explain that `shadow` is proposal-only, while `online` with `auto_verified`
+supports `apply -> re-evaluate -> accept/rollback` for allowlisted verified
+targets without human review or approval after enablement. Document which
+broader targets remain future work.
 
 ---
 
