@@ -7,23 +7,27 @@
 
 **Goal:** Make AWorld framework provide a disabled-by-default self-evolve
 capability that can asynchronously optimize agent-facing harness artifacts after
-an opted-in agent run produces a trajectory. Phase 1 covers skills, prompt
-sections, tool descriptions, selected agent config knobs, and isolated
-workspace-local code/files produced by agent task execution, while preventing
-framework/runtime/CLI product logic changes and letting `aworld-cli` expose one
-manual/debug command entrypoint. Phase 1 must close the trajectory-driven loop by
-selecting an optimization target from trajectory evidence before proposing
-candidate diffs, and `online` mode must support at least one controlled
-automatic evolve path for allowlisted verified targets.
+an opted-in agent run produces a trajectory. Phase 0 must first prove
+trajectory-driven credit assignment on real labeled trajectories. Phase 1a then
+ships the thinnest useful vertical slice: config, trace packaging,
+`SkillTextTarget`, one low-dependency mutator, one deterministic/objective
+evaluation signal, proposal-only artifacts, and an explicit SDK/CLI target path.
+Only after that evidence exists should the plan expand to prompt sections, tool
+descriptions, selected agent config knobs, isolated workspace-local files,
+async post-run scheduling, or `online` automatic apply. All phases prevent
+framework/runtime/CLI product logic changes.
 
 **Architecture:** Add `aworld/self_evolve/` as the framework core. The core
 models optimization targets, trajectory credit assignment, eval sources,
 candidate optimizers, evaluation backends, gates, async scheduling, run
 artifacts, and orchestration. Agent post-run integration only performs a
 lightweight durable enqueue; workers run target inference, candidate
-generation/evaluation, and artifact persistence. The first implementation
-reuses existing `EvaluateRunner`, trajectory / `llm_calls`, trajectory scorers,
-and Ralph verification as backends. Existing `Runners.evolve(...)` /
+generation/evaluation, and artifact persistence. Do not create the full package
+shape before the phase-0 credit-assignment gate passes; start with the phase-1a
+vertical slice and add later modules only when their tests require them. The
+first implementation reuses existing `EvaluateRunner`, trajectory /
+`llm_calls`, trajectory scorers, and Ralph verification as backends. Existing
+`Runners.evolve(...)` /
 `train.evolve.EvolutionRunner` remains the training-oriented evolution pipeline;
 this feature uses `aworld.self_evolve` and `.aworld/self_evolve/` for
 controlled harness optimization. CLI adds a single generic
@@ -48,30 +52,35 @@ trajectory infrastructure, existing `aworld-cli` top-level command pattern,
 
 ### New framework files
 
+Create only the phase-1a files at first:
+
 - `aworld/self_evolve/__init__.py`
 - `aworld/self_evolve/config.py`
 - `aworld/self_evolve/types.py`
 - `aworld/self_evolve/targets.py`
-- `aworld/self_evolve/provenance.py`
 - `aworld/self_evolve/trace_pack.py`
 - `aworld/self_evolve/credit_assignment.py`
-- `aworld/self_evolve/datasets.py`
 - `aworld/self_evolve/optimizers/__init__.py`
 - `aworld/self_evolve/optimizers/base.py`
 - `aworld/self_evolve/optimizers/llm_mutator.py`
-- `aworld/self_evolve/optimizers/dspy_adapter.py`
 - `aworld/self_evolve/evaluation.py`
-- `aworld/self_evolve/judge.py`
 - `aworld/self_evolve/gates.py`
-- `aworld/self_evolve/scheduler.py`
 - `aworld/self_evolve/store.py`
 - `aworld/self_evolve/runner.py`
+
+Add the remaining files only after the phase-1a slice proves useful:
+
+- `aworld/self_evolve/provenance.py`
+- `aworld/self_evolve/datasets.py`
+- `aworld/self_evolve/optimizers/dspy_adapter.py`
+- `aworld/self_evolve/judge.py`
+- `aworld/self_evolve/scheduler.py`
 
 ### Framework files to modify
 
 - `aworld/config/conf.py`
-- `aworld/runner.py` or the task completion path for best-effort post-run
-  enqueue, if accepted
+- `aworld/runners/event_runner.py` completion path for best-effort post-run
+  enqueue, if async scheduling is accepted after phase 1a
 - `aworld/evaluations/` only for narrow backend integration if needed
 - `aworld/dataset/` only for reuse helpers if needed
 - `aworld/skills/` only for skill target loading/apply seams if needed
@@ -91,6 +100,7 @@ trajectory infrastructure, existing `aworld-cli` top-level command pattern,
 
 ### New tests
 
+- `tests/self_evolve/test_credit_assignment_spike.py`
 - `tests/self_evolve/test_config.py`
 - `tests/self_evolve/test_targets.py`
 - `tests/self_evolve/test_provenance.py`
@@ -102,6 +112,40 @@ trajectory infrastructure, existing `aworld-cli` top-level command pattern,
 - `tests/self_evolve/test_judge.py`
 - `tests/self_evolve/test_scheduler.py`
 - `tests/cli/test_optimize_command.py`
+
+---
+
+## Task 0: Prove Credit Assignment Before Building The Pipeline
+
+**Files:**
+
+- Create: `tests/self_evolve/fixtures/credit_assignment_cases/`
+- Create: `tests/self_evolve/test_credit_assignment_spike.py`
+- Optional scratch script: `scripts/self_evolve_credit_assignment_spike.py`
+
+- [ ] **Step 1: Collect real trajectory fixtures**
+
+Collect a small, reviewable set of real trajectories that cover successful
+runs, skill guidance failures, prompt misunderstanding, tool misuse,
+workspace-artifact failures, config-limit failures, and ambiguous cases.
+
+- [ ] **Step 2: Add manual labels**
+
+For each fixture, record the expected target type/id or `no_target`, the
+human-readable rationale, and evidence step ids.
+
+- [ ] **Step 3: Measure target-selection quality**
+
+Run deterministic signals plus optional LLM-assisted diagnosis and report
+precision/recall for target selection and `no_target` rejection. The output must
+include false-positive and false-negative examples.
+
+- [ ] **Step 4: Make the go/no-go decision explicit**
+
+Do not start candidate generation, async scheduling, broad provenance work,
+non-skill targets, DSPy adapters, or online automatic apply until the spike
+meets the configured acceptance threshold. If it fails, continue only with
+diagnostics and explicit-target proposal experiments.
 
 ---
 
@@ -233,14 +277,12 @@ non-mutation, and the allowlisted `auto_verified` apply/rollback path.
 - Test: `tests/self_evolve/test_trace_pack.py`
 - Test: `tests/self_evolve/test_credit_assignment.py`
 
-- [ ] **Step 0: Run a credit-assignment spike on real trajectories**
+- [ ] **Step 0: Verify phase-0 gate is accepted**
 
-Before building the full optimization pipeline, collect a small fixture set of
-real trajectories with manually labeled likely targets and `no_target` cases.
-Measure whether deterministic signals plus optional LLM diagnosis can correctly
-distinguish skill, prompt-section, tool-description, config, workspace-artifact,
-and insufficient-signal outcomes. Do not expand candidate generation until this
-spike produces acceptable precision/recall for target selection.
+Before implementing the production credit assigner, confirm Task 0 has produced
+accepted precision/recall for target selection on real manually labeled
+trajectories. If the gate is not accepted, stop this task and continue only with
+diagnostics or explicit-target proposal experiments.
 
 - [ ] **Step 1: Add trace pack normalization**
 
@@ -549,8 +591,7 @@ Cover max iterations, no candidate improvement, and duplicate pending proposal.
 **Files:**
 
 - Create: `aworld/self_evolve/scheduler.py`
-- Modify: task/runner completion integration point selected during
-  implementation
+- Modify: `aworld/runners/event_runner.py`
 - Test: `tests/self_evolve/test_scheduler.py`
 
 - [ ] **Step 1: Define run context and scheduler protocol**
@@ -566,7 +607,15 @@ Eligibility:
 - a current trajectory is available
 - concurrency/cooldown/pending proposal policies allow enqueue
 
-Enqueue failure must not fail the completed task.
+Integration point:
+
+- Use `TaskEventRunner.do_run(...)` after `await self._save_trajectories()` and
+  `resp = self._response()`, where `TaskResponse.trajectory` and `llm_calls` are
+  available.
+- Keep `Runners.run(...)` as a delegating convenience wrapper; do not make it
+  parse or own trajectory extraction.
+- Wrap enqueue in a broad best-effort guard. Enqueue failure must not fail,
+  delay, or replace the completed task response.
 
 - [ ] **Step 3: Implement durable job record and worker handoff**
 
@@ -652,10 +701,16 @@ semantics without reinterpreting mode in CLI code.
 
 - [ ] **Step 1: Document framework concepts**
 
+State explicitly that phase-1 self-evolve means harness-text/config evolution,
+not model-weight training, replacement of the agent policy, or
+framework/runtime/CLI product-code evolution.
+
 - [ ] **Step 2: Document async post-run behavior**
 
 Explain that self-evolve runs in the background and cannot affect the completed
-task result.
+task result. Also document that a single current trajectory usually produces a
+limited-confidence proposal unless independent eval sources and a
+deterministic/objective signal are configured.
 
 - [ ] **Step 3: Document boundary with existing evolve/training assets**
 
