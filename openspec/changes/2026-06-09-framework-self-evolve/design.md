@@ -23,6 +23,14 @@ This follows the desired positioning:
 - CLI provides one generic manual/debug command that invokes the framework
   capability for a specified task or target
 
+In this change, "self-evolve" means improving the agent-facing harness that
+shapes future runs: skill text, prompt sections, tool descriptions, selected
+configuration knobs, and isolated task artifacts. It does not mean training
+model weights, replacing the agent policy, or changing framework/runtime product
+code. The default single-trajectory post-run path is expected to produce
+diagnostics and limited-confidence proposals unless independent evaluation
+sources and deterministic/objective gates are configured.
+
 ## Goals / Non-Goals
 
 **Goals**
@@ -32,9 +40,12 @@ This follows the desired positioning:
 - Add an agent-level opt-in contract using `AgentConfig.self_evolve_config.mode`.
 - Support asynchronous post-run self-evolve for opted-in agents after a
   trajectory is produced, without blocking or changing the main task result.
-- Make trajectory-driven credit assignment a phase-1 core capability: the
-  framework must inspect the trajectory, choose an evidence-backed target, and
-  either produce a proposal/diff or record why no reliable target exists.
+- Make trajectory-driven credit assignment the phase-0 go/no-go gate and a
+  phase-1 core capability: the framework must inspect the trajectory, choose an
+  evidence-backed target, and either produce a proposal/diff or record why no
+  reliable target exists. The rest of the optimizer pipeline must not expand
+  until the spike demonstrates acceptable target-selection precision/recall on
+  real labeled trajectories.
 - Provide a CLI command that can optimize a specified task, target, dataset, or
   prior session as a manual/debug entrypoint.
 - Support phase-1 optimization targets:
@@ -57,6 +68,8 @@ This follows the desired positioning:
 **Non-Goals**
 
 - Do not train or fine-tune model weights.
+- Do not claim phase-1 harness-text optimization is equivalent to agent policy
+  or model self-improvement.
 - Do not replace or rename the existing `Runners.evolve(...)` /
   `train.evolve.EvolutionRunner` training pipeline.
 - Do not make self-evolve run automatically for all agents.
@@ -143,7 +156,7 @@ The new capability should live under a framework package such as:
 
 - `aworld/self_evolve/`
 
-Recommended submodules:
+Recommended submodules after the credit-assignment gate passes:
 
 - `config.py`: `SelfEvolveConfig` and related policy models
 - `targets.py`: optimization target interfaces and built-in target types
@@ -159,6 +172,13 @@ Recommended submodules:
 - `scheduler.py`: best-effort asynchronous post-run enqueue and worker control
 - `store.py`: self-evolve run artifact persistence
 - `runner.py`: `SelfEvolveRunner`
+
+The first vertical slice should be narrower than the final package shape:
+credit-assignment spike, config, `SkillTextTarget`, trace packaging, a simple
+LLM mutator, one deterministic/objective evaluation signal, proposal-only
+artifact persistence, and an explicit target CLI/API path. Async scheduling,
+provenance expansion, DSPy/GEPA adapters, non-skill targets, and online
+auto-apply should follow only after that slice proves useful.
 
 Why:
 
@@ -294,6 +314,19 @@ The enqueue operation MUST be best-effort:
 - background workers MUST enforce timeout, concurrency, retry, and cooldown
   policies
 
+Concrete integration point:
+
+- `Runners.run(...)` in `aworld/runner.py` constructs a `Task` and delegates to
+  `Runners.run_task(...)`; it should not own trajectory extraction.
+- `TaskEventRunner.do_run(...)` in `aworld/runners/event_runner.py` is the
+  first concrete completion path where both `_save_trajectories()` has populated
+  `TaskResponse.trajectory` and `_response()` has copied `llm_calls`.
+- The post-run enqueue hook should live immediately after `resp =
+  self._response()` and before response finalization/return side effects, or in
+  an equivalent helper called from that point. It must be wrapped in a broad
+  best-effort guard so enqueue failures are logged as diagnostics and never
+  replace `resp`.
+
 Why:
 
 - Self-evolve can be expensive and should not degrade the normal user-facing
@@ -374,9 +407,15 @@ Why:
 ### Decision: Phase 1 includes trajectory credit assignment
 
 The phase-1 loop is not complete unless a trajectory can drive target
-selection. Self-evolve should introduce a `TrajectoryCreditAssigner` that turns
-the current trajectory plus available target inventory into a target selection
-report.
+selection. Before building the full optimizer pipeline, phase 0 MUST run a
+credit-assignment spike on real trajectories with manually labeled expected
+targets and `no_target` cases. If the spike cannot reach the configured
+precision/recall threshold, implementation MUST stop at diagnostics and explicit
+target-only proposal experiments.
+
+After that gate passes, self-evolve should introduce a
+`TrajectoryCreditAssigner` that turns the current trajectory plus available
+target inventory into a target selection report.
 
 Recommended interface:
 
@@ -509,6 +548,8 @@ Evaluation discipline:
   verification; they may produce proposals and target-selection diagnostics,
   but they should be marked limited-confidence unless additional dataset,
   session, batch, or benchmark sources are attached
+- the credit-assignment spike is a hard prerequisite to candidate generation,
+  async post-run scheduling, or automatic application
 - if there are too few cases for a meaningful held-out gate, the run may still
   produce diagnostics and proposal diffs, but MUST mark the candidate confidence
   as limited and MUST NOT label the candidate as verified
@@ -704,7 +745,9 @@ Why:
 ### Decision: Online mode closes a narrow unattended self-evolution loop
 
 Phase 1 should include a narrow automatic self-evolution loop for at least one
-allowlisted target. The controlled loop is:
+allowlisted target, but this belongs after the phase-1a proposal-only vertical
+slice proves target selection and candidate evaluation quality. The controlled
+loop is:
 
 1. select a target from trajectory evidence or an explicit request
 2. generate and evaluate candidates against validation data
@@ -858,6 +901,10 @@ Why:
 - `online` with `apply_policy="auto_verified"` must support automatic
   apply/re-evaluate/accept-or-rollback for at least one allowlisted target type,
   initially `SkillTextTarget`.
+- Delivery order is gated: phase 0 proves credit assignment on labeled real
+  trajectories; phase 1a ships the thinnest proposal-only `SkillTextTarget`
+  vertical slice; async scheduling, broad provenance, optional DSPy adapters,
+  non-skill targets, and `online` auto-apply come after that evidence exists.
 - Workspace-local code/file targets are limited to artifacts produced by the
   agent during task execution. Self-evolve candidates MUST NOT change AWorld
   framework or `aworld-cli` product logic.

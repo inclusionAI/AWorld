@@ -70,6 +70,9 @@ NOT implement apply logic itself.
 - **THEN** CLI MUST delegate the apply policy to framework self-evolve APIs
 - **AND** framework gates MUST decide whether to apply, fall back to proposal, or
   reject the request
+- **AND** a task-only or single-trajectory run without sufficient independent
+  evaluation sources MUST report limited confidence instead of implying an
+  automatic verified apply
 - **AND** CLI MUST report the framework apply status from run artifacts
 
 ### Requirement: aworld-cli MUST NOT add separate self-evolve agent opt-in semantics

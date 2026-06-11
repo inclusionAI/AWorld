@@ -3,7 +3,9 @@
 ### Requirement: AWorld framework MUST provide self-evolve as a first-class capability
 
 AWorld framework MUST own the reusable self-evolve capability for optimizing
-agent-facing harness artifacts.
+agent-facing harness artifacts. In phase 1, self-evolve means harness-text and
+allowlisted harness-configuration evolution; it MUST NOT train model weights,
+replace the agent policy, or modify framework/runtime/CLI product logic.
 
 #### Scenario: Existing train/evolve remains separate
 
@@ -93,6 +95,18 @@ When an opted-in agent completes a task with a usable trajectory, AWorld MUST
 support enqueueing a background self-evolve job. That enqueue path MUST be
 lightweight and MUST NOT affect the main task result.
 
+#### Scenario: Runtime completion path exposes trajectory and llm calls
+
+- **WHEN** `TaskEventRunner.do_run(...)` has completed task execution
+- **AND** `_save_trajectories()` has populated `TaskResponse.trajectory`
+- **AND** `_response()` has copied `llm_calls` into the response
+- **THEN** AWorld MAY perform the post-run self-evolve eligibility check and
+  best-effort enqueue
+- **AND** `Runners.run(...)` MUST remain a delegating wrapper rather than owning
+  trajectory extraction or enqueue semantics
+- **AND** enqueue failures MUST NOT replace or mutate the completed
+  `TaskResponse`
+
 #### Scenario: Post-run enqueue succeeds
 
 - **WHEN** an agent task completes
@@ -126,6 +140,15 @@ lightweight and MUST NOT affect the main task result.
 When a self-evolve run is task-driven or post-run trajectory-driven, AWorld MUST
 analyze the trajectory before candidate generation and produce an auditable
 target selection report.
+
+#### Scenario: Credit-assignment spike has not been accepted
+
+- **WHEN** the phase-0 credit-assignment spike has not demonstrated acceptable
+  target-selection precision/recall on real manually labeled trajectories
+- **THEN** AWorld MUST NOT expand task-driven candidate generation, async
+  post-run scheduling, or automatic application
+- **AND** implementation MUST remain limited to diagnostics and explicit-target
+  proposal experiments
 
 #### Scenario: Trajectory evidence selects a target
 

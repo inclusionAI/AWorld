@@ -24,11 +24,12 @@ capability. Current improvement behavior is mostly task-local or prompt-driven:
 The target is to make self-evolution a first-class AWorld framework capability,
 not only an `aworld-cli` workflow. AWorld should be able to run controlled
 optimization loops after an agent run has produced a trajectory. In phase 1,
-the loop MUST include trajectory-driven credit assignment: analyze trajectory
-quality, identify which harness target is most likely responsible for the
-failure or inefficiency, propose safe harness improvements, evaluate candidates,
-and either persist reviewable proposal/diff artifacts or, in an explicitly
-enabled online mode, apply a verified candidate through a controlled
+the scope is harness-text and harness-configuration improvement: analyze
+trajectory quality, identify which skill text, prompt section, tool description,
+or allowlisted harness knob is most likely responsible for the failure or
+inefficiency, propose safe harness improvements, evaluate candidates, and either
+persist reviewable proposal/diff artifacts or, in an explicitly enabled online
+mode, apply a verified candidate through a controlled
 `apply -> re-evaluate -> accept/rollback` loop. Automatic application MUST be
 limited to allowlisted targets and MUST NOT affect the task that already
 completed.
@@ -39,11 +40,24 @@ use names such as `EvolutionRunner` and `EvolutionConfig`. This change owns
 controlled harness optimization under `aworld.self_evolve`, with artifacts
 stored separately under `.aworld/self_evolve/`.
 
+Phase 1 does not train model weights, replace the agent policy, or make the
+agent intrinsically stronger independent of its harness. A single post-run
+trajectory usually has too little evidence to verify an automatic change, so the
+default post-run outcome is a target-selection report plus a limited-confidence
+proposal. Automatic `online` application is only expected when an allowlisted
+target, independent evaluation sources, deterministic/objective gates, and
+post-apply re-evaluation are all configured.
+
 ## What Changes
 
 - Add a framework-owned self-evolve module that manages optimization targets,
   trajectory credit assignment, datasets, candidate generation, evaluation,
   gates, and run artifacts.
+- Add a phase-0 credit-assignment spike as a hard go/no-go gate before building
+  the full optimizer pipeline. The spike must use real trajectory fixtures with
+  manually labeled target/no-target outcomes and demonstrate acceptable target
+  selection precision/recall before candidate generation, async scheduling, or
+  broad target support expands.
 - Add trace packaging, target provenance, dataset recipes, and optimizer
   lineage as first-class framework concepts.
 - Add an explicit agent-level opt-in surface, `AgentConfig.self_evolve_config`
@@ -123,7 +137,7 @@ stored separately under `.aworld/self_evolve/`.
   - `aworld/evaluations/`
   - `aworld/dataset/`
   - `aworld/runners/`
-  - `aworld/runners/ralph/`
+  - `aworld/runners/ralph_runner.py`
   - `aworld/skills/`
   - `aworld/core/context/amni/`
 - Affected CLI areas:
@@ -156,6 +170,9 @@ stored separately under `.aworld/self_evolve/`.
   - single-trajectory post-run jobs usually lack enough held-out cases and MUST
     produce limited-confidence proposals unless additional eval sources are
     supplied
+  - phase-0 credit assignment MUST be accepted before building the full
+    optimizer pipeline; otherwise phase 1 MUST stop at diagnostics and explicit
+    target-only experiments
   - global harness-text targets MUST pass configured regression benchmarks
     before a candidate can be considered verified
   - judge-only improvements MUST remain limited-confidence; verified

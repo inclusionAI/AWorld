@@ -1,3 +1,18 @@
+## 0. Credit-Assignment Spike Gate
+
+- [ ] 0.1 Collect real trajectory fixtures covering skill, prompt-section,
+  tool-description, config, workspace-artifact, success, and ambiguous
+  `no_target` outcomes.
+- [ ] 0.2 Add manual labels for expected target/no-target decisions, rationale,
+  and evidence step ids.
+- [ ] 0.3 Measure deterministic signals plus optional LLM-assisted diagnosis for
+  target-selection precision/recall and `no_target` rejection.
+- [ ] 0.4 Make the go/no-go decision explicit before building candidate
+  generation, async scheduling, broad provenance, non-skill targets, DSPy
+  adapters, or online automatic apply.
+- [ ] 0.5 If the spike fails, limit phase 1 to diagnostics and explicit-target
+  proposal experiments until the credit-assignment approach is improved.
+
 ## 1. Scope Freeze
 
 - [x] 1.1 Confirm self-evolve is a framework-owned capability, with CLI as a
@@ -25,8 +40,8 @@
 - [x] 1.11 Confirm existing `Runners.evolve(...)` / `train.evolve` remains the
   training-oriented evolution pipeline, while `aworld.self_evolve` owns
   controlled harness optimization.
-- [x] 1.12 Confirm trajectory-driven credit assignment is a phase-1 core loop,
-  not a placeholder.
+- [x] 1.12 Confirm trajectory-driven credit assignment is a phase-0 hard gate
+  and a phase-1 core loop, not a placeholder.
 - [x] 1.13 Confirm opt-in uses `SelfEvolveConfig.mode`; no separate
   `AgentConfig.optimize` flag is added.
 - [x] 1.14 Confirm `aworld-skills/app_evaluator/SKILL.md` remains independent
@@ -41,6 +56,19 @@
 - [x] 1.17 Confirm `aworld-cli optimize` is the only phase-1 CLI entrypoint and
   CLI must not own scheduler, evaluator, optimizer, target inference, durable
   artifacts, or agent opt-in semantics.
+- [x] 1.18 Confirm phase-1 "self-evolve" means harness-text/config evolution, not
+  model-weight training or replacement of the agent policy.
+- [x] 1.19 Confirm a single post-run trajectory usually produces a
+  limited-confidence proposal, not an automatic verified apply.
+
+## 1A. Phase-1a Minimal Vertical Slice
+
+- [ ] 1A.1 Ship the first implementation as config + `SkillTextTarget` + trace
+  packaging + low-dependency LLM mutator + one deterministic/objective
+  evaluation signal + proposal-only artifacts + explicit SDK/CLI target path.
+- [ ] 1A.2 Defer async scheduling, broad provenance expansion, DSPy adapters,
+  non-skill targets, and online automatic apply until the phase-1a slice proves
+  target selection and proposal value.
 
 ## 2. Framework Configuration
 
@@ -112,8 +140,8 @@
 
 ## 6. Trajectory Credit Assignment
 
-- [ ] 6.0 Run a credit-assignment spike on real trajectory fixtures with manual
-  target labels before expanding the full optimizer pipeline.
+- [ ] 6.0 Verify the phase-0 credit-assignment gate has been accepted before
+  implementing production target inference.
 - [ ] 6.1 Add `TrajectoryCreditAssigner` and `TargetSelectionReport` models.
 - [ ] 6.2 Add `TracePack` normalization/compression before credit assignment.
 - [ ] 6.3 Build target inventory for skill, prompt-section, tool-description,
@@ -190,9 +218,14 @@
 
 ## 9A. Async Post-Run Scheduling
 
+- [ ] 9A.0 Start this section only after the phase-1a explicit-target
+  proposal-only slice proves useful.
 - [ ] 9A.1 Add `SelfEvolveScheduler` with best-effort enqueue semantics.
 - [ ] 9A.2 Add post-run eligibility checks for
   `self_evolve_config.mode in {"shadow", "online"}`.
+- [ ] 9A.2A Hook enqueue from `TaskEventRunner.do_run(...)` after
+  `_save_trajectories()` and `_response()` have made trajectory and `llm_calls`
+  available; keep `Runners.run(...)` as a delegating wrapper.
 - [ ] 9A.3 Add concurrency, timeout, retry, pending-proposal, and cooldown
   controls.
 - [ ] 9A.4 Add tests proving scheduler/worker failures do not affect the main
@@ -224,6 +257,8 @@
 ## 11. Documentation And Examples
 
 - [ ] 11.1 Document framework self-evolve concepts and safety model.
+- [ ] 11.1A Document that phase-1 self-evolve means harness-text/config
+  evolution, not model-weight training or replacement of the agent policy.
 - [ ] 11.2 Document `SelfEvolveConfig.mode` opt-in and its distinction from
   `meta_learning_config`, `ContextRuleConfig.optimization_config`, and
   `train.evolve`.
@@ -234,6 +269,9 @@
   deferred while agent-produced workspace artifacts remain isolated and gated.
 - [ ] 11.6 Document that phase 1 has two modes: proposal-only `shadow` and
   controlled automatic `online` for allowlisted verified targets.
+- [ ] 11.6A Document that the default single-trajectory post-run path produces a
+  limited-confidence proposal unless independent eval sources and
+  deterministic/objective gates are configured.
 - [ ] 11.7 Document that `aworld-skills/app_evaluator/SKILL.md` is not part of
   the new self-evolve subsystem and may only be used as an explicitly
   configured read-only scorer/fixture.
