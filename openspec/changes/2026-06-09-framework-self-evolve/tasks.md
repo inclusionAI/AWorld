@@ -3,10 +3,16 @@
 - [ ] 0.1 Collect real trajectory fixtures covering skill, prompt-section,
   tool-description, config, workspace-artifact, success, and ambiguous
   `no_target` outcomes.
+- [ ] 0.1A Use `~/Documents/logs/trajectory.log` as the initial source for
+  task records, then commit sanitized/generated fixture cases rather than making
+  tests depend on the developer-local path.
 - [ ] 0.2 Add manual labels for expected target/no-target decisions, rationale,
   and evidence step ids.
 - [ ] 0.3 Measure deterministic signals plus optional LLM-assisted diagnosis for
   target-selection precision/recall and `no_target` rejection.
+- [ ] 0.3A Seed the first regression benchmark dataset from task records in
+  `~/Documents/logs/trajectory.log`, including source fingerprint, extraction
+  filters, split seed, and train/validation/held-out case ids.
 - [ ] 0.4 Make the go/no-go decision explicit before building candidate
   generation, async scheduling, broad provenance, non-skill targets, DSPy
   adapters, or online automatic apply.
@@ -115,6 +121,9 @@
   evaluated through the same dataset and scorer policy.
 - [ ] 4.7 Add tests proving optional trajectory-log sources are accepted when
   configured but not required by default.
+- [ ] 4.7A Add a dataset builder test proving task records extracted from
+  `~/Documents/logs/trajectory.log` can seed the initial regression benchmark
+  when explicitly requested.
 - [ ] 4.8 Add held-out evaluation discipline: select candidates on validation
   metrics and gate verification on optimizer-held-out test metrics when enough
   cases are available.
@@ -122,6 +131,8 @@
   proposals rather than verified candidates.
 - [ ] 4.10 Add tests proving judge-only improvements remain limited-confidence
   and verified candidates require a deterministic/objective signal.
+- [ ] 4.11 Add replay-cost preflight estimation for baseline and candidate
+  re-execution before launching evaluation batches.
 
 ## 5. Dataset Builders
 
@@ -143,7 +154,9 @@
 - [ ] 6.0 Verify the phase-0 credit-assignment gate has been accepted before
   implementing production target inference.
 - [ ] 6.1 Add `TrajectoryCreditAssigner` and `TargetSelectionReport` models.
-- [ ] 6.2 Add `TracePack` normalization/compression before credit assignment.
+- [ ] 6.2 Add SAR-first `TracePack` normalization/compression before credit
+  assignment, preserving `TrajectoryItem.state`, `action`, `reward`, and stable
+  evidence ids.
 - [ ] 6.3 Build target inventory for skill, prompt-section, tool-description,
   whitelisted config, and agent-produced workspace artifact targets.
 - [ ] 6.4 Implement deterministic trajectory signal extraction using

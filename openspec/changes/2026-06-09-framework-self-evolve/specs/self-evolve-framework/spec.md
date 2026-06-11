@@ -177,15 +177,17 @@ target selection report.
 
 AWorld MUST convert current trajectories, prior sessions, and trajectory logs
 into bounded trace packs before credit assignment or trace-reflective candidate
-generation.
+generation. Trace packs MUST be built from AWorld's `TrajectoryItem` SAR shape,
+not from an assumed plain chat transcript.
 
 #### Scenario: Raw trajectory is larger than the configured trace budget
 
 - **WHEN** a trajectory exceeds the configured trace-pack budget
-- **THEN** AWorld MUST preserve task input, first turns, final turns, tool
-  calls, tool results, failed arguments, verification outputs, generated
-  artifact references, LLM usage/cost metadata, and stable evidence ids
-- **AND** it MAY summarize middle turns
+- **THEN** AWorld MUST preserve task input and context from `state`, assistant
+  content and tool calls from `action`, tool outputs/status/score from `reward`,
+  failed arguments, verification outputs, generated artifact references,
+  LLM usage/cost metadata, and stable evidence ids
+- **AND** it MAY summarize middle SAR records
 - **AND** summaries MUST retain evidence references usable by target selection
   reports
 
@@ -386,6 +388,17 @@ sessions, jsonl datasets, and batch configs are optional explicit sources.
 - **THEN** AWorld MAY use that path as an additional evaluation source
 - **AND** the source identity MUST be recorded in run artifacts
 
+#### Scenario: Initial benchmark is seeded from the local trajectory log
+
+- **WHEN** phase-0 or phase-1a benchmark seeding is run with
+  `~/Documents/logs/trajectory.log`
+- **THEN** AWorld MUST extract task records into benchmark cases with stable case
+  ids, source task ids, source fingerprint, extraction filters, split seed, and
+  train/validation/held-out split identities
+- **AND** committed tests MUST use sanitized/generated fixture copies rather
+  than depending on the developer-local path
+- **AND** product runtime behavior MUST NOT hard-code that path
+
 #### Scenario: No sufficient eval source is available
 
 - **WHEN** available evaluation sources are insufficient for reliable
@@ -425,6 +438,14 @@ exception.
 - **THEN** it MUST compare candidate metrics against baseline metrics produced
   from the same evaluation policy
 - **AND** it MUST persist both metric sets in the self-evolve run artifacts
+
+#### Scenario: Candidate replay is projected to exceed budget
+
+- **WHEN** baseline plus candidate task re-execution, judge repetitions, and
+  verification commands are projected to exceed configured token or cost budgets
+- **THEN** AWorld MUST reduce candidate count, reduce eval cases, skip optional
+  judge repetitions, or stop before launching the batch
+- **AND** it MUST persist budget diagnostics explaining the decision
 
 #### Scenario: Candidate is marked verified
 

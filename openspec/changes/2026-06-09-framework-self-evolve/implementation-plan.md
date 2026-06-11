@@ -128,6 +128,18 @@ Add the remaining files only after the phase-1a slice proves useful:
 Collect a small, reviewable set of real trajectories that cover successful
 runs, skill guidance failures, prompt misunderstanding, tool misuse,
 workspace-artifact failures, config-limit failures, and ambiguous cases.
+Use `~/Documents/logs/trajectory.log` as the initial source for task records and
+extract a sanitized fixture set into
+`tests/self_evolve/fixtures/credit_assignment_cases/`. Do not make tests depend
+on the developer-local path after fixture generation.
+
+- [ ] **Step 1A: Seed the first regression benchmark**
+
+Parse task records from `~/Documents/logs/trajectory.log` into regression
+benchmark cases with stable case ids, source task ids, expected observable
+outcomes, and optional deterministic verification commands. Persist a dataset
+recipe that records source path, content fingerprint, extraction filters, split
+seed, and train/validation/held-out case ids.
 
 - [ ] **Step 2: Add manual labels**
 
@@ -287,14 +299,15 @@ diagnostics or explicit-target proposal experiments.
 - [ ] **Step 1: Add trace pack normalization**
 
 Normalize current trajectories, prior sessions, and trajectory logs into a
-bounded `TracePack` that preserves task input, first/final turns, tool calls,
-tool results, failed arguments, verification output, LLM usage/cost metadata,
-generated artifact references, and evidence ids.
+bounded `TracePack` that preserves AWorld `TrajectoryItem` SAR fields: task
+input and context from `state`, assistant content and tool calls from `action`,
+tool outputs/status/score from `reward`, failed arguments, verification output,
+LLM usage/cost metadata, generated artifact references, and evidence ids.
 
 - [ ] **Step 2: Test trace pack compression**
 
-Cover preservation of first/final turns, middle-turn summarization, evidence id
-stability, and budget enforcement.
+Cover preservation of initial/final SAR records, middle-record summarization,
+evidence id stability, and budget enforcement.
 
 - [ ] **Step 3: Define selection report models**
 
@@ -406,6 +419,13 @@ Ensure baseline and candidate run against identical dataset and policy.
 Ensure a trajectory log can be supplied explicitly, and ensure default post-run
 self-evolve does not require one.
 
+- [ ] **Step 6A: Build the trajectory-log benchmark seed**
+
+Add a local-only builder path that reads `~/Documents/logs/trajectory.log` when
+explicitly requested, extracts task records into benchmark cases, persists the
+dataset recipe and source fingerprint, and writes sanitized fixture copies for
+tests. Product defaults must not require that path.
+
 - [ ] **Step 7: Enforce held-out evaluation discipline**
 
 Candidate ranking uses validation metrics. Verified pass/fail gates use
@@ -413,6 +433,13 @@ optimizer-held-out test metrics when at least `min_eval_cases` exist. Too few
 cases may still produce proposals, but they must be marked limited-confidence.
 Single-trajectory post-run jobs usually fall into this limited-confidence path
 unless an additional dataset/session/batch source is configured.
+
+- [ ] **Step 7A: Estimate replay cost before evaluation**
+
+Before running baseline/candidate batches, estimate cost as baseline cases plus
+candidate-count times candidate eval cases, including judge repetitions and
+verification commands. If the estimate exceeds `max_run_tokens` or
+`max_run_cost_usd`, reduce candidates/eval cases or stop with budget diagnostics.
 
 - [ ] **Step 8: Enforce verified signal discipline**
 
@@ -511,6 +538,8 @@ suppression, repeated gate failure, and cooldown.
 
 Enforce max run tokens and optional max run cost across mutator calls,
 baseline/candidate evaluation, judge repetitions, and verification.
+Include preflight replay-cost estimation for baseline and candidate task
+re-execution; do not start a batch that is already projected to exceed budget.
 
 - [ ] **Step 8: Add held-out verification gate**
 

@@ -376,31 +376,49 @@ External files such as `~/Documents/logs/trajectory.log` MAY be used as local
 tests or explicit `--from-trajectory` input, but MUST NOT be required by the
 self-evolve feature.
 
+Initial benchmark seed:
+
+- Phase 0 and phase 1a should use task records extracted from
+  `~/Documents/logs/trajectory.log` as the first regression benchmark seed.
+- The seed builder MUST persist a dataset recipe that records the source path,
+  content fingerprint, extraction time, source task ids, filters, and split seed.
+- Committed tests MUST use sanitized fixture copies or generated fixture files
+  derived from that log, not the developer-local path directly.
+- Product runs MUST still receive the trajectory log or resulting benchmark
+  dataset through explicit API/CLI configuration.
+
 ### Decision: Trajectory evidence is normalized before credit assignment
 
 Self-evolve should not feed raw, oversized, provider-specific trajectory blobs
 directly into credit assignment or optimizers. A `TracePack` stage should
 normalize and compress trajectory evidence while preserving optimization signal.
 
+Current AWorld trajectories are standardized as `TrajectoryItem` SAR records:
+`state` carries environment/context, `action` carries assistant decisions and
+tool calls, and `reward` carries tool outputs, status, and score. TracePack must
+be SAR-first rather than assuming a plain chat-turn transcript.
+
 Trace packs MUST preserve:
 
 - task input, final answer, status, and error summary
-- first turns that define the task, system context, and initial tool inventory
-- final turns that show failure, completion, or verification state
-- tool calls, tool results, exit codes, and failed tool arguments
+- initial `state` records that define the task, system context, message history,
+  and available tool inventory
+- final `action`/`reward` records that show failure, completion, verification
+  state, or scoring state
+- action tool calls, reward tool outputs, exit codes, and failed tool arguments
 - LLM call summaries, usage/cost metadata, and reasoning/tool-selection evidence
 - generated artifact references and workspace paths
 - scorer findings and deterministic verification outputs
 
-Trace packs MAY summarize middle turns when needed for budget, but summaries
-must include evidence references so target selection reports can cite specific
-steps.
+Trace packs MAY summarize middle SAR records when needed for budget, but
+summaries must include evidence references so target selection reports can cite
+specific trajectory item ids and state/action/reward fields.
 
 Why:
 
 - Hermes' trajectory compression pattern preserves first and final turns while
-  summarizing middle context; that is a good fit for AWorld's run budget and
-  evidence-citation needs.
+  summarizing middle context. AWorld should adapt that idea to SAR records
+  instead of treating trajectories as generic chat transcripts.
 - GEPA-style reflective optimization depends on traces being compact enough for
   an LLM while still carrying failure signal.
 
@@ -540,6 +558,10 @@ gate for a verified improvement.
 
 Evaluation discipline:
 
+- before launching candidate evaluation, the runner MUST estimate replay cost as
+  roughly `baseline_cases + candidate_count * candidate_cases`, including judge
+  repetitions and verification commands, and compare that estimate with token
+  and cost budgets
 - candidate generation may use training/source cases and trajectory feedback
 - candidate ranking uses validation metrics
 - pass/fail gates use optimizer-held-out test metrics when at least
@@ -560,6 +582,10 @@ Evaluation discipline:
   deterministic signal, such as command verification, exact/objective scoring,
   or a configured regression benchmark.
 - `min_improvement` applies to the held-out gate, not to training/source cases
+- if the estimated replay budget exceeds `max_run_tokens` or
+  `max_run_cost_usd`, the runner MUST reduce candidate count, reduce eval cases,
+  skip optional judge repetitions, or stop with budget diagnostics before
+  launching the batch
 
 Global harness-text target discipline:
 
