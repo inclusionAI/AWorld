@@ -159,12 +159,20 @@ class StateCheckGrader:
             raise ValueError(f"unsupported state-check source: {self.source}")
         try:
             actual = _resolve_path(sources[self.source], self.path)
-            passed = _compare_values(actual, self.op, self.expected)
-            reason = "matched" if passed else f"expected {self.expected!r}, got {actual!r}"
         except KeyError:
             actual = None
             passed = False
             reason = f"missing path: {'.'.join(self.path)}"
+        else:
+            try:
+                passed = _compare_values(actual, self.op, self.expected)
+            except (TypeError, ValueError) as exc:
+                if isinstance(exc, ValueError) and str(exc).startswith("unsupported state-check operator"):
+                    raise
+                passed = False
+                reason = f"not comparable: expected {self.expected!r}, got {actual!r} ({exc})"
+            else:
+                reason = "matched" if passed else f"expected {self.expected!r}, got {actual!r}"
         return OutcomeCheckResult(
             metric_name=self.metric_name,
             value=1.0 if passed else 0.0,
