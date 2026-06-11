@@ -46,6 +46,18 @@ aworld-cli evaluator \
   --out-dir ./reports
 
 aworld-cli evaluator \
+  --input ./task_answers.jsonl \
+  --kind answer \
+  --judge-agent-name answer-quality-judge \
+  --out-dir ./reports
+
+aworld-cli evaluator \
+  --input ./task_answers.jsonl \
+  --kind answer \
+  --judge-backend-ref my_eval.judges:build_backend \
+  --out-dir ./reports
+
+aworld-cli evaluator \
   --input ~/Documents/logs/trajectory.log \
   --kind trajectory \
   --task-id task_20260609193335 \
@@ -67,6 +79,14 @@ aworld-cli evaluator \
 
 For `task` JSONL inputs, the default fields are `id` and `input`; the evaluator runs each task through the CLI default `Aworld` agent unless `--agent` is supplied. For `trajectory`, passing `--task-id` replays one task from an existing AWorld trajectory log, omitting `--task-id` with a trajectory log replays all tasks in that log, and omitting `--task-id` with task JSONL runs the main agent, extracts the response trajectory, and evaluates that generated trajectory. For `answer` JSONL inputs, the default fields are `id`, `input`, and `answer`. Use `--id-field`, `--task-field`, and `--answer-field` only when the file uses different names.
 
+Source-backed runs require exactly one judge selector:
+
+- `--judge-agent <agent.md>` loads a markdown judge prompt directly.
+- `--judge-agent-name <agent-or-team>` loads an AWorld CLI registered local agent or team by name and runs the judge prompt through that agent's executor. Use `--agent-dir` in commands that support it, or set `LOCAL_AGENTS_DIR`, when the judge agent is not in the default agent search path.
+- `--judge-backend-ref <module:callable>` imports a process-local Python factory or callable. A factory may return a `JudgeBackend`-compatible object such as `AgentJudgeBackend` / `CallableJudgeBackend`; a raw callable is wrapped as a callable judge backend.
+
+The three judge selectors are mutually exclusive. They are CLI assembly choices and are not serialized into suite manifests as live handles.
+
 Useful options:
 
 ```bash
@@ -75,6 +95,8 @@ aworld-cli evaluator --target ./artifact --interactive-approval
 aworld-cli evaluator --input ./tasks.jsonl --kind task --judge-agent ./agent.md --agent Aworld --output ./report.json
 aworld-cli evaluator --input ./tasks.jsonl --kind trajectory --judge-agent ./trajectory_agent.md --output ./report.json
 aworld-cli evaluator --input ./task_answers.jsonl --kind answer --judge-agent ./agent.md --output ./report.json
+LOCAL_AGENTS_DIR=./judge_agents aworld-cli evaluator --input ./task_answers.jsonl --kind answer --judge-agent-name answer-quality-judge
+aworld-cli evaluator --input ./task_answers.jsonl --kind answer --judge-backend-ref my_eval.judges:build_backend
 ```
 
 ## Declared Suite Manifests
@@ -133,9 +155,9 @@ Current event payloads:
 - `evaluator.pre_discover`: `target`, `workspace_path`
 - `evaluator.post_discover`: `target`, `workspace_path`, `suite_names`
 - `evaluator.pre_run` for target mode: `mode`, `target`, `suite`, `workspace_path`
-- `evaluator.pre_run` for source mode: `mode`, `input`, `kind`, `task_id`, `judge_agent`, `agent`, `workspace_path`, `output_path`
+- `evaluator.pre_run` for source mode: `mode`, `input`, `kind`, `task_id`, `judge_agent`, `judge_agent_name`, `judge_backend_ref`, `agent`, `workspace_path`, `output_path`
 - `evaluator.post_run` for target mode: `mode`, `report`, `target`, `suite`, `workspace_path`
-- `evaluator.post_run` for source mode: `mode`, `report`, `input`, `kind`, `task_id`, `judge_agent`, `agent`, `workspace_path`, `output_path`
+- `evaluator.post_run` for source mode: `mode`, `report`, `input`, `kind`, `task_id`, `judge_agent`, `judge_agent_name`, `judge_backend_ref`, `agent`, `workspace_path`, `output_path`
 - `evaluator.render_summary`: `report`, `workspace_path`
 
 Hook boundaries:
