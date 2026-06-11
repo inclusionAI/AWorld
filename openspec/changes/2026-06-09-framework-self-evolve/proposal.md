@@ -48,6 +48,10 @@ proposal. Automatic `online` application is only expected when an allowlisted
 target, independent evaluation sources, deterministic/objective gates, and
 post-apply re-evaluation are all configured.
 
+This is the intended boundary: the goal of this change is harness evolution, not
+policy or weight evolution. "Execution capability" is improved only through the
+agent-facing harness that guides future execution.
+
 ## What Changes
 
 - Add a framework-owned self-evolve module that manages optimization targets,
@@ -57,7 +61,15 @@ post-apply re-evaluation are all configured.
   the full optimizer pipeline. The spike must use real trajectory fixtures with
   manually labeled target/no-target outcomes and demonstrate acceptable target
   selection precision/recall before candidate generation, async scheduling, or
-  broad target support expands.
+  broad target support expands. Initial acceptance thresholds are
+  target-selection precision >= 0.80, target-selection recall >= 0.70, and
+  `no_target` precision >= 0.80, unless the proposal is amended with stricter
+  thresholds before implementation starts.
+- Seed the first regression benchmark from task records in the local trajectory
+  log at `~/Documents/logs/trajectory.log`. The seed process should extract
+  task/evaluation cases, persist a dataset recipe with the source path and
+  content fingerprint, and copy any committed test fixtures into the repository
+  rather than making product behavior depend on that local path.
 - Add trace packaging, target provenance, dataset recipes, and optimizer
   lineage as first-class framework concepts.
 - Add an explicit agent-level opt-in surface, `AgentConfig.self_evolve_config`
@@ -173,12 +185,19 @@ post-apply re-evaluation are all configured.
   - phase-0 credit assignment MUST be accepted before building the full
     optimizer pipeline; otherwise phase 1 MUST stop at diagnostics and explicit
     target-only experiments
+  - the initial regression benchmark SHOULD be seeded from
+    `~/Documents/logs/trajectory.log`, but runtime self-evolve MUST still require
+    explicit dataset/session/batch/trajectory sources and MUST NOT hard-code that
+    path as a product dependency
   - global harness-text targets MUST pass configured regression benchmarks
     before a candidate can be considered verified
   - judge-only improvements MUST remain limited-confidence; verified
     improvements MUST include at least one deterministic signal such as command
     verification or a configured objective scorer
   - every run MUST enforce a token/cost budget ceiling
+  - candidate evaluation MUST estimate baseline plus candidate replay cost before
+    launching batch evaluation and MUST reduce candidates/eval cases or stop
+    before exceeding the configured budget
   - optimizers MUST receive compact trace packs and trainable failure cases,
     not raw unbounded trajectories or held-out gate data
   - evaluator-agent-only loops MUST NOT be the only correctness signal
