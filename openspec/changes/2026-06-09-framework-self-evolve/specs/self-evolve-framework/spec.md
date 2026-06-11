@@ -83,6 +83,8 @@ phase 1.
 - **AND** phase-1 online mode MUST still emit proposal and diff artifacts only
 - **AND** online self-evolve MUST NOT change the result of the task that already
   completed
+- **AND** phase-1 online mode MUST be treated as proposal-only and equivalent to
+  shadow mode for persistent application
 
 ### Requirement: Post-run self-evolve MUST be asynchronous and best-effort
 
@@ -147,6 +149,29 @@ target selection report.
 - **AND** it SHOULD still record trajectory evidence when a trajectory source is
   supplied
 
+### Requirement: Self-evolve MUST normalize trajectory evidence before target selection
+
+AWorld MUST convert current trajectories, prior sessions, and trajectory logs
+into bounded trace packs before credit assignment or trace-reflective candidate
+generation.
+
+#### Scenario: Raw trajectory is larger than the configured trace budget
+
+- **WHEN** a trajectory exceeds the configured trace-pack budget
+- **THEN** AWorld MUST preserve task input, first turns, final turns, tool
+  calls, tool results, failed arguments, verification outputs, generated
+  artifact references, LLM usage/cost metadata, and stable evidence ids
+- **AND** it MAY summarize middle turns
+- **AND** summaries MUST retain evidence references usable by target selection
+  reports
+
+#### Scenario: Optimizer uses trajectory feedback
+
+- **WHEN** a trace-reflective optimizer is invoked
+- **THEN** AWorld MUST provide the optimizer a trace pack, scorer feedback, and
+  trainable failure cases
+- **AND** it MUST NOT provide raw unbounded trajectories by default
+
 ### Requirement: Self-evolve MUST optimize explicit target types
 
 AWorld MUST model each optimizable harness artifact as an explicit target with
@@ -190,6 +215,36 @@ contract.
 - **AND** candidate evaluation MUST run in an isolated candidate workspace or
   overlay before proposal and diff artifacts are selected
 
+### Requirement: Self-evolve targets MUST carry provenance and trust metadata
+
+AWorld MUST track provenance separately from target file content so self-evolve
+can distinguish framework-owned, user-authored, generated, external, and
+protected artifacts.
+
+#### Scenario: Target inventory is built
+
+- **WHEN** AWorld builds a target inventory
+- **THEN** each target entry MUST include source kind, write origin, trust
+  level, protected status, and protected reason when applicable
+- **AND** this metadata MUST NOT require modifying the target file itself
+
+#### Scenario: Agent-produced workspace artifact is considered as a target
+
+- **WHEN** a workspace-local artifact is selected as a target
+- **THEN** AWorld MUST verify from trajectory/provenance evidence that the
+  artifact was produced by the agent during task execution
+- **AND** it MUST reject user-authored foreground files unless the caller
+  explicitly targets them under an approved policy
+
+#### Scenario: Existing app evaluator skill is encountered
+
+- **WHEN** target inventory includes `aworld-skills/app_evaluator/SKILL.md`
+- **THEN** AWorld MUST mark it protected for phase 1
+- **AND** target inference MUST NOT select it as a default target
+- **AND** candidate generation and proposal application MUST NOT mutate it
+- **AND** it MAY only be used as an explicitly configured read-only scorer or
+  fixture
+
 ### Requirement: Phase-1 self-evolve MUST NOT include framework or runtime code evolution
 
 The first self-evolve implementation phase MUST optimize text harness artifacts,
@@ -210,6 +265,13 @@ selected config knobs, and isolated agent-produced workspace artifacts only.
   shared infrastructure, package metadata, secret/config paths, or AWorld
   product logic
 - **THEN** AWorld MUST fail safety gates for that candidate
+- **AND** it MUST NOT apply that candidate automatically
+
+#### Scenario: Candidate diff touches app evaluator skill
+
+- **WHEN** a candidate diff touches `aworld-skills/app_evaluator/SKILL.md`
+- **THEN** AWorld MUST fail safety gates for that candidate
+- **AND** it MUST preserve diagnostics explaining that the path is protected
 - **AND** it MUST NOT apply that candidate automatically
 
 ### Requirement: Self-evolve MUST use a pluggable evaluation contract
@@ -237,6 +299,40 @@ interface rather than depending directly on a single evaluator agent.
 - **THEN** AWorld MAY include that signal in the evaluation result
 - **AND** self-evolve MUST still allow additional objective scorers and gates
 
+### Requirement: Self-evolve LLM judges MUST be configurable evaluation signals
+
+AWorld MUST allow judge behavior to be configured independently from optimizer
+behavior. The default judge MUST belong to the self-evolve subsystem and operate
+on trajectory evidence, while users MAY provide an explicit `agent.md` or
+custom agent as an additional judge signal.
+
+#### Scenario: No judge is explicitly configured
+
+- **WHEN** a self-evolve run needs an LLM judge signal and no judge is supplied
+- **THEN** AWorld SHOULD use the default self-evolve trajectory judge
+- **AND** that judge MUST evaluate compact trace packs, target selection
+  reports, baseline/candidate outputs, and scorer diagnostics
+
+#### Scenario: User supplies an agent.md judge
+
+- **WHEN** a caller configures a judge with an `agent.md` path
+- **THEN** AWorld MUST load that agent through the approved agent-loading path
+- **AND** it MUST run the judge as an evaluation signal
+- **AND** the judge output MUST be persisted in run artifacts
+
+#### Scenario: User supplies a custom judge agent
+
+- **WHEN** a caller configures a custom judge agent or registered agent name
+- **THEN** AWorld MUST run that judge through the evaluation contract
+- **AND** it MUST NOT let the judge own candidate generation, target mutation,
+  or apply policy
+
+#### Scenario: LLM judge is the only positive signal
+
+- **WHEN** a candidate improves only according to LLM judge output
+- **THEN** AWorld MAY persist the candidate as a proposal
+- **AND** it MUST mark confidence as limited rather than verified
+
 ### Requirement: Self-evolve eval sources MUST be pluggable
 
 Self-evolve MUST NOT depend on a hard-coded trajectory log path. The current
@@ -250,6 +346,16 @@ sessions, jsonl datasets, and batch configs are optional explicit sources.
   credit-assignment, evaluation, and diagnostic source
 - **AND** it MUST NOT require any external trajectory log file
 
+#### Scenario: Post-run source has too few held-out cases
+
+- **WHEN** a post-run self-evolve job only has the current trajectory or fewer
+  than the configured minimum eval cases
+- **THEN** AWorld MAY produce a target selection report, diagnostics, proposal,
+  and diff
+- **AND** it MUST mark candidate confidence as limited
+- **AND** it MUST NOT mark the candidate as verified unless additional eval
+  sources satisfy held-out and deterministic-signal gates
+
 #### Scenario: External trajectory log is supplied
 
 - **WHEN** a caller supplies a trajectory log path through API or CLI
@@ -262,6 +368,26 @@ sessions, jsonl datasets, and batch configs are optional explicit sources.
   candidate evaluation
 - **THEN** AWorld MUST record diagnostics
 - **AND** it SHOULD avoid generating or applying candidates
+
+### Requirement: Self-evolve MUST persist dataset recipes and split discipline
+
+AWorld MUST persist how each evaluation dataset was built, including source
+selection, filters, split seed, synthetic generation policy, and holdout policy.
+
+#### Scenario: Dataset is built from multiple sources
+
+- **WHEN** AWorld builds a dataset from current trajectory, session history,
+  jsonl cases, batch configs, or synthetic cases
+- **THEN** it MUST persist a dataset recipe with source identities and filters
+- **AND** it MUST persist the resulting train, validation, and held-out test
+  split identities
+
+#### Scenario: Failure cases are exposed to an optimizer
+
+- **WHEN** candidate generation receives failure examples
+- **THEN** AWorld MAY provide trainable failure cases and validation feedback
+- **AND** it MUST keep held-out failure cases and held-out judge outputs hidden
+  from the optimizer
 
 ### Requirement: Baseline and candidate evaluation MUST be comparable
 
@@ -284,12 +410,24 @@ exception.
   least the configured minimum eval case count is available
 - **AND** the optimizer MUST NOT have received held-out test cases or held-out
   judge outputs during candidate generation
+- **AND** at least one deterministic signal, command verification, exact or
+  objective scorer, or approved regression benchmark MUST support the
+  improvement
 
 #### Scenario: Eval case count is too low
 
 - **WHEN** there are too few evaluation cases for the configured held-out gate
 - **THEN** AWorld MAY still persist a proposal and diff
 - **AND** it MUST mark confidence as limited rather than verified
+
+#### Scenario: Global harness-text target is marked verified
+
+- **WHEN** a verified candidate targets skill text, a prompt section, or a tool
+  description
+- **THEN** AWorld MUST require a configured regression benchmark or equivalent
+  objective regression suite independent from the source trajectory
+- **AND** if no such benchmark is configured, the candidate MUST remain
+  limited-confidence
 
 ### Requirement: Self-evolve MUST preserve run artifacts and lineage
 
@@ -302,6 +440,8 @@ review the optimization.
 - **THEN** AWorld MUST persist run metadata, target identity, target
   fingerprint, dataset identity, optimizer policy, baseline metrics, candidate
   metrics, gate results, diagnostics, diffs, and selected candidate state
+- **AND** it MUST persist target provenance, trust metadata, dataset recipe,
+  split identities, and optimizer lineage
 - **AND** it MUST persist target selection reports and trajectory evidence for
   inferred targets
 - **AND** it MUST persist whether the run came from asynchronous post-run
@@ -353,6 +493,39 @@ evaluation contracts.
   selection time
 - **AND** importing the framework MUST NOT fail
 
+#### Scenario: GEPA-style optimizer is selected
+
+- **WHEN** a GEPA-style optimizer is selected for skill, prompt, or tool
+  description text
+- **THEN** AWorld MUST provide trace packs and validation feedback through the
+  optimizer abstraction
+- **AND** target loading, evaluation, gates, and artifacts MUST remain owned by
+  framework self-evolve contracts rather than by DSPy-specific code
+
+#### Scenario: MIPRO-style optimizer is selected
+
+- **WHEN** a MIPRO-style optimizer is selected for instruction text or few-shot
+  examples
+- **THEN** AWorld MUST require enough training and validation examples for that
+  optimizer policy
+- **AND** it MUST fail with a clear configuration error when the dataset is too
+  small for the selected optimizer
+
+#### Scenario: Darwinian/code optimizer is requested in phase 1
+
+- **WHEN** a caller requests Darwinian/code evolution
+- **THEN** AWorld MUST treat it as a future external CLI/subprocess adapter
+- **AND** AWorld core MUST NOT import AGPL Darwinian optimizer libraries
+- **AND** phase-1 code target support MUST remain limited to proposal-only
+  agent-produced workspace artifacts with isolated evaluation
+
+#### Scenario: Candidate lineage is recorded
+
+- **WHEN** an optimizer returns candidate variants
+- **THEN** AWorld MUST record backend identity, parent candidate ids when
+  applicable, mutation rationale, and trainable failure-case ids used
+- **AND** that lineage MUST be persisted with the run artifacts
+
 ### Requirement: Self-evolve MUST enforce safety and regression gates
 
 AWorld MUST validate candidates before selecting or applying them.
@@ -381,6 +554,22 @@ AWorld MUST validate candidates before selecting or applying them.
   product logic
 - **THEN** AWorld MUST mark the candidate as gated out
 - **AND** it MUST NOT apply the candidate
+
+#### Scenario: Candidate originates from an external or generated target
+
+- **WHEN** a candidate target has external, generated, or community trust
+  metadata
+- **THEN** AWorld MUST run configured trust/provenance and static
+  security/content gates before selecting the candidate
+- **AND** a failed scan MUST prevent the candidate from being marked verified
+
+#### Scenario: Global target lacks a regression benchmark
+
+- **WHEN** a candidate changes a global skill, prompt section, or tool
+  description
+- **AND** no regression benchmark is configured for that target
+- **THEN** AWorld MUST NOT mark the candidate as verified
+- **AND** it MAY still emit proposal and diff artifacts for review
 
 #### Scenario: Run budget is exhausted
 
