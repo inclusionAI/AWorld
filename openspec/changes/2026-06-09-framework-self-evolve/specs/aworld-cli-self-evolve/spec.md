@@ -2,9 +2,12 @@
 
 ### Requirement: aworld-cli MUST expose a command to invoke framework self-evolve
 
-`aworld-cli` MUST provide a user-facing command that invokes the framework
-self-evolve capability for a specified target, task, dataset, or previous run
-source.
+`aworld-cli` MUST provide one user-facing manual/debug command that invokes the
+framework self-evolve capability for a specified target, task, dataset, or
+previous run source. The command MUST reuse the same framework path as
+asynchronous post-run self-evolve jobs, and it MUST extend behavior through
+options and `--target <type>:<id>` forms rather than separate target-specific
+commands.
 
 #### Scenario: User optimizes a skill target from a dataset
 
@@ -17,8 +20,9 @@ source.
 
 - **WHEN** the user runs `aworld-cli optimize --task <task>`
 - **THEN** CLI MUST pass the task context to framework self-evolve
-- **AND** framework self-evolve MUST decide or require which target should be
-  optimized according to its target selection policy
+- **AND** framework self-evolve MUST run trajectory/target credit assignment
+  when an explicit `--target` is not supplied
+- **AND** CLI MUST NOT own the target inference logic
 
 #### Scenario: User optimizes from prior session or trajectory
 
@@ -28,6 +32,8 @@ source.
   builders
 - **AND** CLI MUST NOT parse trajectory semantics independently of framework
   APIs except for command argument validation
+- **AND** the trajectory path MUST be optional user input, not a hard-coded
+  product dependency
 
 ### Requirement: aworld-cli optimize MUST default to proposal-only application
 
@@ -39,11 +45,11 @@ CLI self-evolve runs MUST NOT write candidate changes by default.
 - **THEN** CLI MUST request framework proposal-only behavior
 - **AND** it MUST clearly report that no target files were changed
 
-#### Scenario: User requests write or branch application
+#### Scenario: User requests write or branch application in phase 1
 
 - **WHEN** the user passes `--apply write` or `--apply branch`
-- **THEN** CLI MUST require the framework gates to pass before application
-- **AND** CLI MUST report the applied candidate id and destination
+- **THEN** CLI MUST reject the request as unsupported in phase 1
+- **AND** CLI MUST explain that phase 1 only emits proposal and diff artifacts
 
 ### Requirement: Built-in AWorld main agent MUST support explicit self-evolve opt-in configuration
 
@@ -59,14 +65,16 @@ default.
 
 #### Scenario: Self-evolve environment variables are set
 
-- **WHEN** `AWORLD_AGENT_OPTIMIZE=1` or an equivalent approved config is set
-- **THEN** CLI MAY construct the built-in `Aworld` agent with optimization
-  eligibility enabled
-- **AND** `AWORLD_SELF_EVOLVE_MODE` MAY select the configured mode
+- **WHEN** `AWORLD_SELF_EVOLVE_MODE` or an equivalent approved config is set to
+  `offline`, `shadow`, or `online`
+- **THEN** CLI MAY construct the built-in `Aworld` agent with the corresponding
+  `SelfEvolveConfig.mode`
+- **AND** omitted env/config MUST keep mode `off`
 
 ### Requirement: CLI self-evolve command MUST support explicit target forms
 
-CLI MUST provide stable target syntax that maps to framework target types.
+CLI MUST provide stable target syntax that maps to framework target types. All
+target forms MUST be parsed by the same generic `aworld-cli optimize` command.
 
 #### Scenario: Target is a skill
 
@@ -97,8 +105,9 @@ self-evolve run.
 #### Scenario: Optimize command completes
 
 - **WHEN** a self-evolve CLI command completes
-- **THEN** CLI MUST print the evolution run id
+- **THEN** CLI MUST print the self-evolve run id
 - **AND** it MUST print the report path
+- **AND** it MUST print the selected or inferred target when available
 - **AND** it MUST print the best candidate id if one exists
 - **AND** it MUST print whether the run applied changes or only generated a
   proposal
