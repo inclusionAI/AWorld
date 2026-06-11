@@ -1,0 +1,42 @@
+{
+  "extraction_filters": {
+    "include_sub_tasks": true,
+    "manual_label_overrides": [
+      "1f9149cc482611f196356a5e5d182581",
+      "e676a3103f9411f197ecaead30e27f1a",
+      "fa27d89c63e911f18b676a5e5d18257e",
+      "task_20260510202321",
+      "task_20260511104323",
+      "task_20260511112019",
+      "task_20260513161047",
+      "task_20260609193335",
+      "task_20260609230145"
+    ],
+    "record_limit": null
+  },
+  "source": {
+    "initial_seed_path": "~/Documents/logs/trajectory.log",
+    "kind": "aworld_trajectory_log",
+    "path": "tests/self_evolve/fixtures/credit_assignment_cases/sample_trajectory.log",
+    "sha256": "8a5d3e3224436ad29d0d606f4273708d0fff8ac32c9b10f382024f4c94e4e9f3"
+  },
+  "split_seed": "self-evolve-credit-assignment-2026-06-09-v1",
+  "splits": {
+    "held_out": [
+      "trajectory-log-process-cleanup-success",
+      "trajectory-log-x-login-skill-guidance",
+      "trajectory-log-validation-prompt-section",
+      "trajectory-log-skill-tool-description",
+      "trajectory-log-cdp-config",
+      "trajectory-log-btc-monitor-artifact",
+      "trajectory-log-ambiguous-no-target"
+    ],
+    "train": [
+      "trajectory-log-health-report-success"
+    ],
+    "validation": [
+      "trajectory-log-podcast-summary-success"
+    ]
+  },
+  "version": 1
+}

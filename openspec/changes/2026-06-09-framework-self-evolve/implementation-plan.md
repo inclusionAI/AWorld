@@ -123,7 +123,7 @@ Add the remaining files only after the phase-1a slice proves useful:
 - Create: `tests/self_evolve/test_credit_assignment_spike.py`
 - Optional scratch script: `scripts/self_evolve_credit_assignment_spike.py`
 
-- [ ] **Step 1: Collect real trajectory fixtures**
+- [x] **Step 1: Collect real trajectory fixtures**
 
 Collect a small, reviewable set of real trajectories that cover successful
 runs, skill guidance failures, prompt misunderstanding, tool misuse,
@@ -133,7 +133,7 @@ extract a sanitized fixture set into
 `tests/self_evolve/fixtures/credit_assignment_cases/`. Do not make tests depend
 on the developer-local path after fixture generation.
 
-- [ ] **Step 1A: Seed the first regression benchmark**
+- [x] **Step 1A: Seed the first regression benchmark**
 
 Parse task records from `~/Documents/logs/trajectory.log` into regression
 benchmark cases with stable case ids, source task ids, expected observable
@@ -141,23 +141,30 @@ outcomes, and optional deterministic verification commands. Persist a dataset
 recipe that records source path, content fingerprint, extraction filters, split
 seed, and train/validation/held-out case ids.
 
-- [ ] **Step 2: Add manual labels**
+- [x] **Step 2: Add manual labels**
 
 For each fixture, record the expected target type/id or `no_target`, the
 human-readable rationale, and evidence step ids.
 
-- [ ] **Step 3: Measure target-selection quality**
+- [x] **Step 3: Measure target-selection quality**
 
 Run deterministic signals plus optional LLM-assisted diagnosis and report
 precision/recall for target selection and `no_target` rejection. The output must
 include false-positive and false-negative examples.
 
-- [ ] **Step 4: Make the go/no-go decision explicit**
+- [x] **Step 4: Make the go/no-go decision explicit**
 
 Do not start candidate generation, async scheduling, broad provenance work,
 non-skill targets, DSPy adapters, or online automatic apply until the spike
 meets the configured acceptance threshold. If it fails, continue only with
 diagnostics and explicit-target proposal experiments.
+
+Result: `tests/self_evolve/fixtures/credit_assignment_cases/spike_report.json`
+records a `go` decision for the minimized benchmark with all required target
+types covered and target-selection thresholds met. Proceed only to the phase-1a
+explicit-target proposal-only slice next; async scheduling, broad provenance
+expansion, DSPy adapters, non-skill target expansion, and online automatic apply
+remain deferred.
 
 ---
 

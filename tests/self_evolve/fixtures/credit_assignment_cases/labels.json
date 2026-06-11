@@ -1,0 +1,111 @@
+{
+  "labels": [
+    {
+      "case_id": "trajectory-log-health-report-success",
+      "evidence_step_ids": [
+        "step-1",
+        "step-81"
+      ],
+      "expected_target": {
+        "id": "successful_health_report_run",
+        "type": "no_target"
+      },
+      "rationale": "The trajectory completed the requested health report and does not provide evidence that a harness target should be changed."
+    },
+    {
+      "case_id": "trajectory-log-podcast-summary-success",
+      "evidence_step_ids": [
+        "step-1",
+        "step-10"
+      ],
+      "expected_target": {
+        "id": "successful_podcast_summary_run",
+        "type": "no_target"
+      },
+      "rationale": "The trajectory produced the requested podcast summary using the configured browser path; no failed skill, prompt, tool, config, or artifact target is evident."
+    },
+    {
+      "case_id": "trajectory-log-process-cleanup-success",
+      "evidence_step_ids": [
+        "step-1",
+        "step-3"
+      ],
+      "expected_target": {
+        "id": "successful_process_cleanup_run",
+        "type": "no_target"
+      },
+      "rationale": "The trajectory inspected and cleaned the requested processes, then verified the outcome; no self-evolve target should be selected from this success case."
+    },
+    {
+      "case_id": "trajectory-log-x-login-skill-guidance",
+      "evidence_step_ids": [
+        "step-1",
+        "step-11"
+      ],
+      "expected_target": {
+        "id": "agent-browser-cdp-login-guidance",
+        "type": "skill"
+      },
+      "rationale": "The run repeatedly concluded the user was not logged in even though the user reported an existing logged-in Chrome session. The likely improvement target is the browser/CDP skill guidance for reusing the correct logged-in profile."
+    },
+    {
+      "case_id": "trajectory-log-validation-prompt-section",
+      "evidence_step_ids": [
+        "step-1",
+        "step-9"
+      ],
+      "expected_target": {
+        "id": "result-validation-anchor-policy",
+        "type": "prompt-section"
+      },
+      "rationale": "The trajectory ended with a result-validation mismatch even after the user goal was clear. The target is the prompt section that governs source anchors and validation recovery."
+    },
+    {
+      "case_id": "trajectory-log-skill-tool-description",
+      "evidence_step_ids": [
+        "step-1"
+      ],
+      "expected_target": {
+        "id": "SKILL_tool.active_skill",
+        "type": "tool-description"
+      },
+      "rationale": "The task explicitly required activating a skill through SKILL_tool but the record contains no useful action or final result. The likely target is the tool description/schema for skill activation workflows."
+    },
+    {
+      "case_id": "trajectory-log-cdp-config",
+      "evidence_step_ids": [
+        "step-1",
+        "step-22"
+      ],
+      "expected_target": {
+        "id": "browser_cdp_port_and_profile",
+        "type": "config"
+      },
+      "rationale": "The run diagnosed a CDP/login mismatch around an already-running browser. The likely target is explicit harness configuration for CDP port/profile reuse."
+    },
+    {
+      "case_id": "trajectory-log-btc-monitor-artifact",
+      "evidence_step_ids": [
+        "step-1",
+        "step-8"
+      ],
+      "expected_target": {
+        "id": "btc_monitor.sh",
+        "type": "workspace-artifact"
+      },
+      "rationale": "The trajectory executed an agent-produced BTC monitor script and reported API timeouts. The likely improvement target is the generated workspace artifact."
+    },
+    {
+      "case_id": "trajectory-log-ambiguous-no-target",
+      "evidence_step_ids": [
+        "step-1",
+        "step-5"
+      ],
+      "expected_target": {
+        "id": "ambiguous_user_typo_or_missing_path",
+        "type": "no_target"
+      },
+      "rationale": "The user named a script that could not be found. The trajectory lacks enough evidence to blame a skill, prompt, tool description, config, or artifact target."
+    }
+  ]
+}
