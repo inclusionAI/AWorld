@@ -7,6 +7,7 @@ from aworld.config import EvaluationConfig, ModelConfig
 from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult, EvalDataCase
 from aworld.evaluations.scorers import scorer_register
 from aworld.evaluations.scorers.base_validator import RuleScorer, LLMAsJudgeScorer
+from aworld.evaluations.scorers.state_extractors import get_trajectory
 from aworld.evaluations.types import MetricNames
 from aworld.logs.util import logger
 
@@ -70,6 +71,9 @@ Please evaluate the following Agent Trajectory:
 
 class TrajectoryValidator(RuleScorer):
     def _parse_trajectory(self, output: Any) -> Dict:
+        trajectory = get_trajectory(output)
+        if trajectory:
+            return trajectory
         if isinstance(output, dict):
             if "trajectory" in output:
                 output = output["trajectory"]
