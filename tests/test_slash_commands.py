@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
 from aworld.plugins.discovery import discover_plugins
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
-from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd
+from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd, evaluation_cmd
 from aworld_cli.console import AWorldCLI
 
 
@@ -27,7 +27,7 @@ class TestCommandRegistration:
 
     def test_commands_registered(self):
         """Verify all commands are registered."""
-        expected_commands = ['help', 'commit', 'review', 'diff', 'cron', 'plugins']
+        expected_commands = ['help', 'commit', 'review', 'diff', 'cron', 'plugins', 'evaluation']
         for cmd_name in expected_commands:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd is not None, f"Command /{cmd_name} not registered"
@@ -44,7 +44,7 @@ class TestCommandRegistration:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd.command_type == 'prompt', f"/{cmd_name} should be prompt command"
 
-        for cmd_name in ['cron', 'plugins']:
+        for cmd_name in ['cron', 'plugins', 'evaluation']:
             tool_cmd = CommandRegistry.get(cmd_name)
             assert tool_cmd.command_type == 'tool'
 
@@ -59,6 +59,7 @@ class TestCommandRegistration:
         assert 'diff' in command_names
         assert 'cron' in command_names
         assert 'plugins' in command_names
+        assert 'evaluation' in command_names
 
 
 class TestHelpCommand:
@@ -79,6 +80,7 @@ class TestHelpCommand:
         assert '/review' in result
         assert '/diff' in result
         assert '/plugins' in result
+        assert '/evaluation' in result
 
     @pytest.mark.asyncio
     async def test_help_command_with_args(self):
@@ -550,8 +552,183 @@ class TestCronCommand:
         assert remaining[0].job_id == "job-2"
 
 
+class TestEvaluationCommand:
+    """Test /evaluation command direct execution."""
+
+    @pytest.mark.asyncio
+    async def test_evaluation_without_args_shows_usage(self):
+        cmd = CommandRegistry.get("evaluation")
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args=""))
+
+        assert "Usage:" in result
+        assert "/evaluation --input" in result
+        assert "--kind trajectory" in result
+
+    @pytest.mark.asyncio
+    async def test_evaluation_delegates_to_source_runtime(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("evaluation")
+        input_path = tmp_path / "trajectory.log"
+        agent_path = tmp_path / "agent.md"
+        calls = {}
+
+        def fake_run_evaluator_source_cli(**kwargs):
+            calls.update(kwargs)
+            return {
+                "suite_id": "trajectory-source-evaluator",
+                "gate": {"status": "pass"},
+                "summary": {"trajectory-source-evaluator": {"score": {"mean": 88.0}}},
+                "results": [],
+                "approval": {"required": False, "resolved": False, "approved": None},
+                "report_path": str(tmp_path / "report.json"),
+            }
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.evaluation_cmd.run_evaluator_source_cli",
+            fake_run_evaluator_source_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=os.getcwd(),
+                user_args=(
+                    f"--input {input_path} --kind trajectory "
+                    f"--task-id task-1 --judge-agent {agent_path} --out-dir {tmp_path}"
+                ),
+            )
+        )
+
+        assert calls["input"] == str(input_path)
+        assert calls["kind"] == "trajectory"
+        assert calls["task_id"] == "task-1"
+        assert calls["judge_agent"] == str(agent_path)
+        assert calls["judge_agent_name"] is None
+        assert calls["judge_backend_ref"] is None
+        assert calls["out_dir"] == str(tmp_path)
+        assert "trajectory-source-evaluator" in result
+        assert "Report:" in result
+
+    @pytest.mark.asyncio
+    async def test_evaluation_accepts_judge_agent_name(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("evaluation")
+        input_path = tmp_path / "answers.jsonl"
+        calls = {}
+
+        def fake_run_evaluator_source_cli(**kwargs):
+            calls.update(kwargs)
+            return {
+                "suite_id": "answer-source-evaluator",
+                "gate": {"status": "pass"},
+                "summary": {"answer-source-evaluator": {"score": {"mean": 88.0}}},
+                "results": [],
+                "approval": {"required": False, "resolved": False, "approved": None},
+                "report_path": str(tmp_path / "report.json"),
+            }
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.evaluation_cmd.run_evaluator_source_cli",
+            fake_run_evaluator_source_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=os.getcwd(),
+                user_args=f"--input {input_path} --kind answer --judge-agent-name JudgeTeam",
+            )
+        )
+
+        assert calls["judge_agent"] is None
+        assert calls["judge_agent_name"] == "JudgeTeam"
+        assert calls["judge_backend_ref"] is None
+        assert "answer-source-evaluator" in result
+
+    @pytest.mark.asyncio
+    async def test_evaluation_accepts_judge_backend_ref(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("evaluation")
+        input_path = tmp_path / "answers.jsonl"
+        calls = {}
+
+        def fake_run_evaluator_source_cli(**kwargs):
+            calls.update(kwargs)
+            return {
+                "suite_id": "answer-source-evaluator",
+                "gate": {"status": "pass"},
+                "summary": {"answer-source-evaluator": {"score": {"mean": 88.0}}},
+                "results": [],
+                "approval": {"required": False, "resolved": False, "approved": None},
+                "report_path": str(tmp_path / "report.json"),
+            }
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.evaluation_cmd.run_evaluator_source_cli",
+            fake_run_evaluator_source_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=os.getcwd(),
+                user_args=f"--input {input_path} --kind answer --judge-backend-ref custom_judge:build_backend",
+            )
+        )
+
+        assert calls["judge_agent"] is None
+        assert calls["judge_agent_name"] is None
+        assert calls["judge_backend_ref"] == "custom_judge:build_backend"
+        assert "answer-source-evaluator" in result
+
+    @pytest.mark.asyncio
+    async def test_evaluation_runs_source_runtime_without_nested_event_loop(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("evaluation")
+        input_path = tmp_path / "answers.jsonl"
+        input_path.write_text('{"id":"case-1","input":"question","answer":"answer"}\n', encoding="utf-8")
+        agent_path = tmp_path / "agent.md"
+        agent_path.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+
+        async def fake_run_evaluation_flow(flow):
+            return {
+                "report_version": 1,
+                "report_format": {"id": "aworld.evaluator.report", "version": 1},
+                "generated_at": "2026-06-10T00:00:00Z",
+                "suite_id": "answer-source-evaluator",
+                "target": flow.target,
+                "judge_backend": {"backend_id": "source-agent-md"},
+                "summary": {"answer-source-evaluator": {"score": {"mean": 88.0}}},
+                "metrics": {"score": {"mean": 88.0}},
+                "results": [],
+                "result_counts": {"cases_total": 0, "cases_with_metrics": 0, "cases_with_judge": 0},
+                "gate": {"status": "pass", "metric_name": "score", "value": 88.0},
+                "approval": {"required": False, "resolved": False, "approved": None},
+            }
+
+        monkeypatch.setattr("aworld_cli.evaluator_runtime._load_evaluator_hooks", lambda: {})
+        monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=os.getcwd(),
+                user_args=(
+                    f"--input {input_path} --kind answer "
+                    f"--judge-agent {agent_path} --output {tmp_path / 'report.json'}"
+                ),
+            )
+        )
+
+        assert "answer-source-evaluator" in result
+        assert "Report:" in result
+
+
 class TestSlashCommandCompletion:
     """Test slash command completion sources."""
+
+    def test_console_completion_entries_include_evaluation_command(self):
+        cli = AWorldCLI()
+
+        words, meta = cli._build_completion_entries(agent_names=[])
+
+        assert "/evaluation" in words
+        assert "/evaluation --kind answer" in words
+        assert "/evaluation --kind trajectory" in words
+        assert meta["/evaluation"] == "Run evaluator flows"
 
     def test_console_completion_entries_include_cron_subcommands(self):
         """Typing /cron should expose concrete cron subcommands in the completer source."""

@@ -165,6 +165,7 @@ team_implementation_analysis.md
 # Temporary AI-generated artifacts
 ai_news_today.*
 survey/
+eval/
 
 # OpenSpec design docs (not runtime)
 openspec/
@@ -177,4 +178,3 @@ openspec/
 *.tmp
 __pycache__/
 *.pyc
-

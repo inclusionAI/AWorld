@@ -126,6 +126,8 @@ class EvaluateRunner(Runner):
         Returns:
             EvalDataset
         """
+        if getattr(eval_config, "eval_dataset", None) is not None:
+            return eval_config.eval_dataset
         if self._is_file_path(eval_config.eval_dataset_id_or_file_path):
             dataset = Dataset[Dict[str, Any]](name="my_dataset", data=[])
             preload_transform = None
