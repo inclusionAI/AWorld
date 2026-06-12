@@ -6,10 +6,12 @@ import inspect
 import json
 import time
 import traceback
+from collections.abc import Mapping
 from functools import partial
 from typing import List, Callable, Any, AsyncGenerator
 
 import aworld.trace as trace
+from aworld.config.conf import SelfEvolveConfig
 from aworld.core.agent.base import BaseAgent, is_agent_by_name, AgentFactory
 from aworld.core.common import TaskItem, ActionModel, Observation
 from aworld.core.context.amni import AmniContext, ApplicationContext
@@ -26,6 +28,7 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.post_tool_progress import WATCHDOG_STATE_KEY, increment_watchdog_metric
 from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
+from aworld.self_evolve.scheduler import SelfEvolveRunContext, SelfEvolveScheduler
 from aworld.trace.base import get_trace_id
 from aworld.trace.instrumentation import semconv
 from aworld.models.usage import normalize_usage, summarize_prompt_cache_usage
@@ -159,6 +162,7 @@ class TaskEventRunner(TaskRunner):
                 await self._do_run()
                 await self._save_trajectories()
                 resp = self._response()
+                self._enqueue_self_evolve_after_response(resp)
                 time_cost = time.time() - self.start_time
                 token_usage = self._current_token_usage()
                 logger.info(
@@ -743,6 +747,79 @@ class TaskEventRunner(TaskRunner):
         self._task_response.llm_calls = copy.deepcopy(self.context.context_info.get("llm_calls", []))
         self._task_response.trace_id = get_trace_id()
         return self._task_response
+
+    def _enqueue_self_evolve_after_response(self, response: TaskResponse) -> TaskResponse:
+        try:
+            agent = self._self_evolve_agent()
+            if agent is None:
+                return response
+            config = self._self_evolve_config(agent)
+            if config is None:
+                return response
+
+            workspace_root = (
+                getattr(self.context, "workspace_path", None)
+                or getattr(getattr(agent, "conf", None), "working_dir", None)
+                or "."
+            )
+            context = SelfEvolveRunContext(
+                agent_id=self._self_evolve_agent_id(agent),
+                task_id=self.task.id,
+                workspace_root=str(workspace_root),
+                trajectory=tuple(getattr(response, "trajectory", None) or ()),
+                self_evolve_config=config,
+                source_hints={
+                    "session_id": getattr(self.context, "session_id", None),
+                    "llm_calls": copy.deepcopy(getattr(response, "llm_calls", None) or []),
+                },
+            )
+            SelfEvolveScheduler(workspace_root=workspace_root).enqueue(context)
+        except Exception as exc:
+            logger.warning(f"Self-evolve post-run enqueue failed for task {self.task.id}: {exc}")
+        return response
+
+    def _self_evolve_agent(self):
+        agent = getattr(self.task, "agent", None)
+        if agent is not None:
+            return agent
+        swarm = getattr(self, "swarm", None) or getattr(self.task, "swarm", None)
+        if swarm is None:
+            return None
+        communicate_agent = getattr(swarm, "communicate_agent", None)
+        if isinstance(communicate_agent, (list, tuple)) and communicate_agent:
+            return communicate_agent[0]
+        if communicate_agent is not None:
+            return communicate_agent
+        agents = getattr(swarm, "agents", None)
+        if isinstance(agents, Mapping) and agents:
+            return next(iter(agents.values()))
+        return None
+
+    def _self_evolve_agent_id(self, agent) -> str:
+        agent_id = getattr(agent, "id", None)
+        if callable(agent_id):
+            return str(agent_id())
+        if agent_id is not None:
+            return str(agent_id)
+        name = getattr(agent, "name", None)
+        if callable(name):
+            return str(name())
+        if name is not None:
+            return str(name)
+        return "unknown-agent"
+
+    def _self_evolve_config(self, agent) -> SelfEvolveConfig | None:
+        config = getattr(getattr(agent, "conf", None), "self_evolve_config", None)
+        if config is None:
+            return None
+        if isinstance(config, SelfEvolveConfig):
+            return config
+        if isinstance(config, Mapping):
+            return SelfEvolveConfig(**dict(config))
+        model_dump = getattr(config, "model_dump", None)
+        if callable(model_dump):
+            return SelfEvolveConfig(**model_dump())
+        return None
 
     async def _save_trajectories(self):
         try:

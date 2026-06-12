@@ -1,0 +1,1 @@
+{"case_id":"login-retry-1","input":"User login intermittently fails after a transient timeout.","expected_output":"The agent should retry once, preserve session context, and report a clear failure if retry also fails.","verification_command":"python -m pytest tests/login/test_retry.py -q","metadata":{"target":"skill:login"}}

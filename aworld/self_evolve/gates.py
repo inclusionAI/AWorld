@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
+from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
 
 
@@ -91,6 +93,21 @@ class NoopCandidateGate:
             gate_name="noop_candidate",
             passed=changed,
             reason="candidate changes target content" if changed else "candidate content is unchanged",
+        )
+
+
+class MalformedCandidateGate:
+    def evaluate(self, candidate: CandidateVariant) -> GateResult:
+        if not candidate.content.strip():
+            return GateResult(
+                gate_name="malformed_candidate",
+                passed=False,
+                reason="candidate content is empty",
+            )
+        return GateResult(
+            gate_name="malformed_candidate",
+            passed=True,
+            reason="candidate content is non-empty",
         )
 
 
@@ -186,6 +203,31 @@ class BudgetGate:
         )
 
 
+class RequiredVerificationGate:
+    def evaluate(self, summary: EvaluationSummary) -> GateResult:
+        command_case_count = int(_number_metric(summary.metrics, "command_case_count") or 0)
+        command_pass_count = int(_number_metric(summary.metrics, "command_pass_count") or 0)
+        if command_case_count <= 0:
+            return GateResult(
+                gate_name="required_verification",
+                passed=False,
+                reason="required deterministic verification command was not run",
+            )
+        if command_pass_count != command_case_count:
+            return GateResult(
+                gate_name="required_verification",
+                passed=False,
+                reason="required verification commands did not all pass",
+                details={"command_case_count": command_case_count, "command_pass_count": command_pass_count},
+            )
+        return GateResult(
+            gate_name="required_verification",
+            passed=True,
+            reason="required verification commands passed",
+            details={"command_case_count": command_case_count, "command_pass_count": command_pass_count},
+        )
+
+
 class JudgeOnlySignalGate:
     def evaluate(self, decision: CandidateConfidenceDecision) -> GateResult:
         passed = decision.deterministic_signal_present
@@ -198,6 +240,160 @@ class JudgeOnlySignalGate:
                 else "judge-only improvements remain limited confidence"
             ),
             details={"confidence": decision.confidence},
+        )
+
+
+@dataclass(frozen=True)
+class StoppingConditionState:
+    iteration: int = 0
+    stalled_iterations: int = 0
+    pending_duplicate: bool = False
+    cooldown_remaining_seconds: int = 0
+    repeated_gate_failures: int = 0
+
+
+class StoppingConditionGate:
+    def __init__(
+        self,
+        *,
+        max_iterations: int,
+        max_stalled_iterations: int,
+        max_repeated_gate_failures: int,
+    ) -> None:
+        self.max_iterations = max_iterations
+        self.max_stalled_iterations = max_stalled_iterations
+        self.max_repeated_gate_failures = max_repeated_gate_failures
+
+    def evaluate(self, state: StoppingConditionState) -> GateResult:
+        if state.iteration >= self.max_iterations:
+            return GateResult(
+                gate_name="stopping_condition",
+                passed=False,
+                reason="max iteration limit reached",
+            )
+        if state.stalled_iterations >= self.max_stalled_iterations:
+            return GateResult(
+                gate_name="stopping_condition",
+                passed=False,
+                reason="stalled improvement limit reached",
+            )
+        if state.pending_duplicate:
+            return GateResult(
+                gate_name="stopping_condition",
+                passed=False,
+                reason="duplicate pending proposal exists",
+            )
+        if state.cooldown_remaining_seconds > 0:
+            return GateResult(
+                gate_name="stopping_condition",
+                passed=False,
+                reason="target is in cooldown",
+                details={"cooldown_remaining_seconds": state.cooldown_remaining_seconds},
+            )
+        if state.repeated_gate_failures >= self.max_repeated_gate_failures:
+            return GateResult(
+                gate_name="stopping_condition",
+                passed=False,
+                reason="repeated gate failure limit reached",
+            )
+        return GateResult(
+            gate_name="stopping_condition",
+            passed=True,
+            reason="stopping conditions allow another iteration",
+        )
+
+
+class HeldOutVerificationGate:
+    def __init__(self, *, min_eval_cases: int) -> None:
+        self.min_eval_cases = min_eval_cases
+
+    def evaluate(self, decision: CandidateConfidenceDecision) -> GateResult:
+        passed = (
+            decision.confidence == "verified"
+            and decision.verification_split == "held_out"
+            and decision.held_out_case_count >= self.min_eval_cases
+            and decision.deterministic_signal_present
+        )
+        return GateResult(
+            gate_name="held_out_verification",
+            passed=passed,
+            reason=(
+                "candidate is verified on sufficient held-out cases"
+                if passed
+                else "candidate is not verified on sufficient held-out cases"
+            ),
+            details={
+                "confidence": decision.confidence,
+                "held_out_case_count": decision.held_out_case_count,
+                "min_eval_cases": self.min_eval_cases,
+                "verification_split": decision.verification_split,
+            },
+        )
+
+
+class TrustProvenanceGate:
+    _GENERATED_OR_EXTERNAL_TRUST_LEVELS = {"generated", "external"}
+    _GENERATED_OR_EXTERNAL_ORIGINS = {"agent_generated_artifact", "external"}
+
+    def __init__(self, *, allow_generated: bool = False, allow_external: bool = False) -> None:
+        self.allow_generated = allow_generated
+        self.allow_external = allow_external
+
+    def evaluate(self, provenance: TargetProvenance) -> GateResult:
+        if provenance.protected:
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="protected target provenance cannot be mutated",
+            )
+        if (
+            provenance.trust_level == "generated"
+            or provenance.write_origin == "agent_generated_artifact"
+        ) and not self.allow_generated:
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="generated target requires explicit trust policy",
+            )
+        if (
+            provenance.trust_level == "external"
+            or provenance.write_origin == "external"
+        ) and not self.allow_external:
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="external target requires explicit trust policy",
+            )
+        return GateResult(
+            gate_name="trust_provenance",
+            passed=True,
+            reason="target provenance satisfies trust policy",
+        )
+
+
+class GlobalRegressionBenchmarkGate:
+    _REQUIRES_REGRESSION_TARGET_TYPES = {"skill", "prompt-section", "tool-description"}
+
+    def evaluate(
+        self,
+        candidate: CandidateVariant,
+        summary: EvaluationSummary,
+    ) -> GateResult:
+        if candidate.target.target_type not in self._REQUIRES_REGRESSION_TARGET_TYPES:
+            return GateResult(
+                gate_name="global_regression_benchmark",
+                passed=True,
+                reason="target type does not require global regression benchmark",
+            )
+        passed = summary.metrics.get("global_regression_passed") is True
+        return GateResult(
+            gate_name="global_regression_benchmark",
+            passed=passed,
+            reason=(
+                "global regression benchmark passed"
+                if passed
+                else "global regression benchmark is required for verified text targets"
+            ),
         )
 
 

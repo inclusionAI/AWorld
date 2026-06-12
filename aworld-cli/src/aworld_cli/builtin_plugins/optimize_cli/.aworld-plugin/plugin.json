@@ -1,0 +1,19 @@
+{
+  "id": "aworld-optimize-cli",
+  "name": "aworld-optimize-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "optimize",
+        "name": "optimize",
+        "target": "cli_commands/optimize.py",
+        "scope": "workspace",
+        "visibility": "public",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

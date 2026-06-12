@@ -4,12 +4,20 @@ from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCos
 from aworld.self_evolve.gates import (
     BudgetGate,
     CostLatencyRegressionGate,
+    GlobalRegressionBenchmarkGate,
+    HeldOutVerificationGate,
     JudgeOnlySignalGate,
+    MalformedCandidateGate,
     NoopCandidateGate,
     ProtectedPathGate,
+    RequiredVerificationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
+    StoppingConditionGate,
+    StoppingConditionState,
+    TrustProvenanceGate,
 )
+from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
 
 
@@ -78,6 +86,40 @@ def test_noop_and_skill_markdown_gates_reject_bad_candidates() -> None:
     assert SkillMarkdownGate().evaluate(
         _candidate("---\nname: demo\n---\n# Demo\n\nUpdated guidance.\n")
     ).passed is True
+    assert MalformedCandidateGate().evaluate(_candidate("")).passed is False
+    assert MalformedCandidateGate().evaluate(_candidate("Updated guidance.")).passed is True
+
+
+def test_required_verification_gate_requires_all_commands_to_pass() -> None:
+    gate = RequiredVerificationGate()
+
+    passed = gate.evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "deterministic_signal": True,
+                "command_case_count": 2,
+                "command_pass_count": 2,
+            },
+        )
+    )
+    failed = gate.evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "deterministic_signal": True,
+                "command_case_count": 2,
+                "command_pass_count": 1,
+            },
+        )
+    )
+    missing = gate.evaluate(EvaluationSummary(variant_id="cand-1", metrics={}))
+
+    assert passed.passed is True
+    assert failed.passed is False
+    assert failed.reason == "required verification commands did not all pass"
+    assert missing.passed is False
+    assert missing.reason == "required deterministic verification command was not run"
 
 
 def test_protected_path_gate_blocks_product_and_app_evaluator_paths() -> None:
@@ -118,3 +160,108 @@ def test_budget_and_judge_only_gates_downgrade_or_reject() -> None:
     result = judge_gate.evaluate(decision)
     assert result.passed is False
     assert result.reason == "judge-only improvements remain limited confidence"
+
+
+def test_stopping_condition_gate_rejects_iteration_stall_duplicate_failure_and_cooldown() -> None:
+    gate = StoppingConditionGate(
+        max_iterations=3,
+        max_stalled_iterations=2,
+        max_repeated_gate_failures=2,
+    )
+
+    assert gate.evaluate(StoppingConditionState(iteration=3)).passed is False
+    assert gate.evaluate(StoppingConditionState(stalled_iterations=2)).reason == "stalled improvement limit reached"
+    assert gate.evaluate(StoppingConditionState(pending_duplicate=True)).reason == "duplicate pending proposal exists"
+    assert gate.evaluate(StoppingConditionState(cooldown_remaining_seconds=60)).reason == "target is in cooldown"
+    assert gate.evaluate(StoppingConditionState(repeated_gate_failures=2)).reason == "repeated gate failure limit reached"
+    assert gate.evaluate(StoppingConditionState(iteration=1)).passed is True
+
+
+def test_held_out_and_global_regression_gates_require_independent_verification() -> None:
+    held_out_gate = HeldOutVerificationGate(min_eval_cases=2)
+
+    limited = held_out_gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="limited",
+            reason="insufficient held-out eval cases for verified confidence",
+            selection_split="validation",
+            verification_split=None,
+            deterministic_signal_present=True,
+            held_out_case_count=1,
+        )
+    )
+    verified = held_out_gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="verified",
+            reason="held-out deterministic evaluation is sufficient",
+            selection_split="validation",
+            verification_split="held_out",
+            deterministic_signal_present=True,
+            held_out_case_count=2,
+        )
+    )
+
+    assert limited.passed is False
+    assert limited.reason == "candidate is not verified on sufficient held-out cases"
+    assert verified.passed is True
+
+    regression_gate = GlobalRegressionBenchmarkGate()
+    assert regression_gate.evaluate(
+        _candidate("x"),
+        EvaluationSummary(variant_id="cand-1", metrics={"global_regression_passed": False}),
+    ).passed is False
+    assert regression_gate.evaluate(
+        _candidate("x"),
+        EvaluationSummary(variant_id="cand-1", metrics={"global_regression_passed": True}),
+    ).passed is True
+    assert regression_gate.evaluate(
+        CandidateVariant(
+            candidate_id="cand-1",
+            target=SelfEvolveTargetRef(target_type="workspace-artifact", target_id="demo"),
+            content="x",
+            rationale="test",
+        ),
+        EvaluationSummary(variant_id="cand-1", metrics={}),
+    ).passed is True
+
+
+def test_trust_provenance_gate_rejects_protected_generated_and_external_targets() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    gate = TrustProvenanceGate()
+
+    protected = gate.evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind="skill",
+            write_origin="repository",
+            trust_level="protected",
+            protected=True,
+            reason="read-only",
+        )
+    )
+    generated = gate.evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind="workspace_artifact",
+            write_origin="agent_generated_artifact",
+            trust_level="generated",
+            protected=False,
+            reason="generated artifact",
+        )
+    )
+    trusted = gate.evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind="skill",
+            write_origin="repository",
+            trust_level="local",
+            protected=False,
+            reason="local skill",
+        )
+    )
+
+    assert protected.passed is False
+    assert protected.reason == "protected target provenance cannot be mutated"
+    assert generated.passed is False
+    assert generated.reason == "generated target requires explicit trust policy"
+    assert trusted.passed is True

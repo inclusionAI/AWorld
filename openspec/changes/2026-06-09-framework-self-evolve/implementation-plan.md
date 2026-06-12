@@ -520,7 +520,7 @@ failure-case ids used, and candidate ancestry in run artifacts.
 
 - [x] **Step 2: Add cost/latency regression gate**
 
-- [ ] **Step 3: Add no-op and malformed-candidate gate**
+- [x] **Step 3: Add no-op and malformed-candidate gate**
 
 - [x] **Step 4: Add skill markdown/frontmatter gate**
 
@@ -536,7 +536,7 @@ Reject candidates and inferred targets that would modify
 `aworld-skills/app_evaluator/SKILL.md`. The skill may only be used as an
 explicitly configured read-only scorer/fixture.
 
-- [ ] **Step 6: Add stopping condition gates**
+- [x] **Step 6: Add stopping condition gates**
 
 Cover max iterations, no meaningful improvement, pending proposal duplicate
 suppression, repeated gate failure, and cooldown.
@@ -548,17 +548,17 @@ baseline/candidate evaluation, judge repetitions, and verification.
 Include preflight replay-cost estimation for baseline and candidate task
 re-execution; do not start a batch that is already projected to exceed budget.
 
-- [ ] **Step 8: Add held-out verification gate**
+- [x] **Step 8: Add held-out verification gate**
 
 Only mark a candidate as verified when it passes held-out test evaluation under
 the configured minimum improvement and variance policy.
 
-- [ ] **Step 9: Add trust and provenance gates**
+- [x] **Step 9: Add trust and provenance gates**
 
 Reject or downgrade candidates from generated, external, or protected targets
 unless their trust policy, content scan, and protected-path checks pass.
 
-- [ ] **Step 10: Add global target regression benchmark gates**
+- [x] **Step 10: Add global target regression benchmark gates**
 
 For `SkillTextTarget`, `PromptSectionTarget`, and `ToolDescriptionTarget`, a
 candidate cannot be marked verified unless it passes a configured regression
@@ -570,7 +570,7 @@ trajectory.
 If all positive signal comes from LLM judge output, persist the proposal but do
 not mark it verified.
 
-- [ ] **Step 12: Add post-apply re-evaluation and rollback gates**
+- [x] **Step 12: Add post-apply re-evaluation and rollback gates**
 
 For `auto_verified`, re-run required gates after application. Accept only when
 post-apply metrics still pass; otherwise roll back or mark rejected according to
@@ -609,7 +609,7 @@ Flow:
 
 - [x] **Step 3: Verify proposal-only does not mutate target**
 
-- [ ] **Step 4: Verify online auto-evolve apply path**
+- [x] **Step 4: Verify online auto-evolve apply path**
 
 Cover a fake allowlisted `SkillTextTarget` candidate that passes gates, applies,
 persists post-apply metrics, and is accepted. Cover a post-apply regression that
@@ -630,12 +630,12 @@ Cover max iterations, no candidate improvement, and duplicate pending proposal.
 - Modify: `aworld/runners/event_runner.py`
 - Test: `tests/self_evolve/test_scheduler.py`
 
-- [ ] **Step 1: Define run context and scheduler protocol**
+- [x] **Step 1: Define run context and scheduler protocol**
 
 Capture agent id/config, task metadata, current trajectory reference, workspace,
 and optional source hints.
 
-- [ ] **Step 2: Implement best-effort enqueue**
+- [x] **Step 2: Implement best-effort enqueue**
 
 Eligibility:
 
@@ -661,7 +661,7 @@ that can be drained by an explicit optimize invocation using the same command
 path. The worker calls `SelfEvolveRunner` outside the main task response path
 and persists failure artifacts if a run has been created.
 
-- [ ] **Step 4: Test non-blocking behavior**
+- [x] **Step 4: Test non-blocking behavior**
 
 Prove enqueue and worker failures do not alter task response status or answer.
 
@@ -677,7 +677,7 @@ Prove enqueue and worker failures do not alter task response status or answer.
   `aworld-cli/src/aworld_cli/builtin_plugins/optimize_cli/cli_commands/optimize.py`
 - Test: `tests/cli/test_optimize_command.py`
 
-- [ ] **Step 1: Add parser tests**
+- [x] **Step 1: Add parser tests**
 
 Cover:
 
@@ -706,7 +706,7 @@ The single CLI command should construct framework config and call
 `SelfEvolveRunner`, not own optimizer logic or split target types into separate
 commands.
 
-- [ ] **Step 3: Print report path and best candidate summary**
+- [x] **Step 3: Print report path and best candidate summary**
 
 ---
 
@@ -735,28 +735,28 @@ semantics without reinterpreting mode in CLI code.
 - Add or modify docs under `docs/Agents/` or `docs/AWorld CLI/Commands/`
 - Add minimal example under `examples/aworld_quick_start/self_evolve/`
 
-- [ ] **Step 1: Document framework concepts**
+- [x] **Step 1: Document framework concepts**
 
 State explicitly that phase-1 self-evolve means harness-text/config evolution,
 not model-weight training, replacement of the agent policy, or
 framework/runtime/CLI product-code evolution.
 
-- [ ] **Step 2: Document async post-run behavior**
+- [x] **Step 2: Document async post-run behavior**
 
 Explain that self-evolve runs in the background and cannot affect the completed
 task result. Also document that a single current trajectory usually produces a
 limited-confidence proposal unless independent eval sources and a
 deterministic/objective signal are configured.
 
-- [ ] **Step 3: Document boundary with existing evolve/training assets**
+- [x] **Step 3: Document boundary with existing evolve/training assets**
 
-- [ ] **Step 4: Document CLI usage**
+- [x] **Step 4: Document CLI usage**
 
 State that `aworld-cli optimize` is the only phase-1 CLI entrypoint and that CLI
 invokes framework self-evolve APIs without owning scheduler, evaluator,
 optimizer, target inference, or agent opt-in logic.
 
-- [ ] **Step 5: Add toy trajectory-driven optimization example**
+- [x] **Step 5: Add toy trajectory-driven optimization example**
 
 - [ ] **Step 6: Document app_evaluator boundary**
 

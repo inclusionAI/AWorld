@@ -4,5 +4,6 @@ Use slash commands inside interactive AWorld CLI sessions to inspect workspace s
 
 Available command references:
 
-- [Evaluator](/Users/wuman/Documents/workspace/aworld-mas/aworld/docs/AWorld%20CLI/Commands/Evaluator.md): suite-backed evaluation, schema export, and report validation
-- [Gateway](/Users/wuman/Documents/workspace/aworld-mas/aworld/docs/AWorld%20CLI/Commands/Gateway.md): multi-channel gateway lifecycle and command bridge behavior
+- [Evaluator](Evaluator.md): suite-backed evaluation, schema export, and report validation
+- [Optimize](Optimize.md): manual self-evolve proposal and auto-verified request entrypoint
+- [Gateway](Gateway.md): multi-channel gateway lifecycle and command bridge behavior
