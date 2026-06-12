@@ -4,17 +4,21 @@ from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCos
 from aworld.self_evolve.gates import (
     BudgetGate,
     CostLatencyRegressionGate,
+    ExternalCodeEvolutionGate,
     GlobalRegressionBenchmarkGate,
     HeldOutVerificationGate,
     JudgeOnlySignalGate,
     MalformedCandidateGate,
     NoopCandidateGate,
+    PromptSectionGate,
     ProtectedPathGate,
     RequiredVerificationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
     StoppingConditionGate,
     StoppingConditionState,
+    TokenLimitGate,
+    ToolDescriptionGate,
     TrustProvenanceGate,
 )
 from aworld.self_evolve.provenance import TargetProvenance
@@ -88,6 +92,16 @@ def test_noop_and_skill_markdown_gates_reject_bad_candidates() -> None:
     ).passed is True
     assert MalformedCandidateGate().evaluate(_candidate("")).passed is False
     assert MalformedCandidateGate().evaluate(_candidate("Updated guidance.")).passed is True
+
+
+def test_prompt_tool_token_and_external_code_candidate_gates() -> None:
+    assert PromptSectionGate().evaluate(_candidate("Follow these steps clearly.")).passed is True
+    assert PromptSectionGate().evaluate(_candidate("")).passed is False
+    assert ToolDescriptionGate().evaluate(_candidate("Use browser to inspect authenticated state.")).passed is True
+    assert ToolDescriptionGate().evaluate(_candidate("bad")).passed is False
+    assert TokenLimitGate(max_chars=12).evaluate(_candidate("short text")).passed is True
+    assert TokenLimitGate(max_chars=4).evaluate(_candidate("too long")).passed is False
+    assert ExternalCodeEvolutionGate().evaluate(_candidate("import darwinian_evolve")).passed is False
 
 
 def test_required_verification_gate_requires_all_commands_to_pass() -> None:

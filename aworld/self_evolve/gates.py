@@ -128,6 +128,81 @@ class SkillMarkdownGate:
         )
 
 
+class PromptSectionGate:
+    def evaluate(self, candidate: CandidateVariant) -> GateResult:
+        content = candidate.content.strip()
+        passed = bool(content) and "\x00" not in content
+        return GateResult(
+            gate_name="prompt_section",
+            passed=passed,
+            reason=(
+                "prompt section candidate is valid"
+                if passed
+                else "prompt section candidate must be non-empty text"
+            ),
+        )
+
+
+class ToolDescriptionGate:
+    def __init__(self, *, min_chars: int = 12) -> None:
+        self.min_chars = min_chars
+
+    def evaluate(self, candidate: CandidateVariant) -> GateResult:
+        content = " ".join(candidate.content.split())
+        passed = len(content) >= self.min_chars
+        return GateResult(
+            gate_name="tool_description",
+            passed=passed,
+            reason=(
+                "tool description candidate is descriptive enough"
+                if passed
+                else "tool description candidate is too short"
+            ),
+            details={"min_chars": self.min_chars, "actual_chars": len(content)},
+        )
+
+
+class TokenLimitGate:
+    def __init__(self, *, max_chars: int) -> None:
+        self.max_chars = max_chars
+
+    def evaluate(self, candidate: CandidateVariant) -> GateResult:
+        passed = len(candidate.content) <= self.max_chars
+        return GateResult(
+            gate_name="token_limit",
+            passed=passed,
+            reason=(
+                "candidate content is within token budget"
+                if passed
+                else "candidate content exceeds token budget"
+            ),
+            details={"max_chars": self.max_chars, "actual_chars": len(candidate.content)},
+        )
+
+
+class ExternalCodeEvolutionGate:
+    _BLOCKED_PATTERNS = (
+        "darwinian_evolve",
+        "darwinian",
+        "agpl",
+        "evolution_runner",
+    )
+
+    def evaluate(self, candidate: CandidateVariant) -> GateResult:
+        lowered = candidate.content.lower()
+        blocked = next((pattern for pattern in self._BLOCKED_PATTERNS if pattern in lowered), None)
+        return GateResult(
+            gate_name="external_code_evolution",
+            passed=blocked is None,
+            reason=(
+                "candidate does not import external code-evolution adapters"
+                if blocked is None
+                else "Darwinian/code evolution must remain an external adapter"
+            ),
+            details={"blocked_pattern": blocked} if blocked is not None else None,
+        )
+
+
 class ProtectedPathGate:
     _PROTECTED_ROOTS = {
         "aworld",

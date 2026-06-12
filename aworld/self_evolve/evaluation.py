@@ -132,6 +132,52 @@ class EvaluateRunnerBackend:
         )
 
 
+class TrajectoryQualityBackend:
+    """Score basic trajectory quality from trace packs without running a model."""
+
+    async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
+        case_count = 0
+        failed_step_count = 0
+        completed_case_count = 0
+        total_step_count = 0
+
+        for case in request.dataset.cases:
+            if case.trace_pack is None:
+                continue
+            case_count += 1
+            steps = case.trace_pack.steps
+            total_step_count += len(steps)
+            if steps:
+                final_content = steps[-1].action.get("content")
+                if isinstance(final_content, str) and final_content.strip():
+                    completed_case_count += 1
+            for step in steps:
+                status = str(step.reward.get("status", "")).lower()
+                action_content = str(step.action.get("content", "")).lower()
+                if "fail" in status or "error" in status or "fail" in action_content:
+                    failed_step_count += 1
+
+        quality_score = None
+        if case_count:
+            completion_score = completed_case_count / case_count
+            failure_penalty = failed_step_count / total_step_count if total_step_count else 0.0
+            quality_score = max(0.0, min(1.0, completion_score - failure_penalty))
+
+        return EvaluationSummary(
+            variant_id=request.variant_id,
+            dataset_split=request.dataset_split,
+            metrics={
+                "trajectory_quality_signal": case_count > 0,
+                "trajectory_case_count": case_count,
+                "trajectory_step_count": total_step_count,
+                "completed_case_count": completed_case_count,
+                "failed_step_count": failed_step_count,
+                "trajectory_quality_score": quality_score,
+                "score": quality_score,
+            },
+        )
+
+
 async def evaluate_baseline_and_candidate(
     backend: EvaluationBackend,
     *,

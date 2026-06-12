@@ -272,3 +272,35 @@ def test_optimize_command_module_does_not_own_framework_self_evolve_components()
         "AgentConfig",
     }
     assert not [symbol for symbol in forbidden_framework_symbols if symbol in source]
+
+
+def test_optimize_command_does_not_define_cli_owned_self_evolve_mode(capsys: pytest.CaptureFixture[str]) -> None:
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "optimize", "--mode", "online"]
+    )
+
+    output = capsys.readouterr().err
+    assert handled is True
+    assert "unrecognized arguments: --mode online" in output
+
+
+def test_framework_cli_request_runs_explicit_skill_target_without_cli_owned_optimizer(tmp_path: Path) -> None:
+    from aworld.self_evolve import optimize_from_cli_request
+
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    dataset_path = tmp_path / "eval.jsonl"
+    dataset_path.write_text('{"case_id":"case-1","input":"demo"}\n', encoding="utf-8")
+
+    report = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        dataset=str(dataset_path),
+        apply_policy="proposal",
+    )
+
+    assert Path(report["report_path"]).exists()
+    assert report["status"] == "succeeded"
+    assert report["best_candidate_id"] is None
+    assert skill_path.read_text(encoding="utf-8").endswith("Old guidance.\n")

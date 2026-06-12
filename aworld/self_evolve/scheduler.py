@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -10,6 +11,7 @@ from aworld.config.conf import SelfEvolveConfig
 
 
 WriteJobCallable = Callable[[Path, Mapping[str, Any]], None]
+RunJobCallable = Callable[[Mapping[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -30,15 +32,27 @@ class SelfEvolveEnqueueResult:
     job_path: Path | None = None
 
 
+@dataclass(frozen=True)
+class SelfEvolveSchedulerPolicy:
+    cooldown_seconds: int = 0
+    max_enqueue_retries: int = 0
+    enqueue_timeout_seconds: float | None = None
+    allow_duplicate_pending: bool = False
+
+
 class SelfEvolveScheduler:
     def __init__(
         self,
         *,
         workspace_root: str | Path,
         write_job: WriteJobCallable | None = None,
+        policy: SelfEvolveSchedulerPolicy | None = None,
+        now: Callable[[], float] | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root)
         self.write_job = write_job or _write_job
+        self.policy = policy or SelfEvolveSchedulerPolicy()
+        self.now = now or time.time
 
     def enqueue(self, context: SelfEvolveRunContext) -> SelfEvolveEnqueueResult:
         if context.self_evolve_config.mode not in {"shadow", "online"}:
@@ -51,12 +65,28 @@ class SelfEvolveScheduler:
                 accepted=False,
                 reason="current trajectory is required for post-run enqueue",
             )
+        if not self.policy.allow_duplicate_pending and _has_pending_job(self._jobs_dir()):
+            return SelfEvolveEnqueueResult(
+                accepted=False,
+                reason="duplicate pending self-evolve job exists",
+            )
+        cooldown_remaining = _cooldown_remaining_seconds(
+            self._jobs_dir(),
+            cooldown_seconds=self.policy.cooldown_seconds,
+            now=self.now(),
+        )
+        if cooldown_remaining > 0:
+            return SelfEvolveEnqueueResult(
+                accepted=False,
+                reason="self-evolve target is in cooldown",
+            )
 
         job_id = _job_id(context)
-        job_path = self.workspace_root / ".aworld" / "self_evolve" / "jobs" / f"{job_id}.json"
+        job_path = self._jobs_dir() / f"{job_id}.json"
         payload = {
             "job_id": job_id,
             "status": "pending",
+            "created_at": self.now(),
             "agent_id": context.agent_id,
             "task_id": context.task_id,
             "workspace_root": context.workspace_root,
@@ -64,19 +94,61 @@ class SelfEvolveScheduler:
             "self_evolve_config": context.self_evolve_config.model_dump(),
             "source_hints": dict(context.source_hints),
         }
-        try:
-            self.write_job(job_path, payload)
-        except Exception as exc:
-            return SelfEvolveEnqueueResult(
-                accepted=False,
-                reason=f"enqueue failed: {exc}",
-            )
+        attempts = 0
+        last_error: Exception | None = None
+        while attempts <= self.policy.max_enqueue_retries:
+            attempts += 1
+            try:
+                self.write_job(job_path, payload)
+                return SelfEvolveEnqueueResult(
+                    accepted=True,
+                    reason="pending self-evolve job persisted",
+                    job_id=job_id,
+                    job_path=job_path,
+                )
+            except Exception as exc:
+                last_error = exc
         return SelfEvolveEnqueueResult(
-            accepted=True,
-            reason="pending self-evolve job persisted",
-            job_id=job_id,
-            job_path=job_path,
+            accepted=False,
+            reason=f"enqueue failed: {last_error}",
         )
+
+    def _jobs_dir(self) -> Path:
+        return self.workspace_root / ".aworld" / "self_evolve" / "jobs"
+
+
+class SelfEvolveJobWorker:
+    def __init__(
+        self,
+        *,
+        workspace_root: str | Path,
+        run_job: RunJobCallable,
+    ) -> None:
+        self.workspace_root = Path(workspace_root)
+        self.run_job = run_job
+
+    def drain_pending_jobs(self) -> int:
+        drained = 0
+        jobs_dir = self.workspace_root / ".aworld" / "self_evolve" / "jobs"
+        for job_path in sorted(jobs_dir.glob("*.json")):
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            if payload.get("status") != "pending":
+                continue
+            drained += 1
+            payload["status"] = "running"
+            _write_job(job_path, payload)
+            try:
+                self.run_job(payload)
+            except Exception as exc:
+                payload["status"] = "failed"
+                payload["failure"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            else:
+                payload["status"] = "succeeded"
+            _write_job(job_path, payload)
+        return drained
 
 
 def _write_job(path: Path, payload: Mapping[str, Any]) -> None:
@@ -92,3 +164,39 @@ def _job_id(context: SelfEvolveRunContext) -> str:
         f"{context.agent_id}:{context.task_id}:{context.self_evolve_config.mode}".encode("utf-8")
     ).hexdigest()[:16]
     return f"self-evolve-{digest}"
+
+
+def _has_pending_job(jobs_dir: Path) -> bool:
+    if not jobs_dir.exists():
+        return False
+    for job_path in jobs_dir.glob("*.json"):
+        try:
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if payload.get("status") == "pending":
+            return True
+    return False
+
+
+def _cooldown_remaining_seconds(
+    jobs_dir: Path,
+    *,
+    cooldown_seconds: int,
+    now: float,
+) -> int:
+    if cooldown_seconds <= 0 or not jobs_dir.exists():
+        return 0
+    latest_created_at = None
+    for job_path in jobs_dir.glob("*.json"):
+        try:
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        created_at = payload.get("created_at")
+        if isinstance(created_at, (int, float)):
+            latest_created_at = max(latest_created_at or created_at, created_at)
+    if latest_created_at is None:
+        return 0
+    remaining = int(cooldown_seconds - max(0.0, now - latest_created_at))
+    return max(0, remaining)

@@ -426,7 +426,7 @@ Ensure baseline and candidate run against identical dataset and policy.
 Ensure a trajectory log can be supplied explicitly, and ensure default post-run
 self-evolve does not require one.
 
-- [ ] **Step 6A: Build the trajectory-log benchmark seed**
+- [x] **Step 6A: Build the trajectory-log benchmark seed**
 
 Add a local-only builder path that reads `~/Documents/logs/trajectory.log` when
 explicitly requested, extracts task records into benchmark cases, persists the
@@ -474,19 +474,19 @@ Add `CandidateOptimizer.propose(...)`.
 Use existing model config surfaces to propose candidate text variants from
 trace packs, scorer feedback, validation failures, and trainable failure cases.
 
-- [ ] **Step 3: Implement optional DSPy adapters**
+- [x] **Step 3: Implement optional DSPy adapters**
 
 Add optional `DSPyGEPAOptimizer` and `DSPyMIPROOptimizer` selection paths behind
 dependency checks. GEPA should be the preferred trace-reflective text optimizer
 when installed; MIPRO should be a fallback for instruction text and few-shot
 examples when enough examples exist.
 
-- [ ] **Step 4: Keep Darwinian/code evolution external**
+- [x] **Step 4: Keep Darwinian/code evolution external**
 
 Represent Darwinian/code evolution as a future external CLI/subprocess adapter
 only. Do not import AGPL libraries into AWorld core.
 
-- [ ] **Step 5: Implement workspace-local artifact candidate guardrails**
+- [x] **Step 5: Implement workspace-local artifact candidate guardrails**
 
 Generate candidates only for workspace-local code/files produced by agent task
 execution, never for AWorld or `aworld-cli` product logic, and only through
@@ -589,7 +589,7 @@ confirmation, or intervention.
 
 - [x] **Step 1: Write fake target / fake optimizer runner tests**
 
-- [ ] **Step 2: Implement orchestration**
+- [x] **Step 2: Implement orchestration**
 
 Flow:
 
@@ -616,7 +616,7 @@ persists post-apply metrics, and is accepted. Cover a post-apply regression that
 rolls back or marks the candidate rejected. Cover that no human approval callback
 is required in the successful path.
 
-- [ ] **Step 5: Verify bounded stopping conditions**
+- [x] **Step 5: Verify bounded stopping conditions**
 
 Cover max iterations, no candidate improvement, and duplicate pending proposal.
 
@@ -653,7 +653,7 @@ Integration point:
 - Wrap enqueue in a broad best-effort guard. Enqueue failure must not fail,
   delay, or replace the completed task response.
 
-- [ ] **Step 3: Implement durable job record and worker handoff**
+- [x] **Step 3: Implement durable job record and worker handoff**
 
 The scheduler persists a pending job before returning. Long-lived runtimes may
 start an in-process worker. Short-lived CLI processes must leave a durable job
@@ -700,7 +700,7 @@ Cover:
   target selection
 - `skill:app_evaluator` is not used as a default target in tests or examples
 
-- [ ] **Step 2: Implement command as thin framework caller**
+- [x] **Step 2: Implement command as thin framework caller**
 
 The single CLI command should construct framework config and call
 `SelfEvolveRunner`, not own optimizer logic or split target types into separate
@@ -716,12 +716,12 @@ commands.
 
 - Test: `tests/cli/test_optimize_command.py`
 
-- [ ] **Step 1: Add no-CLI-mode tests**
+- [x] **Step 1: Add no-CLI-mode tests**
 
 Verify `aworld-cli optimize` does not define a separate CLI-owned self-evolve
 mode for the built-in AWorld main agent.
 
-- [ ] **Step 2: Pass through framework config only**
+- [x] **Step 2: Pass through framework config only**
 
 If optimize needs agent config, use framework `AgentConfig.self_evolve_config`
 semantics without reinterpreting mode in CLI code.
@@ -758,17 +758,17 @@ optimizer, target inference, or agent opt-in logic.
 
 - [x] **Step 5: Add toy trajectory-driven optimization example**
 
-- [ ] **Step 6: Document app_evaluator boundary**
+- [x] **Step 6: Document app_evaluator boundary**
 
 State that `aworld-skills/app_evaluator/SKILL.md` is independent from the new
 self-evolve subsystem and protected from mutation.
 
-- [ ] **Step 7: Document configurable judge behavior**
+- [x] **Step 7: Document configurable judge behavior**
 
 Show the default self-evolve trajectory judge and examples for an explicit
 `agent.md` judge and a custom registered judge agent.
 
-- [ ] **Step 8: Document online closed-loop behavior**
+- [x] **Step 8: Document online closed-loop behavior**
 
 Explain that `shadow` is proposal-only, while `online` with `auto_verified`
 supports `apply -> re-evaluate -> accept/rollback` for allowlisted verified

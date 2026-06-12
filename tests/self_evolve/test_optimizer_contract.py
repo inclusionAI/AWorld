@@ -4,7 +4,7 @@ import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.optimizers.base import OptimizerRequest
-from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer
+from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import (
@@ -150,3 +150,51 @@ async def test_dspy_adapter_missing_dependency_fails_only_when_selected() -> Non
                 trace_packs=(_trace_pack(),),
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_dspy_gepa_adapter_delegates_when_dependency_is_available() -> None:
+    class FakeDSPy:
+        @staticmethod
+        def GEPA(request):
+            return {
+                "content": "# Demo\n\nGEPA candidate.\n",
+                "rationale": "GEPA improved instructions.",
+            }
+
+    optimizer = DSPyGEPAOptimizer(import_module=lambda name: FakeDSPy)
+    result = await optimizer.propose(
+        OptimizerRequest(
+            target=_target(),
+            current_content="# Demo\n",
+            target_fingerprint="sha256:old",
+            trace_packs=(_trace_pack(),),
+        )
+    )
+
+    assert result.candidates[0].content.endswith("GEPA candidate.\n")
+    assert result.lineage[0].optimizer_name == "dspy-gepa"
+
+
+@pytest.mark.asyncio
+async def test_dspy_mipro_adapter_delegates_when_dependency_is_available() -> None:
+    class FakeDSPy:
+        @staticmethod
+        def MIPRO(request):
+            return {
+                "content": "# Demo\n\nMIPRO candidate.\n",
+                "rationale": "MIPRO improved few-shot examples.",
+            }
+
+    optimizer = DSPyMIPROOptimizer(import_module=lambda name: FakeDSPy)
+    result = await optimizer.propose(
+        OptimizerRequest(
+            target=_target(),
+            current_content="# Demo\n",
+            target_fingerprint="sha256:old",
+            trace_packs=(_trace_pack(),),
+        )
+    )
+
+    assert result.candidates[0].content.endswith("MIPRO candidate.\n")
+    assert result.lineage[0].optimizer_name == "dspy-mipro"

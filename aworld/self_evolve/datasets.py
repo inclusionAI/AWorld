@@ -61,7 +61,7 @@ def load_jsonl_eval_cases(
     *,
     max_cases: int | None = None,
 ) -> list[EvalCase]:
-    resolved_path = Path(path)
+    resolved_path = Path(path).expanduser()
     cases: list[EvalCase] = []
     for line_number, raw_line in enumerate(
         resolved_path.read_text(encoding="utf-8").splitlines(),
@@ -144,7 +144,8 @@ def build_dataset_from_source(
     if source_config.kind == "trajectory_log":
         if source_config.path is None:
             raise ValueError("trajectory_log eval source requires path")
-        packs = trace_packs_from_trajectory_log(source_config.path)
+        trajectory_path = Path(source_config.path).expanduser()
+        packs = trace_packs_from_trajectory_log(trajectory_path)
         cases = _filter_and_limit_cases(
             (
                 EvalCase(
@@ -153,7 +154,7 @@ def build_dataset_from_source(
                     trace_pack=pack,
                     source={
                         "kind": "trajectory_log",
-                        "path": str(source_config.path),
+                        "path": str(trajectory_path),
                         "task_id": pack.task_id,
                     },
                 )
@@ -175,7 +176,7 @@ def build_dataset_from_source(
             raise ValueError("session eval source requires path and session_id")
         cases = _filter_and_limit_cases(
             load_session_eval_cases(
-                source_config.path,
+                Path(source_config.path).expanduser(),
                 session_id=source_config.session_id,
             ),
             source_config=source_config,
@@ -193,7 +194,7 @@ def build_dataset_from_source(
         if source_config.path is None:
             raise ValueError("batch_config eval source requires path")
         cases = _filter_and_limit_cases(
-            load_batch_config_eval_cases(source_config.path),
+            load_batch_config_eval_cases(Path(source_config.path).expanduser()),
             source_config=source_config,
         )
         return SelfEvolveDataset(
@@ -211,7 +212,7 @@ def build_dataset_from_source(
 
 
 def load_batch_config_eval_cases(path: str | Path) -> list[EvalCase]:
-    config_path = Path(path)
+    config_path = Path(path).expanduser()
     config = _load_config_mapping(config_path)
     dataset_value = config.get("eval_dataset_id_or_file_path")
     if not isinstance(dataset_value, str) or not dataset_value:
@@ -260,7 +261,7 @@ def load_session_eval_cases(
     session_id: str,
     max_cases: int | None = None,
 ) -> list[EvalCase]:
-    session_path = _resolve_session_path(workspace_or_session_path, session_id=session_id)
+    session_path = _resolve_session_path(Path(workspace_or_session_path).expanduser(), session_id=session_id)
     cases: list[EvalCase] = []
     for line_number, raw_line in enumerate(
         session_path.read_text(encoding="utf-8").splitlines(),
@@ -339,8 +340,8 @@ def _source_recipe(
         "fingerprint": _cases_fingerprint(cases),
     }
     if source_config.path is not None:
-        source["path"] = str(source_config.path)
-        path = Path(source_config.path)
+        path = Path(source_config.path).expanduser()
+        source["path"] = str(path)
         if path.is_file():
             source["content_fingerprint"] = _file_fingerprint(path)
     if source_config.session_id is not None:

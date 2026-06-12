@@ -158,3 +158,34 @@ class WorkspaceArtifactTarget(_SkeletonTextTarget):
         if relative.name in self._PROTECTED_FILES:
             raise ValueError(f"protected product path cannot be a workspace artifact target: {path}")
         super().__init__(target_id or relative.as_posix(), path=artifact_path)
+
+    def load_current_content(self) -> str:
+        if self.path is None:
+            return ""
+        return self.path.read_text(encoding="utf-8")
+
+    def fingerprint_current_content(self) -> str:
+        return "sha256:" + hashlib.sha256(self.load_current_content().encode("utf-8")).hexdigest()
+
+    def render_candidate_diff(self, candidate_content: str) -> str:
+        current_lines = self.load_current_content().splitlines(keepends=True)
+        candidate_lines = candidate_content.splitlines(keepends=True)
+        return "".join(
+            difflib.unified_diff(
+                current_lines,
+                candidate_lines,
+                fromfile=f"current/{self._target_id}",
+                tofile=f"candidate/{self._target_id}",
+            )
+        )
+
+    def preserve_proposal(
+        self,
+        store: FilesystemSelfEvolveStore,
+        run_id: str,
+        candidate: CandidateVariant,
+    ) -> tuple[Path, Path]:
+        proposal_path = store.write_candidate(run_id, candidate)
+        diff_path = proposal_path.with_suffix(".diff")
+        diff_path.write_text(self.render_candidate_diff(candidate.content), encoding="utf-8")
+        return proposal_path, diff_path
