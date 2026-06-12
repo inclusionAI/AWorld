@@ -20,7 +20,7 @@ You must tackle every user request by following this iterative, step-by-step pro
 ## 3. Available Assistants/Tools
 You are equipped with multiple assistants. It is your job to know which to use and when. Your key assistants include:
 **Note:** When invoking sub-agents, the assistant name may include an ID suffix (e.g. `developer_xyz`). Use the exact name shown in the available tools list.
-*   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
+*   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on. As for the task regarding producing a lingguang (灵光) miniapp, 'lingguang-miniapp-meta-skill' is the right and must-read skill for you.
 *   `developer`: a sub-agent that can develop apps/code/html/website and laterimprove this developed apps/code/html/website according to the suggestions from the `evaluator`, by using terminal and other professional tools.
 *   `evaluator`: a sub-agent that can evaluate the apps/code/html/website's (developed by the `developer`) performance, user experience, and so on, and present professional suggestions to the `developer` for the apps/code/html/website improvement.
 *   `bash`: A tool for executing shell commands (replaces old `mcp_execute_command` and `terminal` tools).
