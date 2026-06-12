@@ -1,0 +1,470 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+from aworld.self_evolve.trace_pack import (
+    TracePack,
+    build_trace_pack,
+    trace_packs_from_trajectory_log,
+)
+from aworld.self_evolve.types import DatasetRecipe
+
+
+SUPPORTED_SOURCE_KINDS = {
+    "current_trajectory",
+    "trajectory_log",
+    "session",
+    "jsonl",
+    "batch_config",
+}
+
+
+@dataclass(frozen=True)
+class SelfEvolveEvalSourceConfig:
+    kind: str = "current_trajectory"
+    path: str | None = None
+    session_id: str | None = None
+    task_ids: tuple[str, ...] = ()
+    max_cases: int = 100
+
+    def __post_init__(self) -> None:
+        if self.kind not in SUPPORTED_SOURCE_KINDS:
+            raise ValueError(f"unsupported eval source kind: {self.kind}")
+        if self.max_cases <= 0:
+            raise ValueError("max_cases must be positive")
+        object.__setattr__(self, "task_ids", tuple(self.task_ids))
+
+
+@dataclass(frozen=True)
+class EvalCase:
+    case_id: str
+    input: Any
+    expected_output: Any | None = None
+    verification_command: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    trace_pack: TracePack | None = None
+    source: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SelfEvolveDataset:
+    cases: tuple[EvalCase, ...]
+    recipe: DatasetRecipe
+
+
+def load_jsonl_eval_cases(
+    path: str | Path,
+    *,
+    max_cases: int | None = None,
+) -> list[EvalCase]:
+    resolved_path = Path(path)
+    cases: list[EvalCase] = []
+    for line_number, raw_line in enumerate(
+        resolved_path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        if max_cases is not None and len(cases) >= max_cases:
+            break
+        if not raw_line.strip():
+            continue
+        payload = json.loads(raw_line)
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"jsonl line {line_number} must be an object")
+        case_id = _case_id(payload, resolved_path=resolved_path, line_number=line_number)
+        cases.append(
+            EvalCase(
+                case_id=case_id,
+                input=payload.get("input"),
+                expected_output=payload.get("expected_output"),
+                verification_command=_string_or_none(payload.get("verification_command")),
+                metadata=_mapping_or_empty(payload.get("metadata")),
+                source={
+                    "kind": "jsonl",
+                    "path": str(resolved_path),
+                    "line_number": line_number,
+                },
+            )
+        )
+    return cases
+
+
+def build_dataset_from_source(
+    source_config: SelfEvolveEvalSourceConfig,
+    *,
+    current_trajectory: Iterable[Mapping[str, Any]] | None = None,
+    task_id: str | None = None,
+    split_seed: str = "self-evolve-default-split",
+) -> SelfEvolveDataset:
+    if source_config.kind == "jsonl":
+        if source_config.path is None:
+            raise ValueError("jsonl eval source requires path")
+        cases = _filter_and_limit_cases(
+            load_jsonl_eval_cases(source_config.path),
+            source_config=source_config,
+        )
+        return SelfEvolveDataset(
+            cases=cases,
+            recipe=build_dataset_recipe(
+                cases,
+                source_config=source_config,
+                split_seed=split_seed,
+            ),
+        )
+
+    if source_config.kind == "current_trajectory":
+        if current_trajectory is None:
+            raise ValueError("current_trajectory eval source requires current_trajectory")
+        trace_pack = build_trace_pack(
+            current_trajectory,
+            source_kind="current_trajectory",
+            task_id=task_id,
+        )
+        cases = (
+            EvalCase(
+                case_id=trace_pack.task_id,
+                input=_trace_pack_input(trace_pack),
+                trace_pack=trace_pack,
+                source={"kind": "current_trajectory", "task_id": trace_pack.task_id},
+            ),
+        )
+        cases = _filter_and_limit_cases(cases, source_config=source_config)
+        return SelfEvolveDataset(
+            cases=cases,
+            recipe=build_dataset_recipe(
+                cases,
+                source_config=source_config,
+                split_seed=split_seed,
+            ),
+        )
+
+    if source_config.kind == "trajectory_log":
+        if source_config.path is None:
+            raise ValueError("trajectory_log eval source requires path")
+        packs = trace_packs_from_trajectory_log(source_config.path)
+        cases = _filter_and_limit_cases(
+            (
+                EvalCase(
+                    case_id=pack.task_id,
+                    input=_trace_pack_input(pack),
+                    trace_pack=pack,
+                    source={
+                        "kind": "trajectory_log",
+                        "path": str(source_config.path),
+                        "task_id": pack.task_id,
+                    },
+                )
+                for pack in packs
+            ),
+            source_config=source_config,
+        )
+        return SelfEvolveDataset(
+            cases=cases,
+            recipe=build_dataset_recipe(
+                cases,
+                source_config=source_config,
+                split_seed=split_seed,
+            ),
+        )
+
+    if source_config.kind == "session":
+        if source_config.path is None or source_config.session_id is None:
+            raise ValueError("session eval source requires path and session_id")
+        cases = _filter_and_limit_cases(
+            load_session_eval_cases(
+                source_config.path,
+                session_id=source_config.session_id,
+            ),
+            source_config=source_config,
+        )
+        return SelfEvolveDataset(
+            cases=cases,
+            recipe=build_dataset_recipe(
+                cases,
+                source_config=source_config,
+                split_seed=split_seed,
+            ),
+        )
+
+    if source_config.kind == "batch_config":
+        if source_config.path is None:
+            raise ValueError("batch_config eval source requires path")
+        cases = _filter_and_limit_cases(
+            load_batch_config_eval_cases(source_config.path),
+            source_config=source_config,
+        )
+        return SelfEvolveDataset(
+            cases=cases,
+            recipe=build_dataset_recipe(
+                cases,
+                source_config=source_config,
+                split_seed=split_seed,
+            ),
+        )
+
+    raise NotImplementedError(
+        f"{source_config.kind} eval source is declared but not implemented in phase 1a"
+    )
+
+
+def load_batch_config_eval_cases(path: str | Path) -> list[EvalCase]:
+    config_path = Path(path)
+    config = _load_config_mapping(config_path)
+    dataset_value = config.get("eval_dataset_id_or_file_path")
+    if not isinstance(dataset_value, str) or not dataset_value:
+        raise ValueError("batch_config requires eval_dataset_id_or_file_path")
+    dataset_path = Path(dataset_value)
+    if not dataset_path.is_absolute():
+        dataset_path = config_path.parent / dataset_path
+
+    query_column = _string_or_none(config.get("eval_dataset_query_column")) or "query"
+    answer_column = _string_or_none(config.get("eval_dataset_answer_column")) or "answer"
+
+    cases: list[EvalCase] = []
+    for line_number, raw_line in enumerate(
+        dataset_path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        if not raw_line.strip():
+            continue
+        payload = json.loads(raw_line)
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"batch dataset line {line_number} must be an object")
+        case_id = _case_id(payload, resolved_path=dataset_path, line_number=line_number)
+        cases.append(
+            EvalCase(
+                case_id=case_id,
+                input=payload.get(query_column, payload.get("input")),
+                expected_output=payload.get(answer_column),
+                metadata=_without_keys(
+                    payload,
+                    {"case_id", "id", query_column, answer_column},
+                ),
+                source={
+                    "kind": "batch_config",
+                    "path": str(config_path),
+                    "dataset_path": str(dataset_path),
+                    "line_number": line_number,
+                },
+            )
+        )
+    return cases
+
+
+def load_session_eval_cases(
+    workspace_or_session_path: str | Path,
+    *,
+    session_id: str,
+    max_cases: int | None = None,
+) -> list[EvalCase]:
+    session_path = _resolve_session_path(workspace_or_session_path, session_id=session_id)
+    cases: list[EvalCase] = []
+    for line_number, raw_line in enumerate(
+        session_path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        if max_cases is not None and len(cases) >= max_cases:
+            break
+        if not raw_line.strip():
+            continue
+        payload = json.loads(raw_line)
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"session log line {line_number} must be an object")
+        case_id = _session_case_id(payload, session_id=session_id, line_number=line_number)
+        cases.append(
+            EvalCase(
+                case_id=case_id,
+                input=payload.get("input") or {"task_id": case_id},
+                expected_output=payload.get("final_answer"),
+                metadata=_session_metadata(payload),
+                source={
+                    "kind": "session",
+                    "path": str(session_path),
+                    "session_id": session_id,
+                    "line_number": line_number,
+                },
+            )
+        )
+    return cases
+
+
+def _filter_and_limit_cases(
+    cases: Iterable[EvalCase],
+    *,
+    source_config: SelfEvolveEvalSourceConfig,
+) -> tuple[EvalCase, ...]:
+    selected_task_ids = set(source_config.task_ids)
+    filtered = [
+        case
+        for case in cases
+        if not selected_task_ids or case.case_id in selected_task_ids
+    ]
+    return tuple(filtered[: source_config.max_cases])
+
+
+def build_dataset_recipe(
+    cases: Iterable[EvalCase],
+    *,
+    source_config: SelfEvolveEvalSourceConfig,
+    split_seed: str,
+    synthetic_generation_policy: str = "disabled",
+) -> DatasetRecipe:
+    case_tuple = tuple(cases)
+    splits = _split_case_ids(
+        tuple(case.case_id for case in case_tuple),
+        split_seed=split_seed,
+    )
+    return DatasetRecipe(
+        source=_source_recipe(case_tuple, source_config=source_config),
+        split_seed=split_seed,
+        splits=splits,
+        synthetic_generation_policy=synthetic_generation_policy,
+        trainable_case_ids=tuple(splits["train"] + splits["validation"]),
+        held_out_case_ids=tuple(splits["held_out"]),
+    )
+
+
+def _source_recipe(
+    cases: tuple[EvalCase, ...],
+    *,
+    source_config: SelfEvolveEvalSourceConfig,
+) -> Mapping[str, Any]:
+    source: dict[str, Any] = {
+        "kind": source_config.kind,
+        "case_count": len(cases),
+        "task_ids": list(source_config.task_ids),
+        "fingerprint": _cases_fingerprint(cases),
+    }
+    if source_config.path is not None:
+        source["path"] = str(source_config.path)
+        path = Path(source_config.path)
+        if path.is_file():
+            source["content_fingerprint"] = _file_fingerprint(path)
+    if source_config.session_id is not None:
+        source["session_id"] = source_config.session_id
+    return source
+
+
+def _split_case_ids(case_ids: tuple[str, ...], *, split_seed: str) -> Mapping[str, list[str]]:
+    ordered = sorted(
+        case_ids,
+        key=lambda case_id: hashlib.sha256(
+            f"{split_seed}:{case_id}".encode("utf-8")
+        ).hexdigest(),
+    )
+    count = len(ordered)
+    if count == 0:
+        return {"train": [], "validation": [], "held_out": []}
+    if count == 1:
+        return {"train": ordered, "validation": [], "held_out": []}
+    if count == 2:
+        return {"train": ordered[:1], "validation": ordered[1:], "held_out": []}
+
+    held_out_count = max(1, count // 5)
+    validation_count = max(1, count // 5)
+    train_count = count - validation_count - held_out_count
+    return {
+        "train": ordered[:train_count],
+        "validation": ordered[train_count : train_count + validation_count],
+        "held_out": ordered[train_count + validation_count :],
+    }
+
+
+def _cases_fingerprint(cases: tuple[EvalCase, ...]) -> str:
+    payload = [
+        {
+            "case_id": case.case_id,
+            "input": case.input,
+            "expected_output": case.expected_output,
+            "verification_command": case.verification_command,
+            "metadata": case.metadata,
+            "source": case.source,
+        }
+        for case in cases
+    ]
+    return "sha256:" + hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _file_fingerprint(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _load_config_mapping(path: Path) -> Mapping[str, Any]:
+    raw_content = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        payload = json.loads(raw_content)
+    else:
+        import yaml
+
+        payload = yaml.safe_load(raw_content)
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"batch config must be an object: {path}")
+    return payload
+
+
+def _case_id(payload: Mapping[str, Any], *, resolved_path: Path, line_number: int) -> str:
+    for key in ("case_id", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return f"{resolved_path.stem}:line-{line_number}"
+
+
+def _trace_pack_input(trace_pack: TracePack) -> Any:
+    if not trace_pack.steps:
+        return {}
+    state_input = trace_pack.steps[0].state.get("input")
+    return state_input if state_input is not None else {}
+
+
+def _resolve_session_path(workspace_or_session_path: str | Path, *, session_id: str) -> Path:
+    path = Path(workspace_or_session_path)
+    if path.is_file():
+        return path
+    return path / ".aworld" / "memory" / "sessions" / f"{_safe_session_id(session_id)}.jsonl"
+
+
+def _safe_session_id(session_id: str) -> str:
+    safe_id = "".join(
+        character
+        for character in session_id
+        if character.isalnum() or character in {"-", "_"}
+    ).strip()
+    return safe_id or "default"
+
+
+def _session_case_id(
+    payload: Mapping[str, Any],
+    *,
+    session_id: str,
+    line_number: int,
+) -> str:
+    task_id = payload.get("task_id")
+    if isinstance(task_id, str) and task_id:
+        return task_id
+    return f"{session_id}:line-{line_number}"
+
+
+def _session_metadata(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {
+        key: payload[key]
+        for key in ("recorded_at", "task_status", "candidates", "llm_calls")
+        if key in payload
+    }
+
+
+def _without_keys(payload: Mapping[str, Any], keys: set[str]) -> Mapping[str, Any]:
+    return {key: value for key, value in payload.items() if key not in keys}
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _string_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None

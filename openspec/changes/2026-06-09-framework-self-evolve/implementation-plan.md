@@ -296,14 +296,14 @@ non-mutation, and the allowlisted `auto_verified` apply/rollback path.
 - Test: `tests/self_evolve/test_trace_pack.py`
 - Test: `tests/self_evolve/test_credit_assignment.py`
 
-- [ ] **Step 0: Verify phase-0 gate is accepted**
+- [x] **Step 0: Verify phase-0 gate is accepted**
 
 Before implementing the production credit assigner, confirm Task 0 has produced
 accepted precision/recall for target selection on real manually labeled
 trajectories. If the gate is not accepted, stop this task and continue only with
 diagnostics or explicit-target proposal experiments.
 
-- [ ] **Step 1: Add trace pack normalization**
+- [x] **Step 1: Add trace pack normalization**
 
 Normalize current trajectories, prior sessions, and trajectory logs into a
 bounded `TracePack` that preserves AWorld `TrajectoryItem` SAR fields: task
@@ -311,33 +311,33 @@ input and context from `state`, assistant content and tool calls from `action`,
 tool outputs/status/score from `reward`, failed arguments, verification output,
 LLM usage/cost metadata, generated artifact references, and evidence ids.
 
-- [ ] **Step 2: Test trace pack compression**
+- [x] **Step 2: Test trace pack compression**
 
 Cover preservation of initial/final SAR records, middle-record summarization,
 evidence id stability, and budget enforcement.
 
-- [ ] **Step 3: Define selection report models**
+- [x] **Step 3: Define selection report models**
 
 Define `TargetSelectionReport` with selected target id, confidence, evidence
 step refs, failure category, and `no_target` diagnostics.
 
-- [ ] **Step 4: Build target inventory**
+- [x] **Step 4: Build target inventory**
 
 Inventory supported phase-1 targets: skills, prompt sections, tool
 descriptions, whitelisted config knobs, and agent-produced workspace artifacts,
 including provenance/trust metadata and protected status.
 
-- [ ] **Step 5: Implement deterministic signal extraction**
+- [x] **Step 5: Implement deterministic signal extraction**
 
 Use trajectory validators, tool call errors, repeated actions, LLM call
 metadata, generated artifact references, and task status.
 
-- [ ] **Step 6: Add optional LLM-assisted diagnosis**
+- [x] **Step 6: Add optional LLM-assisted diagnosis**
 
 The LLM diagnosis must cite trajectory evidence and may return `no_target` when
 confidence is below policy.
 
-- [ ] **Step 7: Test target inference**
+- [x] **Step 7: Test target inference**
 
 Cover inferred skill, prompt-section, tool-description, workspace-artifact, and
 insufficient-signal `no_target` cases.
@@ -351,32 +351,32 @@ insufficient-signal `no_target` cases.
 - Create: `aworld/self_evolve/datasets.py`
 - Test: `tests/self_evolve/test_datasets.py`
 
-- [ ] **Step 1: Add source config models**
+- [x] **Step 1: Add source config models**
 
 Define `SelfEvolveEvalSourceConfig` with `current_trajectory`,
 `trajectory_log`, `session`, `jsonl`, and `batch_config` kinds. The default
 post-run source is `current_trajectory`; external trajectory logs are optional.
 
-- [ ] **Step 2: Add jsonl loader**
+- [x] **Step 2: Add jsonl loader**
 
 Load task/evaluation cases from jsonl.
 
-- [ ] **Step 3: Add dataset identity and splits**
+- [x] **Step 3: Add dataset identity and splits**
 
 Compute dataset fingerprint and deterministic train/validation/test split.
 
-- [ ] **Step 4: Add dataset recipe persistence**
+- [x] **Step 4: Add dataset recipe persistence**
 
 Persist source selection, filters, split seed, synthetic generation policy, and
 holdout policy. Store trainable failure cases separately from held-out failure
 cases so optimizers cannot see final gate data.
 
-- [ ] **Step 5: Add current trajectory, session, and trajectory-log mining
+- [x] **Step 5: Add current trajectory, session, and trajectory-log mining
 interfaces**
 
 Expose interfaces that can feed phase-1 credit assignment and evaluation.
 
-- [ ] **Step 6: Add fixture-backed trajectory source tests**
+- [x] **Step 6: Add fixture-backed trajectory source tests**
 
 Use a checked-in or temporary trajectory log sample. Do not hard-code
 `~/Documents/logs/trajectory.log` into product behavior.
@@ -392,19 +392,19 @@ Use a checked-in or temporary trajectory log sample. Do not hard-code
 - Test: `tests/self_evolve/test_evaluation_backend.py`
 - Test: `tests/self_evolve/test_judge.py`
 
-- [ ] **Step 1: Define backend protocol**
+- [x] **Step 1: Define backend protocol**
 
 Add `EvaluationBackend.evaluate_variant(...)`.
 
-- [ ] **Step 2: Add EvaluateRunner-backed implementation**
+- [x] **Step 2: Add EvaluateRunner-backed implementation**
 
 Wrap existing `EvaluateRunner` where possible.
 
-- [ ] **Step 3: Add command verification backend**
+- [x] **Step 3: Add command verification backend**
 
 Support deterministic shell/pytest-style verification commands as one signal.
 
-- [ ] **Step 4: Add configurable judge backend**
+- [x] **Step 4: Add configurable judge backend**
 
 Support:
 
@@ -417,11 +417,11 @@ Support:
 Persist judge prompts, compact inputs, outputs, and verdict metadata in run
 artifacts.
 
-- [ ] **Step 5: Test baseline/candidate parity**
+- [x] **Step 5: Test baseline/candidate parity**
 
 Ensure baseline and candidate run against identical dataset and policy.
 
-- [ ] **Step 6: Test optional external trajectory source behavior**
+- [x] **Step 6: Test optional external trajectory source behavior**
 
 Ensure a trajectory log can be supplied explicitly, and ensure default post-run
 self-evolve does not require one.
@@ -433,7 +433,7 @@ explicitly requested, extracts task records into benchmark cases, persists the
 dataset recipe and source fingerprint, and writes sanitized fixture copies for
 tests. Product defaults must not require that path.
 
-- [ ] **Step 7: Enforce held-out evaluation discipline**
+- [x] **Step 7: Enforce held-out evaluation discipline**
 
 Candidate ranking uses validation metrics. Verified pass/fail gates use
 optimizer-held-out test metrics when at least `min_eval_cases` exist. Too few
@@ -441,14 +441,14 @@ cases may still produce proposals, but they must be marked limited-confidence.
 Single-trajectory post-run jobs usually fall into this limited-confidence path
 unless an additional dataset/session/batch source is configured.
 
-- [ ] **Step 7A: Estimate replay cost before evaluation**
+- [x] **Step 7A: Estimate replay cost before evaluation**
 
 Before running baseline/candidate batches, estimate cost as baseline cases plus
 candidate-count times candidate eval cases, including judge repetitions and
 verification commands. If the estimate exceeds `max_run_tokens` or
 `max_run_cost_usd`, reduce candidates/eval cases or stop with budget diagnostics.
 
-- [ ] **Step 8: Enforce verified signal discipline**
+- [x] **Step 8: Enforce verified signal discipline**
 
 Judge-only improvements must remain limited-confidence. Verified improvements
 require at least one deterministic signal, such as command verification,
@@ -465,11 +465,11 @@ exact/objective scoring, or a configured regression benchmark.
 - Create: `aworld/self_evolve/optimizers/dspy_adapter.py`
 - Test: `tests/self_evolve/test_optimizer_contract.py`
 
-- [ ] **Step 1: Define optimizer protocol**
+- [x] **Step 1: Define optimizer protocol**
 
 Add `CandidateOptimizer.propose(...)`.
 
-- [ ] **Step 2: Implement trace-reflective LLM mutator fallback**
+- [x] **Step 2: Implement trace-reflective LLM mutator fallback**
 
 Use existing model config surfaces to propose candidate text variants from
 trace packs, scorer feedback, validation failures, and trainable failure cases.
@@ -492,17 +492,17 @@ Generate candidates only for workspace-local code/files produced by agent task
 execution, never for AWorld or `aworld-cli` product logic, and only through
 isolated candidate workspace evaluation.
 
-- [ ] **Step 6: Implement optional dependency guards**
+- [x] **Step 6: Implement optional dependency guards**
 
 If DSPy or future external optimizer dependencies are unavailable, fail only
 when that adapter is selected.
 
-- [ ] **Step 7: Prevent held-out leakage**
+- [x] **Step 7: Prevent held-out leakage**
 
 Ensure optimizers receive only training/source cases, validation feedback, and
 trajectory diagnostics, never held-out test cases or held-out judge outputs.
 
-- [ ] **Step 8: Persist optimizer lineage**
+- [x] **Step 8: Persist optimizer lineage**
 
 Record parent candidate ids, mutation rationale, backend name/version, trainable
 failure-case ids used, and candidate ancestry in run artifacts.
@@ -516,21 +516,21 @@ failure-case ids used, and candidate ancestry in run artifacts.
 - Create: `aworld/self_evolve/gates.py`
 - Test: `tests/self_evolve/test_gates.py`
 
-- [ ] **Step 1: Add score improvement gate**
+- [x] **Step 1: Add score improvement gate**
 
-- [ ] **Step 2: Add cost/latency regression gate**
+- [x] **Step 2: Add cost/latency regression gate**
 
 - [ ] **Step 3: Add no-op and malformed-candidate gate**
 
-- [ ] **Step 4: Add skill markdown/frontmatter gate**
+- [x] **Step 4: Add skill markdown/frontmatter gate**
 
-- [ ] **Step 5: Add protected-path gate**
+- [x] **Step 5: Add protected-path gate**
 
 Reject candidates that touch framework, `aworld-cli`, runtime, shared
 infrastructure, package metadata, secret/config paths, or any AWorld product
 logic.
 
-- [ ] **Step 5A: Add app_evaluator protection**
+- [x] **Step 5A: Add app_evaluator protection**
 
 Reject candidates and inferred targets that would modify
 `aworld-skills/app_evaluator/SKILL.md`. The skill may only be used as an
@@ -541,7 +541,7 @@ explicitly configured read-only scorer/fixture.
 Cover max iterations, no meaningful improvement, pending proposal duplicate
 suppression, repeated gate failure, and cooldown.
 
-- [ ] **Step 7: Add whole-run budget gates**
+- [x] **Step 7: Add whole-run budget gates**
 
 Enforce max run tokens and optional max run cost across mutator calls,
 baseline/candidate evaluation, judge repetitions, and verification.
@@ -565,7 +565,7 @@ candidate cannot be marked verified unless it passes a configured regression
 benchmark or equivalent objective regression suite independent from the source
 trajectory.
 
-- [ ] **Step 11: Add judge-only limited-confidence gate**
+- [x] **Step 11: Add judge-only limited-confidence gate**
 
 If all positive signal comes from LLM judge output, persist the proposal but do
 not mark it verified.
@@ -587,7 +587,7 @@ confirmation, or intervention.
 - Create: `aworld/self_evolve/runner.py`
 - Test: `tests/self_evolve/test_runner.py`
 
-- [ ] **Step 1: Write fake target / fake optimizer runner tests**
+- [x] **Step 1: Write fake target / fake optimizer runner tests**
 
 - [ ] **Step 2: Implement orchestration**
 
@@ -607,7 +607,7 @@ Flow:
 11. if apply policy is `auto_verified`, apply only allowlisted verified
     candidates, re-run post-apply gates, then accept or roll back/reject
 
-- [ ] **Step 3: Verify proposal-only does not mutate target**
+- [x] **Step 3: Verify proposal-only does not mutate target**
 
 - [ ] **Step 4: Verify online auto-evolve apply path**
 

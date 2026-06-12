@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.judge import JudgeRecord
 from aworld.self_evolve.types import (
     CandidateVariant,
     DatasetRecipe,
@@ -65,6 +66,14 @@ class FilesystemSelfEvolveStore:
         lineage_dir.mkdir(parents=True, exist_ok=True)
         path = lineage_dir / f"{lineage.candidate_id}.json"
         self._write_json(path, lineage)
+        return path
+
+    def write_judge_record(self, run_id: str, record: JudgeRecord) -> Path:
+        self._validate_id(record.backend_id, "backend_id")
+        judge_dir = self.run_path(run_id) / "judges"
+        judge_dir.mkdir(parents=True, exist_ok=True)
+        path = judge_dir / f"{record.backend_id}.json"
+        self._write_json(path, record)
         return path
 
     def _write_json(self, path: Path, payload: Any) -> None:
