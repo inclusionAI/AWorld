@@ -220,3 +220,111 @@ async def test_optimize_explicit_target_python_api_uses_framework_runner(tmp_pat
     assert result.run.status.value == "succeeded"
     assert result.selected_candidate is not None
     assert (tmp_path / ".aworld" / "self_evolve" / "run-sdk" / "report.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_runner_orchestrates_baseline_candidate_evaluation_and_gates(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="gate-task")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="gate-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nBetter guidance.\n",
+            "rationale": "Improve guidance.",
+        }
+
+    class RecordingBackend:
+        def __init__(self):
+            self.requests = []
+
+        async def evaluate_variant(self, request):
+            self.requests.append(request)
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.4, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={"score": 0.8, "latency_ms": 110.0, "cost_usd": 1.0},
+                dataset_split=request.dataset_split,
+            )
+
+    backend = RecordingBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=backend,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-orchestrated",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert [request.variant_id for request in backend.requests][0] == "baseline"
+    assert backend.requests[1].candidate is result.selected_candidate
+    report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-orchestrated" / "report.json").read_text())
+    assert report["baseline_metrics"]["score"] == 0.4
+    assert report["candidate_metrics"]["score"] == 0.8
+    assert report["gate_results"][0]["gate_name"] == "score_improvement"
+
+
+@pytest.mark.asyncio
+async def test_runner_stops_when_duplicate_pending_proposal_exists(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="stop-task")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="stop-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        pytest.fail("optimizer should not run when stopping conditions block")
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        pending_duplicate=True,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-stopped",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+    )
+
+    assert result.run.status.value == "rejected"
+    report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-stopped" / "report.json").read_text())
+    assert report["stopping_condition"]["reason"] == "duplicate pending proposal exists"

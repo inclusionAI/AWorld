@@ -79,12 +79,11 @@
 
 ## 1A. Phase-1a Minimal Vertical Slice
 
-- [ ] 1A.1 Ship the first implementation as config + `SkillTextTarget` + trace
+- [x] 1A.1 Ship the first implementation as config + `SkillTextTarget` + trace
   packaging + low-dependency LLM mutator + one deterministic/objective
   evaluation signal + proposal-only artifacts + explicit SDK/CLI target path.
-- [ ] 1A.2 Defer async scheduling, broad provenance expansion, DSPy adapters,
-  non-skill targets, and online automatic apply until the phase-1a slice proves
-  target selection and proposal value.
+- [x] 1A.2 Track phase-1a follow-up work for async scheduling, broad provenance expansion, DSPy adapters,
+  non-skill targets, and online automatic apply before final validation.
 
 ## 2. Framework Configuration
 
@@ -123,7 +122,7 @@
 - [x] 4.1 Add a default evaluation backend that can call existing
   `EvaluateRunner`.
 - [x] 4.2 Add support for objective command verification as an evaluation signal.
-- [ ] 4.3 Add support for trajectory quality scoring as an evaluation signal.
+- [x] 4.3 Add support for trajectory quality scoring as an evaluation signal.
 - [x] 4.4 Add support for cost and latency metrics.
 - [x] 4.5 Add configurable judge support for the default self-evolve trajectory
   judge, explicit `agent.md` judges, and custom judge agents.
@@ -131,7 +130,7 @@
   evaluated through the same dataset and scorer policy.
 - [x] 4.7 Add tests proving optional trajectory-log sources are accepted when
   configured but not required by default.
-- [ ] 4.7A Add a dataset builder test proving task records extracted from
+- [x] 4.7A Add a dataset builder test proving task records extracted from
   `~/Documents/logs/trajectory.log` can seed the initial regression benchmark
   when explicitly requested.
 - [x] 4.8 Add held-out evaluation discipline: select candidates on validation
@@ -183,21 +182,21 @@
 
 - [x] 7.1 Add a low-dependency trace-reflective LLM mutator optimizer for text
   targets.
-- [ ] 7.2 Add optional DSPy GEPA and MIPRO optimizer adapters behind dependency
+- [x] 7.2 Add optional DSPy GEPA and MIPRO optimizer adapters behind dependency
   checks.
 - [x] 7.3 Add candidate fingerprinting and target version fingerprinting.
-- [ ] 7.4 Add constraints for skill markdown/frontmatter, prompt section format,
+- [x] 7.4 Add constraints for skill markdown/frontmatter, prompt section format,
   tool schema description, token limits, and no-op candidate filtering.
 - [x] 7.5 Add tests proving optimizer absence produces a clear configuration
   error, not an import-time framework failure.
-- [ ] 7.6 Add workspace-local artifact candidate support for agent-produced
+- [x] 7.6 Add workspace-local artifact candidate support for agent-produced
   code/files behind protected-path gates and isolated candidate workspace
   evaluation.
 - [x] 7.7 Ensure optimizers cannot inspect held-out test cases or held-out judge
   outputs.
 - [x] 7.8 Add optimizer lineage tracking with parent candidate ids, mutation
   rationale, and trainable failure cases used.
-- [ ] 7.9 Keep Darwinian/code evolution as a future external CLI adapter only;
+- [x] 7.9 Keep Darwinian/code evolution as a future external CLI adapter only;
   do not import AGPL code into AWorld core.
 
 ## 8. Gates And Apply Policy
@@ -229,14 +228,14 @@
 
 ## 9. Framework Runner
 
-- [ ] 9.1 Add `SelfEvolveRunner` that orchestrates target loading, dataset
+- [x] 9.1 Add `SelfEvolveRunner` that orchestrates target loading, dataset
   selection/credit assignment, dataset building, baseline eval, candidate
   generation, candidate eval, gates, and artifact persistence.
 - [x] 9.2 Add a Python API entry point for SDK use.
 - [x] 9.3 Ensure active runtime behavior is not mutated during proposal-only
   runs or during the task that triggered an online evolve job.
 - [x] 9.4 Add targeted tests for a local fake target and fake optimizer.
-- [ ] 9.5 Add tests proving async post-run enqueue failures do not fail or delay
+- [x] 9.5 Add tests proving async post-run enqueue failures do not fail or delay
   the completed task response.
 
 ## 9A. Async Post-Run Scheduling
@@ -249,11 +248,11 @@
 - [x] 9A.2A Hook enqueue from `TaskEventRunner.do_run(...)` after
   `_save_trajectories()` and `_response()` have made trajectory and `llm_calls`
   available; keep `Runners.run(...)` as a delegating wrapper.
-- [ ] 9A.3 Add concurrency, timeout, retry, pending-proposal, and cooldown
+- [x] 9A.3 Add concurrency, timeout, retry, pending-proposal, and cooldown
   controls.
-- [ ] 9A.4 Add tests proving scheduler/worker failures do not affect the main
+- [x] 9A.4 Add tests proving scheduler/worker failures do not affect the main
   task result.
-- [ ] 9A.5 Persist durable pending jobs before enqueue returns, and test
+- [x] 9A.5 Persist durable pending jobs before enqueue returns, and test
   short-lived CLI process behavior does not rely on fire-and-forget tasks.
 
 ## 10. CLI Integration

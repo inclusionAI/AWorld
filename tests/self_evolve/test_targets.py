@@ -80,3 +80,27 @@ def test_workspace_artifact_target_rejects_protected_product_paths(tmp_path) -> 
 
     with pytest.raises(ValueError, match="protected product path"):
         WorkspaceArtifactTarget(protected_path, workspace_root=tmp_path)
+
+
+def test_workspace_artifact_target_supports_isolated_generated_artifact_proposals(tmp_path) -> None:
+    artifact_path = tmp_path / "generated" / "report.md"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text("old report\n", encoding="utf-8")
+    target = WorkspaceArtifactTarget(artifact_path, workspace_root=tmp_path)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.create_run(SelfEvolveRun(run_id="run-artifact", target=target.identity))
+    candidate = CandidateVariant(
+        candidate_id="cand-artifact",
+        target=target.identity,
+        content="new report\n",
+        rationale="agent-generated workspace artifact",
+    )
+
+    proposal_path, diff_path = target.preserve_proposal(store, "run-artifact", candidate)
+
+    assert target.identity.target_type == "workspace-artifact"
+    assert target.load_current_content() == "old report\n"
+    assert target.fingerprint_current_content().startswith("sha256:")
+    assert artifact_path.read_text(encoding="utf-8") == "old report\n"
+    assert proposal_path.read_text(encoding="utf-8") == "new report\n"
+    assert "+new report" in diff_path.read_text(encoding="utf-8")

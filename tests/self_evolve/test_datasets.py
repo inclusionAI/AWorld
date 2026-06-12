@@ -170,6 +170,45 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
     assert log_dataset.recipe.source["case_count"] == 2
 
 
+def test_build_dataset_from_user_documents_trajectory_log_seed(monkeypatch, tmp_path) -> None:
+    home = tmp_path / "home"
+    log_path = home / "Documents" / "logs" / "trajectory.log"
+    log_path.parent.mkdir(parents=True)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Seed regression benchmark."}},
+            "action": {"content": "I will preserve benchmark evidence."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    log_path.write_text(
+        repr(
+            {
+                "task_id": "seed-task",
+                "is_sub_task": False,
+                "trajectory": json.dumps(trajectory),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(
+            kind="trajectory_log",
+            path="~/Documents/logs/trajectory.log",
+        ),
+        split_seed="seed-benchmark",
+    )
+
+    assert [case.case_id for case in dataset.cases] == ["seed-task"]
+    assert dataset.recipe.source["kind"] == "trajectory_log"
+    assert dataset.recipe.source["path"] == str(log_path)
+    assert dataset.recipe.source["fingerprint"].startswith("sha256:")
+
+
 def test_build_dataset_from_session_source_reads_explicit_workspace_session_log(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     session_log = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"

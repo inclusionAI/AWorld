@@ -12,10 +12,12 @@ from aworld.self_evolve.evaluation import (
     EvaluateRunnerBackend,
     EvaluationBackend,
     EvaluationRequest,
+    TrajectoryQualityBackend,
     determine_candidate_confidence,
     estimate_replay_cost,
     evaluate_baseline_and_candidate,
 )
+from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import (
     CandidateVariant,
     DatasetRecipe,
@@ -177,12 +179,44 @@ def test_replay_cost_preflight_counts_replays_judges_and_verification_budget() -
     assert estimate.estimated_tokens == 900
     assert estimate.estimated_cost_usd == 0.09
 
+
+@pytest.mark.asyncio
+async def test_trajectory_quality_backend_scores_trace_pack_completion_and_failures() -> None:
+    trace_pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {"input": {"content": "Fix login."}},
+                "action": {"content": "I will inspect login state.", "tool_calls": []},
+                "reward": {"status": "ok"},
+            },
+            {
+                "meta": {"step": 2, "agent_id": "agent", "pre_agent": "agent"},
+                "state": {"messages": []},
+                "action": {"content": "Login guidance still failed.", "tool_calls": []},
+                "reward": {"status": "failed"},
+            },
+        ],
+        source_kind="current_trajectory",
+        task_id="quality-task",
+    )
+    dataset = _dataset((EvalCase(case_id="quality-task", input="Fix login.", trace_pack=trace_pack),))
+
+    summary = await TrajectoryQualityBackend().evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["trajectory_quality_signal"] is True
+    assert summary.metrics["trajectory_case_count"] == 1
+    assert summary.metrics["failed_step_count"] == 1
+    assert summary.metrics["trajectory_quality_score"] == 0.5
+
     over_budget = estimate_replay_cost(
         dataset=dataset,
         candidate_count=2,
         judge_repetitions=3,
         estimated_tokens_per_replay=100,
-        max_run_tokens=800,
+        max_run_tokens=200,
     )
 
     assert over_budget.passed is False
