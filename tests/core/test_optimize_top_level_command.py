@@ -1,0 +1,274 @@
+from __future__ import annotations
+
+import inspect
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
+
+from aworld_cli import main as main_module
+from aworld_cli.top_level_commands.optimize_cmd import run_optimize_cli
+
+
+def test_registry_registers_builtin_optimize_command_from_plugin_manifest() -> None:
+    registry = main_module._build_top_level_command_registry()
+
+    command = registry.get("optimize")
+
+    assert command is not None
+    assert command.name == "optimize"
+
+
+def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json"), "best_candidate_id": "cand-1"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--target",
+            "skill:demo",
+            "--dataset",
+            "eval.jsonl",
+            "--apply",
+            "proposal",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert handled is True
+    assert calls["target"] == "skill:demo"
+    assert calls["dataset"] == "eval.jsonl"
+    assert calls["apply"] == "proposal"
+    assert calls["from_trajectory"] is None
+    assert calls["task"] is None
+    assert "report.json" in output
+    assert "cand-1" in output
+
+
+def test_optimize_command_rejects_unsupported_apply_modes(capsys: pytest.CaptureFixture[str]) -> None:
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "optimize", "--target", "skill:demo", "--apply", "write"]
+    )
+
+    output = capsys.readouterr().out
+    assert handled is True
+    assert "Optimize error: --apply must be one of proposal, auto_verified" in output
+
+
+@pytest.mark.parametrize("apply_mode", ["write", "branch"])
+def test_optimize_command_rejects_phase1_external_apply_modes(
+    apply_mode: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "optimize", "--target", "skill:demo", "--apply", apply_mode]
+    )
+
+    output = capsys.readouterr().out
+    assert handled is True
+    assert "Optimize error: --apply must be one of proposal, auto_verified" in output
+
+
+@pytest.mark.parametrize("target", ["skill:demo", "prompt:system", "tool:browser"])
+def test_optimize_command_uses_one_generic_path_for_target_forms(
+    target: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "optimize", "--target", target, "--dataset", "eval.jsonl"]
+    )
+
+    assert handled is True
+    assert calls["target"] == target
+    assert calls["dataset"] == "eval.jsonl"
+
+
+def test_optimize_command_passes_session_batch_iterations_and_auto_verified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--target",
+            "tool:browser",
+            "--from-session",
+            "session-1",
+            "--batch-config",
+            "batch.yaml",
+            "--iterations",
+            "3",
+            "--apply",
+            "auto_verified",
+        ]
+    )
+
+    assert handled is True
+    assert calls["target"] == "tool:browser"
+    assert calls["from_session"] == "session-1"
+    assert calls["batch_config"] == "batch.yaml"
+    assert calls["iterations"] == 3
+    assert calls["apply"] == "auto_verified"
+
+
+def test_optimize_command_task_without_target_uses_framework_inference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "optimize", "--task", "fix browser login", "--from-trajectory", "trajectory.log"]
+    )
+
+    assert handled is True
+    assert calls["target"] is None
+    assert calls["task"] == "fix browser login"
+    assert calls["infer_target"] is True
+    assert calls["from_trajectory"] == "trajectory.log"
+
+
+def test_run_optimize_cli_delegates_generic_request_to_framework_api(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    report = run_optimize_cli(
+        agent="Agent",
+        task=None,
+        target="prompt:system",
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=3,
+        apply="auto_verified",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+    )
+
+    assert report["report_path"].endswith("report.json")
+    assert calls["workspace_root"] == str(tmp_path)
+    assert calls["agent"] == "Agent"
+    assert calls["target"] == "prompt:system"
+    assert calls["dataset"] == "eval.jsonl"
+    assert calls["iterations"] == 3
+    assert calls["apply_policy"] == "auto_verified"
+    assert calls["infer_target"] is False
+
+
+def test_run_optimize_cli_leaves_target_inference_to_framework(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task="fix login",
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory="trajectory.log",
+        batch_config=None,
+        iterations=None,
+        apply="proposal",
+        infer_target=True,
+        workspace_root=str(tmp_path),
+    )
+
+    assert calls["task"] == "fix login"
+    assert calls["target"] is None
+    assert calls["infer_target"] is True
+    assert calls["from_trajectory"] == "trajectory.log"
+
+
+def test_optimize_command_module_does_not_own_framework_self_evolve_components() -> None:
+    import aworld_cli.top_level_commands.optimize_cmd as optimize_cmd
+
+    source = inspect.getsource(optimize_cmd)
+
+    forbidden_framework_symbols = {
+        "SelfEvolveScheduler",
+        "SelfEvolveRunner",
+        "EvaluationBackend",
+        "CandidateOptimizer",
+        "FilesystemSelfEvolveStore",
+        "TrajectoryCreditAssigner",
+        "SelfEvolveConfig",
+        "AgentConfig",
+    }
+    assert not [symbol for symbol in forbidden_framework_symbols if symbol in source]

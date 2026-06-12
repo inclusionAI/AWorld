@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+from aworld.config.conf import SelfEvolveConfig
+from aworld.core.task import TaskResponse
+from aworld.runners.event_runner import TaskEventRunner
+from aworld.self_evolve.scheduler import (
+    SelfEvolveRunContext,
+    SelfEvolveScheduler,
+)
+
+
+def _trajectory() -> tuple[dict, ...]:
+    return (
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        },
+    )
+
+
+def test_scheduler_declines_when_mode_is_not_shadow_or_online(tmp_path) -> None:
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    context = SelfEvolveRunContext(
+        agent_id="agent",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        trajectory=_trajectory(),
+        self_evolve_config=SelfEvolveConfig(mode="offline"),
+    )
+
+    result = scheduler.enqueue(context)
+
+    assert result.accepted is False
+    assert result.reason == "self-evolve mode is not eligible for post-run enqueue"
+    assert result.job_path is None
+
+
+def test_scheduler_persists_pending_job_for_shadow_mode_before_returning(tmp_path) -> None:
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    context = SelfEvolveRunContext(
+        agent_id="agent",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        trajectory=_trajectory(),
+        self_evolve_config=SelfEvolveConfig(mode="shadow"),
+        source_hints={"target": "skill:demo"},
+    )
+
+    result = scheduler.enqueue(context)
+
+    assert result.accepted is True
+    assert result.job_path is not None
+    saved = json.loads(result.job_path.read_text(encoding="utf-8"))
+    assert saved["status"] == "pending"
+    assert saved["agent_id"] == "agent"
+    assert saved["task_id"] == "task-1"
+    assert saved["self_evolve_config"]["mode"] == "shadow"
+    assert saved["trajectory"][0]["state"]["input"]["content"] == "Fix guidance."
+    assert saved["source_hints"] == {"target": "skill:demo"}
+
+
+def test_scheduler_best_effort_enqueue_failure_does_not_raise(tmp_path) -> None:
+    def fail_writer(path, payload):
+        raise OSError("disk unavailable")
+
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path, write_job=fail_writer)
+    context = SelfEvolveRunContext(
+        agent_id="agent",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        trajectory=_trajectory(),
+        self_evolve_config=SelfEvolveConfig(mode="shadow"),
+    )
+
+    result = scheduler.enqueue(context)
+
+    assert result.accepted is False
+    assert result.reason == "enqueue failed: disk unavailable"
+    assert result.job_path is None
+
+
+def test_event_runner_enqueues_self_evolve_after_response(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls = {}
+
+    class CapturingScheduler:
+        def __init__(self, *, workspace_root):
+            calls["workspace_root"] = workspace_root
+
+        def enqueue(self, context):
+            calls["context"] = context
+            return SimpleNamespace(accepted=True, reason="queued")
+
+    monkeypatch.setattr(
+        "aworld.runners.event_runner.SelfEvolveScheduler",
+        CapturingScheduler,
+        raising=False,
+    )
+
+    runner = TaskEventRunner.__new__(TaskEventRunner)
+    runner.task = SimpleNamespace(
+        id="task-1",
+        is_sub_task=False,
+        agent=SimpleNamespace(
+            id=lambda: "agent-1",
+            conf=SimpleNamespace(self_evolve_config=SelfEvolveConfig(mode="shadow")),
+        ),
+    )
+    runner.context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        session_id="session-1",
+    )
+    response = TaskResponse(
+        id="task-1",
+        trajectory=list(_trajectory()),
+        llm_calls=[{"model": "judge"}],
+    )
+
+    result = runner._enqueue_self_evolve_after_response(response)
+
+    assert result is response
+    assert calls["workspace_root"] == str(tmp_path)
+    context = calls["context"]
+    assert context.agent_id == "agent-1"
+    assert context.task_id == "task-1"
+    assert context.workspace_root == str(tmp_path)
+    assert context.trajectory == _trajectory()
+    assert context.self_evolve_config.mode == "shadow"
+    assert context.source_hints["session_id"] == "session-1"
+    assert context.source_hints["llm_calls"] == [{"model": "judge"}]
+
+
+def test_event_runner_self_evolve_enqueue_failure_does_not_replace_response(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class FailingScheduler:
+        def __init__(self, *, workspace_root):
+            pass
+
+        def enqueue(self, context):
+            raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(
+        "aworld.runners.event_runner.SelfEvolveScheduler",
+        FailingScheduler,
+        raising=False,
+    )
+
+    runner = TaskEventRunner.__new__(TaskEventRunner)
+    runner.task = SimpleNamespace(
+        id="task-1",
+        is_sub_task=False,
+        agent=SimpleNamespace(
+            id=lambda: "agent-1",
+            conf=SimpleNamespace(self_evolve_config=SelfEvolveConfig(mode="shadow")),
+        ),
+    )
+    runner.context = SimpleNamespace(workspace_path=str(tmp_path), session_id="session-1")
+    response = TaskResponse(id="task-1", trajectory=list(_trajectory()))
+
+    result = runner._enqueue_self_evolve_after_response(response)
+
+    assert result is response

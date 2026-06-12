@@ -108,11 +108,11 @@
 
 - [x] 3.1 Create `aworld/self_evolve/` with stable public imports.
 - [x] 3.2 Define target interfaces and phase-1 target types.
-- [ ] 3.3 Define candidate variant, run, metric, diagnostic, and gate result
+- [x] 3.3 Define candidate variant, run, metric, diagnostic, and gate result
   models.
-- [ ] 3.4 Define optimizer and evaluation backend protocols.
+- [x] 3.4 Define optimizer and evaluation backend protocols.
 - [x] 3.5 Define persistent run artifact storage under `.aworld/self_evolve/`.
-- [ ] 3.6 Define async trigger/run-context models for post-run enqueue.
+- [x] 3.6 Define async trigger/run-context models for post-run enqueue.
 - [x] 3.7 Define `SelfEvolveRun` naming that does not conflict with existing
   `train.evolve.EvolutionRunner` / `EvolutionConfig`.
 - [x] 3.8 Define trace pack, dataset recipe, target provenance, and optimizer
@@ -124,7 +124,7 @@
   `EvaluateRunner`.
 - [x] 4.2 Add support for objective command verification as an evaluation signal.
 - [ ] 4.3 Add support for trajectory quality scoring as an evaluation signal.
-- [ ] 4.4 Add support for cost and latency metrics.
+- [x] 4.4 Add support for cost and latency metrics.
 - [x] 4.5 Add configurable judge support for the default self-evolve trajectory
   judge, explicit `agent.md` judges, and custom judge agents.
 - [x] 4.6 Add regression tests proving baseline and candidate variants are
@@ -204,27 +204,27 @@
 
 - [x] 8.1 Add gate policy for minimum score improvement.
 - [x] 8.2 Add gate policy for maximum cost/latency regression.
-- [ ] 8.3 Add gate policy for required deterministic verification commands.
-- [ ] 8.4 Add proposal-only apply mode as the default.
-- [ ] 8.5 Add `auto_verified` apply mode for `online` and allowlisted targets.
-- [ ] 8.5A Ensure `auto_verified` is gate-driven and unattended after enablement.
-- [ ] 8.6 Ensure proposal mode writes report, candidate files, and diffs only.
+- [x] 8.3 Add gate policy for required deterministic verification commands.
+- [x] 8.4 Add proposal-only apply mode as the default.
+- [x] 8.5 Add `auto_verified` apply mode for `online` and allowlisted targets.
+- [x] 8.5A Ensure `auto_verified` is gate-driven and unattended after enablement.
+- [x] 8.6 Ensure proposal mode writes report, candidate files, and diffs only.
 - [x] 8.7 Add protected-path gates for framework, `aworld-cli`, runtime, shared
   infrastructure, package metadata, secret/config paths, and AWorld product
   logic.
 - [x] 8.7A Add protected-path gates for `aworld-skills/app_evaluator/SKILL.md`
   so it cannot be selected as a default target or mutated by candidates.
-- [ ] 8.8 Add stopping conditions for max iterations, stalled improvement,
+- [x] 8.8 Add stopping conditions for max iterations, stalled improvement,
   pending proposal duplicate suppression, and cooldown.
 - [x] 8.9 Add whole-run token and cost budget gates.
-- [ ] 8.10 Add held-out verification gates for candidates that claim verified
+- [x] 8.10 Add held-out verification gates for candidates that claim verified
   improvement.
-- [ ] 8.11 Add trust/provenance gates for generated, external, and protected
+- [x] 8.11 Add trust/provenance gates for generated, external, and protected
   targets.
-- [ ] 8.12 Add global regression benchmark gates for skill, prompt-section, and
+- [x] 8.12 Add global regression benchmark gates for skill, prompt-section, and
   tool-description targets.
 - [x] 8.13 Add judge-only limited-confidence gates.
-- [ ] 8.14 Add post-apply re-evaluation and rollback/rejection gates for
+- [x] 8.14 Add post-apply re-evaluation and rollback/rejection gates for
   `auto_verified`.
 
 ## 9. Framework Runner
@@ -232,7 +232,7 @@
 - [ ] 9.1 Add `SelfEvolveRunner` that orchestrates target loading, dataset
   selection/credit assignment, dataset building, baseline eval, candidate
   generation, candidate eval, gates, and artifact persistence.
-- [ ] 9.2 Add a Python API entry point for SDK use.
+- [x] 9.2 Add a Python API entry point for SDK use.
 - [x] 9.3 Ensure active runtime behavior is not mutated during proposal-only
   runs or during the task that triggered an online evolve job.
 - [x] 9.4 Add targeted tests for a local fake target and fake optimizer.
@@ -241,12 +241,12 @@
 
 ## 9A. Async Post-Run Scheduling
 
-- [ ] 9A.0 Start this section only after the phase-1a explicit-target
+- [x] 9A.0 Start this section only after the phase-1a explicit-target
   proposal-only slice proves useful.
-- [ ] 9A.1 Add `SelfEvolveScheduler` with best-effort enqueue semantics.
-- [ ] 9A.2 Add post-run eligibility checks for
+- [x] 9A.1 Add `SelfEvolveScheduler` with best-effort enqueue semantics.
+- [x] 9A.2 Add post-run eligibility checks for
   `self_evolve_config.mode in {"shadow", "online"}`.
-- [ ] 9A.2A Hook enqueue from `TaskEventRunner.do_run(...)` after
+- [x] 9A.2A Hook enqueue from `TaskEventRunner.do_run(...)` after
   `_save_trajectories()` and `_response()` have made trajectory and `llm_calls`
   available; keep `Runners.run(...)` as a delegating wrapper.
 - [ ] 9A.3 Add concurrency, timeout, retry, pending-proposal, and cooldown
@@ -258,52 +258,52 @@
 
 ## 10. CLI Integration
 
-- [ ] 10.1 Add a single top-level `aworld-cli optimize` command.
-- [ ] 10.2 Support `--agent`, `--task`, `--target`, `--dataset`,
+- [x] 10.1 Add a single top-level `aworld-cli optimize` command.
+- [x] 10.2 Support `--agent`, `--task`, `--target`, `--dataset`,
   `--from-session`, `--from-trajectory`, `--batch-config`, `--iterations`, and
   `--apply`.
-- [ ] 10.3 Do not add interactive `/optimize` or other extra phase-1 CLI
+- [x] 10.3 Do not add interactive `/optimize` or other extra phase-1 CLI
   entrypoints.
-- [ ] 10.4 Do not add CLI-owned env/config wiring for built-in AWorld main agent
+- [x] 10.4 Do not add CLI-owned env/config wiring for built-in AWorld main agent
   self-evolve mode; use framework agent config semantics only.
-- [ ] 10.5 Add command tests proving CLI invokes framework APIs rather than
+- [x] 10.5 Add command tests proving CLI invokes framework APIs rather than
   owning self-evolve logic.
-- [ ] 10.6 Add CLI tests proving `--from-trajectory` is optional and passed
+- [x] 10.6 Add CLI tests proving `--from-trajectory` is optional and passed
   through as an explicit eval source.
-- [ ] 10.7 Add CLI tests proving `--task` can invoke framework target inference
+- [x] 10.7 Add CLI tests proving `--task` can invoke framework target inference
   through the same command path.
-- [ ] 10.8 Add CLI tests proving command discovery uses the built-in plugin
+- [x] 10.8 Add CLI tests proving command discovery uses the built-in plugin
   manifest/`cli_commands` path.
-- [ ] 10.9 Add CLI tests proving CLI does not own scheduler, evaluator,
+- [x] 10.9 Add CLI tests proving CLI does not own scheduler, evaluator,
   optimizer, target inference, durable artifacts, or agent opt-in semantics.
 
 ## 11. Documentation And Examples
 
-- [ ] 11.1 Document framework self-evolve concepts and safety model.
-- [ ] 11.1A Document that phase-1 self-evolve means harness-text/config
+- [x] 11.1 Document framework self-evolve concepts and safety model.
+- [x] 11.1A Document that phase-1 self-evolve means harness-text/config
   evolution, not model-weight training or replacement of the agent policy.
-- [ ] 11.2 Document `SelfEvolveConfig.mode` opt-in and its distinction from
+- [x] 11.2 Document `SelfEvolveConfig.mode` opt-in and its distinction from
   `meta_learning_config`, `ContextRuleConfig.optimization_config`, and
   `train.evolve`.
-- [ ] 11.3 Document CLI `optimize` usage.
-- [ ] 11.4 Add a minimal example that uses a toy trajectory to infer and
+- [x] 11.3 Document CLI `optimize` usage.
+- [x] 11.4 Add a minimal example that uses a toy trajectory to infer and
   propose a target improvement, with optional jsonl eval cases.
-- [ ] 11.5 Add a note explaining why framework/runtime/CLI logic evolution is
+- [x] 11.5 Add a note explaining why framework/runtime/CLI logic evolution is
   deferred while agent-produced workspace artifacts remain isolated and gated.
-- [ ] 11.6 Document that phase 1 has two modes: proposal-only `shadow` and
+- [x] 11.6 Document that phase 1 has two modes: proposal-only `shadow` and
   controlled automatic `online` for allowlisted verified targets.
-- [ ] 11.6A Document that the default single-trajectory post-run path produces a
+- [x] 11.6A Document that the default single-trajectory post-run path produces a
   limited-confidence proposal unless independent eval sources and
   deterministic/objective gates are configured.
-- [ ] 11.7 Document that `aworld-skills/app_evaluator/SKILL.md` is not part of
+- [x] 11.7 Document that `aworld-skills/app_evaluator/SKILL.md` is not part of
   the new self-evolve subsystem and may only be used as an explicitly
   configured read-only scorer/fixture.
-- [ ] 11.8 Document which Hermes/GEPA/Darwinian patterns were adopted as
+- [x] 11.8 Document which Hermes/GEPA/Darwinian patterns were adopted as
   framework contracts and which remain future adapters.
-- [ ] 11.9 Document configurable LLM judge behavior and examples for default
+- [x] 11.9 Document configurable LLM judge behavior and examples for default
   trajectory judge, `agent.md`, and custom judge agents.
-- [ ] 11.10 Document the online closed-loop path:
+- [x] 11.10 Document the online closed-loop path:
   `apply -> re-evaluate -> accept/rollback`, and note which broader targets are
   deferred to later phases.
-- [ ] 11.11 Document that online automatic mode is unattended after enablement
+- [x] 11.11 Document that online automatic mode is unattended after enablement
   and does not wait for human review or approval.
