@@ -115,115 +115,115 @@
 - [ ] 3.6 Define async trigger/run-context models for post-run enqueue.
 - [x] 3.7 Define `SelfEvolveRun` naming that does not conflict with existing
   `train.evolve.EvolutionRunner` / `EvolutionConfig`.
-- [ ] 3.8 Define trace pack, dataset recipe, target provenance, and optimizer
+- [x] 3.8 Define trace pack, dataset recipe, target provenance, and optimizer
   lineage models.
 
 ## 4. Evaluation Integration
 
-- [ ] 4.1 Add a default evaluation backend that can call existing
+- [x] 4.1 Add a default evaluation backend that can call existing
   `EvaluateRunner`.
-- [ ] 4.2 Add support for objective command verification as an evaluation signal.
+- [x] 4.2 Add support for objective command verification as an evaluation signal.
 - [ ] 4.3 Add support for trajectory quality scoring as an evaluation signal.
 - [ ] 4.4 Add support for cost and latency metrics.
-- [ ] 4.5 Add configurable judge support for the default self-evolve trajectory
+- [x] 4.5 Add configurable judge support for the default self-evolve trajectory
   judge, explicit `agent.md` judges, and custom judge agents.
-- [ ] 4.6 Add regression tests proving baseline and candidate variants are
+- [x] 4.6 Add regression tests proving baseline and candidate variants are
   evaluated through the same dataset and scorer policy.
-- [ ] 4.7 Add tests proving optional trajectory-log sources are accepted when
+- [x] 4.7 Add tests proving optional trajectory-log sources are accepted when
   configured but not required by default.
 - [ ] 4.7A Add a dataset builder test proving task records extracted from
   `~/Documents/logs/trajectory.log` can seed the initial regression benchmark
   when explicitly requested.
-- [ ] 4.8 Add held-out evaluation discipline: select candidates on validation
+- [x] 4.8 Add held-out evaluation discipline: select candidates on validation
   metrics and gate verification on optimizer-held-out test metrics when enough
   cases are available.
-- [ ] 4.9 Add tests for insufficient eval cases producing limited-confidence
+- [x] 4.9 Add tests for insufficient eval cases producing limited-confidence
   proposals rather than verified candidates.
-- [ ] 4.10 Add tests proving judge-only improvements remain limited-confidence
+- [x] 4.10 Add tests proving judge-only improvements remain limited-confidence
   and verified candidates require a deterministic/objective signal.
-- [ ] 4.11 Add replay-cost preflight estimation for baseline and candidate
+- [x] 4.11 Add replay-cost preflight estimation for baseline and candidate
   re-execution before launching evaluation batches.
 
 ## 5. Dataset Builders
 
-- [ ] 5.1 Add jsonl dataset ingestion for explicit eval cases.
-- [ ] 5.2 Add builder support for existing batch job config as an eval source.
-- [ ] 5.3 Add current-trajectory, session, and trajectory-log source interfaces
+- [x] 5.1 Add jsonl dataset ingestion for explicit eval cases.
+- [x] 5.2 Add builder support for existing batch job config as an eval source.
+- [x] 5.3 Add current-trajectory, session, and trajectory-log source interfaces
   that can feed phase-1 credit assignment.
-- [ ] 5.4 Add deterministic train/validation/test split metadata.
-- [ ] 5.5 Add tests for dataset identity and split reproducibility.
-- [ ] 5.6 Add a fixture-backed test that can use a trajectory log sample, without
+- [x] 5.4 Add deterministic train/validation/test split metadata.
+- [x] 5.5 Add tests for dataset identity and split reproducibility.
+- [x] 5.6 Add a fixture-backed test that can use a trajectory log sample, without
   hard-coding `~/Documents/logs/trajectory.log` into product behavior.
-- [ ] 5.7 Add dataset recipe persistence with source filters, synthetic
+- [x] 5.7 Add dataset recipe persistence with source filters, synthetic
   generation policy, and trainable vs held-out failure-case separation.
-- [ ] 5.8 Add tests proving single-trajectory post-run sources cannot produce a
+- [x] 5.8 Add tests proving single-trajectory post-run sources cannot produce a
   verified candidate unless additional eval sources satisfy held-out gates.
 
 ## 6. Trajectory Credit Assignment
 
-- [ ] 6.0 Verify the phase-0 credit-assignment gate has been accepted before
+- [x] 6.0 Verify the phase-0 credit-assignment gate has been accepted before
   implementing production target inference.
-- [ ] 6.1 Add `TrajectoryCreditAssigner` and `TargetSelectionReport` models.
-- [ ] 6.2 Add SAR-first `TracePack` normalization/compression before credit
+- [x] 6.1 Add `TrajectoryCreditAssigner` and `TargetSelectionReport` models.
+- [x] 6.2 Add SAR-first `TracePack` normalization/compression before credit
   assignment, preserving `TrajectoryItem.state`, `action`, `reward`, and stable
   evidence ids.
-- [ ] 6.3 Build target inventory for skill, prompt-section, tool-description,
+- [x] 6.3 Build target inventory for skill, prompt-section, tool-description,
   whitelisted config, and agent-produced workspace artifact targets.
-- [ ] 6.4 Implement deterministic trajectory signal extraction using
+- [x] 6.4 Implement deterministic trajectory signal extraction using
   trajectory scorers, tool call failures, repeated actions, LLM calls, and
   generated artifact references.
-- [ ] 6.5 Add optional LLM-assisted diagnosis that cites trajectory evidence and
+- [x] 6.5 Add optional LLM-assisted diagnosis that cites trajectory evidence and
   can return `no_target` on low confidence.
-- [ ] 6.6 Add tests proving `--task` / current trajectory can infer skill,
+- [x] 6.6 Add tests proving `--task` / current trajectory can infer skill,
   prompt, or tool-description targets, and can decline when evidence is
   insufficient.
-- [ ] 6.7 Add target provenance and trust metadata to target inventory.
+- [x] 6.7 Add target provenance and trust metadata to target inventory.
 
 ## 7. Candidate Generation
 
-- [ ] 7.1 Add a low-dependency trace-reflective LLM mutator optimizer for text
+- [x] 7.1 Add a low-dependency trace-reflective LLM mutator optimizer for text
   targets.
 - [ ] 7.2 Add optional DSPy GEPA and MIPRO optimizer adapters behind dependency
   checks.
-- [ ] 7.3 Add candidate fingerprinting and target version fingerprinting.
+- [x] 7.3 Add candidate fingerprinting and target version fingerprinting.
 - [ ] 7.4 Add constraints for skill markdown/frontmatter, prompt section format,
   tool schema description, token limits, and no-op candidate filtering.
-- [ ] 7.5 Add tests proving optimizer absence produces a clear configuration
+- [x] 7.5 Add tests proving optimizer absence produces a clear configuration
   error, not an import-time framework failure.
 - [ ] 7.6 Add workspace-local artifact candidate support for agent-produced
   code/files behind protected-path gates and isolated candidate workspace
   evaluation.
-- [ ] 7.7 Ensure optimizers cannot inspect held-out test cases or held-out judge
+- [x] 7.7 Ensure optimizers cannot inspect held-out test cases or held-out judge
   outputs.
-- [ ] 7.8 Add optimizer lineage tracking with parent candidate ids, mutation
+- [x] 7.8 Add optimizer lineage tracking with parent candidate ids, mutation
   rationale, and trainable failure cases used.
 - [ ] 7.9 Keep Darwinian/code evolution as a future external CLI adapter only;
   do not import AGPL code into AWorld core.
 
 ## 8. Gates And Apply Policy
 
-- [ ] 8.1 Add gate policy for minimum score improvement.
-- [ ] 8.2 Add gate policy for maximum cost/latency regression.
+- [x] 8.1 Add gate policy for minimum score improvement.
+- [x] 8.2 Add gate policy for maximum cost/latency regression.
 - [ ] 8.3 Add gate policy for required deterministic verification commands.
 - [ ] 8.4 Add proposal-only apply mode as the default.
 - [ ] 8.5 Add `auto_verified` apply mode for `online` and allowlisted targets.
 - [ ] 8.5A Ensure `auto_verified` is gate-driven and unattended after enablement.
 - [ ] 8.6 Ensure proposal mode writes report, candidate files, and diffs only.
-- [ ] 8.7 Add protected-path gates for framework, `aworld-cli`, runtime, shared
+- [x] 8.7 Add protected-path gates for framework, `aworld-cli`, runtime, shared
   infrastructure, package metadata, secret/config paths, and AWorld product
   logic.
-- [ ] 8.7A Add protected-path gates for `aworld-skills/app_evaluator/SKILL.md`
+- [x] 8.7A Add protected-path gates for `aworld-skills/app_evaluator/SKILL.md`
   so it cannot be selected as a default target or mutated by candidates.
 - [ ] 8.8 Add stopping conditions for max iterations, stalled improvement,
   pending proposal duplicate suppression, and cooldown.
-- [ ] 8.9 Add whole-run token and cost budget gates.
+- [x] 8.9 Add whole-run token and cost budget gates.
 - [ ] 8.10 Add held-out verification gates for candidates that claim verified
   improvement.
 - [ ] 8.11 Add trust/provenance gates for generated, external, and protected
   targets.
 - [ ] 8.12 Add global regression benchmark gates for skill, prompt-section, and
   tool-description targets.
-- [ ] 8.13 Add judge-only limited-confidence gates.
+- [x] 8.13 Add judge-only limited-confidence gates.
 - [ ] 8.14 Add post-apply re-evaluation and rollback/rejection gates for
   `auto_verified`.
 
@@ -233,9 +233,9 @@
   selection/credit assignment, dataset building, baseline eval, candidate
   generation, candidate eval, gates, and artifact persistence.
 - [ ] 9.2 Add a Python API entry point for SDK use.
-- [ ] 9.3 Ensure active runtime behavior is not mutated during proposal-only
+- [x] 9.3 Ensure active runtime behavior is not mutated during proposal-only
   runs or during the task that triggered an online evolve job.
-- [ ] 9.4 Add targeted tests for a local fake target and fake optimizer.
+- [x] 9.4 Add targeted tests for a local fake target and fake optimizer.
 - [ ] 9.5 Add tests proving async post-run enqueue failures do not fail or delay
   the completed task response.
 
