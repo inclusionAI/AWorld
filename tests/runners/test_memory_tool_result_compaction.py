@@ -305,6 +305,96 @@ async def test_llm_message_replay_skips_duplicate_tool_result(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_llm_message_replay_drops_incomplete_tool_call_turn(monkeypatch):
+    meta = MessageMetadata(
+        session_id="session-1",
+        user_id="user-1",
+        task_id="task-1",
+        agent_id="agent-1",
+        agent_name="Aworld",
+    )
+    ai_message = MemoryAIMessage(
+        content="",
+        tool_calls=[
+            ToolCall.from_dict({
+                "id": "cron__cron_tool:missing",
+                "function": {"name": "cron__cron_tool", "arguments": "{}"},
+            })
+        ],
+        metadata=meta,
+    )
+    fake_memory = _FakeMemory()
+    fake_memory.items = [(ai_message, None)]
+    monkeypatch.setattr(
+        "aworld.agents.llm_agent.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+
+    context = _build_context()
+    agent = LLMAgent(
+        name="Aworld",
+        agent_id="agent-1",
+        conf=AgentConfig(
+            llm_model_name="test-model",
+            llm_api_key="test-key",
+            memory_config=AgentMemoryConfig(history_rounds=10),
+        ),
+    )
+    message = Message(headers={"context": context})
+
+    messages = await agent.async_messages_transform(
+        image_urls=[],
+        observation=Observation(action_result=[ActionResult(content="continue current turn")]),
+        message=message,
+    )
+
+    assert not any(message.get("tool_calls") for message in messages)
+    assert not any(message.get("role") == "tool" for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_llm_message_replay_skips_orphan_tool_result(monkeypatch):
+    meta = MessageMetadata(
+        session_id="session-1",
+        user_id="user-1",
+        task_id="task-1",
+        agent_id="agent-1",
+        agent_name="Aworld",
+    )
+    orphan_tool = MemoryToolMessage(
+        content="orphan result",
+        tool_call_id="missing-call",
+        metadata=meta,
+    )
+    fake_memory = _FakeMemory()
+    fake_memory.items = [(orphan_tool, None)]
+    monkeypatch.setattr(
+        "aworld.agents.llm_agent.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+
+    context = _build_context()
+    agent = LLMAgent(
+        name="Aworld",
+        agent_id="agent-1",
+        conf=AgentConfig(
+            llm_model_name="test-model",
+            llm_api_key="test-key",
+            memory_config=AgentMemoryConfig(history_rounds=10),
+        ),
+    )
+    message = Message(headers={"context": context})
+
+    messages = await agent.async_messages_transform(
+        image_urls=[],
+        observation=Observation(action_result=[ActionResult(content="continue current turn")]),
+        message=message,
+    )
+
+    assert not any(message.get("role") == "tool" for message in messages)
+
+
+@pytest.mark.asyncio
 async def test_default_memory_handler_compacts_large_tool_results_by_char_length(monkeypatch):
     fake_memory = _FakeMemory()
     monkeypatch.setattr(
