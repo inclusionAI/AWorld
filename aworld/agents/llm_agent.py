@@ -865,17 +865,45 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tool_calls_map = {}
             last_tool_calls = []
             matched_tool_call_ids = set()
+
+            def _is_tool_history(history) -> bool:
+                if isinstance(history, MemoryMessage):
+                    return isinstance(history, MemoryToolMessage)
+                return history.metadata.get('role') == 'tool'
+
+            def _drop_incomplete_tool_call_turn(reason: str):
+                nonlocal tool_calls_map, last_tool_calls
+                if not last_tool_calls:
+                    return
+                dropped_message = None
+                if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls"):
+                    dropped_message = messages.pop()
+                logger.warning(
+                    "Skip incomplete tool-call turn in memory replay: "
+                    f"reason={reason}, missing_tool_call_ids={last_tool_calls}, "
+                    f"matched_tool_result_ids={list(tool_calls_map.keys())}, "
+                    f"dropped_assistant_message={bool(dropped_message)}, agent={self.id()}"
+                )
+                tool_calls_map = {}
+                last_tool_calls = []
+
+            def _append_complete_tool_results():
+                nonlocal tool_calls_map, last_tool_calls
+                for tool_call_id in last_tool_calls:
+                    if tool_call_id not in tool_calls_map:
+                        _drop_incomplete_tool_call_turn(f"missing tool result for {tool_call_id}")
+                        return
+                    messages.append(tool_calls_map.get(tool_call_id))
+                    matched_tool_call_ids.add(tool_call_id)
+                tool_calls_map = {}
+                last_tool_calls = []
+
             for history in histories:
                 if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
                     # Maintain the order of tool calls
-                    for tool_call_id in last_tool_calls:
-                        if tool_call_id not in tool_calls_map:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                        messages.append(tool_calls_map.get(tool_call_id))
-                        matched_tool_call_ids.add(tool_call_id)
-                    tool_calls_map = {}
-                    last_tool_calls = []
+                    _append_complete_tool_results()
+                elif last_tool_calls and not _is_tool_history(history):
+                    _drop_incomplete_tool_call_turn("next non-tool message encountered")
 
                 if isinstance(history, MemoryMessage):
                     if isinstance(history, MemoryToolMessage):
@@ -887,9 +915,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 f"tool_call_id={history.tool_call_id}, agent={self.id()}"
                             )
                         else:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {history.tool_call_id} not found in {last_tool_calls}, "
-                                f"messages: {messages}, histories: {histories}")
+                            logger.warning(
+                                "Skip orphan tool result in memory replay: "
+                                f"tool_call_id={history.tool_call_id}, agent={self.id()}"
+                            )
                     else:
                         messages.append(history.to_openai_message())
                         if isinstance(history, MemoryAIMessage) and history.tool_calls:
@@ -908,9 +937,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 f"tool_call_id={tool_call_id}, agent={self.id()}"
                             )
                         else:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {last_tool_calls}, "
-                                f"messages: {messages}, histories: {histories}")
+                            logger.warning(
+                                "Skip orphan tool result in memory replay: "
+                                f"tool_call_id={tool_call_id}, agent={self.id()}"
+                            )
                     else:
                         if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
                             messages.append({'role': history.metadata['role'], 'content': history.content,
@@ -922,31 +952,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                              "tool_call_id": history.metadata.get("tool_call_id")})
                 if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
                     # Maintain the order of tool calls
-                    for tool_call_id in last_tool_calls:
-                        if tool_call_id not in tool_calls_map:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                        messages.append(tool_calls_map.get(tool_call_id))
-                        matched_tool_call_ids.add(tool_call_id)
-                    tool_calls_map = {}
-                    last_tool_calls = []
+                    _append_complete_tool_results()
                 elif len(tool_calls_map) > len(last_tool_calls):
-                    raise AWorldRuntimeException(
-                        f"tool_calls mismatch! {len(tool_calls_map)} tool messages > {len(last_tool_calls)} tool calls: "
-                        f"tool_calls_map={tool_calls_map}, last_tool_calls={last_tool_calls}, messages={messages}, histories={histories}")
-            if len(tool_calls_map) == len(last_tool_calls):
-                for tool_call_id in last_tool_calls:
-                    if tool_call_id not in tool_calls_map:
-                        raise AWorldRuntimeException(
-                            f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                    messages.append(tool_calls_map.get(tool_call_id))
-                    matched_tool_call_ids.add(tool_call_id)
-                tool_calls_map = {}
-                last_tool_calls = []
+                    _drop_incomplete_tool_call_turn("more tool results than tool calls")
+            if last_tool_calls and len(tool_calls_map) == len(last_tool_calls):
+                _append_complete_tool_results()
             else:
-                raise AWorldRuntimeException(
-                    f"tool_calls mismatch! {len(tool_calls_map)} tool messages != {len(last_tool_calls)} tool calls: "
-                    f"tool_calls_map={tool_calls_map}, last_tool_calls={last_tool_calls}, messages={messages}, histories={histories}")
+                _drop_incomplete_tool_call_turn("end of history reached")
 
         return messages
 
