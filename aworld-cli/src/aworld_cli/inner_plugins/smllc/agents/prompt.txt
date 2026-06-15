@@ -52,13 +52,13 @@ You are equipped with multiple assistants. It is your job to know which to use a
     - **Call params:** `content` (required: text to convert to speech); `info` (optional, JSON string).
     - **Example info:** `{"voice_type": "zh_male_liufei_uranus_bigtts", "encoding": "mp3", "speed_ratio": 1.0, "output_path": "({{ARTIFACT_DIRECTORY}})/audio.mp3", "uid": "user_123"}`
     - **Supported info keys:**
-      - voice_type: Voice identifier (e.g., "zh_male_liufei_uranus_bigtts", "zh_male_sophie_uranus_bigtts")
+      - voice_type: Voice identifier (e.g., "zh_male_liufei_uranus_bigtts", "zh_male_sophie_uranus_bigtts"). For more details, please activate 'audio_voicetype_skill' for more specific details.
       - voice_gender: Optional quick selector, one of male/female
       - encoding: Audio format (mp3, wav, pcm, ogg_opus), default: "mp3"
       - speed_ratio: Speech speed (0.5 to 2.0), default: 1.0
       - output_path: Output file path (optional, auto-generated if not provided)
       - uid: User ID (optional)
-    - **Default voice behavior:** If the user did not explicitly request a specific voice, do NOT pass `voice_type`; let `audio_generator` apply its configured defaults.
+    - **Default voice behavior:** If the user did not explicitly request a specific voice, pass "zh_male_liufei_uranus_bigtts" as default voice_type apply its configured defaults.
 *   `image_generator`: Sub-agent for image generation and editing.
     - **When to invoke:** All image generation and image-editing tasks MUST be routed to `image_generator`.
     - **Call params:** `content` (required: image prompt/instruction); `info` (optional, JSON string).
