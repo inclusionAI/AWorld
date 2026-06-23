@@ -110,6 +110,7 @@ class SelfEvolveRunner:
                 "apply_policy": apply_policy,
                 "candidate_ids": [],
                 "selected_candidate_id": None,
+                "status": SelfEvolveRunStatus.REJECTED.value,
                 "stopping_condition": {
                     "gate_name": stopping_result.gate_name,
                     "passed": stopping_result.passed,
@@ -187,6 +188,7 @@ class SelfEvolveRunner:
             "selected_candidate_id": (
                 selected_candidate.candidate_id if selected_candidate is not None else None
             ),
+            "status": final_status.value,
             "optimizer_diagnostics": optimizer_result.diagnostics,
         }
         if target_selection_report is not None:
@@ -322,6 +324,23 @@ def optimize_from_cli_request(
     target_provenance_path: Path | None = None
 
     if infer_target:
+        if not trace_packs:
+            target_selection_report = _no_evidence_target_selection_report(source_config.kind)
+            run_id = _cli_run_id(
+                "no_evidence",
+                dataset,
+                from_session,
+                from_trajectory,
+                batch_config,
+                iterations,
+            )
+            return _persist_no_target_cli_result(
+                store=store,
+                run_id=run_id,
+                dataset=built_dataset,
+                target_selection_report=target_selection_report,
+                apply_policy=apply_policy,
+            )
         target_selection_report, inventory_entry = _infer_target_from_trace_packs(
             trace_packs,
             workspace_root=workspace_root,
@@ -348,12 +367,23 @@ def optimize_from_cli_request(
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
             )
-        target_adapter = _target_from_ref(
-            target_selection_report.selected_target,
-            workspace_root=workspace_root,
-        )
         if inventory_entry is not None:
             target_provenance = inventory_entry.provenance
+        try:
+            target_adapter = _target_from_ref(
+                target_selection_report.selected_target,
+                workspace_root=workspace_root,
+            )
+        except NotImplementedError as exc:
+            return _persist_unsupported_target_cli_result(
+                store=store,
+                run_id=run_id,
+                dataset=built_dataset,
+                target_selection_report=target_selection_report,
+                target_provenance=target_provenance,
+                apply_policy=apply_policy,
+                reason=str(exc),
+            )
     else:
         if not target:
             raise ValueError("target is required unless target inference is enabled")
@@ -366,6 +396,10 @@ def optimize_from_cli_request(
             iterations,
         )
         target_adapter = _target_from_cli_ref(target, workspace_root=workspace_root)
+        target_selection_report = _explicit_target_selection_report(
+            target_adapter.identity,
+            trace_packs,
+        )
 
     async def _noop_mutation(prompt: str) -> dict[str, str]:
         return {
@@ -457,14 +491,55 @@ def _infer_target_from_trace_packs(
     inventory = build_default_target_inventory(workspace_root)
     assigner = TrajectoryCreditAssigner(inventory=inventory)
     reports = [assigner.assign(trace_pack) for trace_pack in trace_packs]
-    for report in reports:
-        if report.selected_target is not None:
-            return report, inventory.find(
-                report.selected_target.target_type,
-                report.selected_target.target_id,
-            )
-    best_report = max(reports, key=lambda item: item.confidence)
+    best_report = max(
+        reports,
+        key=lambda item: (
+            item.selected_target is not None,
+            item.confidence,
+        ),
+    )
+    if best_report.selected_target is not None:
+        return best_report, inventory.find(
+            best_report.selected_target.target_type,
+            best_report.selected_target.target_id,
+        )
     return best_report, None
+
+
+def _explicit_target_selection_report(
+    target: SelfEvolveTargetRef,
+    trace_packs: tuple[TracePack, ...],
+) -> TargetSelectionReport | None:
+    if not trace_packs:
+        return None
+    evidence_step_ids = tuple(
+        step.evidence_id
+        for trace_pack in trace_packs
+        for step in trace_pack.steps
+    )
+    return TargetSelectionReport(
+        selected_target=target,
+        confidence=1.0,
+        evidence_step_ids=evidence_step_ids,
+        failure_category="explicit_target",
+        signals=("explicit_target",),
+        diagnostics={
+            "pack_ids": [trace_pack.pack_id for trace_pack in trace_packs],
+            "target_inference": "bypassed",
+        },
+    )
+
+
+def _no_evidence_target_selection_report(source_kind: str) -> TargetSelectionReport:
+    return TargetSelectionReport(
+        selected_target=None,
+        confidence=0.0,
+        evidence_step_ids=(),
+        failure_category="no_target",
+        signals=("missing_trajectory_evidence",),
+        no_target_reason="target inference requires trajectory evidence",
+        diagnostics={"source_kind": source_kind},
+    )
 
 
 def _persist_no_target_cli_result(
@@ -503,6 +578,71 @@ def _persist_no_target_cli_result(
         "run_id": run_id,
         "status": run.status.value,
     }
+
+
+def _persist_unsupported_target_cli_result(
+    *,
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    dataset: SelfEvolveDataset,
+    target_selection_report: TargetSelectionReport,
+    target_provenance: TargetProvenance | None,
+    apply_policy: str,
+    reason: str,
+) -> Mapping[str, Any]:
+    if target_selection_report.selected_target is None:
+        return _persist_no_target_cli_result(
+            store=store,
+            run_id=run_id,
+            dataset=dataset,
+            target_selection_report=target_selection_report,
+            apply_policy=apply_policy,
+        )
+
+    target = target_selection_report.selected_target
+    run = SelfEvolveRun(run_id=run_id, target=target, status=SelfEvolveRunStatus.REJECTED)
+    store.create_run(run)
+    store.write_dataset_recipe(run_id, dataset.recipe)
+    target_selection_path = store.write_target_selection_report(run_id, target_selection_report)
+    target_provenance_path = (
+        store.write_target_provenance(run_id, target_provenance)
+        if target_provenance is not None
+        else None
+    )
+    report_path = store.write_report(
+        run_id,
+        {
+            "run_id": run_id,
+            "target": {
+                "target_type": target.target_type,
+                "target_id": target.target_id,
+                "path": target.path,
+            },
+            "apply_policy": apply_policy,
+            "candidate_ids": [],
+            "selected_candidate_id": None,
+            "status": run.status.value,
+            "target_selection": to_json_dict(target_selection_report),
+            "unsupported_target": {
+                "target_ref": _target_ref_text(target),
+                "reason": reason,
+            },
+        },
+    )
+    summary = {
+        "report_path": str(report_path),
+        "target_selection_path": str(target_selection_path),
+        "best_candidate_id": None,
+        "run_id": run_id,
+        "status": run.status.value,
+    }
+    if target_provenance_path is not None:
+        summary["target_provenance_path"] = str(target_provenance_path)
+    return summary
+
+
+def _target_ref_text(target: SelfEvolveTargetRef) -> str:
+    return f"{target.target_type}:{target.target_id}"
 
 
 def _cli_run_id(

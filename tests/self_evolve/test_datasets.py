@@ -213,6 +213,14 @@ def test_build_dataset_from_session_source_reads_explicit_workspace_session_log(
     workspace = tmp_path / "workspace"
     session_log = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
     session_log.parent.mkdir(parents=True)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Use pnpm."}},
+            "action": {"content": "I will inspect package manager usage."},
+            "reward": {"status": "ok"},
+        }
+    ]
     session_log.write_text(
         "\n".join(
             [
@@ -223,6 +231,7 @@ def test_build_dataset_from_session_source_reads_explicit_workspace_session_log(
                         "input": {"content": "Use pnpm."},
                         "final_answer": "Use pnpm and keep tests fast.",
                         "task_status": "completed",
+                        "trajectory": trajectory,
                     }
                 ),
                 json.dumps(
@@ -253,6 +262,9 @@ def test_build_dataset_from_session_source_reads_explicit_workspace_session_log(
     assert [case.case_id for case in dataset.cases] == ["task-1"]
     assert dataset.cases[0].input == {"content": "Use pnpm."}
     assert dataset.cases[0].expected_output == "Use pnpm and keep tests fast."
+    assert dataset.cases[0].trace_pack is not None
+    assert dataset.cases[0].trace_pack.source_kind == "session"
+    assert dataset.cases[0].trace_pack.task_id == "task-1"
     assert dataset.cases[0].metadata["task_status"] == "completed"
     assert dataset.recipe.source["kind"] == "session"
     assert dataset.recipe.source["session_id"] == "session-1"

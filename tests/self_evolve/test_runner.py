@@ -14,6 +14,23 @@ from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import EvaluationSummary
 
 
+def _write_trajectory_log(path: Path, records: list[dict]) -> None:
+    path.write_text(
+        "\n".join(
+            repr(
+                {
+                    "task_id": record["task_id"],
+                    "is_sub_task": False,
+                    "trajectory": json.dumps(record["trajectory"]),
+                }
+            )
+            for record in records
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.asyncio
 async def test_runner_persists_proposal_artifacts_without_mutating_skill_target(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
@@ -409,3 +426,195 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
     target_selection = json.loads(target_selection_path.read_text(encoding="utf-8"))
     assert target_selection["selected_target"]["target_id"] == "agent-browser-cdp-login-guidance"
     assert target_selection["failure_category"] == "browser_session"
+
+
+def test_optimize_cli_request_persists_unsupported_inferred_target(tmp_path) -> None:
+    trajectory_log = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        trajectory_log,
+        [
+            {
+                "task_id": "validation-task",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                        "state": {
+                            "input": {"content": "Validate result anchors before writing."},
+                            "messages": [],
+                        },
+                        "action": {
+                            "content": (
+                                "Result validation mismatch: required anchors are missing "
+                                "from source evidence."
+                            ),
+                            "tool_calls": [],
+                            "is_agent_finished": True,
+                        },
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    from aworld.self_evolve import optimize_from_cli_request
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        task="fix validation anchors",
+        target=None,
+        from_trajectory=str(trajectory_log),
+        apply_policy="proposal",
+        infer_target=True,
+    )
+
+    assert report_summary["status"] == "rejected"
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["target"]["target_type"] == "prompt-section"
+    assert report["target"]["target_id"] == "result-validation-anchor-policy"
+    assert report["unsupported_target"]["target_ref"] == "prompt-section:result-validation-anchor-policy"
+    assert report["candidate_ids"] == []
+
+    assert Path(report_summary["target_selection_path"]).exists()
+    assert Path(report_summary["target_provenance_path"]).exists()
+
+
+def test_optimize_cli_request_infers_highest_confidence_target_from_trajectory_log(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "agent-browser-cdp-login-guidance" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: agent-browser-cdp-login-guidance\n---\n# Browser Login Guidance\n",
+        encoding="utf-8",
+    )
+    trajectory_log = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        trajectory_log,
+        [
+            {
+                "task_id": "browser-task",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                        "state": {
+                            "input": {
+                                "content": "I am logged in but you see a logged-out browser."
+                            }
+                        },
+                        "action": {"content": "I will inspect login traces."},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "validation-task",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                        "state": {"input": {"content": "Validate anchors."}},
+                        "action": {
+                            "content": "Result validation mismatch: anchors are missing.",
+                            "tool_calls": [],
+                            "is_agent_finished": True,
+                        },
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+        ],
+    )
+
+    from aworld.self_evolve import optimize_from_cli_request
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        task="fix validation anchors",
+        target=None,
+        from_trajectory=str(trajectory_log),
+        apply_policy="proposal",
+        infer_target=True,
+    )
+
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["status"] == "rejected"
+    assert report["target"]["target_type"] == "prompt-section"
+    assert report["target_selection"]["confidence"] == 0.9
+
+
+def test_optimize_cli_request_infers_target_from_session_trajectory(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "agent-browser-cdp-login-guidance" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: agent-browser-cdp-login-guidance\n---\n# Browser Login Guidance\n",
+        encoding="utf-8",
+    )
+    session_log = tmp_path / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    session_log.parent.mkdir(parents=True)
+    session_log.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "task_id": "browser-session-task",
+                "input": {"content": "I am logged in but you see a logged-out browser."},
+                "final_answer": "No login traces were found in browser sessions.",
+                "task_status": "failed",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    from aworld.self_evolve import optimize_from_cli_request
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        task="fix browser login",
+        target=None,
+        from_session="session-1",
+        apply_policy="proposal",
+        infer_target=True,
+    )
+
+    assert report_summary["status"] == "succeeded"
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["target"]["target_id"] == "agent-browser-cdp-login-guidance"
+    assert report["target_selection"]["evidence_step_ids"] == [
+        "browser-session-task:step-1"
+    ]
+
+
+def test_optimize_cli_request_records_explicit_target_trajectory_evidence(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    trajectory_log = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        trajectory_log,
+        [
+            {
+                "task_id": "explicit-task",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                        "state": {"input": {"content": "Fix demo guidance."}},
+                        "action": {"content": "Guidance failed."},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    from aworld.self_evolve import optimize_from_cli_request
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        from_trajectory=str(trajectory_log),
+        apply_policy="proposal",
+        infer_target=False,
+    )
+
+    assert Path(report_summary["target_selection_path"]).exists()
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["target_selection"]["failure_category"] == "explicit_target"
+    assert report["target_selection"]["evidence_step_ids"] == ["explicit-task:step-1"]

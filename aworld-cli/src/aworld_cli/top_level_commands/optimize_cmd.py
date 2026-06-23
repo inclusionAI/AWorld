@@ -68,14 +68,20 @@ class OptimizeTopLevelCommand:
 
 def render_optimize_summary(report: Any) -> str:
     report_path = _read_report_value(report, "report_path")
+    status = _read_report_value(report, "status")
+    target_selection_path = _read_report_value(report, "target_selection_path")
     candidate_id = _read_report_value(report, "best_candidate_id") or _read_report_value(
         report,
         "selected_candidate_id",
     )
 
     lines = ["Optimize run submitted."]
+    if status:
+        lines.append(f"Status: {status}")
     if report_path:
         lines.append(f"Report: {report_path}")
+    if target_selection_path:
+        lines.append(f"Target selection: {target_selection_path}")
     if candidate_id:
         lines.append(f"Best candidate: {candidate_id}")
     return "\n".join(lines)
