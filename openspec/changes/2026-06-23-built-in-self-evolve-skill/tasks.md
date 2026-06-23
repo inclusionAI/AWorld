@@ -90,5 +90,5 @@
   listed explicitly.
 - [x] 5.2 Record that the skill is an operating surface over framework
   self-evolve, not the implementation owner.
-- [ ] 5.3 Commit the spec and follow-up implementation separately unless the
+- [x] 5.3 Commit the spec and follow-up implementation separately unless the
   user asks to combine them.
