@@ -218,6 +218,7 @@ class ProtectedPathGate:
         ".env",
     }
     _APP_EVALUATOR_PARTS = ("aworld-skills", "app_evaluator", "SKILL.md")
+    _SELF_EVOLVE_SKILL_PARTS = ("aworld-skills", "self_evolve", "SKILL.md")
 
     def __init__(self, *, workspace_root: str | Path) -> None:
         self.workspace_root = Path(workspace_root).resolve()
@@ -242,6 +243,12 @@ class ProtectedPathGate:
                 gate_name="protected_path",
                 passed=False,
                 reason="app_evaluator skill is protected from self-evolve mutation",
+            )
+        if relative.parts[-3:] == self._SELF_EVOLVE_SKILL_PARTS:
+            return GateResult(
+                gate_name="protected_path",
+                passed=False,
+                reason="self_evolve skill is protected from default self-mutation",
             )
         if relative.parts and relative.parts[0] in self._PROTECTED_ROOTS:
             return GateResult(

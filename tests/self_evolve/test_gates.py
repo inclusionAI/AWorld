@@ -142,6 +142,7 @@ def test_protected_path_gate_blocks_product_and_app_evaluator_paths() -> None:
     assert gate.evaluate(_candidate("x", path="/repo/aworld/core/runtime.py")).passed is False
     assert gate.evaluate(_candidate("x", path="/repo/aworld-cli/src/main.py")).passed is False
     assert gate.evaluate(_candidate("x", path="/repo/aworld-skills/app_evaluator/SKILL.md")).passed is False
+    assert gate.evaluate(_candidate("x", path="/repo/aworld-skills/self_evolve/SKILL.md")).passed is False
     assert gate.evaluate(_candidate("x", path="/repo/generated/SKILL.md")).passed is True
 
 
