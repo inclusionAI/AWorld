@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.judge import JudgeRecord
+from aworld.self_evolve.credit_assignment import TargetSelectionReport
 from aworld.self_evolve.types import (
     CandidateVariant,
     DatasetRecipe,
@@ -58,6 +59,15 @@ class FilesystemSelfEvolveStore:
     def write_target_provenance(self, run_id: str, provenance: TargetProvenance) -> Path:
         path = self.run_path(run_id) / "target_provenance.json"
         self._write_json(path, provenance)
+        return path
+
+    def write_target_selection_report(
+        self,
+        run_id: str,
+        report: TargetSelectionReport,
+    ) -> Path:
+        path = self.run_path(run_id) / "target_selection.json"
+        self._write_json(path, report)
         return path
 
     def write_optimizer_lineage(self, run_id: str, lineage: OptimizerLineage) -> Path:

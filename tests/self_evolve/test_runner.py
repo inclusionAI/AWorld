@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -328,3 +329,83 @@ async def test_runner_stops_when_duplicate_pending_proposal_exists(tmp_path) -> 
     assert result.run.status.value == "rejected"
     report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-stopped" / "report.json").read_text())
     assert report["stopping_condition"]["reason"] == "duplicate pending proposal exists"
+
+
+def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) -> None:
+    from aworld.self_evolve import optimize_from_cli_request
+
+    skill_path = tmp_path / "aworld-skills" / "agent-browser-cdp-login-guidance" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = (
+        "---\n"
+        "name: agent-browser-cdp-login-guidance\n"
+        "---\n"
+        "# Browser Login Guidance\n\n"
+        "Keep existing guidance.\n"
+    )
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {
+                "input": {
+                    "content": (
+                        "I am definitely logged in. Why do you keep seeing a "
+                        "logged-out browser?"
+                    )
+                },
+                "messages": [],
+            },
+            "action": {
+                "content": "I will inspect browser login traces and Chrome profiles.",
+                "tool_calls": [],
+                "is_agent_finished": False,
+            },
+            "reward": {"status": "failed"},
+        },
+        {
+            "meta": {"step": 2, "agent_id": "agent", "pre_agent": "agent"},
+            "state": {"messages": []},
+            "action": {
+                "content": "No login traces were found in the checked browser sessions.",
+                "tool_calls": [],
+                "is_agent_finished": True,
+            },
+            "reward": {"status": "failed"},
+        },
+    ]
+    trajectory_log = tmp_path / "trajectory.log"
+    trajectory_log.write_text(
+        repr(
+            {
+                "task_id": "browser-login-task",
+                "is_sub_task": False,
+                "trajectory": json.dumps(trajectory),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        task="fix browser login",
+        target=None,
+        from_trajectory=str(trajectory_log),
+        apply_policy="proposal",
+        infer_target=True,
+    )
+
+    assert report_summary["status"] == "succeeded"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["target"]["target_type"] == "skill"
+    assert report["target"]["target_id"] == "agent-browser-cdp-login-guidance"
+    assert report["target_selection"]["confidence"] >= 0.8
+    assert report["target_selection"]["evidence_step_ids"]
+
+    target_selection_path = Path(report_summary["target_selection_path"])
+    target_selection = json.loads(target_selection_path.read_text(encoding="utf-8"))
+    assert target_selection["selected_target"]["target_id"] == "agent-browser-cdp-login-guidance"
+    assert target_selection["failure_category"] == "browser_session"
