@@ -6,6 +6,12 @@ from typing import Callable, Any
 from pathlib import Path
 from typing import Mapping, Iterable
 
+from aworld.self_evolve.credit_assignment import (
+    TargetInventoryEntry,
+    TargetSelectionReport,
+    TrajectoryCreditAssigner,
+    build_default_target_inventory,
+)
 from aworld.self_evolve.datasets import (
     SelfEvolveDataset,
     SelfEvolveEvalSourceConfig,
@@ -23,6 +29,7 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SelfEvolveTarget, SkillTextTarget
 from aworld.self_evolve.trace_pack import TracePack
@@ -31,6 +38,8 @@ from aworld.self_evolve.types import (
     EvaluationSummary,
     SelfEvolveRun,
     SelfEvolveRunStatus,
+    SelfEvolveTargetRef,
+    to_json_dict,
 )
 
 
@@ -68,6 +77,8 @@ class SelfEvolveRunner:
         dataset: SelfEvolveDataset,
         trace_packs: tuple[TracePack, ...],
         apply_policy: str = "proposal",
+        target_selection_report: TargetSelectionReport | None = None,
+        target_provenance: TargetProvenance | None = None,
     ) -> SelfEvolveRunnerResult:
         if apply_policy not in {"proposal", "auto_verified"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
@@ -75,6 +86,10 @@ class SelfEvolveRunner:
         run = SelfEvolveRun(run_id=run_id, target=target.identity, status=SelfEvolveRunStatus.RUNNING)
         self.store.create_run(run)
         self.store.write_dataset_recipe(run_id, dataset.recipe)
+        if target_selection_report is not None:
+            self.store.write_target_selection_report(run_id, target_selection_report)
+        if target_provenance is not None:
+            self.store.write_target_provenance(run_id, target_provenance)
 
         stopping_gate = StoppingConditionGate(
             max_iterations=self.max_iterations,
@@ -102,6 +117,8 @@ class SelfEvolveRunner:
                     "details": stopping_result.details,
                 },
             }
+            if target_selection_report is not None:
+                report["target_selection"] = to_json_dict(target_selection_report)
             self.store.write_report(run_id, report)
             completed_run = SelfEvolveRun(
                 run_id=run_id,
@@ -172,6 +189,8 @@ class SelfEvolveRunner:
             ),
             "optimizer_diagnostics": optimizer_result.diagnostics,
         }
+        if target_selection_report is not None:
+            report["target_selection"] = to_json_dict(target_selection_report)
         if post_apply is not None:
             report["post_apply"] = post_apply
         if baseline_summary is not None:
@@ -282,14 +301,9 @@ def optimize_from_cli_request(
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
-    if infer_target:
-        raise NotImplementedError("framework target inference requires trajectory credit assignment wiring")
-    if not target:
-        raise ValueError("target is required unless target inference is enabled")
     if not dataset and not from_session and not from_trajectory and not batch_config:
         raise ValueError("an eval source is required")
 
-    target_adapter = _target_from_cli_ref(target, workspace_root=workspace_root)
     source_config = _source_config_from_cli_request(
         dataset=dataset,
         from_session=from_session,
@@ -301,7 +315,57 @@ def optimize_from_cli_request(
     trace_packs = tuple(
         case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
     )
-    run_id = f"cli-{abs(hash((target, dataset, from_session, from_trajectory, batch_config, iterations))) % 10**12:012d}"
+    store = FilesystemSelfEvolveStore(workspace_root)
+    target_selection_report: TargetSelectionReport | None = None
+    target_provenance: TargetProvenance | None = None
+    target_selection_path: Path | None = None
+    target_provenance_path: Path | None = None
+
+    if infer_target:
+        target_selection_report, inventory_entry = _infer_target_from_trace_packs(
+            trace_packs,
+            workspace_root=workspace_root,
+        )
+        target_selection_key = (
+            f"{target_selection_report.selected_target.target_type}:"
+            f"{target_selection_report.selected_target.target_id}"
+            if target_selection_report.selected_target is not None
+            else "no_target"
+        )
+        run_id = _cli_run_id(
+            target_selection_key,
+            dataset,
+            from_session,
+            from_trajectory,
+            batch_config,
+            iterations,
+        )
+        if target_selection_report.selected_target is None:
+            return _persist_no_target_cli_result(
+                store=store,
+                run_id=run_id,
+                dataset=built_dataset,
+                target_selection_report=target_selection_report,
+                apply_policy=apply_policy,
+            )
+        target_adapter = _target_from_ref(
+            target_selection_report.selected_target,
+            workspace_root=workspace_root,
+        )
+        if inventory_entry is not None:
+            target_provenance = inventory_entry.provenance
+    else:
+        if not target:
+            raise ValueError("target is required unless target inference is enabled")
+        run_id = _cli_run_id(
+            target,
+            dataset,
+            from_session,
+            from_trajectory,
+            batch_config,
+            iterations,
+        )
+        target_adapter = _target_from_cli_ref(target, workspace_root=workspace_root)
 
     async def _noop_mutation(prompt: str) -> dict[str, str]:
         return {
@@ -313,7 +377,7 @@ def optimize_from_cli_request(
 
     result = asyncio.run(
         SelfEvolveRunner(
-            store=FilesystemSelfEvolveStore(workspace_root),
+            store=store,
             optimizer=TraceReflectiveLLMMutator(mutate_text=_noop_mutation),
         ).run_explicit_target(
             run_id=run_id,
@@ -321,10 +385,18 @@ def optimize_from_cli_request(
             dataset=built_dataset,
             trace_packs=trace_packs,
             apply_policy=apply_policy,
+            target_selection_report=target_selection_report,
+            target_provenance=target_provenance,
         )
     )
-    report_path = FilesystemSelfEvolveStore(workspace_root).run_path(run_id) / "report.json"
-    return {
+    run_path = store.run_path(run_id)
+    if target_selection_report is not None:
+        target_selection_path = run_path / "target_selection.json"
+    if target_provenance is not None:
+        target_provenance_path = run_path / "target_provenance.json"
+
+    report_path = run_path / "report.json"
+    summary = {
         "report_path": str(report_path),
         "best_candidate_id": (
             result.selected_candidate.candidate_id
@@ -334,12 +406,35 @@ def optimize_from_cli_request(
         "run_id": result.run.run_id,
         "status": result.run.status.value,
     }
+    if target_selection_path is not None:
+        summary["target_selection_path"] = str(target_selection_path)
+    if target_provenance_path is not None:
+        summary["target_provenance_path"] = str(target_provenance_path)
+    return summary
 
 
 def _target_from_cli_ref(target: str, *, workspace_root: str | Path) -> SelfEvolveTarget:
     target_type, _, target_id = target.partition(":")
     if target_type != "skill" or not target_id:
         raise NotImplementedError(f"CLI target adapter is not implemented for {target!r}")
+    return _skill_target_from_id(target_id, workspace_root=workspace_root)
+
+
+def _target_from_ref(
+    target_ref: SelfEvolveTargetRef,
+    *,
+    workspace_root: str | Path,
+) -> SelfEvolveTarget:
+    if target_ref.target_type == "skill":
+        return _skill_target_from_id(target_ref.target_id, workspace_root=workspace_root)
+    raise NotImplementedError(
+        "target inference selected "
+        f"{target_ref.target_type}:{target_ref.target_id}, but that target adapter "
+        "is not implemented for phase 1 CLI runs"
+    )
+
+
+def _skill_target_from_id(target_id: str, *, workspace_root: str | Path) -> SkillTextTarget:
     workspace = Path(workspace_root)
     candidates = (
         workspace / "aworld-skills" / target_id / "SKILL.md",
@@ -348,7 +443,80 @@ def _target_from_cli_ref(target: str, *, workspace_root: str | Path) -> SelfEvol
     for path in candidates:
         if path.exists():
             return SkillTextTarget(path)
-    raise FileNotFoundError(f"skill target not found: {target}")
+    raise FileNotFoundError(f"skill target not found: skill:{target_id}")
+
+
+def _infer_target_from_trace_packs(
+    trace_packs: tuple[TracePack, ...],
+    *,
+    workspace_root: str | Path,
+) -> tuple[TargetSelectionReport, TargetInventoryEntry | None]:
+    if not trace_packs:
+        raise ValueError("target inference requires trajectory evidence")
+
+    inventory = build_default_target_inventory(workspace_root)
+    assigner = TrajectoryCreditAssigner(inventory=inventory)
+    reports = [assigner.assign(trace_pack) for trace_pack in trace_packs]
+    for report in reports:
+        if report.selected_target is not None:
+            return report, inventory.find(
+                report.selected_target.target_type,
+                report.selected_target.target_id,
+            )
+    best_report = max(reports, key=lambda item: item.confidence)
+    return best_report, None
+
+
+def _persist_no_target_cli_result(
+    *,
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    dataset: SelfEvolveDataset,
+    target_selection_report: TargetSelectionReport,
+    apply_policy: str,
+) -> Mapping[str, Any]:
+    target = SelfEvolveTargetRef(target_type="no_target", target_id="no_target")
+    run = SelfEvolveRun(run_id=run_id, target=target, status=SelfEvolveRunStatus.REJECTED)
+    store.create_run(run)
+    store.write_dataset_recipe(run_id, dataset.recipe)
+    target_selection_path = store.write_target_selection_report(run_id, target_selection_report)
+    report_path = store.write_report(
+        run_id,
+        {
+            "run_id": run_id,
+            "target": {
+                "target_type": target.target_type,
+                "target_id": target.target_id,
+                "path": target.path,
+            },
+            "apply_policy": apply_policy,
+            "candidate_ids": [],
+            "selected_candidate_id": None,
+            "status": run.status.value,
+            "target_selection": to_json_dict(target_selection_report),
+        },
+    )
+    return {
+        "report_path": str(report_path),
+        "target_selection_path": str(target_selection_path),
+        "best_candidate_id": None,
+        "run_id": run_id,
+        "status": run.status.value,
+    }
+
+
+def _cli_run_id(
+    target_key: str | None,
+    dataset: str | None,
+    from_session: str | None,
+    from_trajectory: str | None,
+    batch_config: str | None,
+    iterations: int | None,
+) -> str:
+    return (
+        "cli-"
+        f"{abs(hash((target_key, dataset, from_session, from_trajectory, batch_config, iterations))) % 10**12:012d}"
+    )
 
 
 def _source_config_from_cli_request(
