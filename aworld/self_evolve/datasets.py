@@ -275,12 +275,14 @@ def load_session_eval_cases(
         if not isinstance(payload, Mapping):
             raise ValueError(f"session log line {line_number} must be an object")
         case_id = _session_case_id(payload, session_id=session_id, line_number=line_number)
+        trace_pack = _trace_pack_from_session_payload(payload, task_id=case_id)
         cases.append(
             EvalCase(
                 case_id=case_id,
                 input=payload.get("input") or {"task_id": case_id},
                 expected_output=payload.get("final_answer"),
                 metadata=_session_metadata(payload),
+                trace_pack=trace_pack,
                 source={
                     "kind": "session",
                     "path": str(session_path),
@@ -457,6 +459,39 @@ def _session_metadata(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         for key in ("recorded_at", "task_status", "candidates", "llm_calls")
         if key in payload
     }
+
+
+def _trace_pack_from_session_payload(
+    payload: Mapping[str, Any],
+    *,
+    task_id: str,
+) -> TracePack:
+    trajectory = payload.get("trajectory")
+    if isinstance(trajectory, str):
+        trajectory = json.loads(trajectory)
+    if isinstance(trajectory, list):
+        return build_trace_pack(
+            [item for item in trajectory if isinstance(item, Mapping)],
+            source_kind="session",
+            task_id=task_id,
+        )
+
+    return build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "task_id": task_id},
+                "state": {"input": payload.get("input")},
+                "action": {
+                    "content": _string_or_none(payload.get("final_answer")),
+                    "tool_calls": [],
+                    "is_agent_finished": True,
+                },
+                "reward": {"status": payload.get("task_status")},
+            }
+        ],
+        source_kind="session",
+        task_id=task_id,
+    )
 
 
 def _without_keys(payload: Mapping[str, Any], keys: set[str]) -> Mapping[str, Any]:

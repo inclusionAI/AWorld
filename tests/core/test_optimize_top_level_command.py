@@ -256,6 +256,22 @@ def test_run_optimize_cli_leaves_target_inference_to_framework(
     assert calls["from_trajectory"] == "trajectory.log"
 
 
+def test_render_optimize_summary_includes_status_and_target_selection_path() -> None:
+    from aworld_cli.top_level_commands.optimize_cmd import render_optimize_summary
+
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "report_path": ".aworld/self_evolve/run/report.json",
+            "target_selection_path": ".aworld/self_evolve/run/target_selection.json",
+        }
+    )
+
+    assert "Status: rejected" in summary
+    assert "Report: .aworld/self_evolve/run/report.json" in summary
+    assert "Target selection: .aworld/self_evolve/run/target_selection.json" in summary
+
+
 def test_optimize_command_module_does_not_own_framework_self_evolve_components() -> None:
     import aworld_cli.top_level_commands.optimize_cmd as optimize_cmd
 
