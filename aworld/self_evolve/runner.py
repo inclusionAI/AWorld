@@ -19,13 +19,28 @@ from aworld.self_evolve.datasets import (
 )
 from aworld.self_evolve.evaluation import (
     EvaluationBackend,
+    EvaluationRequest,
+    determine_candidate_confidence,
+    estimate_replay_cost,
     evaluate_baseline_and_candidate,
 )
 from aworld.self_evolve.gates import (
+    BudgetGate,
     CostLatencyRegressionGate,
+    ExternalCodeEvolutionGate,
+    GlobalRegressionBenchmarkGate,
+    HeldOutVerificationGate,
+    JudgeOnlySignalGate,
+    MalformedCandidateGate,
+    NoopCandidateGate,
+    ProtectedPathGate,
+    RequiredVerificationGate,
     ScoreImprovementGate,
+    SkillMarkdownGate,
     StoppingConditionGate,
     StoppingConditionState,
+    TokenLimitGate,
+    TrustProvenanceGate,
 )
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
@@ -36,6 +51,7 @@ from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import (
     CandidateVariant,
     EvaluationSummary,
+    GateResult,
     SelfEvolveRun,
     SelfEvolveRunStatus,
     SelfEvolveTargetRef,
@@ -60,6 +76,10 @@ class SelfEvolveRunner:
         min_score_delta: float = 0.0,
         pending_duplicate: bool = False,
         max_iterations: int = 1,
+        min_eval_cases: int = 30,
+        judge_repetitions: int = 3,
+        max_run_tokens: int = 500_000,
+        auto_apply_target_types: tuple[str, ...] = ("skill",),
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -68,6 +88,10 @@ class SelfEvolveRunner:
         self.min_score_delta = min_score_delta
         self.pending_duplicate = pending_duplicate
         self.max_iterations = max_iterations
+        self.min_eval_cases = min_eval_cases
+        self.judge_repetitions = judge_repetitions
+        self.max_run_tokens = max_run_tokens
+        self.auto_apply_target_types = tuple(auto_apply_target_types)
 
     async def run_explicit_target(
         self,
@@ -149,7 +173,29 @@ class SelfEvolveRunner:
 
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
+        held_out_summary: EvaluationSummary | None = None
         gate_results = []
+        if selected_candidate is not None:
+            current_content = target.load_current_content()
+            gate_results.extend(
+                _candidate_gate_results(
+                    selected_candidate,
+                    current_content=current_content,
+                    workspace_root=self.store.workspace_root,
+                    max_chars=self.max_run_tokens,
+                    target_provenance=target_provenance,
+                )
+            )
+            gate_results.append(
+                BudgetGate().evaluate(
+                    estimate_replay_cost(
+                        dataset=dataset,
+                        candidate_count=len(optimizer_result.candidates),
+                        judge_repetitions=self.judge_repetitions,
+                        max_run_tokens=self.max_run_tokens,
+                    )
+                )
+            )
         if self.evaluation_backend is not None and selected_candidate is not None:
             baseline_summary, candidate_summary = await evaluate_baseline_and_candidate(
                 self.evaluation_backend,
@@ -166,13 +212,68 @@ class SelfEvolveRunner:
                 max_latency_regression_ratio=0.5,
             ).evaluate(baseline=baseline_summary, candidate=candidate_summary)
             gate_results.extend([score_gate, cost_latency_gate])
+            if apply_policy == "auto_verified":
+                held_out_summary = await self.evaluation_backend.evaluate_variant(
+                    EvaluationRequest(
+                        variant_id=selected_candidate.candidate_id,
+                        candidate=selected_candidate,
+                        dataset=dataset,
+                        dataset_split="held_out",
+                    )
+                )
+                confidence = determine_candidate_confidence(
+                    dataset=dataset,
+                    validation_summary=candidate_summary,
+                    held_out_summary=held_out_summary,
+                    min_eval_cases=self.min_eval_cases,
+                )
+                gate_results.extend(
+                    [
+                        RequiredVerificationGate().evaluate(held_out_summary),
+                        HeldOutVerificationGate(min_eval_cases=self.min_eval_cases).evaluate(confidence),
+                        JudgeOnlySignalGate().evaluate(confidence),
+                        GlobalRegressionBenchmarkGate().evaluate(
+                            selected_candidate,
+                            held_out_summary,
+                        ),
+                    ]
+                )
+        elif apply_policy == "auto_verified" and selected_candidate is not None:
+            gate_results.append(
+                GateResult(
+                    gate_name="auto_verified_evaluation",
+                    passed=False,
+                    reason="auto_verified apply policy requires evaluation backend",
+                )
+            )
+
+        if apply_policy == "auto_verified" and selected_candidate is not None:
+            gate_results.append(
+                GateResult(
+                    gate_name="auto_apply_target_type",
+                    passed=target.identity.target_type in self.auto_apply_target_types,
+                    reason=(
+                        "target type is allowlisted for auto apply"
+                        if target.identity.target_type in self.auto_apply_target_types
+                        else "target type is not allowlisted for auto apply"
+                    ),
+                    details={
+                        "target_type": target.identity.target_type,
+                        "auto_apply_target_types": list(self.auto_apply_target_types),
+                    },
+                )
+            )
 
         post_apply: dict[str, object] | None = None
         final_status = SelfEvolveRunStatus.SUCCEEDED
         if apply_policy == "auto_verified" and selected_candidate is not None:
-            post_apply = await self._apply_auto_verified(target, selected_candidate)
-            if post_apply["status"] != "accepted":
+            failed_gates = [gate for gate in gate_results if not gate.passed]
+            if failed_gates:
                 final_status = SelfEvolveRunStatus.REJECTED
+            else:
+                post_apply = await self._apply_auto_verified(target, selected_candidate)
+                if post_apply["status"] != "accepted":
+                    final_status = SelfEvolveRunStatus.REJECTED
 
         report = {
             "run_id": run_id,
@@ -199,6 +300,8 @@ class SelfEvolveRunner:
             report["baseline_metrics"] = dict(baseline_summary.metrics)
         if candidate_summary is not None:
             report["candidate_metrics"] = dict(candidate_summary.metrics)
+        if held_out_summary is not None:
+            report["held_out_metrics"] = dict(held_out_summary.metrics)
         if gate_results:
             report["gate_results"] = [
                 {
@@ -297,23 +400,38 @@ def optimize_from_cli_request(
     from_session: str | None = None,
     from_trajectory: str | None = None,
     batch_config: str | None = None,
+    current_trajectory: Iterable[Mapping[str, Any]] | None = None,
     iterations: int | None = None,
     apply_policy: str = "proposal",
     infer_target: bool = False,
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
-    if not dataset and not from_session and not from_trajectory and not batch_config:
+    if (
+        not dataset
+        and not from_session
+        and not from_trajectory
+        and not batch_config
+        and current_trajectory is None
+    ):
         raise ValueError("an eval source is required")
 
-    source_config = _source_config_from_cli_request(
-        dataset=dataset,
-        from_session=from_session,
-        from_trajectory=from_trajectory,
-        batch_config=batch_config,
-        workspace_root=workspace_root,
+    source_config = (
+        SelfEvolveEvalSourceConfig(kind="current_trajectory")
+        if current_trajectory is not None
+        else _source_config_from_cli_request(
+            dataset=dataset,
+            from_session=from_session,
+            from_trajectory=from_trajectory,
+            batch_config=batch_config,
+            workspace_root=workspace_root,
+        )
     )
-    built_dataset = build_dataset_from_source(source_config, task_id=task)
+    built_dataset = build_dataset_from_source(
+        source_config,
+        current_trajectory=current_trajectory,
+        task_id=task,
+    )
     trace_packs = tuple(
         case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
     )
@@ -452,6 +570,28 @@ def _target_from_cli_ref(target: str, *, workspace_root: str | Path) -> SelfEvol
     if target_type != "skill" or not target_id:
         raise NotImplementedError(f"CLI target adapter is not implemented for {target!r}")
     return _skill_target_from_id(target_id, workspace_root=workspace_root)
+
+
+def _candidate_gate_results(
+    candidate: CandidateVariant,
+    *,
+    current_content: str,
+    workspace_root: str | Path,
+    max_chars: int,
+    target_provenance: TargetProvenance | None,
+) -> list[GateResult]:
+    results = [
+        NoopCandidateGate().evaluate(current_content=current_content, candidate=candidate),
+        MalformedCandidateGate().evaluate(candidate),
+        TokenLimitGate(max_chars=max_chars).evaluate(candidate),
+        ProtectedPathGate(workspace_root=workspace_root).evaluate(candidate),
+        ExternalCodeEvolutionGate().evaluate(candidate),
+    ]
+    if candidate.target.target_type == "skill":
+        results.append(SkillMarkdownGate().evaluate(candidate))
+    if target_provenance is not None:
+        results.append(TrustProvenanceGate().evaluate(target_provenance))
+    return results
 
 
 def _target_from_ref(

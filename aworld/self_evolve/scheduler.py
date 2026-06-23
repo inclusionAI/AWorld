@@ -122,10 +122,10 @@ class SelfEvolveJobWorker:
         self,
         *,
         workspace_root: str | Path,
-        run_job: RunJobCallable,
+        run_job: RunJobCallable | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root)
-        self.run_job = run_job
+        self.run_job = run_job or _run_framework_job
 
     def drain_pending_jobs(self) -> int:
         drained = 0
@@ -149,6 +149,27 @@ class SelfEvolveJobWorker:
                 payload["status"] = "succeeded"
             _write_job(job_path, payload)
         return drained
+
+
+def _run_framework_job(payload: Mapping[str, Any]) -> None:
+    from aworld.self_evolve.runner import optimize_from_cli_request
+
+    config = payload.get("self_evolve_config")
+    apply_policy = "proposal"
+    if isinstance(config, Mapping):
+        apply_policy = str(config.get("apply_policy") or apply_policy)
+    trajectory = payload.get("trajectory")
+    if not isinstance(trajectory, list):
+        raise ValueError("self-evolve job payload requires trajectory list")
+    optimize_from_cli_request(
+        workspace_root=str(payload.get("workspace_root") or "."),
+        task=str(payload.get("task_id") or "self-evolve-job"),
+        current_trajectory=tuple(
+            item for item in trajectory if isinstance(item, Mapping)
+        ),
+        apply_policy=apply_policy,
+        infer_target=True,
+    )
 
 
 def _write_job(path: Path, payload: Mapping[str, Any]) -> None:

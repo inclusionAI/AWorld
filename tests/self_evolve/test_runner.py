@@ -128,11 +128,35 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
             dataset_split="post_apply",
         )
 
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.5, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
     store = FilesystemSelfEvolveStore(tmp_path)
     runner = SelfEvolveRunner(
         store=store,
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
+        evaluation_backend=VerifiedBackend(),
+        min_eval_cases=0,
     )
 
     result = await runner.run_explicit_target(
@@ -149,6 +173,117 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert {gate["gate_name"] for gate in report["gate_results"]} >= {
+        "score_improvement",
+        "required_verification",
+        "held_out_verification",
+        "global_regression_benchmark",
+    }
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_verified_rejects_without_evaluation_backend(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nUnsafe guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="no-eval-task")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="no-eval-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {"content": candidate_content, "rationale": "No verification."}
+
+    async def post_apply(candidate):
+        pytest.fail("auto_verified must not apply before verification gates pass")
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        post_apply_evaluator=post_apply,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-auto-no-eval",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads((store.run_path("run-auto-no-eval") / "report.json").read_text(encoding="utf-8"))
+    assert any(
+        gate["gate_name"] == "auto_verified_evaluation"
+        and gate["passed"] is False
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_verified_rejects_failed_candidate_gates_before_apply(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="bad-candidate")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="bad-candidate",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {"content": "# Demo\n\nMissing frontmatter.\n", "rationale": "Malformed."}
+
+    async def post_apply(candidate):
+        pytest.fail("malformed auto_verified candidate must not be applied")
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        post_apply_evaluator=post_apply,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-auto-bad-candidate",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads((store.run_path("run-auto-bad-candidate") / "report.json").read_text(encoding="utf-8"))
+    assert any(
+        gate["gate_name"] == "skill_markdown"
+        and gate["passed"] is False
+        for gate in report["gate_results"]
+    )
 
 
 @pytest.mark.asyncio
@@ -183,11 +318,35 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
             dataset_split="post_apply",
         )
 
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.5, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
     store = FilesystemSelfEvolveStore(tmp_path)
     runner = SelfEvolveRunner(
         store=store,
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
+        evaluation_backend=VerifiedBackend(),
+        min_eval_cases=0,
     )
 
     result = await runner.run_explicit_target(
@@ -304,7 +463,10 @@ async def test_runner_orchestrates_baseline_candidate_evaluation_and_gates(tmp_p
     report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-orchestrated" / "report.json").read_text())
     assert report["baseline_metrics"]["score"] == 0.4
     assert report["candidate_metrics"]["score"] == 0.8
-    assert report["gate_results"][0]["gate_name"] == "score_improvement"
+    assert any(
+        gate["gate_name"] == "score_improvement"
+        for gate in report["gate_results"]
+    )
 
 
 @pytest.mark.asyncio

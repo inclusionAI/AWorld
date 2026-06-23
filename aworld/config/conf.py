@@ -201,11 +201,31 @@ class SelfEvolveConfig(BaseConfig):
 
     mode: Literal["off", "offline", "shadow", "online"] = "off"
     apply_policy: Literal["proposal", "auto_verified"] = "proposal"
-    max_run_tokens: int = 100000
+    max_run_tokens: int = 500000
     max_run_cost_usd: Optional[float] = None
-    min_eval_cases: int = 1
-    judge_repetitions: int = 1
+    min_eval_cases: int = 30
+    judge_repetitions: int = 3
     cooldown_seconds: int = 0
+    max_iterations: int = 1
+    min_improvement: float = 0.0
+    max_background_jobs: int = 1
+    auto_apply_target_types: tuple[str, ...] = ("skill",)
+    target_types: tuple[str, ...] = (
+        "skill",
+        "prompt-section",
+        "tool-description",
+        "config",
+        "workspace-artifact",
+    )
+    eval_sources: tuple[str, ...] = (
+        "current_trajectory",
+        "trajectory_log",
+        "session",
+        "jsonl",
+        "batch_config",
+    )
+    regression_benchmarks: tuple[str, ...] = ()
+    require_deterministic_signal_for_verified: bool = True
     requires_post_apply_reevaluation: bool = True
     judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
 
