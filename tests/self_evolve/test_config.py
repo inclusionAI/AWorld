@@ -12,6 +12,13 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.mode == "off"
     assert not hasattr(config.self_evolve_config, "enabled")
     assert not hasattr(config, "optimize")
+    assert config.self_evolve_config.max_run_tokens == 500_000
+    assert config.self_evolve_config.min_eval_cases == 30
+    assert config.self_evolve_config.judge_repetitions == 3
+    assert config.self_evolve_config.auto_apply_target_types == ("skill",)
+    assert config.self_evolve_config.require_deterministic_signal_for_verified is True
+    assert config.self_evolve_config.max_iterations == 1
+    assert config.self_evolve_config.max_background_jobs == 1
 
 
 @pytest.mark.parametrize("mode", ["off", "offline", "shadow"])
@@ -41,6 +48,14 @@ def test_self_evolve_budget_fields_parse() -> None:
         min_eval_cases=5,
         judge_repetitions=3,
         cooldown_seconds=600,
+        auto_apply_target_types=("skill", "prompt-section"),
+        require_deterministic_signal_for_verified=False,
+        regression_benchmarks=("global",),
+        max_iterations=2,
+        min_improvement=0.1,
+        target_types=("skill", "tool-description"),
+        eval_sources=("jsonl", "trajectory_log"),
+        max_background_jobs=2,
     )
 
     assert config.max_run_tokens == 50_000
@@ -48,6 +63,14 @@ def test_self_evolve_budget_fields_parse() -> None:
     assert config.min_eval_cases == 5
     assert config.judge_repetitions == 3
     assert config.cooldown_seconds == 600
+    assert config.auto_apply_target_types == ("skill", "prompt-section")
+    assert config.require_deterministic_signal_for_verified is False
+    assert config.regression_benchmarks == ("global",)
+    assert config.max_iterations == 2
+    assert config.min_improvement == 0.1
+    assert config.target_types == ("skill", "tool-description")
+    assert config.eval_sources == ("jsonl", "trajectory_log")
+    assert config.max_background_jobs == 2
 
 
 @pytest.mark.parametrize(

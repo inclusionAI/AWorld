@@ -267,3 +267,46 @@ def test_job_worker_marks_failure_without_raising_to_main_path(tmp_path) -> None
     saved = json.loads(result.job_path.read_text(encoding="utf-8"))
     assert saved["status"] == "failed"
     assert saved["failure"]["message"] == "worker failed"
+
+
+def test_job_worker_default_run_job_drains_pending_job_through_framework(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "agent-browser-cdp-login-guidance" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: agent-browser-cdp-login-guidance\n---\n# Browser Login Guidance\n",
+        encoding="utf-8",
+    )
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    result = scheduler.enqueue(
+        SelfEvolveRunContext(
+            agent_id="agent",
+            task_id="browser-job",
+            workspace_root=str(tmp_path),
+            trajectory=(
+                {
+                    "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                    "state": {
+                        "input": {
+                            "content": "I am logged in but you see a logged-out browser."
+                        }
+                    },
+                    "action": {"content": "I will inspect login traces."},
+                    "reward": {"status": "failed"},
+                },
+            ),
+            self_evolve_config=SelfEvolveConfig(mode="shadow"),
+        )
+    )
+    assert result.job_path is not None
+
+    worker = SelfEvolveJobWorker(workspace_root=tmp_path)
+
+    drained = worker.drain_pending_jobs()
+
+    assert drained == 1
+    saved = json.loads(result.job_path.read_text(encoding="utf-8"))
+    assert saved["status"] == "succeeded"
+    reports = sorted((tmp_path / ".aworld" / "self_evolve").glob("cli-*/report.json"))
+    assert reports
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["target"]["target_id"] == "agent-browser-cdp-login-guidance"
