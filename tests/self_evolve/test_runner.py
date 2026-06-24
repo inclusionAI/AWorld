@@ -513,13 +513,13 @@ async def test_runner_stops_when_duplicate_pending_proposal_exists(tmp_path) -> 
 def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) -> None:
     from aworld.self_evolve import optimize_from_cli_request
 
-    skill_path = tmp_path / "aworld-skills" / "agent-browser-cdp-login-guidance" / "SKILL.md"
+    skill_path = tmp_path / "aworld-skills" / "agent-browser" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     original_content = (
         "---\n"
-        "name: agent-browser-cdp-login-guidance\n"
+        "name: agent-browser\n"
         "---\n"
-        "# Browser Login Guidance\n\n"
+        "# Browser Automation\n\n"
         "Keep existing guidance.\n"
     )
     skill_path.write_text(original_content, encoding="utf-8")
@@ -580,14 +580,26 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
 
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["target"]["target_type"] == "skill"
-    assert report["target"]["target_id"] == "agent-browser-cdp-login-guidance"
+    assert report["target"]["target_id"] == "agent-browser"
     assert report["target_selection"]["confidence"] >= 0.8
     assert report["target_selection"]["evidence_step_ids"]
+    assert report["candidate_ids"]
+    assert report["selected_candidate_id"] == report["candidate_ids"][0]
 
     target_selection_path = Path(report_summary["target_selection_path"])
     target_selection = json.loads(target_selection_path.read_text(encoding="utf-8"))
-    assert target_selection["selected_target"]["target_id"] == "agent-browser-cdp-login-guidance"
+    assert target_selection["selected_target"]["target_id"] == "agent-browser"
     assert target_selection["failure_category"] == "browser_session"
+
+    candidate_path = (
+        Path(report_summary["report_path"]).parent
+        / "candidates"
+        / f"{report['selected_candidate_id']}.md"
+    )
+    candidate_content = candidate_path.read_text(encoding="utf-8")
+    assert candidate_content.startswith("---\nname: agent-browser\n---")
+    assert "Self-Evolve Trace Guidance" in candidate_content
+    assert "browser-login-task" in candidate_content
 
 
 def test_optimize_cli_request_persists_unsupported_inferred_target(tmp_path) -> None:
@@ -703,10 +715,10 @@ def test_optimize_cli_request_infers_highest_confidence_target_from_trajectory_l
 
 
 def test_optimize_cli_request_infers_target_from_session_trajectory(tmp_path) -> None:
-    skill_path = tmp_path / "aworld-skills" / "agent-browser-cdp-login-guidance" / "SKILL.md"
+    skill_path = tmp_path / "aworld-skills" / "agent-browser" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(
-        "---\nname: agent-browser-cdp-login-guidance\n---\n# Browser Login Guidance\n",
+        "---\nname: agent-browser\n---\n# Browser Automation\n",
         encoding="utf-8",
     )
     session_log = tmp_path / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
@@ -738,7 +750,7 @@ def test_optimize_cli_request_infers_target_from_session_trajectory(tmp_path) ->
 
     assert report_summary["status"] == "succeeded"
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
-    assert report["target"]["target_id"] == "agent-browser-cdp-login-guidance"
+    assert report["target"]["target_id"] == "agent-browser"
     assert report["target_selection"]["evidence_step_ids"] == [
         "browser-session-task:step-1"
     ]

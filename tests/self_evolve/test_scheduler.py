@@ -270,10 +270,10 @@ def test_job_worker_marks_failure_without_raising_to_main_path(tmp_path) -> None
 
 
 def test_job_worker_default_run_job_drains_pending_job_through_framework(tmp_path) -> None:
-    skill_path = tmp_path / "aworld-skills" / "agent-browser-cdp-login-guidance" / "SKILL.md"
+    skill_path = tmp_path / "aworld-skills" / "agent-browser" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(
-        "---\nname: agent-browser-cdp-login-guidance\n---\n# Browser Login Guidance\n",
+        "---\nname: agent-browser\n---\n# Browser Automation\n",
         encoding="utf-8",
     )
     scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
@@ -309,4 +309,4 @@ def test_job_worker_default_run_job_drains_pending_job_through_framework(tmp_pat
     reports = sorted((tmp_path / ".aworld" / "self_evolve").glob("cli-*/report.json"))
     assert reports
     report = json.loads(reports[0].read_text(encoding="utf-8"))
-    assert report["target"]["target_id"] == "agent-browser-cdp-login-guidance"
+    assert report["target"]["target_id"] == "agent-browser"
