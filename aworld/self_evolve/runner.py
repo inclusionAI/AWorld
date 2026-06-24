@@ -20,6 +20,7 @@ from aworld.self_evolve.datasets import (
 from aworld.self_evolve.evaluation import (
     EvaluationBackend,
     EvaluationRequest,
+    SkillCandidateOverlayBackend,
     determine_candidate_confidence,
     estimate_replay_cost,
     evaluate_baseline_and_candidate,
@@ -404,6 +405,13 @@ def optimize_from_cli_request(
     iterations: int | None = None,
     apply_policy: str = "proposal",
     infer_target: bool = False,
+    evaluation_backend: EvaluationBackend | None = None,
+    post_apply_evaluator: Callable[[CandidateVariant], Any] | None = None,
+    min_eval_cases: int = 30,
+    judge_repetitions: int = 3,
+    max_run_tokens: int = 500_000,
+    min_score_delta: float = 0.0,
+    auto_apply_target_types: tuple[str, ...] = ("skill",),
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
@@ -491,6 +499,11 @@ def optimize_from_cli_request(
             target_adapter = _target_from_ref(
                 target_selection_report.selected_target,
                 workspace_root=workspace_root,
+                allow_auto_apply=(
+                    apply_policy == "auto_verified"
+                    and target_selection_report.selected_target.target_type
+                    in auto_apply_target_types
+                ),
             )
         except NotImplementedError as exc:
             return _persist_unsupported_target_cli_result(
@@ -513,7 +526,14 @@ def optimize_from_cli_request(
             batch_config,
             iterations,
         )
-        target_adapter = _target_from_cli_ref(target, workspace_root=workspace_root)
+        target_type, _, _target_id = target.partition(":")
+        target_adapter = _target_from_cli_ref(
+            target,
+            workspace_root=workspace_root,
+            allow_auto_apply=(
+                apply_policy == "auto_verified" and target_type in auto_apply_target_types
+            ),
+        )
         target_selection_report = _explicit_target_selection_report(
             target_adapter.identity,
             trace_packs,
@@ -535,12 +555,24 @@ def optimize_from_cli_request(
             ),
         }
 
+    if apply_policy == "auto_verified" and evaluation_backend is None:
+        evaluation_backend = SkillCandidateOverlayBackend()
+    if apply_policy == "auto_verified" and post_apply_evaluator is None:
+        post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
+
     import asyncio
 
     result = asyncio.run(
         SelfEvolveRunner(
             store=store,
             optimizer=TraceReflectiveLLMMutator(mutate_text=_cli_default_mutation),
+            evaluation_backend=evaluation_backend,
+            post_apply_evaluator=post_apply_evaluator,
+            min_score_delta=min_score_delta,
+            min_eval_cases=min_eval_cases,
+            judge_repetitions=judge_repetitions,
+            max_run_tokens=max_run_tokens,
+            auto_apply_target_types=auto_apply_target_types,
         ).run_explicit_target(
             run_id=run_id,
             target=target_adapter,
@@ -575,6 +607,23 @@ def optimize_from_cli_request(
     return summary
 
 
+def _default_post_apply_evaluator(
+    target: SelfEvolveTarget,
+) -> Callable[[CandidateVariant], EvaluationSummary]:
+    def evaluate(candidate: CandidateVariant) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            dataset_split="post_apply",
+            metrics={
+                "post_apply_passed": target.load_current_content() == candidate.content,
+                "deterministic_signal": True,
+                "evaluator_mode": "post_apply_content_match",
+            },
+        )
+
+    return evaluate
+
+
 def _default_cli_skill_candidate(
     *,
     current_content: str,
@@ -589,12 +638,6 @@ def _default_cli_skill_candidate(
         for step in trace_pack.steps[:4]
     ]
     task_ids = [trace_pack.task_id for trace_pack in trace_packs[:3]]
-    serialized_evidence = " ".join(
-        str(value).lower()
-        for trace_pack in trace_packs
-        for step in trace_pack.steps
-        for value in (step.action, step.state, step.reward)
-    )
     guidance = [
         "Use trajectory evidence before choosing or repeating tool actions.",
         (
@@ -602,15 +645,6 @@ def _default_cli_skill_candidate(
             "switch to an alternate evidence source before finalizing."
         ),
     ]
-    if (
-        "cdp" in serialized_evidence
-        or "profile" in serialized_evidence
-        or "port" in serialized_evidence
-    ):
-        guidance.insert(
-            1,
-            "For browser/CDP work, verify the active endpoint and profile before relying on page state.",
-        )
 
     section = [
         "## Self-Evolve Trace Guidance",
@@ -627,11 +661,20 @@ def _default_cli_skill_candidate(
     return prefix + "\n\n" + "\n".join(section) + "\n"
 
 
-def _target_from_cli_ref(target: str, *, workspace_root: str | Path) -> SelfEvolveTarget:
+def _target_from_cli_ref(
+    target: str,
+    *,
+    workspace_root: str | Path,
+    allow_auto_apply: bool = False,
+) -> SelfEvolveTarget:
     target_type, _, target_id = target.partition(":")
     if target_type != "skill" or not target_id:
         raise NotImplementedError(f"CLI target adapter is not implemented for {target!r}")
-    return _skill_target_from_id(target_id, workspace_root=workspace_root)
+    return _skill_target_from_id(
+        target_id,
+        workspace_root=workspace_root,
+        allow_auto_apply=allow_auto_apply,
+    )
 
 
 def _candidate_gate_results(
@@ -660,9 +703,14 @@ def _target_from_ref(
     target_ref: SelfEvolveTargetRef,
     *,
     workspace_root: str | Path,
+    allow_auto_apply: bool = False,
 ) -> SelfEvolveTarget:
     if target_ref.target_type == "skill":
-        return _skill_target_from_id(target_ref.target_id, workspace_root=workspace_root)
+        return _skill_target_from_id(
+            target_ref.target_id,
+            workspace_root=workspace_root,
+            allow_auto_apply=allow_auto_apply,
+        )
     raise NotImplementedError(
         "target inference selected "
         f"{target_ref.target_type}:{target_ref.target_id}, but that target adapter "
@@ -670,7 +718,12 @@ def _target_from_ref(
     )
 
 
-def _skill_target_from_id(target_id: str, *, workspace_root: str | Path) -> SkillTextTarget:
+def _skill_target_from_id(
+    target_id: str,
+    *,
+    workspace_root: str | Path,
+    allow_auto_apply: bool = False,
+) -> SkillTextTarget:
     workspace = Path(workspace_root)
     candidates = (
         workspace / "aworld-skills" / target_id / "SKILL.md",
@@ -678,7 +731,7 @@ def _skill_target_from_id(target_id: str, *, workspace_root: str | Path) -> Skil
     )
     for path in candidates:
         if path.exists():
-            return SkillTextTarget(path)
+            return SkillTextTarget(path, allow_auto_apply=allow_auto_apply)
     raise FileNotFoundError(f"skill target not found: skill:{target_id}")
 
 

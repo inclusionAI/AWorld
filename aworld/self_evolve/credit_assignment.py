@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -75,6 +76,13 @@ class TrajectoryCreditAssigner:
             llm_report = self._assign_from_llm(trace_pack, signals)
             if llm_report is not None:
                 return llm_report
+            skill_report = self._assign_from_skill_inventory(
+                trace_pack,
+                serialized=serialized,
+                existing_signals=signals,
+            )
+            if skill_report is not None:
+                return skill_report
             return TargetSelectionReport(
                 selected_target=None,
                 confidence=signal.confidence,
@@ -107,6 +115,47 @@ class TrajectoryCreditAssigner:
             failure_category=signal.failure_category,
             signals=signals,
             diagnostics={"pack_id": trace_pack.pack_id},
+        )
+
+    def _assign_from_skill_inventory(
+        self,
+        trace_pack: TracePack,
+        *,
+        serialized: str,
+        existing_signals: tuple[str, ...],
+    ) -> TargetSelectionReport | None:
+        matches: list[tuple[int, TargetInventoryEntry, tuple[str, ...]]] = []
+        for entry in self.inventory.entries:
+            if entry.target.target_type != "skill" or entry.provenance.protected:
+                continue
+            aliases = _skill_match_aliases(entry)
+            matched_aliases = tuple(alias for alias in aliases if alias in serialized)
+            if matched_aliases:
+                matches.append((len(matched_aliases), entry, matched_aliases))
+
+        if not matches:
+            return None
+
+        _score, entry, matched_aliases = max(
+            matches,
+            key=lambda item: (item[0], len(item[1].target.target_id)),
+        )
+        evidence_ids = _matching_evidence_ids(trace_pack, matched_aliases)
+        if not evidence_ids:
+            evidence_ids = tuple(step.evidence_id for step in trace_pack.steps)
+        signals = _dedupe(
+            existing_signals + (f"skill_alias_match:{entry.target.target_id}",)
+        )
+        return TargetSelectionReport(
+            selected_target=entry.target,
+            confidence=0.85,
+            evidence_step_ids=evidence_ids,
+            failure_category="skill",
+            signals=signals,
+            diagnostics={
+                "pack_id": trace_pack.pack_id,
+                "matched_aliases": matched_aliases,
+            },
         )
 
     def _assign_from_llm(
@@ -200,28 +249,6 @@ def build_default_target_inventory(workspace_root: str | Path) -> TargetInventor
     for entry in _skill_entries_from_workspace(root):
         add(entry)
 
-    add(
-        _entry(
-            target_type="skill",
-            target_id="agent-browser",
-            path=str(root / "aworld-skills" / "agent-browser" / "SKILL.md"),
-            source_kind="skill",
-            write_origin="installed_skill",
-            trust_level="local",
-            protected=False,
-            reason="Browser automation guidance can be proposed as a skill text target.",
-            aliases=(
-                "agent-browser",
-                "browser automation",
-                "logged-out browser",
-                "login traces",
-                "chrome profiles",
-                "cdp",
-                "profile",
-                "port",
-            ),
-        )
-    )
     add(
         _entry(
             target_type="prompt-section",
@@ -330,24 +357,6 @@ def _deterministic_signal(serialized: str) -> _Signal:
             signals=("generated_artifact_failure",),
             keywords=("btc_monitor", "btc price monitor", "api sources timed out"),
         )
-    if "logged in" in serialized and ("login traces" in serialized or "logged-out browser" in serialized):
-        return _Signal(
-            target_type="skill",
-            target_id="agent-browser",
-            failure_category="browser_session",
-            confidence=0.85,
-            signals=("browser_login_profile_mismatch",),
-            keywords=("logged in", "login traces", "logged-out browser"),
-        )
-    if "cdp" in serialized and ("profile" in serialized or "port" in serialized):
-        return _Signal(
-            target_type="skill",
-            target_id="agent-browser",
-            failure_category="browser_config",
-            confidence=0.85,
-            signals=("browser_cdp_profile_config",),
-            keywords=("cdp", "profile", "port"),
-        )
     return _Signal(
         target_type="no_target",
         target_id="deterministic_success_or_low_confidence",
@@ -388,6 +397,19 @@ def _skill_entries_from_workspace(root: Path) -> tuple[TargetInventoryEntry, ...
                 )
             )
     return tuple(entries)
+
+
+def _skill_match_aliases(entry: TargetInventoryEntry) -> tuple[str, ...]:
+    aliases = [entry.target.target_id]
+    aliases.extend(entry.aliases)
+    normalized: list[str] = []
+    for alias in aliases:
+        lowered = alias.strip().lower()
+        if not lowered:
+            continue
+        normalized.append(lowered)
+        normalized.extend(token for token in re.findall(r"[a-z0-9]+", lowered) if len(token) >= 5)
+    return tuple(dict.fromkeys(normalized))
 
 
 def _skill_frontmatter(path: Path) -> dict[str, str]:
