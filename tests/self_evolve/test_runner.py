@@ -589,7 +589,7 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
     target_selection_path = Path(report_summary["target_selection_path"])
     target_selection = json.loads(target_selection_path.read_text(encoding="utf-8"))
     assert target_selection["selected_target"]["target_id"] == "agent-browser"
-    assert target_selection["failure_category"] == "browser_session"
+    assert target_selection["failure_category"] == "skill"
 
     candidate_path = (
         Path(report_summary["report_path"]).parent

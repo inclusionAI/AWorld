@@ -310,3 +310,68 @@ def test_job_worker_default_run_job_drains_pending_job_through_framework(tmp_pat
     assert reports
     report = json.loads(reports[0].read_text(encoding="utf-8"))
     assert report["target"]["target_id"] == "agent-browser"
+
+
+def test_online_job_worker_auto_applies_verified_skill_candidate(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "workflow-helper" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original = (
+        "---\n"
+        "name: workflow-helper\n"
+        "description: Use for workflow helper task recovery.\n"
+        "---\n"
+        "# Workflow Helper\n"
+    )
+    skill_path.write_text(original, encoding="utf-8")
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    result = scheduler.enqueue(
+        SelfEvolveRunContext(
+            agent_id="agent",
+            task_id="workflow-online-job",
+            workspace_root=str(tmp_path),
+            trajectory=(
+                {
+                    "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                    "state": {
+                        "input": {
+                            "content": (
+                                "Use workflow-helper to recover the failed task "
+                                "handoff."
+                            )
+                        }
+                    },
+                    "action": {
+                        "content": "workflow-helper repeated the same handoff step.",
+                        "tool_calls": [],
+                    },
+                    "reward": {"status": "failed"},
+                },
+            ),
+            self_evolve_config=SelfEvolveConfig(
+                mode="online",
+                apply_policy="auto_verified",
+                min_eval_cases=0,
+            ),
+        )
+    )
+    assert result.job_path is not None
+
+    worker = SelfEvolveJobWorker(workspace_root=tmp_path)
+
+    drained = worker.drain_pending_jobs()
+
+    assert drained == 1
+    saved = json.loads(result.job_path.read_text(encoding="utf-8"))
+    assert saved["status"] == "succeeded"
+    updated = skill_path.read_text(encoding="utf-8")
+    assert updated != original
+    assert "Self-Evolve Trace Guidance" in updated
+    assert "workflow-online-job" in updated
+
+    reports = sorted((tmp_path / ".aworld" / "self_evolve").glob("cli-*/report.json"))
+    assert reports
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["status"] == "succeeded"
+    assert report["apply_policy"] == "auto_verified"
+    assert report["post_apply"]["status"] == "accepted"
+    assert report["candidate_metrics"]["score"] > report["baseline_metrics"]["score"]

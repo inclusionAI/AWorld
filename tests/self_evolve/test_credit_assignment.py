@@ -21,7 +21,18 @@ def _fixture_packs_by_task() -> dict[str, object]:
     }
 
 
+def _write_skill(root: Path, name: str, *, description: str = "") -> Path:
+    path = root / "aworld-skills" / name / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n# {name}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_default_target_inventory_contains_phase1_target_types_with_provenance(tmp_path) -> None:
+    _write_skill(tmp_path, "demo-skill", description="Handles demo tasks.")
     inventory = build_default_target_inventory(workspace_root=tmp_path)
 
     assert isinstance(inventory, TargetInventory)
@@ -34,19 +45,25 @@ def test_default_target_inventory_contains_phase1_target_types_with_provenance(t
     assert all(entry.provenance.write_origin for entry in inventory.entries)
     assert all(entry.provenance.trust_level for entry in inventory.entries)
     assert all(isinstance(entry.provenance.protected, bool) for entry in inventory.entries)
+    assert inventory.find("skill", "demo-skill") is not None
 
 
 def test_credit_assigner_selects_skill_prompt_tool_config_and_artifact_targets(tmp_path) -> None:
+    _write_skill(
+        tmp_path,
+        "agent-browser",
+        description="Automates browser interactions and Chrome profile inspection.",
+    )
     packs = _fixture_packs_by_task()
     assigner = TrajectoryCreditAssigner(
         inventory=build_default_target_inventory(workspace_root=tmp_path)
     )
 
     expected = {
-        "task_20260511112019": ("skill", "agent-browser", "browser_session"),
+        "task_20260511112019": ("skill", "agent-browser", "skill"),
         "task_20260513161047": ("prompt-section", "result-validation-anchor-policy", "validation"),
         "1f9149cc482611f196356a5e5d182581": ("tool-description", "SKILL_tool.active_skill", "tool_activation"),
-        "task_20260511104323": ("skill", "agent-browser", "browser_config"),
+        "task_20260511104323": ("skill", "agent-browser", "skill"),
         "e676a3103f9411f197ecaead30e27f1a": ("workspace-artifact", "btc_monitor.sh", "artifact_failure"),
     }
 
@@ -131,6 +148,11 @@ def test_credit_assigner_accepts_current_trajectory_trace_pack(tmp_path) -> None
 
 
 def test_credit_assigner_reports_tool_failures_repeated_actions_and_task_status(tmp_path) -> None:
+    _write_skill(
+        tmp_path,
+        "agent-browser",
+        description="Automates browser interactions and login trace inspection.",
+    )
     pack = build_trace_pack(
         [
             {
@@ -176,18 +198,23 @@ def test_credit_assigner_reports_tool_failures_repeated_actions_and_task_status(
     assert "trajectory_score_failure" in report.signals
 
 
-def test_credit_assigner_treats_cdp_profile_as_skill_evolution_signal(tmp_path) -> None:
+def test_credit_assigner_selects_installed_skill_by_generic_trajectory_evidence(tmp_path) -> None:
+    _write_skill(
+        tmp_path,
+        "web-navigator",
+        description="Use for web navigation through remote browser sessions.",
+    )
     pack = build_trace_pack(
         [
             {
                 "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
                 "state": {
                     "input": {
-                        "content": "Use agent-browser through CDP port 9222 with the right profile."
+                        "content": "Use web-navigator to open the saved browser session."
                     }
                 },
                 "action": {
-                    "content": "agent-browser --cdp 9222 opened the page using the profile.",
+                    "content": "web-navigator opened the wrong saved browser session.",
                     "tool_calls": [],
                     "is_agent_finished": True,
                 },
@@ -195,7 +222,7 @@ def test_credit_assigner_treats_cdp_profile_as_skill_evolution_signal(tmp_path) 
             }
         ],
         source_kind="current_trajectory",
-        task_id="cdp-profile-task",
+        task_id="web-navigation-task",
     )
     assigner = TrajectoryCreditAssigner(
         inventory=build_default_target_inventory(workspace_root=tmp_path)
@@ -205,9 +232,9 @@ def test_credit_assigner_treats_cdp_profile_as_skill_evolution_signal(tmp_path) 
 
     assert report.selected_target is not None
     assert report.selected_target.target_type == "skill"
-    assert report.selected_target.target_id == "agent-browser"
-    assert report.failure_category == "browser_config"
-    assert "browser_cdp_profile_config" in report.signals
+    assert report.selected_target.target_id == "web-navigator"
+    assert report.failure_category == "skill"
+    assert "skill_alias_match:web-navigator" in report.signals
 
 
 def test_credit_assigner_reports_llm_usage_and_generated_artifact_references(tmp_path) -> None:
@@ -263,6 +290,11 @@ def test_credit_assigner_reports_llm_usage_and_generated_artifact_references(tmp
 
 
 def test_credit_assigner_uses_llm_diagnosis_when_it_cites_trace_evidence(tmp_path) -> None:
+    _write_skill(
+        tmp_path,
+        "agent-browser",
+        description="Automates browser interactions and handoff recovery.",
+    )
     pack = build_trace_pack(
         [
             {

@@ -154,10 +154,12 @@ class SelfEvolveJobWorker:
 def _run_framework_job(payload: Mapping[str, Any]) -> None:
     from aworld.self_evolve.runner import optimize_from_cli_request
 
-    config = payload.get("self_evolve_config")
-    apply_policy = "proposal"
-    if isinstance(config, Mapping):
-        apply_policy = str(config.get("apply_policy") or apply_policy)
+    raw_config = payload.get("self_evolve_config")
+    config = (
+        SelfEvolveConfig.model_validate(raw_config)
+        if isinstance(raw_config, Mapping)
+        else SelfEvolveConfig()
+    )
     trajectory = payload.get("trajectory")
     if not isinstance(trajectory, list):
         raise ValueError("self-evolve job payload requires trajectory list")
@@ -167,8 +169,13 @@ def _run_framework_job(payload: Mapping[str, Any]) -> None:
         current_trajectory=tuple(
             item for item in trajectory if isinstance(item, Mapping)
         ),
-        apply_policy=apply_policy,
+        apply_policy=config.apply_policy,
         infer_target=True,
+        min_eval_cases=config.min_eval_cases,
+        judge_repetitions=config.judge_repetitions,
+        max_run_tokens=config.max_run_tokens,
+        min_score_delta=config.min_improvement,
+        auto_apply_target_types=config.auto_apply_target_types,
     )
 
 
