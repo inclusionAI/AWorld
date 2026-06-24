@@ -62,7 +62,7 @@ src/
 ### 2.1 必须保留 `<div id="safe-area"></div>`
 - 在 `<div id="container">` 内部必须存在一个 `<div id="safe-area"></div>` 空节点
 - **不要删除、重命名或在其内部添加内容**
-- 这是系统预留节点，构建流程会校验其存在
+- 这是系统预留节点，须与 §2.6 / §2.6.1 的安全区 CSS 配置一并保留
 - 示例：
   ```tsx
   <div id="container">
@@ -72,21 +72,35 @@ src/
   ```
 
 ### 2.2 禁止使用原生音频 API
-- **禁止使用**：`AudioContext`、`webkitAudioContext`、`new Audio()`、`HTMLAudioElement`
+- **禁止使用**：`AudioContext`、`webkitAudioContext`、`OfflineAudioContext`、`new Audio()`、`HTMLAudioElement`、`<audio>` 标签、`document.createElement('audio')`
+- **禁止在业务代码中直接使用**：`new AudioContext2()`（运行时虽提供该能力，但 Vite 构建插件会拦截 `src/` 中的直接调用）
+- **禁止直接导入**：`import ... from 'howler'`、`import ... from 'tone'`、`require('howler')`、`import('howler')` 等绕过封装层的写法
 - **必须使用**：
-  - 音效：从 `@/lib/audio` 导入 `Howl` / `Howler`（基于 howler.js）
-  - 程序化音效：使用 `AudioContext2`
+  - 播放音频文件（音效、背景音乐等）：从 `@/lib/audio` 导入 `Howl` / `Howler`（基于 howler.js）
+  - 合成/乐器类程序化音效：从 `@/lib/tone` 导入 Tone.js 高层能力（如 `Synth`、`Sampler`、`Transport`）
+- **Tone.js 额外构建限制**（`block-audio-apis` 插件强制）：
+  - 禁止从 `@/lib/tone` 导入底层上下文能力：`getContext`、`setContext`、`context`、`Context`、`OfflineContext`、`rawContext`
+  - 禁止业务代码直接修改 Tone 总输出静音状态（须由宿主 `window.app.mute/unmute` 统一管控）
+- **运行时能力说明**：宿主环境提供 `AudioContext2` 用于振荡器、增益节点等（见 §4.3），但业务 `src/` 代码不得直接 `new AudioContext2()`，应改用上述 wrapper
 
 ### 2.3 禁止使用 `<input type="file">`
 - 文件选择请使用 `window.lingguang.chooseFile`
+- 构建插件会拦截以下等价写法，均视为违规：
+  - JSX：`<input type="file" />`
+  - 动态创建：`document.createElement('input')` 后将 `type` 设为 `'file'`
+  - `input.setAttribute('type', 'file')` / `setAttributeNS(..., 'type', 'file')`
+  - `Object.assign(input, { type: 'file' })`
 
 ### 2.4 禁止使用 `<form>` 表单提交
 - 使用 `<button type="button" onClick={...}>` 替代
 - 禁止使用 `<button type="submit">`
+- 禁止使用 `<input type="submit">` 和 `<input type="image">`
+- **`<form>` 内的 `<button>` 必须显式声明 `type`**：若位于 `<form>` 内且未写 `type`，浏览器默认按 `submit` 处理，构建会失败；请显式写 `type="button"` 或 `type="reset"`
 
 ### 2.5 禁止使用浏览器原生 `fetch()`
 - 网络数据请求请使用 `window.lingguang.data.fetch`
 - 禁止使用 `XMLHttpRequest`
+- 构建插件同时拦截 `window.fetch()`、`globalThis.fetch()`、`self.fetch()` 等全局调用形式
 
 ### 2.6 安全区配置
 需要检查是否配置了安全区，若无安全区，则执行以下内容：
@@ -104,6 +118,41 @@ src/
     }
 }
 ```
+
+#### 2.6.1 构建强制：CSS 中必须包含 `env(safe-area-inset-*)`（`rewrite-safe-area-env` 插件）
+除上述 §2.1 / §2.6 的 DOM 与 media query 方案外，**构建流程还会强制校验 CSS 安全区**，违反将导致 `npm run build` 失败：
+
+- **必须**：在 `src/` 下的 CSS 文件（如 `App.css`）中至少一处使用 `env(safe-area-inset-top)`、`env(safe-area-inset-right)`、`env(safe-area-inset-bottom)` 或 `env(safe-area-inset-left)`
+- **禁止**：在 JS/TS/TSX 源码的字符串、模板字面量或 JSX 文本中写 `env(safe-area-inset-*)`（须写在 CSS 文件中）
+- 顶部悬浮按钮、底部操作区等靠近屏幕边缘的可交互 UI，也应按需叠加对应方向的 safe-area `env()`
+- 推荐写法（构建会通过，并与 §2.1 的 `#safe-area` 节点配合使用）：
+  ```css
+  #container {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  ```
+
+### 2.7 禁止 CSS `@import` 引入 Google Fonts（`block-google-font-import` 插件）
+- 禁止在 `src/` 的 CSS 文件中写 `@import url("https://fonts.googleapis.com/...")`
+- 禁止在 JS/TS 字符串中嵌入上述 Google Fonts `@import` 语句
+- 请改用浏览器默认字体栈或项目内本地字体资源（与 §3.1 第 2 条一致，此处为构建期强制校验）
+
+### 2.8 禁止远程资源动态加载（`block-remote-imports` 插件）
+- 禁止 `import('https://...')` 远程动态导入
+- 禁止 `document.createElement('script')` 后将 `.src` 设为 `http(s)://` 远程地址（含分步赋值）
+- 请使用本地 npm 依赖或打包进项目的静态资源
+
+### 2.9 禁止设备传感器原生 API（`block-device-events` 插件）
+- 禁止使用 `DeviceOrientationEvent`、`DeviceMotionEvent` 及其构造/直接访问
+- 禁止监听 `deviceorientation`、`devicemotion` 事件（含 `addEventListener` / `ondeviceorientation` / `ondevicemotion`）
+- 请改用 `window.lingguang` 传感器 API（参考 `API_DEVICEMOTION.md` / `API_ACCELEROMETER.md` / `API_COMPASS.md`）
+
+### 2.10 禁止浏览器原生扫码 API（`block-scancode-apis` 插件）
+- 禁止使用 `BarcodeDetector`（含 `window.BarcodeDetector` 等形式）
+- 请改用 `window.lingguang.scanCode(...)`（参考 `docs/API_SCANCODE.md`）
 
 ---
 
@@ -185,6 +234,8 @@ src/
 - 凡是播放音效、背景音乐、语音片段等音频内容，必须使用 `howler.js`
 - 在 React Scaffold 项目中只能从 `@/lib/audio` 导入 `Howl` / `Howler`，禁止直接从 `howler` 导入
 - `@/lib/audio` 已封装宿主静音同步与 `html5: true`，不要自行实现第二套音频底层
+- 合成/乐器类程序化音效须从 `@/lib/tone` 导入，禁止直接 `import from 'tone'`；具体构建拦截规则见 §2.2
+- 禁止使用 `<audio>` 标签或 `document.createElement('audio')` 播放音频
 
 ### 3.11 图片资源引用
 - **图片必须使用 import 导入后再使用，禁止直接用字符串路径**
@@ -304,7 +355,11 @@ src/
 ### 4.3 媒体能力
 - **图片处理** (`window.lingguang.chooseImage`, `window.lingguang.takePhoto`, `window.lingguang.uploadImage`, `window.lingguang.saveImageToPhotosAlbum`): 选择图片、拍照、上传图片、保存图片到相册
 - **文本朗读** (`window.playTTS`, `window.stopAllTTS`): 文本转语音，支持多语言和音色选择，适用于绘本阅读、故事朗读等场景
-- **音效播放** (`AudioContext2`): 支持振荡器、增益节点、白噪音，适用于乐器模拟、游戏音效、提示音等（严禁用于语言类发音）
+- **音效播放**：
+  - 播放音频文件：通过 `@/lib/audio`（Howl / Howler）
+  - 合成/乐器音效：通过 `@/lib/tone`（Tone.js 高层 API）
+  - 宿主运行时提供 `AudioContext2`（振荡器、增益节点、白噪音等），但业务 `src/` 代码中禁止直接 `new AudioContext2()`，详见 §2.2
+- **扫码** (`window.lingguang.scanCode`): 替代浏览器原生 `BarcodeDetector`，详见 §2.10
 
 ### 4.4 位置与地图
 - **位置能力** (`window.lingguang.getLocation`): 获取设备地理位置信息，包括经纬度、国家、省份、城市、POI 信息
@@ -616,7 +671,7 @@ function App() {
   return (
     // 你的代码根基为container，请保留id，如果应用需要设置背景色，请设置在container这一层
     <div id="container">
-      {/* ⚠️ 严禁删除或修改此节点！<div id="safe-area"></div> 必须原样保留，否则构建会失败 */}
+      {/* ⚠️ 严禁删除或修改此节点！<div id="safe-area"></div> 必须原样保留；同时须在 App.css 配置 env(safe-area-inset-*)，见 §2.6.1 */}
       <div id="safe-area"></div>
       <h1>Hello World</h1>
       <img src={helloImage} />
@@ -629,7 +684,13 @@ export default App
 
 ### 9.2 src/App.css
 ```css
-
+/* 构建强制：须在 src CSS 中包含 env(safe-area-inset-*)，见 §2.6.1 */
+#container {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
 ```
 
 ### 9.3 src/index.css
@@ -841,8 +902,10 @@ createRoot(document.getElementById('root')!).render(
    - 如有图片资源，放入 `src/assets/` 目录
 6. **遵循约束**：严格遵守第 2 节的构建硬约束，否则构建会失败
 7. **测试验证**：确保代码符合所有规范，特别是：
-   - 必须保留 `<div id="safe-area"></div>`
-   - 禁止使用原生音频 API、fetch、alert/confirm 等
+   - 必须保留 `<div id="safe-area"></div>`，并在 CSS 中配置 `env(safe-area-inset-*)`（§2.6.1）
+   - 音频须走 `@/lib/audio` / `@/lib/tone`，禁止原生音频 API 与直接 import howler/tone（§2.2）
+   - 禁止使用 fetch、远程动态 import、BarcodeDetector、设备传感器原生 API（§2.5、§2.8–§2.10）
+   - 禁止使用原生音频 API、alert/confirm 等
    - 图片必须 import 导入
    - UI 文本必须 100% 使用中文
 
@@ -869,9 +932,15 @@ createRoot(document.getElementById('root')!).render(
 **A**: 不可以。必须使用 `window.lingguang.data.fetch`。
 
 ### Q7: 我可以删除 `<div id="safe-area"></div>` 吗？
-**A**: 不可以。这是系统预留节点，删除会导致构建失败。
+**A**: 不可以。这是系统预留节点，请与 §2.6.1 的 CSS `env(safe-area-inset-*)` 配置一并保留；缺少 CSS 安全区配置会导致构建失败。
 
-### Q8: UI 文本可以使用英文吗？
+### Q8: 我可以直接在代码里用 `new AudioContext2()` 吗？
+**A**: 不可以。业务 `src/` 代码须通过 `@/lib/audio`（播放文件）或 `@/lib/tone`（合成音效）接入音频能力，构建插件会拦截直接的 `AudioContext2` 及原生 Web Audio 调用。
+
+### Q9: 我可以使用 `BarcodeDetector` 扫码吗？
+**A**: 不可以。请使用 `window.lingguang.scanCode`，构建会拦截 `BarcodeDetector`。
+
+### Q10: UI 文本可以使用英文吗？
 **A**: 不可以。UI 界面文本必须 100% 使用中文，这是最高优先级约束。
 
 ---
@@ -881,10 +950,11 @@ createRoot(document.getElementById('root')!).render(
 本文档整合了灵光小程序开发的所有核心规范和约束。遵循本规范，你将能够开发出符合标准、可以顺利构建和部署的 H5 小程序。
 
 **记住**：
-- 构建硬约束（第 2 节）是最高优先级，违反会导致构建失败
+- 构建硬约束（第 2 节，含 §2.6.1–§2.10 插件规则）是最高优先级，违反会导致构建失败
 - 语言规范（第 3.16 节）是最高优先级，UI 文本必须 100% 使用中文
 - 开发前必须阅读 PRD 中列出的所有 `API_*` Skill
 - 图片必须 import 导入，禁止使用字符串路径
-- 禁止使用原生 API（fetch、alert、confirm、Audio 等）
+- 禁止使用原生 API（fetch、alert、confirm、Audio、BarcodeDetector、设备传感器事件等）；音频与扫码须走项目 wrapper / `lingguang` API
 
 祝你开发顺利！🎉
+
