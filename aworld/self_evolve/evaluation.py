@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import subprocess
 import time
 from dataclasses import dataclass
@@ -203,6 +204,82 @@ class SkillCandidateOverlayBackend:
         )
 
 
+class AWorldTrajectoryEvaluatorBackend:
+    """Evaluate baseline or candidate trajectories through AWorld evaluator runtime."""
+
+    def __init__(
+        self,
+        *,
+        workspace_root: str | Path,
+        judge_agent: str | None = None,
+        judge_agent_name: str | None = None,
+        judge_backend_ref: str | None = None,
+        agent: str | None = None,
+        run_evaluator_source: Callable[..., Any] | None = None,
+    ) -> None:
+        selector_count = sum(
+            bool(value)
+            for value in (judge_agent, judge_agent_name, judge_backend_ref)
+        )
+        if selector_count != 1:
+            raise ValueError("AWorld trajectory evaluator requires exactly one judge selector")
+        self.workspace_root = Path(workspace_root)
+        self.judge_agent = judge_agent
+        self.judge_agent_name = judge_agent_name
+        self.judge_backend_ref = judge_backend_ref
+        self.agent = agent
+        self.run_evaluator_source = run_evaluator_source
+
+    async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
+        if not request.dataset.cases:
+            raise ValueError("AWorld trajectory evaluator requires at least one eval case")
+        eval_dir = (
+            self.workspace_root
+            / ".aworld"
+            / "self_evolve"
+            / "evaluator"
+            / _safe_path_component(request.variant_id)
+            / _safe_path_component(request.dataset_split)
+        )
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        log_path = eval_dir / "trajectory.log"
+        records = [
+            _aworld_trajectory_record(case, request=request)
+            for case in request.dataset.cases
+        ]
+        log_path.write_text(
+            "\n".join(repr(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        report_path = eval_dir / "report.json"
+        runner = self.run_evaluator_source or _load_run_evaluator_source_cli()
+        task_id = request.dataset.cases[0].case_id if len(request.dataset.cases) == 1 else None
+        report = runner(
+            input=str(log_path),
+            kind="trajectory",
+            judge_agent=self.judge_agent,
+            judge_agent_name=self.judge_agent_name,
+            judge_backend_ref=self.judge_backend_ref,
+            out_dir=str(eval_dir / "extracted"),
+            output=str(report_path),
+            task_id=task_id,
+            agent=self.agent,
+        )
+        if inspect.isawaitable(report):
+            report = await report
+        if not isinstance(report, Mapping):
+            raise ValueError("AWorld trajectory evaluator report must be a mapping")
+        return EvaluationSummary(
+            variant_id=request.variant_id,
+            dataset_split=request.dataset_split,
+            metrics=_aworld_evaluator_metrics(
+                report,
+                case_count=len(request.dataset.cases),
+                input_path=log_path,
+            ),
+        )
+
+
 async def evaluate_baseline_and_candidate(
     backend: EvaluationBackend,
     *,
@@ -345,6 +422,138 @@ def _summary_metrics(result: Any) -> Mapping[str, Any]:
             return result_summary
         return result
     return {"result": str(result)}
+
+
+def _load_run_evaluator_source_cli() -> Callable[..., Any]:
+    try:
+        from aworld_cli.evaluator_runtime import run_evaluator_source_cli
+    except ImportError as exc:
+        raise ValueError("AWorld trajectory evaluator requires aworld-cli evaluator runtime") from exc
+    return run_evaluator_source_cli
+
+
+def _aworld_trajectory_record(
+    case: Any,
+    *,
+    request: EvaluationRequest,
+) -> Mapping[str, Any]:
+    trajectory = _trajectory_for_variant(case, request=request)
+    return {
+        "task_id": case.case_id,
+        "is_sub_task": False,
+        "trajectory": json.dumps(trajectory, ensure_ascii=False),
+    }
+
+
+def _trajectory_for_variant(case: Any, *, request: EvaluationRequest) -> list[Mapping[str, Any]]:
+    metadata = case.metadata if isinstance(case.metadata, Mapping) else {}
+    variant_trajectories = metadata.get("variant_trajectories")
+    if isinstance(variant_trajectories, Mapping):
+        candidate_keys = [request.variant_id]
+        if request.candidate is not None:
+            candidate_keys.extend([request.candidate.candidate_id, "candidate"])
+        else:
+            candidate_keys.append("baseline")
+        for key in candidate_keys:
+            selected = variant_trajectories.get(key)
+            if isinstance(selected, list):
+                return _mapping_list(selected)
+
+    if request.candidate is not None:
+        candidate_trajectory = metadata.get("candidate_trajectory")
+        if isinstance(candidate_trajectory, list):
+            return _mapping_list(candidate_trajectory)
+    else:
+        baseline_trajectory = metadata.get("baseline_trajectory")
+        if isinstance(baseline_trajectory, list):
+            return _mapping_list(baseline_trajectory)
+
+    if case.trace_pack is not None:
+        return _trace_pack_to_trajectory(case.trace_pack)
+    raise ValueError(f"eval case {case.case_id!r} does not contain trajectory evidence")
+
+
+def _trace_pack_to_trajectory(trace_pack: Any) -> list[Mapping[str, Any]]:
+    trajectory: list[Mapping[str, Any]] = []
+    for index, step in enumerate(trace_pack.steps, start=1):
+        meta = {
+            "step": index,
+            "agent_id": step.agent_id,
+            "pre_agent": step.pre_agent,
+        }
+        trajectory.append(
+            {
+                "meta": {key: value for key, value in meta.items() if value is not None},
+                "state": dict(step.state),
+                "action": dict(step.action),
+                "reward": dict(step.reward),
+            }
+        )
+    return trajectory
+
+
+def _mapping_list(items: list[Any]) -> list[Mapping[str, Any]]:
+    mapped: list[Mapping[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise ValueError("trajectory entries must be mappings")
+        mapped.append(item)
+    return mapped
+
+
+def _aworld_evaluator_metrics(
+    report: Mapping[str, Any],
+    *,
+    case_count: int,
+    input_path: Path,
+) -> Mapping[str, Any]:
+    metrics: dict[str, Any] = {
+        "evaluator_mode": "aworld_trajectory_evaluator",
+        "evaluator_source_kind": "trajectory",
+        "evaluation_agent_signal": True,
+        "input_path": str(input_path),
+    }
+    summary = report.get("summary")
+    if isinstance(summary, Mapping):
+        for suite_summary in summary.values():
+            if not isinstance(suite_summary, Mapping):
+                continue
+            for metric_name, aggregate in suite_summary.items():
+                if isinstance(aggregate, Mapping) and isinstance(aggregate.get("mean"), (int, float)):
+                    metrics[str(metric_name)] = float(aggregate["mean"])
+
+    gate = report.get("gate")
+    gate_status = gate.get("status") if isinstance(gate, Mapping) else None
+    gate_passed = gate_status == "pass"
+    metrics["evaluator_gate_status"] = gate_status
+    metrics["evaluator_gate_passed"] = gate_passed
+    metrics["global_regression_passed"] = gate_status != "fail"
+    metrics["deterministic_signal"] = gate_passed
+    metrics["command_case_count"] = case_count
+    metrics["command_pass_count"] = case_count if gate_passed else 0
+    metrics["command_failure_count"] = 0 if gate_passed else case_count
+    metrics["command_pass_rate"] = 1.0 if gate_passed else 0.0
+
+    if isinstance(gate, Mapping):
+        gate_value = gate.get("value")
+        if isinstance(gate_value, (int, float)):
+            metrics[str(gate.get("metric_name") or "score")] = float(gate_value)
+            metrics.setdefault("score", float(gate_value))
+    if "score" not in metrics:
+        metrics["score"] = None
+    report_path = report.get("report_path")
+    if isinstance(report_path, str):
+        metrics["report_path"] = report_path
+    return metrics
+
+
+def _safe_path_component(value: str | None) -> str:
+    safe = "".join(
+        character
+        for character in str(value or "default")
+        if character.isalnum() or character in {"-", "_", "."}
+    ).strip(".")
+    return safe or "default"
 
 
 def _elapsed_ms(started_at: float) -> float:

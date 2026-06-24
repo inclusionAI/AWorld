@@ -375,3 +375,39 @@ def test_online_job_worker_auto_applies_verified_skill_candidate(tmp_path) -> No
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["candidate_metrics"]["score"] > report["baseline_metrics"]["score"]
+
+
+def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        captured.update(kwargs)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.runner.optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+    )
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: trajectory-judge\n---\nJudge trajectory quality.\n", encoding="utf-8")
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    result = scheduler.enqueue(
+        SelfEvolveRunContext(
+            agent_id="agent",
+            task_id="judge-config-job",
+            workspace_root=str(tmp_path),
+            trajectory=_trajectory(),
+            self_evolve_config=SelfEvolveConfig(
+                mode="online",
+                apply_policy="auto_verified",
+                judge_config={"mode": "agent_md", "agent_path": str(judge_agent)},
+            ),
+        )
+    )
+    assert result.job_path is not None
+
+    drained = SelfEvolveJobWorker(workspace_root=tmp_path).drain_pending_jobs()
+
+    assert drained == 1
+    assert captured["judge_config"].mode == "agent_md"
+    assert captured["judge_config"].agent_path == str(judge_agent)

@@ -19,6 +19,7 @@ from aworld.self_evolve.datasets import (
     load_session_eval_cases,
 )
 from aworld.self_evolve.evaluation import (
+    AWorldTrajectoryEvaluatorBackend,
     CommandVerificationBackend,
     EvaluateRunnerBackend,
     EvaluationBackend,
@@ -100,6 +101,7 @@ from aworld.self_evolve.types import (
 
 __all__ = [
     "AgentMdJudgeBackend",
+    "AWorldTrajectoryEvaluatorBackend",
     "BudgetGate",
     "CandidateOptimizer",
     "CandidateConfidenceDecision",

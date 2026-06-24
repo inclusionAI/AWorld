@@ -149,6 +149,40 @@ def test_optimize_command_passes_session_batch_iterations_and_auto_verified(
     assert calls["apply"] == "auto_verified"
 
 
+def test_optimize_command_passes_judge_agent_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--target",
+            "skill:workflow-helper",
+            "--from-trajectory",
+            "trajectory.log",
+            "--apply",
+            "auto_verified",
+            "--judge-agent",
+            "agent.md",
+        ]
+    )
+
+    assert handled is True
+    assert calls["judge_agent"] == "agent.md"
+    assert calls["judge_agent_name"] is None
+
+
 def test_optimize_command_task_without_target_uses_framework_inference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -205,6 +239,8 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         apply="auto_verified",
         infer_target=False,
         workspace_root=str(tmp_path),
+        judge_agent="agent.md",
+        judge_agent_name=None,
     )
 
     assert report["report_path"].endswith("report.json")
@@ -215,6 +251,8 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["iterations"] == 3
     assert calls["apply_policy"] == "auto_verified"
     assert calls["infer_target"] is False
+    assert calls["judge_config"].mode == "agent_md"
+    assert calls["judge_config"].agent_path == "agent.md"
 
 
 def test_run_optimize_cli_leaves_target_inference_to_framework(

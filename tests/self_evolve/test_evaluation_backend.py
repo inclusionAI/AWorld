@@ -7,6 +7,7 @@ import pytest
 from aworld.config.conf import EvaluationConfig
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.evaluation import (
+    AWorldTrajectoryEvaluatorBackend,
     CandidateConfidenceDecision,
     CommandVerificationBackend,
     EvaluateRunnerBackend,
@@ -44,6 +45,135 @@ def _candidate(candidate_id: str = "candidate") -> CandidateVariant:
         content="# Demo\n",
         rationale="test candidate",
     )
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_uses_existing_source_runtime(tmp_path) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Recover the workflow."}},
+            "action": {"content": "Recovered with evidence."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="task-eval",
+    )
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                trace_pack=trace_pack,
+            ),
+        )
+    )
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: trajectory-judge\n---\nJudge trajectory quality.\n", encoding="utf-8")
+    calls = []
+
+    def fake_run_evaluator_source(**kwargs):
+        calls.append(kwargs)
+        log_path = kwargs["input"]
+        raw_line = __import__("ast").literal_eval(open(log_path, encoding="utf-8").read().strip())
+        assert raw_line["task_id"] == "task-eval"
+        assert raw_line["is_sub_task"] is False
+        loaded_trajectory = __import__("json").loads(raw_line["trajectory"])
+        assert loaded_trajectory[0]["action"]["content"] == "Recovered with evidence."
+        return {
+            "suite_id": "trajectory-source-evaluator",
+            "summary": {
+                "trajectory-source-evaluator": {
+                    "score": {"mean": 88.0},
+                    "A1_groundedness": {"mean": 4.0},
+                }
+            },
+            "gate": {"status": "pass", "metric_name": "score", "value": 88.0},
+            "report_path": str(tmp_path / "report.json"),
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent=str(judge_agent),
+        run_evaluator_source=fake_run_evaluator_source,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["kind"] == "trajectory"
+    assert calls[0]["judge_agent"] == str(judge_agent)
+    assert calls[0]["task_id"] == "task-eval"
+    assert summary.metrics["evaluator_mode"] == "aworld_trajectory_evaluator"
+    assert summary.metrics["score"] == 88.0
+    assert summary.metrics["A1_groundedness"] == 4.0
+    assert summary.metrics["evaluator_gate_passed"] is True
+    assert summary.metrics["evaluation_agent_signal"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_compares_variant_trajectories(tmp_path) -> None:
+    baseline_trajectory = [
+        {
+            "state": {"input": {"content": "Complete task."}},
+            "action": {"content": "Stopped early."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    candidate_trajectory = [
+        {
+            "state": {"input": {"content": "Complete task."}},
+            "action": {"content": "Completed with cited evidence."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-variant",
+                input={"content": "Complete task."},
+                metadata={
+                    "variant_trajectories": {
+                        "baseline": baseline_trajectory,
+                        "cand-1": candidate_trajectory,
+                    }
+                },
+            ),
+        )
+    )
+    seen_actions = []
+
+    def fake_run_evaluator_source(**kwargs):
+        raw_line = __import__("ast").literal_eval(open(kwargs["input"], encoding="utf-8").read().strip())
+        loaded_trajectory = __import__("json").loads(raw_line["trajectory"])
+        action = loaded_trajectory[0]["action"]["content"]
+        seen_actions.append(action)
+        score = 91.0 if "Completed" in action else 55.0
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": score}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": score},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=fake_run_evaluator_source,
+    )
+
+    baseline, candidate = await evaluate_baseline_and_candidate(
+        backend,
+        dataset=dataset,
+        candidate=_candidate("cand-1"),
+    )
+
+    assert seen_actions == ["Stopped early.", "Completed with cited evidence."]
+    assert baseline.metrics["score"] == 55.0
+    assert candidate.metrics["score"] == 91.0
 
 
 @pytest.mark.asyncio
