@@ -38,6 +38,7 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--apply", type=str, default="proposal")
         parser.add_argument("--judge-agent", type=str, dest="judge_agent")
         parser.add_argument("--judge-agent-name", type=str, dest="judge_agent_name")
+        parser.add_argument("--judge-backend-ref", type=str, dest="judge_backend_ref")
 
     def run(self, args, context) -> int:
         apply_policy = getattr(args, "apply", "proposal") or "proposal"
@@ -47,9 +48,10 @@ class OptimizeTopLevelCommand:
         judge_selectors = [
             getattr(args, "judge_agent", None),
             getattr(args, "judge_agent_name", None),
+            getattr(args, "judge_backend_ref", None),
         ]
         if sum(1 for value in judge_selectors if value) > 1:
-            print("Optimize error: use only one of --judge-agent or --judge-agent-name")
+            print("Optimize error: use only one of --judge-agent, --judge-agent-name, or --judge-backend-ref")
             return 1
 
         target = getattr(args, "target", None)
@@ -68,6 +70,7 @@ class OptimizeTopLevelCommand:
                 workspace_root=context.cwd,
                 judge_agent=getattr(args, "judge_agent", None),
                 judge_agent_name=getattr(args, "judge_agent_name", None),
+                judge_backend_ref=getattr(args, "judge_backend_ref", None),
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
             print(f"Optimize error: {exc}")
@@ -113,12 +116,14 @@ def run_optimize_cli(
     workspace_root: str,
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
+    judge_backend_ref: str | None = None,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
     judge_config = _judge_config_from_cli(
         judge_agent=judge_agent,
         judge_agent_name=judge_agent_name,
+        judge_backend_ref=judge_backend_ref,
     )
     return self_evolve.optimize_from_cli_request(
         agent=agent,
@@ -140,9 +145,11 @@ def _judge_config_from_cli(
     *,
     judge_agent: str | None,
     judge_agent_name: str | None,
+    judge_backend_ref: str | None,
 ) -> Any:
-    if judge_agent and judge_agent_name:
-        raise ValueError("use only one of --judge-agent or --judge-agent-name")
+    selector_count = sum(bool(value) for value in (judge_agent, judge_agent_name, judge_backend_ref))
+    if selector_count > 1:
+        raise ValueError("use only one of --judge-agent, --judge-agent-name, or --judge-backend-ref")
     if judge_agent:
         from aworld.config.conf import SelfEvolveJudgeConfig
 
@@ -151,6 +158,10 @@ def _judge_config_from_cli(
         from aworld.config.conf import SelfEvolveJudgeConfig
 
         return SelfEvolveJudgeConfig(mode="custom_agent", agent_id=judge_agent_name)
+    if judge_backend_ref:
+        from aworld.config.conf import SelfEvolveJudgeConfig
+
+        return SelfEvolveJudgeConfig(mode="backend_ref", backend_ref=judge_backend_ref)
     return None
 
 
