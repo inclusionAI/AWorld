@@ -641,6 +641,13 @@ def _evaluation_backend_from_judge_config(
             workspace_root=workspace_root,
             judge_agent_name=config.agent_id,
         )
+    if config.mode == "backend_ref":
+        if not config.backend_ref:
+            raise ValueError("backend_ref self-evolve evaluator requires backend_ref")
+        return AWorldTrajectoryEvaluatorBackend(
+            workspace_root=workspace_root,
+            judge_backend_ref=config.backend_ref,
+        )
     if config.mode == "disabled":
         raise ValueError("auto_verified self-evolve requires an evaluation backend")
     raise ValueError(f"unsupported judge mode: {config.mode}")

@@ -191,9 +191,10 @@ class MetaLearningConfig(BaseConfig):
 class SelfEvolveJudgeConfig(BaseConfig):
     """Judge selection for framework-owned self-evolve evaluation."""
 
-    mode: Literal["trajectory", "agent_md", "custom_agent", "disabled"] = "trajectory"
+    mode: Literal["trajectory", "agent_md", "custom_agent", "backend_ref", "disabled"] = "trajectory"
     agent_path: Optional[str] = None
     agent_id: Optional[str] = None
+    backend_ref: Optional[str] = None
 
 
 class SelfEvolveConfig(BaseConfig):

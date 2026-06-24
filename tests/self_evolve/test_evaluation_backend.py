@@ -177,6 +177,52 @@ async def test_aworld_trajectory_evaluator_backend_compares_variant_trajectories
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_accepts_backend_ref(tmp_path) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-backend-ref",
+                input={"content": "Recover the workflow."},
+                trace_pack=build_trace_pack(
+                    [
+                        {
+                            "state": {"input": {"content": "Recover the workflow."}},
+                            "action": {"content": "Recovered."},
+                            "reward": {"status": "ok"},
+                        }
+                    ],
+                    source_kind="current_trajectory",
+                    task_id="task-backend-ref",
+                ),
+            ),
+        )
+    )
+    calls = []
+
+    def fake_run_evaluator_source(**kwargs):
+        calls.append(kwargs)
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 77.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 77.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_backend_ref="pkg.module:build_judge",
+        run_evaluator_source=fake_run_evaluator_source,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert calls[0]["judge_backend_ref"] == "pkg.module:build_judge"
+    assert calls[0]["judge_agent"] is None
+    assert calls[0]["judge_agent_name"] is None
+    assert summary.metrics["score"] == 77.0
+
+
+@pytest.mark.asyncio
 async def test_command_verification_backend_reports_objective_pass_rate(tmp_path) -> None:
     dataset = _dataset(
         (

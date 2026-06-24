@@ -79,6 +79,7 @@ def test_self_evolve_budget_fields_parse() -> None:
         ({}, "trajectory"),
         ({"mode": "agent_md", "agent_path": "agent.md"}, "agent_md"),
         ({"mode": "custom_agent", "agent_id": "judge-agent"}, "custom_agent"),
+        ({"mode": "backend_ref", "backend_ref": "pkg.module:build_judge"}, "backend_ref"),
         ({"mode": "disabled"}, "disabled"),
     ],
 )
@@ -86,6 +87,12 @@ def test_self_evolve_judge_config_modes_parse(payload: dict, expected_mode: str)
     config = SelfEvolveJudgeConfig(**payload)
 
     assert config.mode == expected_mode
+
+
+def test_self_evolve_judge_config_preserves_backend_ref() -> None:
+    config = SelfEvolveJudgeConfig(mode="backend_ref", backend_ref="pkg.module:build_judge")
+
+    assert config.backend_ref == "pkg.module:build_judge"
 
 
 def test_self_evolve_config_parses_nested_judge_config_from_dict() -> None:

@@ -181,6 +181,71 @@ def test_optimize_command_passes_judge_agent_selector(
     assert handled is True
     assert calls["judge_agent"] == "agent.md"
     assert calls["judge_agent_name"] is None
+    assert calls["judge_backend_ref"] is None
+
+
+def test_optimize_command_passes_judge_backend_ref_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--target",
+            "skill:workflow-helper",
+            "--from-trajectory",
+            "trajectory.log",
+            "--apply",
+            "auto_verified",
+            "--judge-backend-ref",
+            "pkg.module:build_judge",
+        ]
+    )
+
+    assert handled is True
+    assert calls["judge_agent"] is None
+    assert calls["judge_agent_name"] is None
+    assert calls["judge_backend_ref"] == "pkg.module:build_judge"
+
+
+def test_optimize_command_rejects_multiple_judge_selectors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module._maybe_dispatch_top_level_command(
+            [
+                "aworld-cli",
+                "optimize",
+                "--target",
+                "skill:workflow-helper",
+                "--from-trajectory",
+                "trajectory.log",
+                "--apply",
+                "auto_verified",
+                "--judge-agent",
+                "agent.md",
+                "--judge-backend-ref",
+                "pkg.module:build_judge",
+            ]
+        )
+
+    output = capsys.readouterr().out
+    assert exc_info.value.code == 1
+    assert (
+        "Optimize error: use only one of --judge-agent, --judge-agent-name, or --judge-backend-ref"
+        in output
+    )
 
 
 def test_optimize_command_task_without_target_uses_framework_inference(
@@ -241,6 +306,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         workspace_root=str(tmp_path),
         judge_agent="agent.md",
         judge_agent_name=None,
+        judge_backend_ref=None,
     )
 
     assert report["report_path"].endswith("report.json")
@@ -253,6 +319,46 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["infer_target"] is False
     assert calls["judge_config"].mode == "agent_md"
     assert calls["judge_config"].agent_path == "agent.md"
+
+
+def test_run_optimize_cli_maps_judge_backend_ref_to_framework_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:workflow-helper",
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=None,
+        apply="auto_verified",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        judge_agent=None,
+        judge_agent_name=None,
+        judge_backend_ref="pkg.module:build_judge",
+    )
+
+    assert calls["judge_config"].mode == "backend_ref"
+    assert calls["judge_config"].backend_ref == "pkg.module:build_judge"
 
 
 def test_run_optimize_cli_leaves_target_inference_to_framework(
