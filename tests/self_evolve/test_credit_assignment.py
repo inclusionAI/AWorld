@@ -28,7 +28,8 @@ def test_default_target_inventory_contains_phase1_target_types_with_provenance(t
     assert {
         entry.target.target_type
         for entry in inventory.entries
-    } >= {"skill", "prompt-section", "tool-description", "config", "workspace-artifact"}
+    } >= {"skill", "prompt-section", "tool-description", "workspace-artifact"}
+    assert "config" not in {entry.target.target_type for entry in inventory.entries}
     assert all(entry.provenance.target == entry.target for entry in inventory.entries)
     assert all(entry.provenance.write_origin for entry in inventory.entries)
     assert all(entry.provenance.trust_level for entry in inventory.entries)
@@ -42,10 +43,10 @@ def test_credit_assigner_selects_skill_prompt_tool_config_and_artifact_targets(t
     )
 
     expected = {
-        "task_20260511112019": ("skill", "agent-browser-cdp-login-guidance", "browser_session"),
+        "task_20260511112019": ("skill", "agent-browser", "browser_session"),
         "task_20260513161047": ("prompt-section", "result-validation-anchor-policy", "validation"),
         "1f9149cc482611f196356a5e5d182581": ("tool-description", "SKILL_tool.active_skill", "tool_activation"),
-        "task_20260511104323": ("config", "browser_cdp_port_and_profile", "browser_config"),
+        "task_20260511104323": ("skill", "agent-browser", "browser_config"),
         "e676a3103f9411f197ecaead30e27f1a": ("workspace-artifact", "btc_monitor.sh", "artifact_failure"),
     }
 
@@ -175,6 +176,40 @@ def test_credit_assigner_reports_tool_failures_repeated_actions_and_task_status(
     assert "trajectory_score_failure" in report.signals
 
 
+def test_credit_assigner_treats_cdp_profile_as_skill_evolution_signal(tmp_path) -> None:
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {
+                    "input": {
+                        "content": "Use agent-browser through CDP port 9222 with the right profile."
+                    }
+                },
+                "action": {
+                    "content": "agent-browser --cdp 9222 opened the page using the profile.",
+                    "tool_calls": [],
+                    "is_agent_finished": True,
+                },
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="cdp-profile-task",
+    )
+    assigner = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    )
+
+    report = assigner.assign(pack)
+
+    assert report.selected_target is not None
+    assert report.selected_target.target_type == "skill"
+    assert report.selected_target.target_id == "agent-browser"
+    assert report.failure_category == "browser_config"
+    assert "browser_cdp_profile_config" in report.signals
+
+
 def test_credit_assigner_reports_llm_usage_and_generated_artifact_references(tmp_path) -> None:
     pack = build_trace_pack(
         [
@@ -252,7 +287,7 @@ def test_credit_assigner_uses_llm_diagnosis_when_it_cites_trace_evidence(tmp_pat
         assert isinstance(inventory, TargetInventory)
         return LLMTargetDiagnosis(
             target_type="skill",
-            target_id="agent-browser-cdp-login-guidance",
+            target_id="agent-browser",
             confidence=0.92,
             evidence_step_ids=("llm-task:step-2",),
             failure_category="browser_session",
@@ -268,7 +303,7 @@ def test_credit_assigner_uses_llm_diagnosis_when_it_cites_trace_evidence(tmp_pat
 
     assert report.selected_target is not None
     assert report.selected_target.target_type == "skill"
-    assert report.selected_target.target_id == "agent-browser-cdp-login-guidance"
+    assert report.selected_target.target_id == "agent-browser"
     assert report.confidence == 0.92
     assert report.evidence_step_ids == ("llm-task:step-2",)
     assert "llm_assisted_diagnosis" in report.signals

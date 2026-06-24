@@ -187,18 +187,42 @@ class TrajectoryCreditAssigner:
 
 def build_default_target_inventory(workspace_root: str | Path) -> TargetInventory:
     root = Path(workspace_root)
-    entries = [
+    entries: list[TargetInventoryEntry] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(entry: TargetInventoryEntry) -> None:
+        key = (entry.target.target_type, entry.target.target_id)
+        if key in seen:
+            return
+        entries.append(entry)
+        seen.add(key)
+
+    for entry in _skill_entries_from_workspace(root):
+        add(entry)
+
+    add(
         _entry(
             target_type="skill",
-            target_id="agent-browser-cdp-login-guidance",
-            path=None,
+            target_id="agent-browser",
+            path=str(root / "aworld-skills" / "agent-browser" / "SKILL.md"),
             source_kind="skill",
             write_origin="installed_skill",
             trust_level="local",
             protected=False,
-            reason="Browser/CDP login guidance can be proposed as a skill text target.",
-            aliases=("logged-out browser", "login traces", "chrome profiles"),
-        ),
+            reason="Browser automation guidance can be proposed as a skill text target.",
+            aliases=(
+                "agent-browser",
+                "browser automation",
+                "logged-out browser",
+                "login traces",
+                "chrome profiles",
+                "cdp",
+                "profile",
+                "port",
+            ),
+        )
+    )
+    add(
         _entry(
             target_type="prompt-section",
             target_id="result-validation-anchor-policy",
@@ -209,7 +233,9 @@ def build_default_target_inventory(workspace_root: str | Path) -> TargetInventor
             protected=False,
             reason="Result validation policy can be proposed as a prompt-section target.",
             aliases=("result validation mismatch", "anchors"),
-        ),
+        )
+    )
+    add(
         _entry(
             target_type="tool-description",
             target_id="SKILL_tool.active_skill",
@@ -220,18 +246,9 @@ def build_default_target_inventory(workspace_root: str | Path) -> TargetInventor
             protected=False,
             reason="Skill activation tool description can be proposed for clarity improvements.",
             aliases=("skill_tool", "active_skill"),
-        ),
-        _entry(
-            target_type="config",
-            target_id="browser_cdp_port_and_profile",
-            path=None,
-            source_kind="config",
-            write_origin="allowlisted_config",
-            trust_level="user_allowlisted",
-            protected=False,
-            reason="CDP port/profile config is an allowlisted harness configuration target.",
-            aliases=("cdp", "profile", "port"),
-        ),
+        )
+    )
+    add(
         _entry(
             target_type="workspace-artifact",
             target_id="btc_monitor.sh",
@@ -242,8 +259,8 @@ def build_default_target_inventory(workspace_root: str | Path) -> TargetInventor
             protected=False,
             reason="Agent-produced workspace artifacts may be proposal-only targets.",
             aliases=("btc_monitor", "api sources timed out"),
-        ),
-    ]
+        )
+    )
     return TargetInventory(entries=tuple(entries))
 
 
@@ -316,7 +333,7 @@ def _deterministic_signal(serialized: str) -> _Signal:
     if "logged in" in serialized and ("login traces" in serialized or "logged-out browser" in serialized):
         return _Signal(
             target_type="skill",
-            target_id="agent-browser-cdp-login-guidance",
+            target_id="agent-browser",
             failure_category="browser_session",
             confidence=0.85,
             signals=("browser_login_profile_mismatch",),
@@ -324,8 +341,8 @@ def _deterministic_signal(serialized: str) -> _Signal:
         )
     if "cdp" in serialized and ("profile" in serialized or "port" in serialized):
         return _Signal(
-            target_type="config",
-            target_id="browser_cdp_port_and_profile",
+            target_type="skill",
+            target_id="agent-browser",
             failure_category="browser_config",
             confidence=0.85,
             signals=("browser_cdp_profile_config",),
@@ -340,6 +357,53 @@ def _deterministic_signal(serialized: str) -> _Signal:
         keywords=(),
         reason="deterministic signals did not identify a supported self-evolve target",
     )
+
+
+def _skill_entries_from_workspace(root: Path) -> tuple[TargetInventoryEntry, ...]:
+    entries: list[TargetInventoryEntry] = []
+    for base in (root / "aworld-skills", root / "skills"):
+        if not base.exists():
+            continue
+        for skill_path in sorted(base.glob("*/SKILL.md")):
+            target_id = skill_path.parent.name
+            frontmatter = _skill_frontmatter(skill_path)
+            name = frontmatter.get("name") or target_id
+            description = frontmatter.get("description", "")
+            aliases = tuple(
+                item
+                for item in (target_id, name, description)
+                if isinstance(item, str) and item.strip()
+            )
+            entries.append(
+                _entry(
+                    target_type="skill",
+                    target_id=target_id,
+                    path=str(skill_path),
+                    source_kind="skill",
+                    write_origin="installed_skill",
+                    trust_level="local",
+                    protected=target_id in {"app_evaluator", "self_evolve"},
+                    reason="Installed skill text can be proposed as a self-evolve target.",
+                    aliases=aliases,
+                )
+            )
+    return tuple(entries)
+
+
+def _skill_frontmatter(path: Path) -> dict[str, str]:
+    content = path.read_text(encoding="utf-8", errors="replace")
+    if not content.startswith("---\n"):
+        return {}
+    end = content.find("\n---", 4)
+    if end < 0:
+        return {}
+    values: dict[str, str] = {}
+    for line in content[4:end].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
 
 
 def _pack_text(trace_pack: TracePack) -> str:

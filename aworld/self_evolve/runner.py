@@ -519,10 +519,20 @@ def optimize_from_cli_request(
             trace_packs,
         )
 
-    async def _noop_mutation(prompt: str) -> dict[str, str]:
+    async def _cli_default_mutation(prompt: str) -> dict[str, str]:
+        current_content = target_adapter.load_current_content()
+        candidate_content = _default_cli_skill_candidate(
+            current_content=current_content,
+            trace_packs=trace_packs,
+        )
         return {
-            "content": target_adapter.load_current_content(),
-            "rationale": "No CLI optimizer configured; preserved proposal-only baseline.",
+            "content": candidate_content,
+            "rationale": (
+                "Generated a trajectory-backed skill proposal through the default "
+                "CLI self-evolve mutator."
+                if candidate_content != current_content
+                else "No trajectory evidence available; preserved proposal-only baseline."
+            ),
         }
 
     import asyncio
@@ -530,7 +540,7 @@ def optimize_from_cli_request(
     result = asyncio.run(
         SelfEvolveRunner(
             store=store,
-            optimizer=TraceReflectiveLLMMutator(mutate_text=_noop_mutation),
+            optimizer=TraceReflectiveLLMMutator(mutate_text=_cli_default_mutation),
         ).run_explicit_target(
             run_id=run_id,
             target=target_adapter,
@@ -563,6 +573,58 @@ def optimize_from_cli_request(
     if target_provenance_path is not None:
         summary["target_provenance_path"] = str(target_provenance_path)
     return summary
+
+
+def _default_cli_skill_candidate(
+    *,
+    current_content: str,
+    trace_packs: tuple[TracePack, ...],
+) -> str:
+    if not trace_packs:
+        return current_content
+
+    evidence_ids = [
+        step.evidence_id
+        for trace_pack in trace_packs[:3]
+        for step in trace_pack.steps[:4]
+    ]
+    task_ids = [trace_pack.task_id for trace_pack in trace_packs[:3]]
+    serialized_evidence = " ".join(
+        str(value).lower()
+        for trace_pack in trace_packs
+        for step in trace_pack.steps
+        for value in (step.action, step.state, step.reward)
+    )
+    guidance = [
+        "Use trajectory evidence before choosing or repeating tool actions.",
+        (
+            "When a tool path fails or repeats, record the observed failure and "
+            "switch to an alternate evidence source before finalizing."
+        ),
+    ]
+    if (
+        "cdp" in serialized_evidence
+        or "profile" in serialized_evidence
+        or "port" in serialized_evidence
+    ):
+        guidance.insert(
+            1,
+            "For browser/CDP work, verify the active endpoint and profile before relying on page state.",
+        )
+
+    section = [
+        "## Self-Evolve Trace Guidance",
+        "",
+        f"- Source task ids: {', '.join(task_ids)}",
+        f"- Evidence steps: {', '.join(evidence_ids)}",
+    ]
+    section.extend(f"- {item}" for item in guidance)
+
+    heading = "\n## Self-Evolve Trace Guidance\n"
+    prefix = current_content.rstrip()
+    if heading in current_content:
+        prefix = current_content.split(heading, 1)[0].rstrip()
+    return prefix + "\n\n" + "\n".join(section) + "\n"
 
 
 def _target_from_cli_ref(target: str, *, workspace_root: str | Path) -> SelfEvolveTarget:
