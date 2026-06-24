@@ -6,6 +6,7 @@ from typing import Callable, Any
 from pathlib import Path
 from typing import Mapping, Iterable
 
+from aworld.config.conf import SelfEvolveJudgeConfig
 from aworld.self_evolve.credit_assignment import (
     TargetInventoryEntry,
     TargetSelectionReport,
@@ -18,6 +19,7 @@ from aworld.self_evolve.datasets import (
     build_dataset_from_source,
 )
 from aworld.self_evolve.evaluation import (
+    AWorldTrajectoryEvaluatorBackend,
     EvaluationBackend,
     EvaluationRequest,
     SkillCandidateOverlayBackend,
@@ -412,6 +414,7 @@ def optimize_from_cli_request(
     max_run_tokens: int = 500_000,
     min_score_delta: float = 0.0,
     auto_apply_target_types: tuple[str, ...] = ("skill",),
+    judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
@@ -556,7 +559,10 @@ def optimize_from_cli_request(
         }
 
     if apply_policy == "auto_verified" and evaluation_backend is None:
-        evaluation_backend = SkillCandidateOverlayBackend()
+        evaluation_backend = _evaluation_backend_from_judge_config(
+            judge_config,
+            workspace_root=workspace_root,
+        )
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
 
@@ -605,6 +611,39 @@ def optimize_from_cli_request(
     if target_provenance_path is not None:
         summary["target_provenance_path"] = str(target_provenance_path)
     return summary
+
+
+def _evaluation_backend_from_judge_config(
+    judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None,
+    *,
+    workspace_root: str | Path,
+) -> EvaluationBackend:
+    if judge_config is None:
+        return SkillCandidateOverlayBackend()
+    config = (
+        SelfEvolveJudgeConfig.model_validate(judge_config)
+        if isinstance(judge_config, Mapping)
+        else judge_config
+    )
+    if config.mode == "trajectory":
+        return SkillCandidateOverlayBackend()
+    if config.mode == "agent_md":
+        if not config.agent_path:
+            raise ValueError("agent_md self-evolve evaluator requires agent_path")
+        return AWorldTrajectoryEvaluatorBackend(
+            workspace_root=workspace_root,
+            judge_agent=config.agent_path,
+        )
+    if config.mode == "custom_agent":
+        if not config.agent_id:
+            raise ValueError("custom_agent self-evolve evaluator requires agent_id")
+        return AWorldTrajectoryEvaluatorBackend(
+            workspace_root=workspace_root,
+            judge_agent_name=config.agent_id,
+        )
+    if config.mode == "disabled":
+        raise ValueError("auto_verified self-evolve requires an evaluation backend")
+    raise ValueError(f"unsupported judge mode: {config.mode}")
 
 
 def _default_post_apply_evaluator(

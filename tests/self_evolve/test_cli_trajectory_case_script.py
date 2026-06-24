@@ -127,3 +127,70 @@ def test_cli_trajectory_case_script_reports_pass_for_supported_skill_candidate_w
     assert Path(result["artifacts"]["filtered_trajectory_log"]).exists()
     assert Path(result["artifacts"]["json_report"]).exists()
     assert Path(result["artifacts"]["markdown_report"]).exists()
+
+
+def test_cli_trajectory_case_script_can_route_configured_evaluator_agent(
+    tmp_path: Path,
+) -> None:
+    module = _load_script_module()
+    task_id = "task-evaluator"
+    raw_log = tmp_path / "trajectory.log"
+    raw_log.write_text(
+        repr(
+            {
+                "task_id": task_id,
+                "is_sub_task": False,
+                "trajectory": json.dumps(
+                    [
+                        {
+                            "state": {"input": {"content": "workflow task"}},
+                            "action": {"content": "final", "is_agent_finished": "True"},
+                            "reward": {},
+                        }
+                    ]
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: trajectory-judge\n---\nJudge trajectory quality.\n", encoding="utf-8")
+    captured = {}
+
+    def fake_run_cli(command, env, cwd):
+        captured["command"] = command
+        run_dir = tmp_path / ".aworld" / "self_evolve" / "cli-test"
+        run_dir.mkdir(parents=True)
+        report = {
+            "run_id": "cli-test",
+            "status": "succeeded",
+            "target": {"target_type": "skill", "target_id": "workflow-helper"},
+            "candidate_ids": ["candidate"],
+            "selected_candidate_id": "candidate",
+            "baseline_metrics": {"score": 55.0},
+            "candidate_metrics": {"score": 88.0, "evaluator_mode": "aworld_trajectory_evaluator"},
+        }
+        (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"Optimize run submitted.\nStatus: succeeded\nReport: {run_dir / 'report.json'}\n",
+            stderr="",
+        )
+
+    result = module.run_test_case(
+        trajectory_log=raw_log,
+        task_id=task_id,
+        out_dir=tmp_path / "out",
+        workspace_root=tmp_path,
+        evaluator_agent_md=judge_agent,
+        apply_policy="auto_verified",
+        run_cli=fake_run_cli,
+    )
+
+    assert "--judge-agent" in captured["command"]
+    assert str(judge_agent) in captured["command"]
+    assert "--apply" in captured["command"]
+    assert "auto_verified" in captured["command"]
+    assert result["evaluator_agent"]["usage"] == "aworld_trajectory_evaluator"

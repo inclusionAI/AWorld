@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping
 
 TASK_ID_DEFAULT = "task_20260609193335"
 TRAJECTORY_LOG_DEFAULT = "~/Documents/logs/trajectory.log"
-EVALUATOR_AGENT_DEFAULT = "~/Documents/agent.md"
+EVALUATOR_AGENT_DEFAULT: str | None = None
 
 
 RunCli = Callable[[list[str], Mapping[str, str], Path], subprocess.CompletedProcess[str]]
@@ -27,8 +27,11 @@ def run_test_case(
     out_dir: str | Path,
     workspace_root: str | Path,
     evaluator_agent_md: str | Path | None,
+    apply_policy: str = "proposal",
     run_cli: RunCli | None = None,
 ) -> dict[str, Any]:
+    if apply_policy not in {"proposal", "auto_verified"}:
+        raise ValueError("apply_policy must be one of: proposal, auto_verified")
     workspace = Path(workspace_root).resolve()
     output_dir = Path(out_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -48,8 +51,19 @@ def run_test_case(
         "--from-trajectory",
         str(filtered_log),
         "--apply",
-        "proposal",
+        apply_policy,
     ]
+    evaluator_agent_path = (
+        Path(evaluator_agent_md).expanduser()
+        if evaluator_agent_md is not None
+        else None
+    )
+    if (
+        apply_policy == "auto_verified"
+        and evaluator_agent_path is not None
+        and evaluator_agent_path.exists()
+    ):
+        command.extend(["--judge-agent", str(evaluator_agent_path)])
     env = dict(os.environ)
     pythonpath_parts = [
         str(workspace / "aworld-cli" / "src"),
@@ -77,7 +91,16 @@ def run_test_case(
         report = _load_json_if_exists(report_path)
         target_selection = _load_json_if_exists(target_selection_path)
 
-    evaluator = _evaluator_agent_summary(evaluator_agent_md)
+    evaluator = _evaluator_agent_summary(
+        evaluator_agent_md,
+        usage=(
+            "aworld_trajectory_evaluator"
+            if apply_policy == "auto_verified"
+            and evaluator_agent_path is not None
+            and evaluator_agent_path.exists()
+            else "rubric_reference"
+        ),
+    )
     self_evolve_summary = _self_evolve_summary(
         completed=completed,
         command=command,
@@ -90,6 +113,7 @@ def run_test_case(
         self_evolve=self_evolve_summary,
         report=report,
         target_selection=target_selection,
+        apply_policy=apply_policy,
     )
 
     result: dict[str, Any] = {
@@ -283,6 +307,7 @@ def _evaluate_design_goal(
     self_evolve: Mapping[str, Any],
     report: Mapping[str, Any] | None,
     target_selection: Mapping[str, Any] | None,
+    apply_policy: str,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     target = self_evolve.get("target") if isinstance(self_evolve.get("target"), Mapping) else {}
@@ -323,12 +348,20 @@ def _evaluate_design_goal(
         "reasons": reasons,
         "notes": [
             "This test intentionally uses aworld-cli optimize without --target so the framework owns target inference.",
-            "Proposal-only mode is used; the script does not mutate runtime behavior.",
+            (
+                "Proposal-only mode is used; the script does not mutate runtime behavior."
+                if apply_policy == "proposal"
+                else "auto_verified mode is used; framework gates decide whether to mutate allowlisted targets."
+            ),
         ],
     }
 
 
-def _evaluator_agent_summary(path_value: str | Path | None) -> dict[str, Any]:
+def _evaluator_agent_summary(
+    path_value: str | Path | None,
+    *,
+    usage: str = "rubric_reference",
+) -> dict[str, Any]:
     if path_value is None:
         return {"path": None, "exists": False}
     path = Path(path_value).expanduser()
@@ -342,7 +375,7 @@ def _evaluator_agent_summary(path_value: str | Path | None) -> dict[str, Any]:
         "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
         "name": frontmatter.get("name"),
         "description": frontmatter.get("description"),
-        "usage": "rubric_reference",
+        "usage": usage,
     }
 
 
@@ -393,7 +426,10 @@ def _bounded_text(value: Any, *, limit: int) -> str:
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _render_markdown_report(result: Mapping[str, Any]) -> str:
@@ -442,6 +478,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--workspace-root", default=".")
     parser.add_argument("--evaluator-agent-md", default=EVALUATOR_AGENT_DEFAULT)
+    parser.add_argument("--apply", choices=("proposal", "auto_verified"), default="proposal")
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -458,6 +495,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir=args.out_dir,
         workspace_root=args.workspace_root,
         evaluator_agent_md=args.evaluator_agent_md,
+        apply_policy=args.apply,
     )
     print(json.dumps(result["evaluation"], ensure_ascii=False, indent=2))
     print(f"JSON report: {result['artifacts']['json_report']}")

@@ -176,6 +176,7 @@ def _run_framework_job(payload: Mapping[str, Any]) -> None:
         max_run_tokens=config.max_run_tokens,
         min_score_delta=config.min_improvement,
         auto_apply_target_types=config.auto_apply_target_types,
+        judge_config=config.judge_config,
     )
 
 

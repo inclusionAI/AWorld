@@ -36,12 +36,21 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--batch-config", type=str, dest="batch_config")
         parser.add_argument("--iterations", type=int)
         parser.add_argument("--apply", type=str, default="proposal")
+        parser.add_argument("--judge-agent", type=str, dest="judge_agent")
+        parser.add_argument("--judge-agent-name", type=str, dest="judge_agent_name")
 
     def run(self, args, context) -> int:
         apply_policy = getattr(args, "apply", "proposal") or "proposal"
         if apply_policy not in SUPPORTED_APPLY_POLICIES:
             print("Optimize error: --apply must be one of proposal, auto_verified")
             return 0
+        judge_selectors = [
+            getattr(args, "judge_agent", None),
+            getattr(args, "judge_agent_name", None),
+        ]
+        if sum(1 for value in judge_selectors if value) > 1:
+            print("Optimize error: use only one of --judge-agent or --judge-agent-name")
+            return 1
 
         target = getattr(args, "target", None)
         try:
@@ -57,6 +66,8 @@ class OptimizeTopLevelCommand:
                 apply=apply_policy,
                 infer_target=target is None,
                 workspace_root=context.cwd,
+                judge_agent=getattr(args, "judge_agent", None),
+                judge_agent_name=getattr(args, "judge_agent_name", None),
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
             print(f"Optimize error: {exc}")
@@ -100,9 +111,15 @@ def run_optimize_cli(
     apply: str,
     infer_target: bool,
     workspace_root: str,
+    judge_agent: str | None = None,
+    judge_agent_name: str | None = None,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
+    judge_config = _judge_config_from_cli(
+        judge_agent=judge_agent,
+        judge_agent_name=judge_agent_name,
+    )
     return self_evolve.optimize_from_cli_request(
         agent=agent,
         task=task,
@@ -115,7 +132,26 @@ def run_optimize_cli(
         apply_policy=apply,
         infer_target=infer_target,
         workspace_root=workspace_root,
+        judge_config=judge_config,
     )
+
+
+def _judge_config_from_cli(
+    *,
+    judge_agent: str | None,
+    judge_agent_name: str | None,
+) -> Any:
+    if judge_agent and judge_agent_name:
+        raise ValueError("use only one of --judge-agent or --judge-agent-name")
+    if judge_agent:
+        from aworld.config.conf import SelfEvolveJudgeConfig
+
+        return SelfEvolveJudgeConfig(mode="agent_md", agent_path=judge_agent)
+    if judge_agent_name:
+        from aworld.config.conf import SelfEvolveJudgeConfig
+
+        return SelfEvolveJudgeConfig(mode="custom_agent", agent_id=judge_agent_name)
+    return None
 
 
 def _read_report_value(report: Any, key: str) -> Any:
