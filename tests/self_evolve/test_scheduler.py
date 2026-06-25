@@ -207,7 +207,7 @@ def test_scheduler_policy_rejects_duplicate_pending_and_cooldown(tmp_path) -> No
             task_id="task-2",
             workspace_root=str(tmp_path),
             trajectory=_trajectory(),
-            self_evolve_config=SelfEvolveConfig(mode="shadow"),
+            self_evolve_config=SelfEvolveConfig(mode="shadow", replay_enabled=False),
         )
     )
     assert cooldown.accepted is False
@@ -235,7 +235,7 @@ def test_scheduler_retries_transient_write_failure_before_returning(tmp_path) ->
             task_id="task-1",
             workspace_root=str(tmp_path),
             trajectory=_trajectory(),
-            self_evolve_config=SelfEvolveConfig(mode="shadow"),
+            self_evolve_config=SelfEvolveConfig(mode="shadow", replay_enabled=False),
         )
     )
 
@@ -251,7 +251,7 @@ def test_job_worker_marks_failure_without_raising_to_main_path(tmp_path) -> None
             task_id="task-worker",
             workspace_root=str(tmp_path),
             trajectory=_trajectory(),
-            self_evolve_config=SelfEvolveConfig(mode="shadow"),
+            self_evolve_config=SelfEvolveConfig(mode="shadow", replay_enabled=False),
         )
     )
     assert result.job_path is not None
@@ -294,7 +294,7 @@ def test_job_worker_default_run_job_drains_pending_job_through_framework(tmp_pat
                     "reward": {"status": "failed"},
                 },
             ),
-            self_evolve_config=SelfEvolveConfig(mode="shadow"),
+            self_evolve_config=SelfEvolveConfig(mode="shadow", replay_enabled=False),
         )
     )
     assert result.job_path is not None
@@ -312,7 +312,34 @@ def test_job_worker_default_run_job_drains_pending_job_through_framework(tmp_pat
     assert report["target"]["target_id"] == "agent-browser"
 
 
-def test_online_job_worker_rejects_auto_verified_skill_candidate_without_replay_backend(tmp_path) -> None:
+def test_online_job_worker_rejects_auto_verified_skill_candidate_on_replay_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class FakeReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            from aworld.self_evolve.replay import CandidateReplayResult, ReplayVariantResult
+
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "old"}}],
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="failed",
+                    trajectory=[],
+                    failure={"reason": "fake replay failure"},
+                ),
+            )
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.runner.AWorldCliCandidateReplayBackend",
+        FakeReplayBackend,
+    )
+
     skill_path = tmp_path / "aworld-skills" / "workflow-helper" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     original = (
@@ -410,6 +437,7 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     drained = SelfEvolveJobWorker(workspace_root=tmp_path).drain_pending_jobs()
 
     assert drained == 1
+    assert captured["agent"] == "agent"
     assert captured["judge_config"].mode == "agent_md"
     assert captured["judge_config"].agent_path == str(judge_agent)
     assert captured["replay_enabled"] is True

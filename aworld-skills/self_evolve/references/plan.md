@@ -88,6 +88,8 @@ optimizer, evaluator, scheduler, gate system, or artifact store.
   diagnostics.
 - `aworld.self_evolve.datasets`: dataset and split construction.
 - `aworld.self_evolve.evaluation`: baseline/candidate evaluation and confidence.
+- `aworld.self_evolve.replay`: candidate skill overlays, baseline/candidate
+  runtime replay, replay artifacts, and structured replay failures.
 - `aworld.self_evolve.gates`: safety and regression gates.
 - `aworld.self_evolve.scheduler`: post-run job persistence and draining.
 - `.aworld/self_evolve/`: durable run artifacts.
@@ -103,11 +105,15 @@ passed:
 - target provenance is trusted enough for the requested policy
 - budget preflight passes
 - baseline and candidate use comparable evaluation data
+- candidate replay produces trajectory evidence when verified apply is
+  requested for skill targets
 - held-out case count is sufficient for verified claims
 - deterministic or objective verification signal is present
 - judge-only improvement is downgraded to limited confidence
 - global regression benchmark passes when configured
 - post-apply re-evaluation accepts the candidate
+- post-apply runtime loader verification proves subsequent runs can load the
+  applied real skill, not just that the file contents match
 
 If a required gate is missing, failed, or unavailable, produce a proposal,
 diagnostic, or rejection. Do not report verified improvement.
@@ -153,8 +159,8 @@ async def run(runner: SelfEvolveRunner, target, dataset, trace_packs):
 1. **Phase 1a - available**: skill-text proposals, explicit target runs,
    target inference diagnostics, durable artifacts, and protected-path gates.
 2. **Phase 1b - conditional**: verified apply for allowlisted skill targets
-   when evaluation, held-out, deterministic signal, budget, and post-apply
-   checks are present.
+   when candidate replay, evaluation, held-out, deterministic signal, budget,
+   and post-apply runtime-loader checks are present.
 3. **Phase 2 - roadmap**: tool descriptions and prompt sections after their
    target adapters are implemented and covered end to end.
 4. **Phase 3 - roadmap**: allowlisted config knobs and workspace artifacts with
@@ -171,4 +177,7 @@ async def run(runner: SelfEvolveRunner, target, dataset, trace_packs):
 - Do not use `app_evaluator` or `self_evolve` as default mutation targets.
 - Do not claim CLI fallback output is a real improvement when it preserved the
   baseline.
+- Do not mutate environment prerequisites such as credentials, browser/CDP
+  state, local services, or model configuration. Missing prerequisites are
+  replay failures or operator setup issues, not self-evolve targets.
 - Do not import external project implementation code into AWorld.

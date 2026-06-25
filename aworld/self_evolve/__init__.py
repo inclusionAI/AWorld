@@ -71,9 +71,13 @@ from aworld.self_evolve.optimizers import (
 )
 from aworld.self_evolve.overlay import SkillOverlayArtifact, create_candidate_skill_overlay
 from aworld.self_evolve.replay import (
+    AWorldCliCandidateReplayBackend,
+    AWorldCliReplayExecutor,
     CandidateReplayBackend,
     CandidateReplayRequest,
     CandidateReplayResult,
+    ReplayExecutionRequest,
+    ReplayExecutionResult,
     ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
@@ -112,6 +116,8 @@ from aworld.self_evolve.types import (
 __all__ = [
     "AgentMdJudgeBackend",
     "AWorldTrajectoryEvaluatorBackend",
+    "AWorldCliCandidateReplayBackend",
+    "AWorldCliReplayExecutor",
     "BudgetGate",
     "CandidateOptimizer",
     "CandidateReplayBackend",
@@ -150,6 +156,8 @@ __all__ = [
     "ProtectedPathGate",
     "RequiredVerificationGate",
     "ReplayCostEstimate",
+    "ReplayExecutionRequest",
+    "ReplayExecutionResult",
     "ReplayVariantResult",
     "SelfEvolveRunner",
     "SelfEvolveRunnerResult",

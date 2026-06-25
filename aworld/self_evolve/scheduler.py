@@ -169,6 +169,7 @@ def _run_framework_job(payload: Mapping[str, Any]) -> None:
         raise ValueError("self-evolve job payload requires trajectory list")
     optimize_from_cli_request(
         workspace_root=str(payload.get("workspace_root") or "."),
+        agent=str(payload.get("agent_id")) if payload.get("agent_id") else None,
         task=str(payload.get("task_id") or "self-evolve-job"),
         current_trajectory=tuple(
             item for item in trajectory if isinstance(item, Mapping)

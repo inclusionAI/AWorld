@@ -538,6 +538,7 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
                         "command_case_count": 1,
                         "command_pass_count": 1,
                         "global_regression_passed": True,
+                        "report_path": str(tmp_path / "baseline-eval-report.json"),
                     },
                     dataset_split=request.dataset_split,
                 )
@@ -552,6 +553,7 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
                     "command_case_count": 1,
                     "command_pass_count": 1,
                     "global_regression_passed": True,
+                    "report_path": str(tmp_path / "candidate-eval-report.json"),
                 },
                 dataset_split=request.dataset_split,
             )
@@ -589,6 +591,8 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-replay-eval" / "report.json").read_text())
     assert report["replay"]["candidate"]["status"] == "succeeded"
     assert report["replay"]["overlay_skill_root"] == replay_backend.requests[0].overlay_skill_root
+    assert "/run-replay-eval/replay/llm-mutator-" in report["replay_path"]
+    assert str(tmp_path / "candidate-eval-report.json") in report["evaluator_report_paths"]
     assert any(
         gate["gate_name"] == "candidate_replay" and gate["passed"] is True
         for gate in report["gate_results"]
@@ -1052,3 +1056,69 @@ def test_optimize_cli_request_records_explicit_target_trajectory_evidence(tmp_pa
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["target_selection"]["failure_category"] == "explicit_target"
     assert report["target_selection"]["evidence_step_ids"] == ["explicit-task:step-1"]
+
+
+def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from aworld.self_evolve import optimize_from_cli_request
+
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Use demo skill for this task."}},
+            "action": {"content": "demo failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    created = {"count": 0}
+    replay_agents = []
+
+    class FakeDefaultReplayBackend:
+        def __init__(self):
+            created["count"] += 1
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            from aworld.self_evolve.replay import CandidateReplayResult, ReplayVariantResult
+
+            replay_agents.append(request.agent)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "old"}}],
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="failed",
+                    trajectory=[],
+                    failure={"reason": "fake replay rejection"},
+                ),
+            )
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.runner.AWorldCliCandidateReplayBackend",
+        FakeDefaultReplayBackend,
+    )
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        agent="Aworld",
+        target="skill:demo",
+        current_trajectory=trajectory,
+        task="default-replay",
+        apply_policy="auto_verified",
+        replay_enabled=True,
+        min_eval_cases=0,
+    )
+
+    assert created["count"] == 1
+    assert replay_agents == ["Aworld"]
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["status"] == "rejected"
+    assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
