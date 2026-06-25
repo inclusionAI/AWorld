@@ -86,7 +86,15 @@ The request should include:
 
 The replay harness should execute the same task through the existing AWorld CLI
 or runtime executor with the overlay skill path injected through a framework
-controlled mechanism. It should produce:
+controlled mechanism. When it uses `aworld-cli run`, it MUST run from the
+original workspace root and inherit the normal process environment so the
+existing `aworld-cli` configuration chain (`.env`, global config, provider
+environment variables) is reused. Replay MUST NOT introduce a separate model
+credential or provider configuration path; only runtime prerequisites such as
+browser/CDP availability may be reported as replay environment context.
+
+The CLI replay path MUST request machine-readable trajectory output from
+`aworld-cli run` instead of scraping human console rendering. It should produce:
 
 - candidate trajectory
 - stdout/stderr or structured runtime logs

@@ -259,55 +259,68 @@ class SelfEvolveRunner:
                 and replay_dataset is None
             )
             if not replay_blocked_verified_apply:
-                baseline_summary, candidate_summary = await evaluate_baseline_and_candidate(
-                    self.evaluation_backend,
-                    dataset=evaluation_dataset,
-                    candidate=selected_candidate,
-                    dataset_split="validation",
-                )
-                score_gate = ScoreImprovementGate(min_delta=self.min_score_delta).evaluate(
-                    baseline=baseline_summary,
-                    candidate=candidate_summary,
-                )
-                cost_latency_gate = CostLatencyRegressionGate(
-                    max_cost_regression_ratio=0.25,
-                    max_latency_regression_ratio=0.5,
-                ).evaluate(baseline=baseline_summary, candidate=candidate_summary)
-                gate_results.extend([score_gate, cost_latency_gate])
-                replay_stability_gate = _replay_stability_gate(
-                    baseline_summary=baseline_summary,
-                    candidate_summary=candidate_summary,
-                    min_score_delta=self.min_score_delta,
-                    replay_stability_margin=self.replay_stability_margin,
-                    replay_used=replay_dataset is not None,
-                )
-                if replay_stability_gate is not None:
-                    gate_results.append(replay_stability_gate)
-                if apply_policy == "auto_verified":
-                    held_out_summary = await self.evaluation_backend.evaluate_variant(
-                        EvaluationRequest(
-                            variant_id=selected_candidate.candidate_id,
-                            candidate=selected_candidate,
-                            dataset=evaluation_dataset,
-                            dataset_split="held_out",
-                        )
-                    )
-                    confidence = determine_candidate_confidence(
+                try:
+                    baseline_summary, candidate_summary = await evaluate_baseline_and_candidate(
+                        self.evaluation_backend,
                         dataset=evaluation_dataset,
-                        validation_summary=candidate_summary,
-                        held_out_summary=held_out_summary,
-                        min_eval_cases=self.min_eval_cases,
+                        candidate=selected_candidate,
+                        dataset_split="validation",
                     )
-                    gate_results.extend(
-                        [
-                            RequiredVerificationGate().evaluate(held_out_summary),
-                            HeldOutVerificationGate(min_eval_cases=self.min_eval_cases).evaluate(confidence),
-                            JudgeOnlySignalGate().evaluate(confidence),
-                            GlobalRegressionBenchmarkGate().evaluate(
-                                selected_candidate,
-                                held_out_summary,
-                            ),
-                        ]
+                    score_gate = ScoreImprovementGate(min_delta=self.min_score_delta).evaluate(
+                        baseline=baseline_summary,
+                        candidate=candidate_summary,
+                    )
+                    cost_latency_gate = CostLatencyRegressionGate(
+                        max_cost_regression_ratio=0.25,
+                        max_latency_regression_ratio=0.5,
+                    ).evaluate(baseline=baseline_summary, candidate=candidate_summary)
+                    gate_results.extend([score_gate, cost_latency_gate])
+                    replay_stability_gate = _replay_stability_gate(
+                        baseline_summary=baseline_summary,
+                        candidate_summary=candidate_summary,
+                        min_score_delta=self.min_score_delta,
+                        replay_stability_margin=self.replay_stability_margin,
+                        replay_used=replay_dataset is not None,
+                    )
+                    if replay_stability_gate is not None:
+                        gate_results.append(replay_stability_gate)
+                    if apply_policy == "auto_verified":
+                        held_out_summary = await self.evaluation_backend.evaluate_variant(
+                            EvaluationRequest(
+                                variant_id=selected_candidate.candidate_id,
+                                candidate=selected_candidate,
+                                dataset=evaluation_dataset,
+                                dataset_split="held_out",
+                            )
+                        )
+                        confidence = determine_candidate_confidence(
+                            dataset=evaluation_dataset,
+                            validation_summary=candidate_summary,
+                            held_out_summary=held_out_summary,
+                            min_eval_cases=self.min_eval_cases,
+                        )
+                        gate_results.extend(
+                            [
+                                RequiredVerificationGate().evaluate(held_out_summary),
+                                HeldOutVerificationGate(min_eval_cases=self.min_eval_cases).evaluate(confidence),
+                                JudgeOnlySignalGate().evaluate(confidence),
+                                GlobalRegressionBenchmarkGate().evaluate(
+                                    selected_candidate,
+                                    held_out_summary,
+                                ),
+                            ]
+                        )
+                except Exception as exc:
+                    gate_results.append(
+                        GateResult(
+                            gate_name="evaluation",
+                            passed=False,
+                            reason="evaluation backend failed",
+                            details={
+                                "type": type(exc).__name__,
+                                "reason": str(exc),
+                            },
+                        )
                     )
         elif apply_policy == "auto_verified" and selected_candidate is not None:
             gate_results.append(

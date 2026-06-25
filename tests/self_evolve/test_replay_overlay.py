@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,8 +11,10 @@ from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.overlay import cleanup_self_evolve_overlays
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
+    AWorldCliReplayExecutor,
     CandidateReplayRequest,
     CandidateReplayResult,
+    ReplayExecutionRequest,
     ReplayExecutionResult,
     ReplayVariantResult,
     build_paired_replay_dataset,
@@ -316,6 +320,54 @@ async def test_aworld_cli_candidate_replay_backend_runs_baseline_and_candidate_w
     assert (replay_dir / "request.json").exists()
     assert (replay_dir / "baseline" / "stdout.txt").read_text(encoding="utf-8") == "baseline stdout"
     assert (replay_dir / "cand-1" / "metrics.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_without_custom_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {"input": {"content": "Replay this task"}},
+            "action": {"content": "Replay completed.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="human output\n" + json.dumps({"trajectory": trajectory}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            agent="Aworld",
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.trajectory == trajectory
+    assert "--emit-trajectory" in captured["command"]
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert "env" not in captured["kwargs"]
 
 
 @pytest.mark.asyncio

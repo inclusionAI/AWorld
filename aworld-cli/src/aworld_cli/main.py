@@ -14,6 +14,41 @@ from typing import Optional
 
 from aworld.plugins.discovery import discover_plugins
 
+
+def _trajectory_from_direct_run_summary(
+    summary: dict | None,
+    *,
+    prompt: str,
+    agent_name: str,
+) -> list[dict]:
+    if not isinstance(summary, dict):
+        return []
+    trajectory: list[dict] = []
+    for index, result in enumerate(summary.get("results") or [], start=1):
+        if not isinstance(result, dict):
+            continue
+        response = result.get("response")
+        content = response if isinstance(response, str) else str(response)
+        success = bool(result.get("success"))
+        completed = bool(result.get("completed"))
+        trajectory.append(
+            {
+                "meta": {
+                    "step": int(result.get("iteration") or index),
+                    "agent_id": agent_name,
+                    "pre_agent": "runner",
+                },
+                "state": {"input": {"content": prompt}},
+                "action": {
+                    "content": content,
+                    "is_agent_finished": "True" if completed else "False",
+                    "tool_calls": [],
+                },
+                "reward": {"status": "ok" if success else "failed"},
+            }
+        )
+    return trajectory
+
 # Suppress DEBUG/INFO logs from third-party libraries (asyncio, mcp, etc.)
 # Only show WARNING and above for non-aworld modules
 logging.basicConfig(
@@ -995,7 +1030,7 @@ async def _run_direct_mode(
     continuous_executor = ContinuousExecutor(agent_executor, console=console)
     
     # Run task execution
-    await continuous_executor.run_continuous(
+    return await continuous_executor.run_continuous(
         prompt=multimodal_prompt,
         agent_name=agent_name,
         requested_skill_names=requested_skill_names,

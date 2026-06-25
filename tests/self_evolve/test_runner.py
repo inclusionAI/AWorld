@@ -859,6 +859,72 @@ async def test_runner_orchestrates_baseline_candidate_evaluation_and_gates(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_runner_rejects_auto_verified_candidate_when_evaluation_backend_fails(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="eval-failure-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="eval-failure-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nBetter guidance.\n",
+            "rationale": "Improve guidance.",
+        }
+
+    class BrokenBackend:
+        async def evaluate_variant(self, request):
+            raise ValueError("judge response does not contain a valid JSON object")
+
+    async def post_apply(candidate):
+        pytest.fail("evaluation failure must block auto apply")
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=BrokenBackend(),
+        post_apply_evaluator=post_apply,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-eval-failure",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-eval-failure" / "report.json").read_text())
+    assert any(
+        gate["gate_name"] == "evaluation"
+        and gate["passed"] is False
+        and gate["details"]["type"] == "ValueError"
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_runner_stops_when_duplicate_pending_proposal_exists(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)

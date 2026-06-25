@@ -62,6 +62,18 @@ task using the candidate skill overlay and captures a candidate trajectory.
   token usage, and cost when available
 - **AND** it MUST link replay artifacts from the self-evolve report
 
+#### Scenario: CLI replay reuses normal runtime configuration
+
+- **WHEN** AWorld replays a candidate through `aworld-cli run`
+- **THEN** the replay command MUST execute from the original workspace root
+- **AND** it MUST inherit the normal process environment
+- **AND** it MUST rely on the existing `aworld-cli run` configuration chain
+  such as `.env`, global config, and provider environment variables
+- **AND** it MUST NOT require a separate self-evolve model credential
+  configuration
+- **AND** it MUST request machine-readable trajectory output from the CLI
+  rather than parsing human console rendering
+
 #### Scenario: Candidate task rerun cannot execute
 
 - **WHEN** replay prerequisites are missing or the runtime fails before a

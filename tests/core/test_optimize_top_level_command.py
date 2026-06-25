@@ -426,6 +426,43 @@ def test_run_optimize_cli_leaves_target_inference_to_framework(
     assert calls["from_trajectory"] == "trajectory.log"
 
 
+def test_run_optimize_cli_enables_framework_replay_for_auto_verified(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent="Aworld",
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory="trajectory.log",
+        batch_config=None,
+        iterations=None,
+        apply="auto_verified",
+        infer_target=True,
+        workspace_root=str(tmp_path),
+        judge_agent_name="JudgeTeam",
+    )
+
+    assert calls["replay_enabled"] is True
+
+
 def test_render_optimize_summary_includes_status_and_target_selection_path() -> None:
     from aworld_cli.top_level_commands.optimize_cmd import render_optimize_summary
 
