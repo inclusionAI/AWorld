@@ -7,11 +7,19 @@ import pytest
 
 from aworld.self_evolve.datasets import SelfEvolveEvalSourceConfig, build_dataset_from_source
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
-from aworld.self_evolve.runner import SelfEvolveRunner, optimize_explicit_target
+from aworld.self_evolve.replay import (
+    CandidateReplayResult,
+    ReplayVariantResult,
+)
+from aworld.self_evolve.runner import (
+    SelfEvolveRunner,
+    _default_post_apply_evaluator,
+    optimize_explicit_target,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
-from aworld.self_evolve.types import EvaluationSummary
+from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
 
 
 def _write_trajectory_log(path: Path, records: list[dict]) -> None:
@@ -179,6 +187,12 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         "held_out_verification",
         "global_regression_benchmark",
     }
+    apply_dir = store.run_path("run-auto-verified") / "apply"
+    assert (apply_dir / f"{result.selected_candidate.candidate_id}.backup.md").read_text(encoding="utf-8") == original_content
+    journal = json.loads((apply_dir / f"{result.selected_candidate.candidate_id}.journal.json").read_text(encoding="utf-8"))
+    assert journal["candidate_id"] == result.selected_candidate.candidate_id
+    assert journal["target"]["target_id"] == "demo"
+    assert journal["backup_path"].endswith(".backup.md")
 
 
 @pytest.mark.asyncio
@@ -362,6 +376,252 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
     report = json.loads((store.run_path("run-auto-rollback") / "report.json").read_text(encoding="utf-8"))
     assert report["post_apply"]["status"] == "rolled_back"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_verified_rejects_skill_candidate_when_replay_backend_missing(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="replay-required")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="replay-required",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+            "rationale": "Candidate requires replay.",
+        }
+
+    async def post_apply(candidate):
+        pytest.fail("auto_verified must not apply when replay backend is missing")
+
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 1.0 if request.candidate else 0.1,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=VerifiedBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=None,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-replay-required",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-replay-required" / "report.json").read_text())
+    assert any(
+        gate["gate_name"] == "candidate_replay"
+        and gate["passed"] is False
+        and gate["reason"] == "auto_verified skill apply requires candidate replay backend"
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    helper_path = tmp_path / "skills" / "helper" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    helper_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    helper_path.write_text("---\nname: helper\n---\n# Helper\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="replay-task")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="replay-task",
+    )
+
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nReplay verified guidance.\n"
+
+    async def mutate(prompt: str) -> dict:
+        return {"content": candidate_content, "rationale": "Replay verified candidate."}
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True, "deterministic_signal": True},
+            dataset_split="post_apply",
+        )
+
+    class FakeReplayBackend:
+        def __init__(self):
+            self.requests = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[
+                        {"state": {"input": request.task_input}, "action": {"content": "old"}}
+                    ],
+                    metrics={"score": 0.4, "latency_ms": 100.0, "cost_usd": 1.0},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[
+                        {"state": {"input": request.task_input}, "action": {"content": "new"}}
+                    ],
+                    metrics={"score": 0.9, "latency_ms": 100.0, "cost_usd": 1.0},
+                ),
+            )
+
+    class PairedDatasetBackend:
+        def __init__(self):
+            self.requests = []
+
+        async def evaluate_variant(self, request):
+            self.requests.append(request)
+            case = request.dataset.cases[0]
+            variants = case.metadata["variant_trajectories"]
+            if request.candidate is None:
+                assert variants["baseline"][0]["action"]["content"] == "old"
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={
+                        "score": 0.4,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                        "deterministic_signal": True,
+                        "command_case_count": 1,
+                        "command_pass_count": 1,
+                        "global_regression_passed": True,
+                    },
+                    dataset_split=request.dataset_split,
+                )
+            assert variants[request.candidate.candidate_id][0]["action"]["content"] == "new"
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = FakeReplayBackend()
+    evaluation_backend = PairedDatasetBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=evaluation_backend,
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_stability_margin=0.1,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-replay-eval",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert skill_path.read_text(encoding="utf-8") == candidate_content
+    assert replay_backend.requests
+    assert Path(replay_backend.requests[0].overlay_skill_root, "demo", "SKILL.md").read_text(encoding="utf-8") == candidate_content
+    assert Path(replay_backend.requests[0].overlay_skill_root, "helper", "SKILL.md").exists()
+    assert all(
+        request.dataset.cases[0].metadata["variant_trajectories"]
+        for request in evaluation_backend.requests
+    )
+    report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-replay-eval" / "report.json").read_text())
+    assert report["replay"]["candidate"]["status"] == "succeeded"
+    assert report["replay"]["overlay_skill_root"] == replay_backend.requests[0].overlay_skill_root
+    assert any(
+        gate["gate_name"] == "candidate_replay" and gate["passed"] is True
+        for gate in report["gate_results"]
+    )
+    assert any(
+        gate["gate_name"] == "replay_stability_margin"
+        and gate["passed"] is True
+        and gate["details"]["delta"] == 0.5
+        for gate in report["gate_results"]
+    )
+
+
+def test_default_post_apply_evaluator_requires_runtime_loader_match(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nApplied guidance.\n"
+    skill_path.write_text(candidate_content, encoding="utf-8")
+    target = SkillTextTarget(skill_path, target_id="missing", allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="cand-1",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="missing", path=str(skill_path)),
+        content=candidate_content,
+        rationale="loader mismatch",
+    )
+
+    assert target.load_current_content() == candidate_content
+
+    summary = _default_post_apply_evaluator(target)(candidate)
+
+    assert summary.metrics["post_apply_passed"] is False
+    assert summary.metrics["content_matches_target_file"] is True
+    assert summary.metrics["runtime_skill_found"] is False
+    assert summary.metrics["evaluator_mode"] == "post_apply_runtime_loader"
 
 
 @pytest.mark.asyncio

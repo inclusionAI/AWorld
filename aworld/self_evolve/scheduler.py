@@ -151,6 +151,10 @@ class SelfEvolveJobWorker:
         return drained
 
 
+def drain_pending_self_evolve_jobs(*, workspace_root: str | Path) -> int:
+    return SelfEvolveJobWorker(workspace_root=workspace_root).drain_pending_jobs()
+
+
 def _run_framework_job(payload: Mapping[str, Any]) -> None:
     from aworld.self_evolve.runner import optimize_from_cli_request
 
@@ -177,6 +181,13 @@ def _run_framework_job(payload: Mapping[str, Any]) -> None:
         min_score_delta=config.min_improvement,
         auto_apply_target_types=config.auto_apply_target_types,
         judge_config=config.judge_config,
+        replay_enabled=config.replay_enabled,
+        replay_timeout_seconds=config.replay_timeout_seconds,
+        replay_max_steps=config.replay_max_steps,
+        replay_candidate_limit=config.replay_candidate_limit,
+        baseline_replay_repetitions=config.baseline_replay_repetitions,
+        candidate_replay_repetitions=config.candidate_replay_repetitions,
+        replay_stability_margin=config.replay_stability_margin,
     )
 
 

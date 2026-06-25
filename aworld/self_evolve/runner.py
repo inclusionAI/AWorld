@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 from dataclasses import dataclass
 from typing import Callable, Any
 from pathlib import Path
@@ -47,7 +48,14 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.replay import (
+    CandidateReplayBackend,
+    CandidateReplayResult,
+    build_paired_replay_dataset,
+    build_replay_request,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SelfEvolveTarget, SkillTextTarget
 from aworld.self_evolve.trace_pack import TracePack
@@ -60,6 +68,7 @@ from aworld.self_evolve.types import (
     SelfEvolveTargetRef,
     to_json_dict,
 )
+from aworld.skills.compat_provider import build_compat_registry
 
 
 @dataclass(frozen=True)
@@ -83,6 +92,14 @@ class SelfEvolveRunner:
         judge_repetitions: int = 3,
         max_run_tokens: int = 500_000,
         auto_apply_target_types: tuple[str, ...] = ("skill",),
+        replay_enabled: bool = False,
+        candidate_replay_backend: CandidateReplayBackend | None = None,
+        replay_timeout_seconds: int = 120,
+        replay_max_steps: int | None = None,
+        replay_candidate_limit: int = 1,
+        baseline_replay_repetitions: int = 1,
+        candidate_replay_repetitions: int = 1,
+        replay_stability_margin: float = 0.0,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -95,6 +112,14 @@ class SelfEvolveRunner:
         self.judge_repetitions = judge_repetitions
         self.max_run_tokens = max_run_tokens
         self.auto_apply_target_types = tuple(auto_apply_target_types)
+        self.replay_enabled = replay_enabled
+        self.candidate_replay_backend = candidate_replay_backend
+        self.replay_timeout_seconds = replay_timeout_seconds
+        self.replay_max_steps = replay_max_steps
+        self.replay_candidate_limit = replay_candidate_limit
+        self.baseline_replay_repetitions = baseline_replay_repetitions
+        self.candidate_replay_repetitions = candidate_replay_repetitions
+        self.replay_stability_margin = replay_stability_margin
 
     async def run_explicit_target(
         self,
@@ -177,6 +202,8 @@ class SelfEvolveRunner:
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
         held_out_summary: EvaluationSummary | None = None
+        replay_result: CandidateReplayResult | None = None
+        replay_dataset: SelfEvolveDataset | None = None
         gate_results = []
         if selected_candidate is not None:
             current_content = target.load_current_content()
@@ -195,52 +222,82 @@ class SelfEvolveRunner:
                         dataset=dataset,
                         candidate_count=len(optimizer_result.candidates),
                         judge_repetitions=self.judge_repetitions,
+                        baseline_repetitions=self.baseline_replay_repetitions,
+                        candidate_repetitions=self.candidate_replay_repetitions,
+                        replay_candidate_limit=self.replay_candidate_limit,
                         max_run_tokens=self.max_run_tokens,
                     )
                 )
             )
-        if self.evaluation_backend is not None and selected_candidate is not None:
-            baseline_summary, candidate_summary = await evaluate_baseline_and_candidate(
-                self.evaluation_backend,
+            replay_result, replay_dataset, replay_gate = await self._replay_selected_candidate(
+                run_id=run_id,
+                target=target,
                 dataset=dataset,
-                candidate=selected_candidate,
-                dataset_split="validation",
+                selected_candidate=selected_candidate,
+                apply_policy=apply_policy,
             )
-            score_gate = ScoreImprovementGate(min_delta=self.min_score_delta).evaluate(
-                baseline=baseline_summary,
-                candidate=candidate_summary,
+            if replay_gate is not None:
+                gate_results.append(replay_gate)
+
+        evaluation_dataset = replay_dataset or dataset
+        if self.evaluation_backend is not None and selected_candidate is not None:
+            replay_blocked_verified_apply = (
+                apply_policy == "auto_verified"
+                and self.replay_enabled
+                and selected_candidate.target.target_type == "skill"
+                and replay_dataset is None
             )
-            cost_latency_gate = CostLatencyRegressionGate(
-                max_cost_regression_ratio=0.25,
-                max_latency_regression_ratio=0.5,
-            ).evaluate(baseline=baseline_summary, candidate=candidate_summary)
-            gate_results.extend([score_gate, cost_latency_gate])
-            if apply_policy == "auto_verified":
-                held_out_summary = await self.evaluation_backend.evaluate_variant(
-                    EvaluationRequest(
-                        variant_id=selected_candidate.candidate_id,
-                        candidate=selected_candidate,
-                        dataset=dataset,
-                        dataset_split="held_out",
+            if not replay_blocked_verified_apply:
+                baseline_summary, candidate_summary = await evaluate_baseline_and_candidate(
+                    self.evaluation_backend,
+                    dataset=evaluation_dataset,
+                    candidate=selected_candidate,
+                    dataset_split="validation",
+                )
+                score_gate = ScoreImprovementGate(min_delta=self.min_score_delta).evaluate(
+                    baseline=baseline_summary,
+                    candidate=candidate_summary,
+                )
+                cost_latency_gate = CostLatencyRegressionGate(
+                    max_cost_regression_ratio=0.25,
+                    max_latency_regression_ratio=0.5,
+                ).evaluate(baseline=baseline_summary, candidate=candidate_summary)
+                gate_results.extend([score_gate, cost_latency_gate])
+                replay_stability_gate = _replay_stability_gate(
+                    baseline_summary=baseline_summary,
+                    candidate_summary=candidate_summary,
+                    min_score_delta=self.min_score_delta,
+                    replay_stability_margin=self.replay_stability_margin,
+                    replay_used=replay_dataset is not None,
+                )
+                if replay_stability_gate is not None:
+                    gate_results.append(replay_stability_gate)
+                if apply_policy == "auto_verified":
+                    held_out_summary = await self.evaluation_backend.evaluate_variant(
+                        EvaluationRequest(
+                            variant_id=selected_candidate.candidate_id,
+                            candidate=selected_candidate,
+                            dataset=evaluation_dataset,
+                            dataset_split="held_out",
+                        )
                     )
-                )
-                confidence = determine_candidate_confidence(
-                    dataset=dataset,
-                    validation_summary=candidate_summary,
-                    held_out_summary=held_out_summary,
-                    min_eval_cases=self.min_eval_cases,
-                )
-                gate_results.extend(
-                    [
-                        RequiredVerificationGate().evaluate(held_out_summary),
-                        HeldOutVerificationGate(min_eval_cases=self.min_eval_cases).evaluate(confidence),
-                        JudgeOnlySignalGate().evaluate(confidence),
-                        GlobalRegressionBenchmarkGate().evaluate(
-                            selected_candidate,
-                            held_out_summary,
-                        ),
-                    ]
-                )
+                    confidence = determine_candidate_confidence(
+                        dataset=evaluation_dataset,
+                        validation_summary=candidate_summary,
+                        held_out_summary=held_out_summary,
+                        min_eval_cases=self.min_eval_cases,
+                    )
+                    gate_results.extend(
+                        [
+                            RequiredVerificationGate().evaluate(held_out_summary),
+                            HeldOutVerificationGate(min_eval_cases=self.min_eval_cases).evaluate(confidence),
+                            JudgeOnlySignalGate().evaluate(confidence),
+                            GlobalRegressionBenchmarkGate().evaluate(
+                                selected_candidate,
+                                held_out_summary,
+                            ),
+                        ]
+                    )
         elif apply_policy == "auto_verified" and selected_candidate is not None:
             gate_results.append(
                 GateResult(
@@ -274,7 +331,7 @@ class SelfEvolveRunner:
             if failed_gates:
                 final_status = SelfEvolveRunStatus.REJECTED
             else:
-                post_apply = await self._apply_auto_verified(target, selected_candidate)
+                post_apply = await self._apply_auto_verified(run_id, target, selected_candidate)
                 if post_apply["status"] != "accepted":
                     final_status = SelfEvolveRunStatus.REJECTED
 
@@ -305,6 +362,8 @@ class SelfEvolveRunner:
             report["candidate_metrics"] = dict(candidate_summary.metrics)
         if held_out_summary is not None:
             report["held_out_metrics"] = dict(held_out_summary.metrics)
+        if replay_result is not None:
+            report["replay"] = _replay_report(replay_result)
         if gate_results:
             report["gate_results"] = [
                 {
@@ -330,13 +389,104 @@ class SelfEvolveRunner:
         self.store.create_run(completed_run)
         return SelfEvolveRunnerResult(run=completed_run, selected_candidate=selected_candidate)
 
+    async def _replay_selected_candidate(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+        selected_candidate: CandidateVariant,
+        apply_policy: str,
+    ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
+        if not self.replay_enabled or selected_candidate.target.target_type != "skill":
+            return None, None, None
+        if self.candidate_replay_backend is None:
+            if apply_policy != "auto_verified":
+                return None, None, None
+            return (
+                None,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason="auto_verified skill apply requires candidate replay backend",
+                ),
+            )
+        if target.identity.path is None:
+            return (
+                None,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason="skill replay requires target filesystem path",
+                ),
+            )
+
+        overlay = create_candidate_skill_overlay(
+            workspace_root=self.store.workspace_root,
+            run_id=run_id,
+            candidate=selected_candidate,
+            target_skill_path=target.identity.path,
+        )
+        request = build_replay_request(
+            run_id=run_id,
+            workspace_root=self.store.workspace_root,
+            target=target.identity,
+            candidate=selected_candidate,
+            overlay_skill_root=overlay.shadow_root,
+            dataset=dataset,
+            timeout_seconds=self.replay_timeout_seconds,
+            max_steps=self.replay_max_steps,
+            max_tokens=self.max_run_tokens,
+        )
+        replay_result = await self.candidate_replay_backend.replay_candidate(
+            request,
+            candidate=selected_candidate,
+            dataset=dataset,
+        )
+        if not replay_result.succeeded:
+            return (
+                replay_result,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason="candidate replay did not produce successful paired trajectories",
+                    details=_replay_gate_details(replay_result),
+                ),
+            )
+        replay_dataset = build_paired_replay_dataset(
+            dataset=dataset,
+            replay_result=replay_result,
+            candidate=selected_candidate,
+        )
+        return (
+            replay_result,
+            replay_dataset,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="candidate replay produced successful paired trajectories",
+                details=_replay_gate_details(replay_result),
+            ),
+        )
+
     async def _apply_auto_verified(
         self,
+        run_id: str,
         target: SelfEvolveTarget,
         candidate: CandidateVariant,
     ) -> dict[str, object]:
         if self.post_apply_evaluator is None:
             raise ValueError("auto_verified apply policy requires post_apply_evaluator")
+        original_content = target.load_current_content()
+        backup_path, journal_path = self.store.write_apply_backup(
+            run_id,
+            candidate=candidate,
+            original_content=original_content,
+            target_path=target.identity.path,
+        )
         target.apply_candidate(candidate.content)
         summary = self.post_apply_evaluator(candidate)
         if inspect.isawaitable(summary):
@@ -348,6 +498,8 @@ class SelfEvolveRunner:
                 "status": "accepted",
                 "metrics": dict(summary.metrics),
                 "dataset_split": summary.dataset_split,
+                "backup_path": str(backup_path),
+                "journal_path": str(journal_path),
             }
 
         target.rollback()
@@ -355,6 +507,8 @@ class SelfEvolveRunner:
             "status": "rolled_back",
             "metrics": dict(summary.metrics),
             "dataset_split": summary.dataset_split,
+            "backup_path": str(backup_path),
+            "journal_path": str(journal_path),
         }
 
 
@@ -415,6 +569,14 @@ def optimize_from_cli_request(
     min_score_delta: float = 0.0,
     auto_apply_target_types: tuple[str, ...] = ("skill",),
     judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None = None,
+    replay_enabled: bool = False,
+    candidate_replay_backend: CandidateReplayBackend | None = None,
+    replay_timeout_seconds: int = 120,
+    replay_max_steps: int | None = None,
+    replay_candidate_limit: int = 1,
+    baseline_replay_repetitions: int = 1,
+    candidate_replay_repetitions: int = 1,
+    replay_stability_margin: float = 0.0,
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
@@ -579,6 +741,14 @@ def optimize_from_cli_request(
             judge_repetitions=judge_repetitions,
             max_run_tokens=max_run_tokens,
             auto_apply_target_types=auto_apply_target_types,
+            replay_enabled=replay_enabled,
+            candidate_replay_backend=candidate_replay_backend,
+            replay_timeout_seconds=replay_timeout_seconds,
+            replay_max_steps=replay_max_steps,
+            replay_candidate_limit=replay_candidate_limit,
+            baseline_replay_repetitions=baseline_replay_repetitions,
+            candidate_replay_repetitions=candidate_replay_repetitions,
+            replay_stability_margin=replay_stability_margin,
         ).run_explicit_target(
             run_id=run_id,
             target=target_adapter,
@@ -657,17 +827,143 @@ def _default_post_apply_evaluator(
     target: SelfEvolveTarget,
 ) -> Callable[[CandidateVariant], EvaluationSummary]:
     def evaluate(candidate: CandidateVariant) -> EvaluationSummary:
+        target_path = Path(target.identity.path).resolve() if target.identity.path else None
+        loaded_skill_path: str | None = None
+        runtime_skill_found = False
+        loaded_from_real_path = False
+        runtime_content_matches = False
+        content_matches_target_file = target.load_current_content() == candidate.content
+
+        if target_path is not None:
+            registry = build_compat_registry(target_path.parent.parent)
+            descriptor = next(
+                (
+                    item
+                    for item in registry.list_descriptors()
+                    if item.skill_name == target.identity.target_id
+                ),
+                None,
+            )
+            if descriptor is not None:
+                runtime_skill_found = True
+                loaded_skill_path = descriptor.skill_file
+                loaded_from_real_path = Path(descriptor.skill_file).resolve() == target_path
+                loaded_content = Path(descriptor.skill_file).read_text(encoding="utf-8")
+                runtime_content_matches = (
+                    _content_fingerprint(loaded_content)
+                    == _content_fingerprint(candidate.content)
+                )
+
+        post_apply_passed = (
+            content_matches_target_file
+            and runtime_skill_found
+            and loaded_from_real_path
+            and runtime_content_matches
+        )
         return EvaluationSummary(
             variant_id=candidate.candidate_id,
             dataset_split="post_apply",
             metrics={
-                "post_apply_passed": target.load_current_content() == candidate.content,
+                "post_apply_passed": post_apply_passed,
                 "deterministic_signal": True,
-                "evaluator_mode": "post_apply_content_match",
+                "evaluator_mode": "post_apply_runtime_loader",
+                "content_matches_target_file": content_matches_target_file,
+                "runtime_skill_found": runtime_skill_found,
+                "loaded_from_real_path": loaded_from_real_path,
+                "runtime_content_matches": runtime_content_matches,
+                "loaded_skill_path": loaded_skill_path,
+                "expected_skill_path": str(target_path) if target_path is not None else None,
             },
         )
 
     return evaluate
+
+
+def _content_fingerprint(content: str) -> str:
+    return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
+    return {
+        "request": {
+            "run_id": replay_result.request.run_id,
+            "task_id": replay_result.request.task_id,
+            "candidate_id": replay_result.request.candidate_id,
+            "overlay_skill_root": replay_result.request.overlay_skill_root,
+            "timeout_seconds": replay_result.request.timeout_seconds,
+            "max_steps": replay_result.request.max_steps,
+            "max_tokens": replay_result.request.max_tokens,
+        },
+        "overlay_skill_root": replay_result.request.overlay_skill_root,
+        "baseline": {
+            "variant_id": replay_result.baseline.variant_id,
+            "status": replay_result.baseline.status,
+            "metrics": dict(replay_result.baseline.metrics),
+            "stdout_path": replay_result.baseline.stdout_path,
+            "stderr_path": replay_result.baseline.stderr_path,
+            "failure": replay_result.baseline.failure,
+        },
+        "candidate": {
+            "variant_id": replay_result.candidate.variant_id,
+            "status": replay_result.candidate.status,
+            "metrics": dict(replay_result.candidate.metrics),
+            "stdout_path": replay_result.candidate.stdout_path,
+            "stderr_path": replay_result.candidate.stderr_path,
+            "failure": replay_result.candidate.failure,
+        },
+    }
+
+
+def _replay_gate_details(replay_result: CandidateReplayResult) -> dict[str, object]:
+    return {
+        "baseline_status": replay_result.baseline.status,
+        "candidate_status": replay_result.candidate.status,
+        "baseline_failure": replay_result.baseline.failure,
+        "candidate_failure": replay_result.candidate.failure,
+    }
+
+
+def _replay_stability_gate(
+    *,
+    baseline_summary: EvaluationSummary,
+    candidate_summary: EvaluationSummary,
+    min_score_delta: float,
+    replay_stability_margin: float,
+    replay_used: bool,
+) -> GateResult | None:
+    if not replay_used or replay_stability_margin <= 0:
+        return None
+    baseline_score = _metric_number(baseline_summary.metrics, "score")
+    candidate_score = _metric_number(candidate_summary.metrics, "score")
+    if baseline_score is None or candidate_score is None:
+        return GateResult(
+            gate_name="replay_stability_margin",
+            passed=False,
+            reason="score metric missing for replay stability margin",
+        )
+    delta = candidate_score - baseline_score
+    required_delta = min_score_delta + replay_stability_margin
+    return GateResult(
+        gate_name="replay_stability_margin",
+        passed=delta >= required_delta,
+        reason=(
+            "replay score delta clears stability margin"
+            if delta >= required_delta
+            else "replay score delta is below stability margin"
+        ),
+        details={
+            "baseline": baseline_score,
+            "candidate": candidate_score,
+            "delta": round(delta, 10),
+            "required_delta": round(required_delta, 10),
+            "replay_stability_margin": replay_stability_margin,
+        },
+    )
+
+
+def _metric_number(metrics: Mapping[str, Any], key: str) -> float | None:
+    value = metrics.get(key)
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def _default_cli_skill_candidate(

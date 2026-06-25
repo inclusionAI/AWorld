@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.overlay import create_candidate_skill_overlay
+from aworld.self_evolve.replay import (
+    CandidateReplayRequest,
+    CandidateReplayResult,
+    ReplayVariantResult,
+    build_paired_replay_dataset,
+)
+from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef
+from aworld.skills.compat_provider import build_compat_registry
+
+
+def _candidate(content: str, candidate_id: str = "cand-1") -> CandidateVariant:
+    return CandidateVariant(
+        candidate_id=candidate_id,
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content=content,
+        rationale="test candidate",
+        target_fingerprint="sha256:old",
+    )
+
+
+def test_candidate_skill_overlay_materializes_shadow_root_without_mutating_real_skill(
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "skills"
+    demo_path = skills_root / "demo" / "SKILL.md"
+    helper_path = skills_root / "helper" / "SKILL.md"
+    demo_path.parent.mkdir(parents=True)
+    helper_path.parent.mkdir(parents=True)
+    original_demo = "---\nname: demo\n---\n# Demo\n\nOriginal.\n"
+    candidate_demo = "---\nname: demo\n---\n# Demo\n\nCandidate.\n"
+    demo_path.write_text(original_demo, encoding="utf-8")
+    helper_path.write_text("---\nname: helper\n---\n# Helper\n", encoding="utf-8")
+
+    overlay = create_candidate_skill_overlay(
+        workspace_root=tmp_path,
+        run_id="run-1",
+        candidate=_candidate(candidate_demo),
+        target_skill_path=demo_path,
+        baseline_skill_roots=(skills_root,),
+    )
+
+    assert overlay.shadow_root == tmp_path / ".aworld" / "self_evolve" / "run-1" / "overlays" / "cand-1" / "skills"
+    assert overlay.candidate_skill_path.read_text(encoding="utf-8") == candidate_demo
+    assert (overlay.shadow_root / "helper" / "SKILL.md").exists()
+    assert demo_path.read_text(encoding="utf-8") == original_demo
+
+    registry = build_compat_registry(overlay.shadow_root)
+    descriptors = {descriptor.skill_name: descriptor for descriptor in registry.list_descriptors()}
+    loaded_demo = registry.load_content(descriptors["demo"].skill_id)
+    loaded_helper = registry.load_content(descriptors["helper"].skill_id)
+    assert "Candidate." in loaded_demo.usage
+    assert "Original." not in loaded_demo.usage
+    assert "Helper" in loaded_helper.usage
+
+
+def test_paired_replay_dataset_maps_baseline_and_candidate_trajectories() -> None:
+    baseline_trajectory = [
+        {"state": {"input": {"content": "task"}}, "action": {"content": "old"}, "reward": {}}
+    ]
+    candidate_trajectory = [
+        {"state": {"input": {"content": "task"}}, "action": {"content": "new"}, "reward": {}}
+    ]
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="task-1",
+                input={"content": "task"},
+                metadata={"baseline_trajectory": baseline_trajectory},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    replay = CandidateReplayResult(
+        request=CandidateReplayRequest(
+            run_id="run-1",
+            task_id="task-1",
+            workspace_root=str(Path("/tmp/workspace")),
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+            candidate_id="cand-1",
+            overlay_skill_root="/tmp/overlay",
+            task_input={"content": "task"},
+        ),
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=baseline_trajectory,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="cand-1",
+            status="succeeded",
+            trajectory=candidate_trajectory,
+            metrics={"latency_ms": 120.0},
+        ),
+    )
+
+    paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=replay,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
+    )
+
+    assert paired.cases[0].metadata["variant_trajectories"]["baseline"] == baseline_trajectory
+    assert paired.cases[0].metadata["variant_trajectories"]["cand-1"] == candidate_trajectory
+    assert paired.cases[0].metadata["replay"]["candidate"]["metrics"]["latency_ms"] == 120.0
+
+
+def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    replay = CandidateReplayResult(
+        request=CandidateReplayRequest(
+            run_id="run-1",
+            task_id="task-1",
+            workspace_root=str(Path("/tmp/workspace")),
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+            candidate_id="cand-1",
+            overlay_skill_root="/tmp/overlay",
+            task_input="task",
+        ),
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="cand-1",
+            status="failed",
+            trajectory=[],
+            failure={"reason": "missing browser"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="candidate replay did not succeed"):
+        build_paired_replay_dataset(
+            dataset=dataset,
+            replay_result=replay,
+            candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
+        )

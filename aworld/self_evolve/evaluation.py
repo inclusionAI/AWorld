@@ -315,6 +315,9 @@ def estimate_replay_cost(
     dataset: SelfEvolveDataset,
     candidate_count: int,
     judge_repetitions: int,
+    baseline_repetitions: int = 1,
+    candidate_repetitions: int = 1,
+    replay_candidate_limit: int | None = None,
     estimated_tokens_per_replay: int = 0,
     estimated_cost_usd_per_replay: float | None = None,
     max_run_tokens: int | None = None,
@@ -324,16 +327,29 @@ def estimate_replay_cost(
         raise ValueError("candidate_count must be non-negative")
     if judge_repetitions < 0:
         raise ValueError("judge_repetitions must be non-negative")
+    if baseline_repetitions <= 0:
+        raise ValueError("baseline_repetitions must be positive")
+    if candidate_repetitions <= 0:
+        raise ValueError("candidate_repetitions must be positive")
+    if replay_candidate_limit is not None and replay_candidate_limit <= 0:
+        raise ValueError("replay_candidate_limit must be positive")
 
     case_count = len(dataset.cases)
-    baseline_replay_count = case_count
-    candidate_replay_count = candidate_count * case_count
+    replayed_candidate_count = (
+        min(candidate_count, replay_candidate_limit)
+        if replay_candidate_limit is not None
+        else candidate_count
+    )
+    baseline_replay_count = case_count * baseline_repetitions
+    candidate_replay_count = replayed_candidate_count * case_count * candidate_repetitions
     total_replay_count = baseline_replay_count + candidate_replay_count
     verification_case_count = sum(
         1 for case in dataset.cases if case.verification_command
     )
-    verification_command_count = verification_case_count * (1 + candidate_count)
-    judge_call_count = case_count * candidate_count * judge_repetitions
+    verification_command_count = verification_case_count * (
+        baseline_repetitions + replayed_candidate_count * candidate_repetitions
+    )
+    judge_call_count = case_count * replayed_candidate_count * judge_repetitions
     estimated_tokens = total_replay_count * estimated_tokens_per_replay
     estimated_cost_usd = (
         total_replay_count * estimated_cost_usd_per_replay
