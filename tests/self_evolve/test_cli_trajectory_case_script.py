@@ -194,3 +194,64 @@ def test_cli_trajectory_case_script_can_route_configured_evaluator_agent(
     assert "--apply" in captured["command"]
     assert "auto_verified" in captured["command"]
     assert result["evaluator_agent"]["usage"] == "aworld_trajectory_evaluator"
+
+
+def test_cli_trajectory_case_script_requires_candidate_replay_for_auto_verified(
+    tmp_path: Path,
+) -> None:
+    module = _load_script_module()
+    task_id = "task-verified"
+    raw_log = tmp_path / "trajectory.log"
+    raw_log.write_text(
+        repr(
+            {
+                "task_id": task_id,
+                "is_sub_task": False,
+                "trajectory": json.dumps(
+                    [
+                        {
+                            "state": {"input": {"content": "workflow task"}},
+                            "action": {"content": "final", "is_agent_finished": "True"},
+                            "reward": {},
+                        }
+                    ]
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_run_cli(command, env, cwd):
+        run_dir = tmp_path / ".aworld" / "self_evolve" / "cli-test"
+        run_dir.mkdir(parents=True)
+        report = {
+            "run_id": "cli-test",
+            "status": "succeeded",
+            "target": {"target_type": "skill", "target_id": "workflow-helper"},
+            "candidate_ids": ["candidate"],
+            "selected_candidate_id": "candidate",
+            "baseline_metrics": {"score": 0.4},
+            "candidate_metrics": {"score": 0.9},
+            "gate_results": [{"gate_name": "score_improvement", "passed": True}],
+        }
+        (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"Optimize run submitted.\nStatus: succeeded\nReport: {run_dir / 'report.json'}\n",
+            stderr="",
+        )
+
+    result = module.run_test_case(
+        trajectory_log=raw_log,
+        task_id=task_id,
+        out_dir=tmp_path / "out",
+        workspace_root=tmp_path,
+        evaluator_agent_md=None,
+        apply_policy="auto_verified",
+        run_cli=fake_run_cli,
+    )
+
+    assert result["evaluation"]["verdict"] == "Fail"
+    assert "auto_verified run did not produce successful candidate replay" in result["evaluation"]["reasons"]

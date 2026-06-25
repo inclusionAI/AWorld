@@ -29,6 +29,8 @@ class CandidateReplayRequest:
     max_steps: int | None = None
     max_tokens: int | None = None
     max_cost_usd: float | None = None
+    baseline_repetitions: int = 1
+    candidate_repetitions: int = 1
 
 
 @dataclass(frozen=True)
@@ -128,22 +130,53 @@ class AWorldCliCandidateReplayBackend:
         replay_dir.mkdir(parents=True, exist_ok=True)
         _write_json(replay_dir / "request.json", request)
 
-        baseline = await self._run_variant(
+        baseline = await self._run_repetitions(
             request,
-            variant_id="baseline",
+            base_variant_id="baseline",
             skill_root=request.baseline_skill_root or _infer_baseline_skill_root(request),
             artifact_dir=replay_dir / "baseline",
+            repetitions=request.baseline_repetitions,
         )
-        candidate_result = await self._run_variant(
+        candidate_result = await self._run_repetitions(
             request,
-            variant_id=candidate.candidate_id,
+            base_variant_id=candidate.candidate_id,
             skill_root=request.overlay_skill_root,
             artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
+            repetitions=request.candidate_repetitions,
         )
         return CandidateReplayResult(
             request=request,
             baseline=baseline,
             candidate=candidate_result,
+        )
+
+    async def _run_repetitions(
+        self,
+        request: CandidateReplayRequest,
+        *,
+        base_variant_id: str,
+        skill_root: str | None,
+        artifact_dir: Path,
+        repetitions: int,
+    ) -> ReplayVariantResult:
+        if repetitions <= 0:
+            raise ValueError("replay repetitions must be positive")
+        results: list[ReplayVariantResult] = []
+        for index in range(1, repetitions + 1):
+            variant_id = base_variant_id if repetitions == 1 else f"{base_variant_id}-{index}"
+            repetition_dir = artifact_dir if repetitions == 1 else artifact_dir / str(index)
+            results.append(
+                await self._run_variant(
+                    request,
+                    variant_id=variant_id,
+                    skill_root=skill_root,
+                    artifact_dir=repetition_dir,
+                )
+            )
+        return _aggregate_variant_results(
+            base_variant_id=base_variant_id,
+            results=results,
+            artifact_dir=artifact_dir,
         )
 
     async def _run_variant(
@@ -295,6 +328,8 @@ def build_replay_request(
     max_steps: int | None = None,
     max_tokens: int | None = None,
     max_cost_usd: float | None = None,
+    baseline_repetitions: int = 1,
+    candidate_repetitions: int = 1,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -313,6 +348,8 @@ def build_replay_request(
         max_steps=max_steps,
         max_tokens=max_tokens,
         max_cost_usd=max_cost_usd,
+        baseline_repetitions=baseline_repetitions,
+        candidate_repetitions=candidate_repetitions,
     )
 
 
@@ -373,6 +410,69 @@ def _safe_path(value: str) -> str:
         if character.isalnum() or character in {"-", "_", "."}
     ).strip(".")
     return safe or "default"
+
+
+def _aggregate_variant_results(
+    *,
+    base_variant_id: str,
+    results: list[ReplayVariantResult],
+    artifact_dir: Path,
+) -> ReplayVariantResult:
+    if not results:
+        raise ValueError("cannot aggregate empty replay results")
+    if len(results) == 1:
+        return ReplayVariantResult(
+            variant_id=base_variant_id,
+            status=results[0].status,
+            trajectory=results[0].trajectory,
+            metrics={
+                **dict(results[0].metrics),
+                "repetition_count": 1,
+                "successful_repetition_count": 1 if results[0].succeeded else 0,
+            },
+            stdout_path=results[0].stdout_path,
+            stderr_path=results[0].stderr_path,
+            failure=results[0].failure,
+        )
+
+    successful = [result for result in results if result.succeeded]
+    status = "succeeded" if len(successful) == len(results) else "failed"
+    numeric_metrics: dict[str, list[float]] = {}
+    for result in results:
+        for key, value in result.metrics.items():
+            if isinstance(value, (int, float)):
+                numeric_metrics.setdefault(str(key), []).append(float(value))
+    metrics: dict[str, Any] = {
+        "repetition_count": len(results),
+        "successful_repetition_count": len(successful),
+    }
+    for key, values in numeric_metrics.items():
+        if values:
+            metrics[key] = sum(values) / len(values)
+            metrics[f"{key}_values"] = values
+
+    selected = successful[-1] if successful else results[-1]
+    failure = None
+    if status != "succeeded":
+        failure = {
+            "reason": "one or more replay repetitions failed",
+            "failures": [
+                result.failure
+                for result in results
+                if result.failure is not None
+            ],
+        }
+        _write_json(artifact_dir / "failure.json", failure)
+    _write_json(artifact_dir / "aggregate_metrics.json", metrics)
+    return ReplayVariantResult(
+        variant_id=base_variant_id,
+        status=status,
+        trajectory=selected.trajectory,
+        metrics=metrics,
+        stdout_path=selected.stdout_path,
+        stderr_path=selected.stderr_path,
+        failure=failure,
+    )
 
 
 def build_paired_replay_dataset(

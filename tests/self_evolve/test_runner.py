@@ -136,6 +136,12 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
             dataset_split="post_apply",
         )
 
+    refreshed = []
+
+    async def refresh_runtime(candidate):
+        refreshed.append(candidate.candidate_id)
+        return {"refreshed": True, "strategy": "test-hook"}
+
     class VerifiedBackend:
         async def evaluate_variant(self, request):
             if request.candidate is None:
@@ -165,6 +171,7 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
         min_eval_cases=0,
+        runtime_registry_refresher=refresh_runtime,
     )
 
     result = await runner.run_explicit_target(
@@ -181,6 +188,8 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert refreshed == [result.selected_candidate.candidate_id]
+    assert report["post_apply"]["refresh"] == {"refreshed": True, "strategy": "test-hook"}
     assert {gate["gate_name"] for gate in report["gate_results"]} >= {
         "score_improvement",
         "required_verification",
@@ -191,6 +200,7 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert (apply_dir / f"{result.selected_candidate.candidate_id}.backup.md").read_text(encoding="utf-8") == original_content
     journal = json.loads((apply_dir / f"{result.selected_candidate.candidate_id}.journal.json").read_text(encoding="utf-8"))
     assert journal["candidate_id"] == result.selected_candidate.candidate_id
+    assert journal["status"] == "accepted"
     assert journal["target"]["target_id"] == "demo"
     assert journal["backup_path"].endswith(".backup.md")
 
@@ -376,6 +386,8 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
     report = json.loads((store.run_path("run-auto-rollback") / "report.json").read_text(encoding="utf-8"))
     assert report["post_apply"]["status"] == "rolled_back"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is False
+    journal = json.loads(Path(report["post_apply"]["journal_path"]).read_text(encoding="utf-8"))
+    assert journal["status"] == "rolled_back"
 
 
 @pytest.mark.asyncio
@@ -568,6 +580,8 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
         min_eval_cases=0,
         replay_enabled=True,
         candidate_replay_backend=replay_backend,
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
         replay_stability_margin=0.1,
     )
 
@@ -582,6 +596,8 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     assert result.run.status.value == "succeeded"
     assert skill_path.read_text(encoding="utf-8") == candidate_content
     assert replay_backend.requests
+    assert replay_backend.requests[0].baseline_repetitions == 2
+    assert replay_backend.requests[0].candidate_repetitions == 3
     assert Path(replay_backend.requests[0].overlay_skill_root, "demo", "SKILL.md").read_text(encoding="utf-8") == candidate_content
     assert Path(replay_backend.requests[0].overlay_skill_root, "helper", "SKILL.md").exists()
     assert all(
@@ -601,6 +617,115 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
         gate["gate_name"] == "replay_stability_margin"
         and gate["passed"] is True
         and gate["details"]["delta"] == 0.5
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_verified_rejects_single_candidate_rerun_without_baseline_rerun(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="limited-replay")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="limited-replay",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+            "rationale": "Limited replay candidate.",
+        }
+
+    async def post_apply(candidate):
+        pytest.fail("limited confidence replay must not apply")
+
+    class LimitedReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "historical baseline"}}],
+                    metrics={"replay_source": "historical", "score": 0.2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate rerun"}}],
+                    metrics={"repetition_count": 1, "score": 0.9},
+                ),
+            )
+
+    class PositiveBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={
+                        "score": 0.2,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                        "deterministic_signal": True,
+                        "command_case_count": 1,
+                        "command_pass_count": 1,
+                        "global_regression_passed": True,
+                    },
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=PositiveBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=LimitedReplayBackend(),
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-limited-replay",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-limited-replay" / "report.json").read_text())
+    assert any(
+        gate["gate_name"] == "replay_confidence"
+        and gate["passed"] is False
+        and gate["reason"] == "fixed historical baseline plus one candidate rerun is limited confidence"
         for gate in report["gate_results"]
     )
 

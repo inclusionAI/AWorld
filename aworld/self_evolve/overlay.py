@@ -95,6 +95,34 @@ def create_candidate_skill_overlay(
     )
 
 
+def cleanup_self_evolve_overlays(
+    workspace_root: str | Path,
+    *,
+    keep_latest_runs: int = 5,
+) -> dict[str, object]:
+    if keep_latest_runs < 0:
+        raise ValueError("keep_latest_runs must be non-negative")
+    root = Path(workspace_root) / ".aworld" / "self_evolve"
+    if not root.exists():
+        return {"removed_run_count": 0, "removed_paths": []}
+
+    run_dirs = [
+        path for path in root.iterdir()
+        if path.is_dir() and (path / "overlays").exists()
+    ]
+    run_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    removed_paths: list[str] = []
+    for run_dir in run_dirs[keep_latest_runs:]:
+        overlay_dir = run_dir / "overlays"
+        shutil.rmtree(overlay_dir)
+        removed_paths.append(str(overlay_dir))
+    return {
+        "removed_run_count": len(removed_paths),
+        "removed_paths": removed_paths,
+        "keep_latest_runs": keep_latest_runs,
+    }
+
+
 def _skill_file(skill_dir: Path) -> Path | None:
     for name in ("SKILL.md", "skill.md"):
         path = skill_dir / name
