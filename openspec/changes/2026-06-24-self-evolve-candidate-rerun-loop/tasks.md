@@ -50,6 +50,9 @@
 - [x] 3.9 Add fake-runtime tests for successful replay and replay failure.
 - [x] 3.10 Add tests showing fixed historical baseline plus one candidate rerun
   remains limited confidence unless policy explicitly allows it.
+- [x] 3.11 Add a real CLI replay contract test proving `aworld-cli run`
+  produces machine-readable trajectory output while reusing normal runtime
+  configuration.
 
 ## 4. Paired Trajectory Evaluation
 

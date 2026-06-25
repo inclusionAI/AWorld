@@ -1,4 +1,5 @@
 import sys
+import json
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from aworld_cli.models import AgentInfo
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
+from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
 from aworld.plugins.discovery import discover_plugins
 
 
@@ -465,6 +467,129 @@ async def test_run_direct_mode_binds_runtime_to_executor(
     )
 
     assert captured["runtime_on_executor"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_direct_mode_returns_replayable_trajectory_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return SimpleNamespace(console=None)
+
+    class DummyContinuousExecutor:
+        def __init__(self, agent_executor, console=None) -> None:
+            self.agent_executor = agent_executor
+            self.console = console
+
+        async def run_continuous(self, **kwargs) -> dict:
+            return {
+                "total_runs": 1,
+                "successful_runs": 1,
+                "total_cost": 0.0,
+                "results": [
+                    {
+                        "iteration": 1,
+                        "response": "Replay completed.",
+                        "completed": True,
+                        "success": True,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr(
+        "aworld.core.scheduler.get_scheduler",
+        lambda: SimpleNamespace(),
+    )
+
+    summary = await main_module._run_direct_mode(
+        prompt="Replay this task",
+        agent_name="Aworld",
+    )
+
+    trajectory = main_module._trajectory_from_direct_run_summary(
+        summary,
+        prompt="Replay this task",
+        agent_name="Aworld",
+    )
+
+    assert trajectory == [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {"input": {"content": "Replay this task"}},
+            "action": {
+                "content": "Replay completed.",
+                "is_agent_finished": "True",
+                "tool_calls": [],
+            },
+            "reward": {"status": "ok"},
+        }
+    ]
+
+
+def test_run_top_level_command_emits_machine_readable_trajectory(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def fake_run_direct_mode(**kwargs):
+        return {
+            "results": [
+                {
+                    "iteration": 1,
+                    "response": "Replay completed.",
+                    "completed": True,
+                    "success": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_resolve_agent_dirs",
+        lambda agent_dirs: [],
+    )
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+
+    args = SimpleNamespace(
+        task="Replay this task",
+        agent="Aworld",
+        skill=None,
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        env_file=".env",
+        emit_trajectory=True,
+    )
+    context = SimpleNamespace(argv=["aworld-cli", "run", "--emit-trajectory"])
+
+    assert RunTopLevelCommand().run(args, context) == 0
+
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["trajectory"][0]["action"]["content"] == "Replay completed."
+    assert payload["trajectory"][0]["state"]["input"]["content"] == "Replay this task"
 
 
 @pytest.mark.asyncio

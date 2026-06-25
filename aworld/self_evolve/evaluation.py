@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import subprocess
@@ -254,19 +255,23 @@ class AWorldTrajectoryEvaluatorBackend:
         report_path = eval_dir / "report.json"
         runner = self.run_evaluator_source or _load_run_evaluator_source_cli()
         task_id = request.dataset.cases[0].case_id if len(request.dataset.cases) == 1 else None
-        report = runner(
-            input=str(log_path),
-            kind="trajectory",
-            judge_agent=self.judge_agent,
-            judge_agent_name=self.judge_agent_name,
-            judge_backend_ref=self.judge_backend_ref,
-            out_dir=str(eval_dir / "extracted"),
-            output=str(report_path),
-            task_id=task_id,
-            agent=self.agent,
-        )
-        if inspect.isawaitable(report):
-            report = await report
+        runner_kwargs = {
+            "input": str(log_path),
+            "kind": "trajectory",
+            "judge_agent": self.judge_agent,
+            "judge_agent_name": self.judge_agent_name,
+            "judge_backend_ref": self.judge_backend_ref,
+            "out_dir": str(eval_dir / "extracted"),
+            "output": str(report_path),
+            "task_id": task_id,
+            "agent": self.agent,
+        }
+        if self.run_evaluator_source is None:
+            report = await asyncio.to_thread(runner, **runner_kwargs)
+        else:
+            report = runner(**runner_kwargs)
+            if inspect.isawaitable(report):
+                report = await report
         if not isinstance(report, Mapping):
             raise ValueError("AWorld trajectory evaluator report must be a mapping")
         return EvaluationSummary(

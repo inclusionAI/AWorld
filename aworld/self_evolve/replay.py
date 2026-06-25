@@ -264,6 +264,7 @@ class AWorldCliReplayExecutor:
             "--task",
             request.task_text,
             "--non-interactive",
+            "--emit-trajectory",
         ]
         if request.agent:
             command.extend(["--agent", request.agent])

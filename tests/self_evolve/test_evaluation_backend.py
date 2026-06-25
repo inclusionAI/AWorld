@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import pytest
 
 from aworld.config.conf import EvaluationConfig
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+import aworld.self_evolve.evaluation as evaluation_module
 from aworld.self_evolve.evaluation import (
     AWorldTrajectoryEvaluatorBackend,
     CandidateConfidenceDecision,
@@ -114,6 +116,47 @@ async def test_aworld_trajectory_evaluator_backend_uses_existing_source_runtime(
     assert summary.metrics["A1_groundedness"] == 4.0
     assert summary.metrics["evaluator_gate_passed"] is True
     assert summary.metrics["evaluation_agent_signal"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_runs_default_source_runtime_outside_active_loop(
+    tmp_path, monkeypatch
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+
+    def sync_source_runtime(**kwargs):
+        async def build_report():
+            return {
+                "summary": {"trajectory-source-evaluator": {"score": {"mean": 82.0}}},
+                "gate": {"status": "pass", "metric_name": "score", "value": 82.0},
+            }
+
+        return asyncio.run(build_report())
+
+    monkeypatch.setattr(
+        evaluation_module,
+        "_load_run_evaluator_source_cli",
+        lambda: sync_source_runtime,
+    )
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["score"] == 82.0
+    assert summary.metrics["evaluator_gate_passed"] is True
 
 
 @pytest.mark.asyncio

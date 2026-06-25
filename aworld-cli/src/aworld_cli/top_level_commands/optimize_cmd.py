@@ -157,6 +157,7 @@ def run_optimize_cli(
         infer_target=infer_target,
         workspace_root=workspace_root,
         judge_config=judge_config,
+        replay_enabled=apply == "auto_verified",
     )
 
 
