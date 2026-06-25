@@ -51,6 +51,7 @@ from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.replay import (
+    AWorldCliCandidateReplayBackend,
     CandidateReplayBackend,
     CandidateReplayResult,
     build_paired_replay_dataset,
@@ -100,6 +101,7 @@ class SelfEvolveRunner:
         baseline_replay_repetitions: int = 1,
         candidate_replay_repetitions: int = 1,
         replay_stability_margin: float = 0.0,
+        replay_agent: str | None = None,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -120,6 +122,7 @@ class SelfEvolveRunner:
         self.baseline_replay_repetitions = baseline_replay_repetitions
         self.candidate_replay_repetitions = candidate_replay_repetitions
         self.replay_stability_margin = replay_stability_margin
+        self.replay_agent = replay_agent
 
     async def run_explicit_target(
         self,
@@ -364,6 +367,14 @@ class SelfEvolveRunner:
             report["held_out_metrics"] = dict(held_out_summary.metrics)
         if replay_result is not None:
             report["replay"] = _replay_report(replay_result)
+            report["replay_path"] = _replay_artifact_path(replay_result)
+        evaluator_report_paths = _evaluator_report_paths(
+            baseline_summary,
+            candidate_summary,
+            held_out_summary,
+        )
+        if evaluator_report_paths:
+            report["evaluator_report_paths"] = evaluator_report_paths
         if gate_results:
             report["gate_results"] = [
                 {
@@ -436,6 +447,7 @@ class SelfEvolveRunner:
             candidate=selected_candidate,
             overlay_skill_root=overlay.shadow_root,
             dataset=dataset,
+            agent=self.replay_agent,
             timeout_seconds=self.replay_timeout_seconds,
             max_steps=self.replay_max_steps,
             max_tokens=self.max_run_tokens,
@@ -727,6 +739,8 @@ def optimize_from_cli_request(
         )
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
+    if replay_enabled and candidate_replay_backend is None:
+        candidate_replay_backend = AWorldCliCandidateReplayBackend()
 
     import asyncio
 
@@ -749,6 +763,7 @@ def optimize_from_cli_request(
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
+            replay_agent=agent,
         ).run_explicit_target(
             run_id=run_id,
             target=target_adapter,
@@ -780,6 +795,19 @@ def optimize_from_cli_request(
         summary["target_selection_path"] = str(target_selection_path)
     if target_provenance_path is not None:
         summary["target_provenance_path"] = str(target_provenance_path)
+    if report_path.exists():
+        try:
+            report_payload = _load_json_mapping(report_path)
+        except ValueError:
+            report_payload = {}
+        replay_path = report_payload.get("replay_path")
+        if isinstance(replay_path, str):
+            summary["replay_path"] = replay_path
+        evaluator_report_paths = report_payload.get("evaluator_report_paths")
+        if isinstance(evaluator_report_paths, list):
+            summary["evaluator_report_paths"] = [
+                item for item in evaluator_report_paths if isinstance(item, str)
+            ]
     return summary
 
 
@@ -912,6 +940,39 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             "failure": replay_result.candidate.failure,
         },
     }
+
+
+def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
+    return str(
+        Path(replay_result.request.workspace_root)
+        / ".aworld"
+        / "self_evolve"
+        / replay_result.request.run_id
+        / "replay"
+        / replay_result.request.candidate_id
+    )
+
+
+def _evaluator_report_paths(
+    *summaries: EvaluationSummary | None,
+) -> list[str]:
+    paths: list[str] = []
+    for summary in summaries:
+        if summary is None:
+            continue
+        path = summary.metrics.get("report_path")
+        if isinstance(path, str) and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _load_json_mapping(path: Path) -> Mapping[str, Any]:
+    import json
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"expected JSON object in {path}")
+    return payload
 
 
 def _replay_gate_details(replay_result: CandidateReplayResult) -> dict[str, object]:

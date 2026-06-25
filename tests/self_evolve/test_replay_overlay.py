@@ -7,8 +7,10 @@ import pytest
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.replay import (
+    AWorldCliCandidateReplayBackend,
     CandidateReplayRequest,
     CandidateReplayResult,
+    ReplayExecutionResult,
     ReplayVariantResult,
     build_paired_replay_dataset,
 )
@@ -154,3 +156,133 @@ def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
             replay_result=replay,
             candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
         )
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_runs_baseline_and_candidate_with_skill_roots(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    async def fake_executor(request):
+        calls.append(request)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": f"{request.variant_id} output"},
+                    "reward": {"status": "ok"},
+                }
+            ],
+            metrics={"score": 0.9 if request.variant_id == "cand-1" else 0.4},
+            stdout=f"{request.variant_id} stdout",
+            stderr="",
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input={"content": "Replay this task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-1",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(tmp_path / "skills" / "demo" / "SKILL.md"),
+        ),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        baseline_skill_root=str(tmp_path / "skills"),
+        task_input={"content": "Replay this task"},
+        agent="Aworld",
+        timeout_seconds=42,
+        max_steps=5,
+        max_tokens=100,
+    )
+
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+
+    result = await backend.replay_candidate(
+        request,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+        dataset=dataset,
+    )
+
+    assert result.succeeded is True
+    assert [call.variant_id for call in calls] == ["baseline", "cand-1"]
+    assert calls[0].skill_root == str(tmp_path / "skills")
+    assert calls[1].skill_root == str(tmp_path / "overlay-skills")
+    assert calls[0].task_text == "Replay this task"
+    assert calls[1].agent == "Aworld"
+    assert calls[1].timeout_seconds == 42
+    assert result.baseline.trajectory[0]["action"]["content"] == "baseline output"
+    assert result.candidate.trajectory[0]["action"]["content"] == "cand-1 output"
+
+    replay_dir = tmp_path / ".aworld" / "self_evolve" / "run-1" / "replay" / "cand-1"
+    assert (replay_dir / "request.json").exists()
+    assert (replay_dir / "baseline" / "stdout.txt").read_text(encoding="utf-8") == "baseline stdout"
+    assert (replay_dir / "cand-1" / "metrics.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_returns_structured_failure(
+    tmp_path: Path,
+) -> None:
+    async def failing_executor(request):
+        if request.variant_id == "baseline":
+            return ReplayExecutionResult(
+                status="succeeded",
+                trajectory=[{"action": {"content": "baseline"}}],
+            )
+        return ReplayExecutionResult(
+            status="failed",
+            trajectory=[],
+            failure={"reason": "missing model configuration"},
+            stdout="",
+            stderr="No model configuration",
+        )
+
+    request = CandidateReplayRequest(
+        run_id="run-failure",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        task_input="Replay this task",
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=failing_executor).replay_candidate(
+        request,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+        dataset=SelfEvolveDataset(
+            cases=(EvalCase(case_id="task-1", input="Replay this task"),),
+            recipe=DatasetRecipe(
+                source={"kind": "test", "case_count": 1},
+                split_seed="seed",
+                splits={"train": ["task-1"], "validation": [], "held_out": []},
+            ),
+        ),
+    )
+
+    assert result.succeeded is False
+    assert result.candidate.status == "failed"
+    assert result.candidate.failure == {"reason": "missing model configuration"}
+    failure_path = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-failure"
+        / "replay"
+        / "cand-1"
+        / "cand-1"
+        / "failure.json"
+    )
+    assert failure_path.exists()

@@ -95,6 +95,8 @@ def render_optimize_summary(report: Any) -> str:
     report_path = _read_report_value(report, "report_path")
     status = _read_report_value(report, "status")
     target_selection_path = _read_report_value(report, "target_selection_path")
+    replay_path = _read_report_value(report, "replay_path")
+    evaluator_report_paths = _read_report_value(report, "evaluator_report_paths") or []
     candidate_id = _read_report_value(report, "best_candidate_id") or _read_report_value(
         report,
         "selected_candidate_id",
@@ -107,6 +109,12 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Report: {report_path}")
     if target_selection_path:
         lines.append(f"Target selection: {target_selection_path}")
+    if replay_path:
+        lines.append(f"Replay: {replay_path}")
+    if isinstance(evaluator_report_paths, (list, tuple)):
+        for report_path_item in evaluator_report_paths:
+            if report_path_item:
+                lines.append(f"Evaluator report: {report_path_item}")
     if candidate_id:
         lines.append(f"Best candidate: {candidate_id}")
     return "\n".join(lines)

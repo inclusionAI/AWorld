@@ -24,7 +24,8 @@ needed.
   reporting when the run produces gate results.
 - **Conditional**: `auto_verified` apply, asynchronous post-run jobs, and any
   flow requiring an evaluation backend, held-out cases, deterministic signals,
-  post-apply re-evaluation, or a caller-supplied real optimizer.
+  candidate replay, post-apply runtime-loader verification, or a
+  caller-supplied real optimizer.
 - **Roadmap**: `tool:<tool-name>`, `prompt:<section>`,
   `agent-config:<field>`, and broad workspace-artifact evolution unless the
   current framework target adapter is implemented end to end and covered by
@@ -46,11 +47,13 @@ diagnostic, or roadmap note instead of implying verified behavior.
 4. Invoke framework self-evolve through `aworld.self_evolve` APIs or
    `aworld-cli optimize`.
 5. Default to proposal-only behavior.
-6. For `auto_verified`, require framework gate evidence for evaluation,
-   held-out cases, deterministic or objective signal, target allowlist, budget,
-   protected path, provenance, and post-apply re-evaluation.
+6. For `auto_verified`, require framework gate evidence for candidate replay,
+   evaluation, held-out cases, deterministic or objective signal, target
+   allowlist, budget, protected path, provenance, and post-apply runtime-loader
+   verification.
 7. Report the run id, target, evidence source, candidate id, metric deltas,
-   gate status, report path, and apply status.
+   gate status, replay path, evaluator report path, report path, and apply
+   status.
 
 ## Target Tiers
 
@@ -86,13 +89,40 @@ Proposal-only trajectory-backed target inference:
 ```bash
 aworld-cli optimize \
   --from-trajectory path/to/trajectory.log \
-  --infer-target \
   --apply proposal
+```
+
+Drain pending post-run self-evolve jobs:
+
+```bash
+aworld-cli optimize --drain-pending
+```
+
+Verified replay with an evaluator agent:
+
+```bash
+aworld-cli optimize \
+  --target skill:example_skill \
+  --from-trajectory path/to/trajectory.log \
+  --apply auto_verified \
+  --judge-agent path/to/agent.md
 ```
 
 CLI fallback behavior may preserve the baseline when no real optimizer is
 configured. Do not claim content improvement from a CLI run unless the report
 shows a changed candidate and passing framework evidence.
+
+Verified replay is conditional. The framework mounts a candidate skill in an
+isolated overlay and reruns the task through the runtime. If credentials, model
+configuration, browser state, services, or other environment prerequisites are
+missing, report a replay failure. Do not treat those prerequisites as mutation
+targets.
+
+Replay variance and cost controls are framework configuration, not skill-local
+logic. Respect `replay_candidate_limit`, `baseline_replay_repetitions`,
+`candidate_replay_repetitions`, and `replay_stability_margin` when they appear
+in config or reports. A fixed historical baseline plus a single candidate rerun
+is limited-confidence unless framework policy explicitly accepts it.
 
 ## SDK Example
 
@@ -131,7 +161,12 @@ runner. Do not mutate the skill file directly in this workflow.
 - Do not target framework, runtime, `aworld-cli`, package metadata, secrets, or
   protected built-in skills.
 - Do not auto-apply unless the framework run records passing gates and
-  post-apply acceptance.
+  post-apply runtime-loader acceptance.
+- For long-lived runtimes, require a registry refresh/reload signal in the
+  report before claiming future tasks will observe the applied skill without
+  restart.
+- Do not treat a successful process exit as verified replay unless the run
+  captured candidate trajectory evidence.
 - If gate information is missing, failed, or unavailable, report proposal-only,
   diagnostic, or rejected status.
 
@@ -145,5 +180,7 @@ Return a compact summary with:
 - `candidate_id`
 - `metric_deltas`
 - `gate_status`
+- `replay_path`
+- `evaluator_report_paths`
 - `report_path`
 - `apply_status`

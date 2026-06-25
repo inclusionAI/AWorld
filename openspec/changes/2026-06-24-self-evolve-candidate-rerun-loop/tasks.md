@@ -6,7 +6,7 @@
   tokens/cost, and replay enablement.
 - [x] 1.4 Ensure online `auto_verified` requires replay success for skill
   targets when replay is enabled.
-- [ ] 1.5 Document that replay prerequisites are environment requirements, not
+- [x] 1.5 Document that replay prerequisites are environment requirements, not
   mutation targets.
 - [x] 1.6 Add replay repetition, replay candidate limit, and stability-margin
   config fields.
@@ -35,19 +35,19 @@
 
 ## 3. Task Replay Harness
 
-- [ ] 3.1 Extract replayable task input from current trajectory and explicit
+- [x] 3.1 Extract replayable task input from current trajectory and explicit
   invocation context.
-- [ ] 3.2 Resolve the agent/runtime used for replay without hardcoding a
+- [x] 3.2 Resolve the agent/runtime used for replay without hardcoding a
   specific agent or skill.
-- [ ] 3.3 Execute the task with the candidate skill overlay.
-- [ ] 3.4 Capture candidate trajectory, stdout/stderr, metrics, and failure
+- [x] 3.3 Execute the task with the candidate skill overlay.
+- [x] 3.4 Capture candidate trajectory, stdout/stderr, metrics, and failure
   diagnostics.
-- [ ] 3.5 Enforce replay timeout, token, cost, and step budgets.
-- [ ] 3.6 Return structured replay failure when prerequisites are missing.
-- [ ] 3.7 Support baseline rerun for verified apply when the baseline skill and
+- [x] 3.5 Enforce replay timeout, token, cost, and step budgets.
+- [x] 3.6 Return structured replay failure when prerequisites are missing.
+- [x] 3.7 Support baseline rerun for verified apply when the baseline skill and
   replay prerequisites are available.
 - [ ] 3.8 Support candidate replay repetitions and aggregate metric reporting.
-- [ ] 3.9 Add fake-runtime tests for successful replay and replay failure.
+- [x] 3.9 Add fake-runtime tests for successful replay and replay failure.
 - [ ] 3.10 Add tests showing fixed historical baseline plus one candidate rerun
   remains limited confidence unless policy explicitly allows it.
 
@@ -56,7 +56,7 @@
 - [x] 4.1 Build paired baseline/candidate evaluation cases after replay.
 - [x] 4.2 Populate `variant_trajectories` automatically in dataset metadata.
 - [x] 4.3 Reuse `AWorldTrajectoryEvaluatorBackend` for evaluator-agent scoring.
-- [ ] 4.4 Persist evaluator reports and link them from self-evolve `report.json`.
+- [x] 4.4 Persist evaluator reports and link them from self-evolve `report.json`.
 - [x] 4.5 Test candidate trajectory metrics are used instead of text-only
   overlay heuristics.
 - [ ] 4.6 Test aggregate baseline/candidate metrics and stability-margin
@@ -84,8 +84,8 @@
 
 ## 6. Scheduler And Async Worker
 
-- [ ] 6.1 Make background jobs run the full candidate replay loop.
-- [ ] 6.2 Ensure original task response remains best-effort and non-blocking.
+- [x] 6.1 Make background jobs run the full candidate replay loop.
+- [x] 6.2 Ensure original task response remains best-effort and non-blocking.
 - [ ] 6.3 Persist running/succeeded/failed job state with replay diagnostics.
 - [ ] 6.4 Add tests for worker drain success, replay failure, evaluator failure,
   and gate rejection.
@@ -101,7 +101,7 @@
 ## 7. CLI And Validation Script
 
 - [x] 7.1 Keep `aworld-cli optimize` as a thin wrapper over framework replay.
-- [ ] 7.2 Add CLI output fields for replay artifact paths and evaluator report
+- [x] 7.2 Add CLI output fields for replay artifact paths and evaluator report
   paths.
 - [ ] 7.3 Extend `scripts/self_evolve_cli_trajectory_case.py` to assert a real
   candidate trajectory was generated when strict verified mode is requested.
@@ -110,15 +110,15 @@
 
 ## 8. Documentation And Skill Guidance
 
-- [ ] 8.1 Update built-in `self_evolve` skill guidance after implementation is
+- [x] 8.1 Update built-in `self_evolve` skill guidance after implementation is
   tested.
-- [ ] 8.2 Document available, conditional, and unsupported replay paths.
-- [ ] 8.3 Document environment prerequisites and replay diagnostics.
-- [ ] 8.4 Add examples for proposal-only, verified replay, and failed replay
+- [x] 8.2 Document available, conditional, and unsupported replay paths.
+- [x] 8.3 Document environment prerequisites and replay diagnostics.
+- [x] 8.4 Add examples for proposal-only, verified replay, and failed replay
   diagnostics.
-- [ ] 8.5 Document post-apply runtime loader verification and cache refresh
+- [x] 8.5 Document post-apply runtime loader verification and cache refresh
   semantics.
-- [ ] 8.6 Document replay variance controls and candidate replay limits.
+- [x] 8.6 Document replay variance controls and candidate replay limits.
 
 ## 9. Verification
 
@@ -126,4 +126,4 @@
 - [x] 9.2 Run evaluator runtime tests.
 - [x] 9.3 Run CLI optimize tests.
 - [x] 9.4 Run OpenSpec validation for this change.
-- [ ] 9.5 Record remaining unsupported target types or replay environments.
+- [x] 9.5 Record remaining unsupported target types or replay environments.

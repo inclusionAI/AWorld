@@ -434,12 +434,21 @@ def test_render_optimize_summary_includes_status_and_target_selection_path() -> 
             "status": "rejected",
             "report_path": ".aworld/self_evolve/run/report.json",
             "target_selection_path": ".aworld/self_evolve/run/target_selection.json",
+            "replay_path": ".aworld/self_evolve/run/replay/cand-1",
+            "evaluator_report_paths": [
+                ".aworld/self_evolve/evaluator/cand-1/validation/report.json"
+            ],
         }
     )
 
     assert "Status: rejected" in summary
     assert "Report: .aworld/self_evolve/run/report.json" in summary
     assert "Target selection: .aworld/self_evolve/run/target_selection.json" in summary
+    assert "Replay: .aworld/self_evolve/run/replay/cand-1" in summary
+    assert (
+        "Evaluator report: .aworld/self_evolve/evaluator/cand-1/validation/report.json"
+        in summary
+    )
 
 
 def test_optimize_command_module_does_not_own_framework_self_evolve_components() -> None:
