@@ -40,6 +40,18 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--judge-agent-name", type=str, dest="judge_agent_name")
         parser.add_argument("--judge-backend-ref", type=str, dest="judge_backend_ref")
         parser.add_argument(
+            "--replay-timeout",
+            type=int,
+            dest="replay_timeout_seconds",
+            help="Timeout in seconds for each self-evolve replay rollout.",
+        )
+        parser.add_argument(
+            "--replay-max-runs",
+            type=int,
+            dest="replay_max_steps",
+            help="Maximum aworld-cli run iterations for each self-evolve replay rollout.",
+        )
+        parser.add_argument(
             "--drain-pending",
             action="store_true",
             dest="drain_pending",
@@ -82,6 +94,8 @@ class OptimizeTopLevelCommand:
                 judge_agent=getattr(args, "judge_agent", None),
                 judge_agent_name=getattr(args, "judge_agent_name", None),
                 judge_backend_ref=getattr(args, "judge_backend_ref", None),
+                replay_timeout_seconds=getattr(args, "replay_timeout_seconds", None),
+                replay_max_steps=getattr(args, "replay_max_steps", None),
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
             print(f"Optimize error: {exc}")
@@ -136,6 +150,8 @@ def run_optimize_cli(
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
     judge_backend_ref: str | None = None,
+    replay_timeout_seconds: int | None = None,
+    replay_max_steps: int | None = None,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
@@ -158,7 +174,24 @@ def run_optimize_cli(
         workspace_root=workspace_root,
         judge_config=judge_config,
         replay_enabled=apply == "auto_verified",
+        **_replay_options(
+            replay_timeout_seconds=replay_timeout_seconds,
+            replay_max_steps=replay_max_steps,
+        ),
     )
+
+
+def _replay_options(
+    *,
+    replay_timeout_seconds: int | None,
+    replay_max_steps: int | None,
+) -> dict[str, int]:
+    options: dict[str, int] = {}
+    if replay_timeout_seconds is not None:
+        options["replay_timeout_seconds"] = replay_timeout_seconds
+    if replay_max_steps is not None:
+        options["replay_max_steps"] = replay_max_steps
+    return options
 
 
 def drain_pending_self_evolve_jobs(*, workspace_root: str) -> int:

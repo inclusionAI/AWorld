@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from aworld.self_evolve.trace_pack import build_trace_pack, trace_packs_from_trajectory_log
@@ -96,3 +97,25 @@ def test_trace_packs_from_trajectory_log_requires_explicit_log_path() -> None:
     assert first_pack.steps[0].state["input"]["content"] == (
         "Generate yesterday health report from ~/Documents/health."
     )
+
+
+def test_trace_packs_from_trajectory_log_accepts_prefixed_log_lines(tmp_path: Path) -> None:
+    trajectory = [_trajectory_item(1, "Recovered from prefixed log.")]
+    record = {
+        "task_id": "task-prefixed",
+        "is_sub_task": False,
+        "trajectory": json.dumps(trajectory),
+    }
+    log_path = tmp_path / "trajectory.log"
+    log_path.write_text(
+        "\x1b[32m| 2026-06-09 19:35:42.360 | INFO | trajectory | "
+        + repr(record)
+        + "\x1b[0m\n",
+        encoding="utf-8",
+    )
+
+    trace_packs = trace_packs_from_trajectory_log(log_path)
+
+    assert len(trace_packs) == 1
+    assert trace_packs[0].task_id == "task-prefixed"
+    assert trace_packs[0].steps[0].action["content"] == "Recovered from prefixed log."

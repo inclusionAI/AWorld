@@ -288,18 +288,20 @@ class AWorldCliReplayExecutor:
             return ReplayExecutionResult(
                 status="failed",
                 trajectory=[],
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "",
+                stdout=_text_output(exc.stdout),
+                stderr=_text_output(exc.stderr),
                 failure={"type": "TimeoutExpired", "reason": "replay timed out"},
             )
 
-        trajectory = _extract_trajectory_from_stdout(completed.stdout)
+        stdout = _text_output(completed.stdout)
+        stderr = _text_output(completed.stderr)
+        trajectory = _extract_trajectory_from_stdout(stdout)
         if completed.returncode != 0:
             return ReplayExecutionResult(
                 status="failed",
                 trajectory=trajectory,
-                stdout=completed.stdout,
-                stderr=completed.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 failure={
                     "type": "ProcessError",
                     "reason": "aworld-cli run failed",
@@ -310,8 +312,8 @@ class AWorldCliReplayExecutor:
         return ReplayExecutionResult(
             status="succeeded",
             trajectory=trajectory,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            stdout=stdout,
+            stderr=stderr,
             metrics={"returncode": completed.returncode},
         )
 
@@ -394,6 +396,14 @@ def _extract_trajectory_from_stdout(stdout: str) -> list[Mapping[str, Any]]:
         if isinstance(trajectory, list):
             return [item for item in trajectory if isinstance(item, Mapping)]
     return []
+
+
+def _text_output(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
 
 
 def _write_json(path: Path, payload: Any) -> None:

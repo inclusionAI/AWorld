@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -88,7 +89,9 @@ def trace_packs_from_trajectory_log(
     for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
         if not raw_line.strip():
             continue
-        record = ast.literal_eval(raw_line)
+        record = _trajectory_log_record(raw_line)
+        if record is None:
+            continue
         trajectory = json.loads(record["trajectory"])
         packs.append(
             build_trace_pack(
@@ -100,6 +103,22 @@ def trace_packs_from_trajectory_log(
             )
         )
     return packs
+
+
+def _trajectory_log_record(raw_line: str) -> Mapping[str, Any] | None:
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", raw_line).strip()
+    start = clean.find("{")
+    if start < 0:
+        return None
+    try:
+        record = ast.literal_eval(clean[start:])
+    except (SyntaxError, ValueError):
+        return None
+    if not isinstance(record, Mapping):
+        return None
+    if "task_id" not in record or "trajectory" not in record:
+        return None
+    return record
 
 
 def _select_boundary_items(
