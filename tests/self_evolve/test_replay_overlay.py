@@ -371,6 +371,41 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_w
 
 
 @pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=b"partial stdout",
+            stderr=b"partial stderr",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+        )
+    )
+
+    assert result.succeeded is False
+    assert result.stdout == "partial stdout"
+    assert result.stderr == "partial stderr"
+    assert result.failure == {"type": "TimeoutExpired", "reason": "replay timed out"}
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_candidate_replay_backend_returns_structured_failure(
     tmp_path: Path,
 ) -> None:

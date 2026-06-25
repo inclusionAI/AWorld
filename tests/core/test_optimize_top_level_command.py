@@ -210,6 +210,41 @@ def test_optimize_command_passes_judge_agent_selector(
     assert calls["judge_backend_ref"] is None
 
 
+def test_optimize_command_passes_replay_runtime_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory",
+            "trajectory.log",
+            "--apply",
+            "auto_verified",
+            "--replay-timeout",
+            "300",
+            "--replay-max-runs",
+            "1",
+        ]
+    )
+
+    assert handled is True
+    assert calls["agent"] is None
+    assert calls["replay_timeout_seconds"] == 300
+    assert calls["replay_max_steps"] == 1
+
+
 def test_optimize_command_passes_judge_backend_ref_selector(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
