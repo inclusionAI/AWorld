@@ -61,6 +61,32 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert "cand-1" in output
 
 
+def test_optimize_command_drains_pending_self_evolve_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = {}
+
+    def fake_drain_pending_self_evolve_jobs(*, workspace_root):
+        calls["workspace_root"] = workspace_root
+        return 2
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.drain_pending_self_evolve_jobs",
+        fake_drain_pending_self_evolve_jobs,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "optimize", "--drain-pending"]
+    )
+
+    output = capsys.readouterr().out
+    assert handled is True
+    assert calls["workspace_root"] == str(Path.cwd())
+    assert "Drained pending self-evolve jobs: 2" in output
+
+
 def test_optimize_command_rejects_unsupported_apply_modes(capsys: pytest.CaptureFixture[str]) -> None:
     handled = main_module._maybe_dispatch_top_level_command(
         ["aworld-cli", "optimize", "--target", "skill:demo", "--apply", "write"]

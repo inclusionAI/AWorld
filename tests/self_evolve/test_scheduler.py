@@ -312,7 +312,7 @@ def test_job_worker_default_run_job_drains_pending_job_through_framework(tmp_pat
     assert report["target"]["target_id"] == "agent-browser"
 
 
-def test_online_job_worker_auto_applies_verified_skill_candidate(tmp_path) -> None:
+def test_online_job_worker_rejects_auto_verified_skill_candidate_without_replay_backend(tmp_path) -> None:
     skill_path = tmp_path / "aworld-skills" / "workflow-helper" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     original = (
@@ -363,18 +363,19 @@ def test_online_job_worker_auto_applies_verified_skill_candidate(tmp_path) -> No
     assert drained == 1
     saved = json.loads(result.job_path.read_text(encoding="utf-8"))
     assert saved["status"] == "succeeded"
-    updated = skill_path.read_text(encoding="utf-8")
-    assert updated != original
-    assert "Self-Evolve Trace Guidance" in updated
-    assert "workflow-online-job" in updated
+    assert skill_path.read_text(encoding="utf-8") == original
 
     reports = sorted((tmp_path / ".aworld" / "self_evolve").glob("cli-*/report.json"))
     assert reports
     report = json.loads(reports[0].read_text(encoding="utf-8"))
-    assert report["status"] == "succeeded"
+    assert report["status"] == "rejected"
     assert report["apply_policy"] == "auto_verified"
-    assert report["post_apply"]["status"] == "accepted"
-    assert report["candidate_metrics"]["score"] > report["baseline_metrics"]["score"]
+    assert "post_apply" not in report
+    assert any(
+        gate["gate_name"] == "candidate_replay"
+        and gate["passed"] is False
+        for gate in report["gate_results"]
+    )
 
 
 def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_path) -> None:
@@ -411,3 +412,6 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert drained == 1
     assert captured["judge_config"].mode == "agent_md"
     assert captured["judge_config"].agent_path == str(judge_agent)
+    assert captured["replay_enabled"] is True
+    assert captured["replay_timeout_seconds"] == 120
+    assert captured["replay_candidate_limit"] == 1

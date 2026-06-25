@@ -340,6 +340,9 @@ def test_replay_cost_preflight_counts_replays_judges_and_verification_budget() -
         dataset=dataset,
         candidate_count=2,
         judge_repetitions=3,
+        baseline_repetitions=2,
+        candidate_repetitions=2,
+        replay_candidate_limit=1,
         estimated_tokens_per_replay=100,
         estimated_cost_usd_per_replay=0.01,
         max_run_tokens=2_000,
@@ -347,13 +350,13 @@ def test_replay_cost_preflight_counts_replays_judges_and_verification_budget() -
     )
 
     assert estimate.passed is True
-    assert estimate.baseline_replay_count == 3
+    assert estimate.baseline_replay_count == 6
     assert estimate.candidate_replay_count == 6
-    assert estimate.total_replay_count == 9
-    assert estimate.verification_command_count == 6
-    assert estimate.judge_call_count == 18
-    assert estimate.estimated_tokens == 900
-    assert estimate.estimated_cost_usd == 0.09
+    assert estimate.total_replay_count == 12
+    assert estimate.verification_command_count == 8
+    assert estimate.judge_call_count == 9
+    assert estimate.estimated_tokens == 1200
+    assert estimate.estimated_cost_usd == 0.12
 
 
 @pytest.mark.asyncio

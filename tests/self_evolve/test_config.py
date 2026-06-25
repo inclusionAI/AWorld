@@ -19,6 +19,11 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.require_deterministic_signal_for_verified is True
     assert config.self_evolve_config.max_iterations == 1
     assert config.self_evolve_config.max_background_jobs == 1
+    assert config.self_evolve_config.replay_enabled is True
+    assert config.self_evolve_config.replay_candidate_limit == 1
+    assert config.self_evolve_config.baseline_replay_repetitions == 1
+    assert config.self_evolve_config.candidate_replay_repetitions == 1
+    assert config.self_evolve_config.replay_stability_margin == 0.0
 
 
 @pytest.mark.parametrize("mode", ["off", "offline", "shadow"])
@@ -56,6 +61,11 @@ def test_self_evolve_budget_fields_parse() -> None:
         target_types=("skill", "tool-description"),
         eval_sources=("jsonl", "trajectory_log"),
         max_background_jobs=2,
+        replay_timeout_seconds=120,
+        replay_candidate_limit=2,
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+        replay_stability_margin=0.2,
     )
 
     assert config.max_run_tokens == 50_000
@@ -71,6 +81,11 @@ def test_self_evolve_budget_fields_parse() -> None:
     assert config.target_types == ("skill", "tool-description")
     assert config.eval_sources == ("jsonl", "trajectory_log")
     assert config.max_background_jobs == 2
+    assert config.replay_timeout_seconds == 120
+    assert config.replay_candidate_limit == 2
+    assert config.baseline_replay_repetitions == 2
+    assert config.candidate_replay_repetitions == 3
+    assert config.replay_stability_margin == 0.2
 
 
 @pytest.mark.parametrize(

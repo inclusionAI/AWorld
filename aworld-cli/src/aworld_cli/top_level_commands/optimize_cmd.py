@@ -39,8 +39,19 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--judge-agent", type=str, dest="judge_agent")
         parser.add_argument("--judge-agent-name", type=str, dest="judge_agent_name")
         parser.add_argument("--judge-backend-ref", type=str, dest="judge_backend_ref")
+        parser.add_argument(
+            "--drain-pending",
+            action="store_true",
+            dest="drain_pending",
+            help="Drain pending framework-owned post-run self-evolve jobs.",
+        )
 
     def run(self, args, context) -> int:
+        if getattr(args, "drain_pending", False):
+            drained = drain_pending_self_evolve_jobs(workspace_root=context.cwd)
+            print(f"Drained pending self-evolve jobs: {drained}")
+            return 0
+
         apply_policy = getattr(args, "apply", "proposal") or "proposal"
         if apply_policy not in SUPPORTED_APPLY_POLICIES:
             print("Optimize error: --apply must be one of proposal, auto_verified")
@@ -139,6 +150,12 @@ def run_optimize_cli(
         workspace_root=workspace_root,
         judge_config=judge_config,
     )
+
+
+def drain_pending_self_evolve_jobs(*, workspace_root: str) -> int:
+    import aworld.self_evolve as self_evolve
+
+    return self_evolve.drain_pending_self_evolve_jobs(workspace_root=workspace_root)
 
 
 def _judge_config_from_cli(

@@ -69,6 +69,15 @@ from aworld.self_evolve.optimizers import (
     OptimizerResult,
     TraceReflectiveLLMMutator,
 )
+from aworld.self_evolve.overlay import SkillOverlayArtifact, create_candidate_skill_overlay
+from aworld.self_evolve.replay import (
+    CandidateReplayBackend,
+    CandidateReplayRequest,
+    CandidateReplayResult,
+    ReplayVariantResult,
+    build_paired_replay_dataset,
+    build_replay_request,
+)
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     SelfEvolveRunnerResult,
@@ -81,6 +90,7 @@ from aworld.self_evolve.scheduler import (
     SelfEvolveRunContext,
     SelfEvolveSchedulerPolicy,
     SelfEvolveScheduler,
+    drain_pending_self_evolve_jobs,
 )
 from aworld.self_evolve.trace_pack import (
     TraceEvidenceStep,
@@ -104,6 +114,9 @@ __all__ = [
     "AWorldTrajectoryEvaluatorBackend",
     "BudgetGate",
     "CandidateOptimizer",
+    "CandidateReplayBackend",
+    "CandidateReplayRequest",
+    "CandidateReplayResult",
     "CandidateConfidenceDecision",
     "CandidateVariant",
     "CommandVerificationBackend",
@@ -137,6 +150,7 @@ __all__ = [
     "ProtectedPathGate",
     "RequiredVerificationGate",
     "ReplayCostEstimate",
+    "ReplayVariantResult",
     "SelfEvolveRunner",
     "SelfEvolveRunnerResult",
     "SelfEvolveDataset",
@@ -151,6 +165,7 @@ __all__ = [
     "SelfEvolveSchedulerPolicy",
     "ScoreImprovementGate",
     "SkillMarkdownGate",
+    "SkillOverlayArtifact",
     "TokenLimitGate",
     "ToolDescriptionGate",
     "StoppingConditionGate",
@@ -168,6 +183,10 @@ __all__ = [
     "build_dataset_from_source",
     "build_dataset_recipe",
     "build_judge_backend",
+    "build_paired_replay_dataset",
+    "build_replay_request",
+    "create_candidate_skill_overlay",
+    "drain_pending_self_evolve_jobs",
     "determine_candidate_confidence",
     "estimate_replay_cost",
     "evaluate_baseline_and_candidate",

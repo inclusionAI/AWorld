@@ -86,6 +86,32 @@ class FilesystemSelfEvolveStore:
         self._write_json(path, record)
         return path
 
+    def write_apply_backup(
+        self,
+        run_id: str,
+        *,
+        candidate: CandidateVariant,
+        original_content: str,
+        target_path: str | None,
+    ) -> tuple[Path, Path]:
+        self._validate_id(candidate.candidate_id, "candidate_id")
+        apply_dir = self.run_path(run_id) / "apply"
+        apply_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = apply_dir / f"{candidate.candidate_id}.backup.md"
+        backup_path.write_text(original_content, encoding="utf-8")
+        journal_path = apply_dir / f"{candidate.candidate_id}.journal.json"
+        self._write_json(
+            journal_path,
+            {
+                "candidate_id": candidate.candidate_id,
+                "target": candidate.target,
+                "target_path": target_path,
+                "backup_path": str(backup_path),
+                "status": "backup_written",
+            },
+        )
+        return backup_path, journal_path
+
     def _write_json(self, path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(

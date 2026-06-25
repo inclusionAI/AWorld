@@ -229,6 +229,13 @@ class SelfEvolveConfig(BaseConfig):
     require_deterministic_signal_for_verified: bool = True
     requires_post_apply_reevaluation: bool = True
     judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
+    replay_enabled: bool = True
+    replay_timeout_seconds: int = 120
+    replay_max_steps: Optional[int] = None
+    replay_candidate_limit: int = 1
+    baseline_replay_repetitions: int = 1
+    candidate_replay_repetitions: int = 1
+    replay_stability_margin: float = 0.0
 
     @model_validator(mode="after")
     def validate_apply_policy(self) -> "SelfEvolveConfig":
@@ -236,6 +243,16 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("online self-evolve requires apply_policy='auto_verified'")
         if self.apply_policy == "auto_verified" and not self.requires_post_apply_reevaluation:
             raise ValueError("auto_verified self-evolve requires post-apply re-evaluation")
+        if self.replay_candidate_limit <= 0:
+            raise ValueError("replay_candidate_limit must be positive")
+        if self.baseline_replay_repetitions <= 0:
+            raise ValueError("baseline_replay_repetitions must be positive")
+        if self.candidate_replay_repetitions <= 0:
+            raise ValueError("candidate_replay_repetitions must be positive")
+        if self.replay_timeout_seconds <= 0:
+            raise ValueError("replay_timeout_seconds must be positive")
+        if self.replay_stability_margin < 0:
+            raise ValueError("replay_stability_margin must be non-negative")
         return self
 
 
