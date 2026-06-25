@@ -112,12 +112,67 @@ class FilesystemSelfEvolveStore:
         )
         return backup_path, journal_path
 
+    def update_apply_journal(
+        self,
+        journal_path: str | Path,
+        *,
+        status: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> Path:
+        path = Path(journal_path)
+        payload = self._read_json(path)
+        payload["status"] = status
+        if details:
+            payload.setdefault("details", {}).update(dict(details))
+        self._write_json(path, payload)
+        return path
+
+    def recover_interrupted_apply(self, journal_path: str | Path) -> Mapping[str, Any]:
+        path = Path(journal_path)
+        payload = self._read_json(path)
+        status = payload.get("status")
+        if status not in {"backup_written", "applying"}:
+            return {
+                "status": "skipped",
+                "reason": "apply journal is not in an interrupted state",
+            }
+        backup_path = Path(str(payload.get("backup_path") or ""))
+        target_path = Path(str(payload.get("target_path") or ""))
+        if not backup_path.exists() or not target_path.exists():
+            recovery = {
+                "status": "recovery_failed",
+                "restored_from_backup": False,
+                "reason": "backup or target path is missing",
+            }
+            payload["status"] = "recovery_failed"
+            payload["recovery"] = recovery
+            self._write_json(path, payload)
+            return recovery
+
+        target_path.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
+        recovery = {
+            "status": "recovered_rolled_back",
+            "restored_from_backup": True,
+            "target_path": str(target_path),
+            "backup_path": str(backup_path),
+        }
+        payload["status"] = "recovered_rolled_back"
+        payload["recovery"] = recovery
+        self._write_json(path, payload)
+        return recovery
+
     def _write_json(self, path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(to_json_dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+
+    def _read_json(self, path: Path) -> dict[str, Any]:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"expected JSON object in {path}")
+        return payload
 
     def _validate_id(self, value: str, field_name: str) -> None:
         if not value or "/" in value or "\\" in value or value in {".", ".."}:

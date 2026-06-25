@@ -121,3 +121,44 @@ def test_run_record_serializes_metrics_and_gate_results(tmp_path) -> None:
     assert saved["status"] == "succeeded"
     assert saved["metrics"][0]["metrics"] == {"score": 0.5}
     assert saved["gate_results"][0]["passed"] is True
+
+
+def test_store_recovers_interrupted_apply_from_backup_journal(tmp_path) -> None:
+    target_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    target_path.parent.mkdir(parents=True)
+    original = "---\nname: demo\n---\n# Demo\n\nOriginal.\n"
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nCandidate.\n"
+    target_path.write_text(original, encoding="utf-8")
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(target_path),
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-1",
+        target=target,
+        content=candidate_content,
+        rationale="candidate",
+    )
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    store.create_run(SelfEvolveRun(run_id="run-apply", target=target))
+    _backup_path, journal_path = store.write_apply_backup(
+        "run-apply",
+        candidate=candidate,
+        original_content=original,
+        target_path=str(target_path),
+    )
+    store.update_apply_journal(
+        journal_path,
+        status="applying",
+        details={"candidate_written": True},
+    )
+    target_path.write_text(candidate_content, encoding="utf-8")
+
+    recovery = store.recover_interrupted_apply(journal_path)
+
+    assert recovery["status"] == "recovered_rolled_back"
+    assert target_path.read_text(encoding="utf-8") == original
+    saved_journal = _read_json(journal_path)
+    assert saved_journal["status"] == "recovered_rolled_back"
+    assert saved_journal["recovery"]["restored_from_backup"] is True

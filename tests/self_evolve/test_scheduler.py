@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -443,3 +444,129 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["replay_enabled"] is True
     assert captured["replay_timeout_seconds"] == 120
     assert captured["replay_candidate_limit"] == 1
+
+
+def test_job_worker_persists_framework_result_and_replay_diagnostics(tmp_path) -> None:
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    result = scheduler.enqueue(
+        SelfEvolveRunContext(
+            agent_id="agent",
+            task_id="diagnostic-job",
+            workspace_root=str(tmp_path),
+            trajectory=_trajectory(),
+            self_evolve_config=SelfEvolveConfig(mode="shadow", replay_enabled=False),
+        )
+    )
+    assert result.job_path is not None
+
+    def run_job(payload):
+        return {
+            "status": "rejected",
+            "run_id": "run-1",
+            "report_path": ".aworld/self_evolve/run-1/report.json",
+            "replay_path": ".aworld/self_evolve/run-1/replay/cand-1",
+            "gate_results": [
+                {
+                    "gate_name": "candidate_replay",
+                    "passed": False,
+                    "reason": "candidate replay failed",
+                }
+            ],
+        }
+
+    drained = SelfEvolveJobWorker(workspace_root=tmp_path, run_job=run_job).drain_pending_jobs()
+
+    assert drained == 1
+    saved = json.loads(result.job_path.read_text(encoding="utf-8"))
+    assert saved["status"] == "succeeded"
+    assert saved["framework_result"]["status"] == "rejected"
+    assert saved["replay_diagnostics"]["replay_path"] == ".aworld/self_evolve/run-1/replay/cand-1"
+    assert saved["replay_diagnostics"]["failed_gates"][0]["gate_name"] == "candidate_replay"
+
+
+def test_job_worker_recovers_interrupted_apply_before_draining(tmp_path) -> None:
+    from aworld.self_evolve.store import FilesystemSelfEvolveStore
+    from aworld.self_evolve.types import CandidateVariant, SelfEvolveRun, SelfEvolveTargetRef
+
+    target_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    target_path.parent.mkdir(parents=True)
+    original = "---\nname: demo\n---\n# Demo\n\nOriginal.\n"
+    target_path.write_text(original, encoding="utf-8")
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(target_path))
+    candidate = CandidateVariant(
+        candidate_id="cand-1",
+        target=target,
+        content="---\nname: demo\n---\n# Demo\n\nCandidate.\n",
+        rationale="candidate",
+    )
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    store.create_run(SelfEvolveRun(run_id="run-interrupted", target=target))
+    _backup_path, journal_path = store.write_apply_backup(
+        "run-interrupted",
+        candidate=candidate,
+        original_content=original,
+        target_path=str(target_path),
+    )
+    store.update_apply_journal(journal_path, status="applying")
+    target_path.write_text(candidate.content, encoding="utf-8")
+
+    worker = SelfEvolveJobWorker(workspace_root=tmp_path)
+
+    recovered = worker.recover_interrupted_applies()
+
+    assert recovered == 1
+    assert target_path.read_text(encoding="utf-8") == original
+
+
+def test_job_worker_respects_max_jobs_resource_limit(tmp_path) -> None:
+    scheduler = SelfEvolveScheduler(
+        workspace_root=tmp_path,
+        policy=SelfEvolveSchedulerPolicy(allow_duplicate_pending=True),
+    )
+    for task_id in ("task-1", "task-2"):
+        result = scheduler.enqueue(
+            SelfEvolveRunContext(
+                agent_id="agent",
+                task_id=task_id,
+                workspace_root=str(tmp_path),
+                trajectory=_trajectory(),
+                self_evolve_config=SelfEvolveConfig(mode="shadow", replay_enabled=False),
+            )
+        )
+        assert result.accepted is True
+
+    drained = SelfEvolveJobWorker(
+        workspace_root=tmp_path,
+        run_job=lambda payload: {"status": "succeeded"},
+    ).drain_pending_jobs(max_jobs=1)
+
+    assert drained == 1
+    jobs = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((tmp_path / ".aworld" / "self_evolve" / "jobs").glob("*.json"))
+    ]
+    assert sum(1 for job in jobs if job["status"] == "pending") == 1
+    assert sum(1 for job in jobs if job["status"] == "succeeded") == 1
+
+
+def test_async_drain_entrypoint_offloads_sync_worker(monkeypatch, tmp_path) -> None:
+    from aworld.self_evolve.scheduler import drain_pending_self_evolve_jobs_async
+
+    calls = {}
+
+    def fake_drain_pending_self_evolve_jobs(*, workspace_root, max_jobs=None):
+        calls["workspace_root"] = workspace_root
+        calls["max_jobs"] = max_jobs
+        return 3
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.scheduler.drain_pending_self_evolve_jobs",
+        fake_drain_pending_self_evolve_jobs,
+    )
+
+    drained = asyncio.run(
+        drain_pending_self_evolve_jobs_async(workspace_root=tmp_path, max_jobs=2)
+    )
+
+    assert drained == 3
+    assert calls == {"workspace_root": tmp_path, "max_jobs": 2}

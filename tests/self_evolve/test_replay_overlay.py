@@ -6,6 +6,7 @@ import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
+from aworld.self_evolve.overlay import cleanup_self_evolve_overlays
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayRequest,
@@ -61,6 +62,24 @@ def test_candidate_skill_overlay_materializes_shadow_root_without_mutating_real_
     assert "Candidate." in loaded_demo.usage
     assert "Original." not in loaded_demo.usage
     assert "Helper" in loaded_helper.usage
+
+
+def test_cleanup_self_evolve_overlays_retains_latest_runs(tmp_path: Path) -> None:
+    root = tmp_path / ".aworld" / "self_evolve"
+    old_overlay = root / "run-old" / "overlays" / "cand-1" / "skills"
+    new_overlay = root / "run-new" / "overlays" / "cand-2" / "skills"
+    old_overlay.mkdir(parents=True)
+    new_overlay.mkdir(parents=True)
+    old_report = root / "run-old" / "report.json"
+    new_report = root / "run-new" / "report.json"
+    old_report.write_text("{}", encoding="utf-8")
+    new_report.write_text("{}", encoding="utf-8")
+
+    cleanup = cleanup_self_evolve_overlays(tmp_path, keep_latest_runs=1)
+
+    assert cleanup["removed_run_count"] == 1
+    assert not (root / "run-old" / "overlays").exists()
+    assert (root / "run-new" / "overlays").exists()
 
 
 def test_paired_replay_dataset_maps_baseline_and_candidate_trajectories() -> None:
@@ -156,6 +175,74 @@ def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
             replay_result=replay,
             candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
         )
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_aggregates_repetitions(
+    tmp_path: Path,
+) -> None:
+    calls = []
+    scores = {
+        "baseline-1": 0.4,
+        "baseline-2": 0.6,
+        "cand-1-1": 0.8,
+        "cand-1-2": 0.9,
+        "cand-1-3": 1.0,
+    }
+
+    async def fake_executor(request):
+        calls.append(request)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": request.variant_id},
+                    "reward": {"status": "ok"},
+                }
+            ],
+            metrics={"score": scores[request.variant_id]},
+        )
+
+    request = CandidateReplayRequest(
+        run_id="run-repetitions",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        task_input="Replay this task",
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+        dataset=SelfEvolveDataset(
+            cases=(EvalCase(case_id="task-1", input="Replay this task"),),
+            recipe=DatasetRecipe(
+                source={"kind": "test", "case_count": 1},
+                split_seed="seed",
+                splits={"train": ["task-1"], "validation": [], "held_out": []},
+            ),
+        ),
+    )
+
+    assert [call.variant_id for call in calls] == [
+        "baseline-1",
+        "baseline-2",
+        "cand-1-1",
+        "cand-1-2",
+        "cand-1-3",
+    ]
+    assert result.baseline.variant_id == "baseline"
+    assert result.baseline.metrics["repetition_count"] == 2
+    assert result.baseline.metrics["score"] == pytest.approx(0.5)
+    assert result.candidate.variant_id == "cand-1"
+    assert result.candidate.metrics["repetition_count"] == 3
+    assert result.candidate.metrics["score"] == pytest.approx(0.9)
+    assert result.candidate.trajectory[0]["action"]["content"] == "cand-1-3"
 
 
 @pytest.mark.asyncio

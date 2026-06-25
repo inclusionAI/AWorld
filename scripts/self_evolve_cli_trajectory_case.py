@@ -295,6 +295,11 @@ def _self_evolve_summary(
         "gate_results": report.get("gate_results", []) if isinstance(report, Mapping) else [],
         "candidate_metrics": report.get("candidate_metrics") if isinstance(report, Mapping) else None,
         "baseline_metrics": report.get("baseline_metrics") if isinstance(report, Mapping) else None,
+        "replay": report.get("replay") if isinstance(report, Mapping) else None,
+        "replay_path": report.get("replay_path") if isinstance(report, Mapping) else None,
+        "evaluator_report_paths": (
+            report.get("evaluator_report_paths") if isinstance(report, Mapping) else None
+        ),
         "report_path": str(report_path) if report_path is not None else None,
         "target_selection_path": (
             str(target_selection_path) if target_selection_path is not None else None
@@ -328,6 +333,16 @@ def _evaluate_design_goal(
         reasons.append("no candidate was selected")
     if not self_evolve.get("candidate_metrics"):
         reasons.append("no candidate metrics were produced")
+    if apply_policy == "auto_verified":
+        replay = self_evolve.get("replay")
+        candidate_replay = replay.get("candidate") if isinstance(replay, Mapping) else None
+        candidate_replay_status = (
+            candidate_replay.get("status")
+            if isinstance(candidate_replay, Mapping)
+            else None
+        )
+        if candidate_replay_status != "succeeded" or not self_evolve.get("replay_path"):
+            reasons.append("auto_verified run did not produce successful candidate replay")
 
     selected_target = (
         target_selection.get("selected_target")
@@ -450,6 +465,7 @@ def _render_markdown_report(result: Mapping[str, Any]) -> str:
         f"- Candidate ids: {self_evolve.get('candidate_ids')}\n"
         f"- Selected candidate: {self_evolve.get('selected_candidate_id')}\n"
         f"- Report path: {self_evolve.get('report_path')}\n"
+        f"- Replay path: {self_evolve.get('replay_path')}\n"
         f"- Target selection path: {self_evolve.get('target_selection_path')}\n\n"
         "## Evaluation\n\n"
         f"- Verdict: {evaluation['verdict']}\n"

@@ -102,6 +102,7 @@ class SelfEvolveRunner:
         candidate_replay_repetitions: int = 1,
         replay_stability_margin: float = 0.0,
         replay_agent: str | None = None,
+        runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -123,6 +124,7 @@ class SelfEvolveRunner:
         self.candidate_replay_repetitions = candidate_replay_repetitions
         self.replay_stability_margin = replay_stability_margin
         self.replay_agent = replay_agent
+        self.runtime_registry_refresher = runtime_registry_refresher
 
     async def run_explicit_target(
         self,
@@ -241,6 +243,12 @@ class SelfEvolveRunner:
             )
             if replay_gate is not None:
                 gate_results.append(replay_gate)
+            replay_confidence_gate = _replay_confidence_gate(
+                replay_result,
+                apply_policy=apply_policy,
+            )
+            if replay_confidence_gate is not None:
+                gate_results.append(replay_confidence_gate)
 
         evaluation_dataset = replay_dataset or dataset
         if self.evaluation_backend is not None and selected_candidate is not None:
@@ -451,6 +459,8 @@ class SelfEvolveRunner:
             timeout_seconds=self.replay_timeout_seconds,
             max_steps=self.replay_max_steps,
             max_tokens=self.max_run_tokens,
+            baseline_repetitions=self.baseline_replay_repetitions,
+            candidate_repetitions=self.candidate_replay_repetitions,
         )
         replay_result = await self.candidate_replay_backend.replay_candidate(
             request,
@@ -499,6 +509,11 @@ class SelfEvolveRunner:
             original_content=original_content,
             target_path=target.identity.path,
         )
+        self.store.update_apply_journal(
+            journal_path,
+            status="applying",
+            details={"candidate_id": candidate.candidate_id},
+        )
         target.apply_candidate(candidate.content)
         summary = self.post_apply_evaluator(candidate)
         if inspect.isawaitable(summary):
@@ -506,15 +521,37 @@ class SelfEvolveRunner:
         if not isinstance(summary, EvaluationSummary):
             raise ValueError("post_apply_evaluator must return EvaluationSummary")
         if summary.metrics.get("post_apply_passed") is True:
-            return {
+            refresh_result: Any = None
+            if self.runtime_registry_refresher is not None:
+                refresh_result = self.runtime_registry_refresher(candidate)
+                if inspect.isawaitable(refresh_result):
+                    refresh_result = await refresh_result
+            self.store.update_apply_journal(
+                journal_path,
+                status="accepted",
+                details={"post_apply_passed": True},
+            )
+            result = {
                 "status": "accepted",
                 "metrics": dict(summary.metrics),
                 "dataset_split": summary.dataset_split,
                 "backup_path": str(backup_path),
                 "journal_path": str(journal_path),
             }
+            if refresh_result is not None:
+                result["refresh"] = (
+                    dict(refresh_result)
+                    if isinstance(refresh_result, Mapping)
+                    else {"result": refresh_result}
+                )
+            return result
 
         target.rollback()
+        self.store.update_apply_journal(
+            journal_path,
+            status="rolled_back",
+            details={"post_apply_passed": False},
+        )
         return {
             "status": "rolled_back",
             "metrics": dict(summary.metrics),
@@ -982,6 +1019,40 @@ def _replay_gate_details(replay_result: CandidateReplayResult) -> dict[str, obje
         "baseline_failure": replay_result.baseline.failure,
         "candidate_failure": replay_result.candidate.failure,
     }
+
+
+def _replay_confidence_gate(
+    replay_result: CandidateReplayResult | None,
+    *,
+    apply_policy: str,
+) -> GateResult | None:
+    if replay_result is None or apply_policy != "auto_verified":
+        return None
+    baseline_source = replay_result.baseline.metrics.get("replay_source")
+    candidate_repetitions = replay_result.candidate.metrics.get("repetition_count")
+    if (
+        baseline_source == "historical"
+        and isinstance(candidate_repetitions, (int, float))
+        and int(candidate_repetitions) <= 1
+    ):
+        return GateResult(
+            gate_name="replay_confidence",
+            passed=False,
+            reason="fixed historical baseline plus one candidate rerun is limited confidence",
+            details={
+                "baseline_replay_source": baseline_source,
+                "candidate_repetition_count": int(candidate_repetitions),
+            },
+        )
+    return GateResult(
+        gate_name="replay_confidence",
+        passed=True,
+        reason="replay comparison has sufficient confidence for policy",
+        details={
+            "baseline_replay_source": baseline_source,
+            "candidate_repetition_count": candidate_repetitions,
+        },
+    )
 
 
 def _replay_stability_gate(

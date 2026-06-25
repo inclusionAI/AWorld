@@ -69,7 +69,11 @@ from aworld.self_evolve.optimizers import (
     OptimizerResult,
     TraceReflectiveLLMMutator,
 )
-from aworld.self_evolve.overlay import SkillOverlayArtifact, create_candidate_skill_overlay
+from aworld.self_evolve.overlay import (
+    SkillOverlayArtifact,
+    cleanup_self_evolve_overlays,
+    create_candidate_skill_overlay,
+)
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     AWorldCliReplayExecutor,
@@ -95,6 +99,7 @@ from aworld.self_evolve.scheduler import (
     SelfEvolveSchedulerPolicy,
     SelfEvolveScheduler,
     drain_pending_self_evolve_jobs,
+    drain_pending_self_evolve_jobs_async,
 )
 from aworld.self_evolve.trace_pack import (
     TraceEvidenceStep,
@@ -193,8 +198,10 @@ __all__ = [
     "build_judge_backend",
     "build_paired_replay_dataset",
     "build_replay_request",
+    "cleanup_self_evolve_overlays",
     "create_candidate_skill_overlay",
     "drain_pending_self_evolve_jobs",
+    "drain_pending_self_evolve_jobs_async",
     "determine_candidate_confidence",
     "estimate_replay_cost",
     "evaluate_baseline_and_candidate",

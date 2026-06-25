@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import time
 from dataclasses import dataclass, field
@@ -127,10 +128,15 @@ class SelfEvolveJobWorker:
         self.workspace_root = Path(workspace_root)
         self.run_job = run_job or _run_framework_job
 
-    def drain_pending_jobs(self) -> int:
+    def drain_pending_jobs(self, *, max_jobs: int | None = None) -> int:
+        if max_jobs is not None and max_jobs <= 0:
+            raise ValueError("max_jobs must be positive")
+        self.recover_interrupted_applies()
         drained = 0
         jobs_dir = self.workspace_root / ".aworld" / "self_evolve" / "jobs"
         for job_path in sorted(jobs_dir.glob("*.json")):
+            if max_jobs is not None and drained >= max_jobs:
+                break
             payload = json.loads(job_path.read_text(encoding="utf-8"))
             if payload.get("status") != "pending":
                 continue
@@ -138,7 +144,7 @@ class SelfEvolveJobWorker:
             payload["status"] = "running"
             _write_job(job_path, payload)
             try:
-                self.run_job(payload)
+                framework_result = self.run_job(payload)
             except Exception as exc:
                 payload["status"] = "failed"
                 payload["failure"] = {
@@ -147,15 +153,48 @@ class SelfEvolveJobWorker:
                 }
             else:
                 payload["status"] = "succeeded"
+                if isinstance(framework_result, Mapping):
+                    payload["framework_result"] = dict(framework_result)
+                    payload["replay_diagnostics"] = _replay_diagnostics(framework_result)
             _write_job(job_path, payload)
         return drained
 
+    def recover_interrupted_applies(self) -> int:
+        from aworld.self_evolve.store import FilesystemSelfEvolveStore
 
-def drain_pending_self_evolve_jobs(*, workspace_root: str | Path) -> int:
-    return SelfEvolveJobWorker(workspace_root=workspace_root).drain_pending_jobs()
+        store = FilesystemSelfEvolveStore(self.workspace_root)
+        recovered = 0
+        artifact_root = self.workspace_root / ".aworld" / "self_evolve"
+        for journal_path in sorted(artifact_root.glob("*/apply/*.journal.json")):
+            result = store.recover_interrupted_apply(journal_path)
+            if result.get("status") == "recovered_rolled_back":
+                recovered += 1
+        return recovered
 
 
-def _run_framework_job(payload: Mapping[str, Any]) -> None:
+def drain_pending_self_evolve_jobs(
+    *,
+    workspace_root: str | Path,
+    max_jobs: int | None = None,
+) -> int:
+    return SelfEvolveJobWorker(workspace_root=workspace_root).drain_pending_jobs(
+        max_jobs=max_jobs,
+    )
+
+
+async def drain_pending_self_evolve_jobs_async(
+    *,
+    workspace_root: str | Path,
+    max_jobs: int | None = None,
+) -> int:
+    return await asyncio.to_thread(
+        drain_pending_self_evolve_jobs,
+        workspace_root=workspace_root,
+        max_jobs=max_jobs,
+    )
+
+
+def _run_framework_job(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     from aworld.self_evolve.runner import optimize_from_cli_request
 
     raw_config = payload.get("self_evolve_config")
@@ -167,7 +206,7 @@ def _run_framework_job(payload: Mapping[str, Any]) -> None:
     trajectory = payload.get("trajectory")
     if not isinstance(trajectory, list):
         raise ValueError("self-evolve job payload requires trajectory list")
-    optimize_from_cli_request(
+    return optimize_from_cli_request(
         workspace_root=str(payload.get("workspace_root") or "."),
         agent=str(payload.get("agent_id")) if payload.get("agent_id") else None,
         task=str(payload.get("task_id") or "self-evolve-job"),
@@ -190,6 +229,29 @@ def _run_framework_job(payload: Mapping[str, Any]) -> None:
         candidate_replay_repetitions=config.candidate_replay_repetitions,
         replay_stability_margin=config.replay_stability_margin,
     )
+
+
+def _replay_diagnostics(result: Mapping[str, Any]) -> dict[str, Any]:
+    gate_results = result.get("gate_results")
+    failed_gates = []
+    if isinstance(gate_results, list):
+        failed_gates = [
+            dict(gate)
+            for gate in gate_results
+            if isinstance(gate, Mapping) and gate.get("passed") is False
+        ]
+    diagnostics: dict[str, Any] = {
+        "status": result.get("status"),
+        "report_path": result.get("report_path"),
+        "replay_path": result.get("replay_path"),
+        "failed_gates": failed_gates,
+    }
+    evaluator_report_paths = result.get("evaluator_report_paths")
+    if isinstance(evaluator_report_paths, list):
+        diagnostics["evaluator_report_paths"] = [
+            item for item in evaluator_report_paths if isinstance(item, str)
+        ]
+    return diagnostics
 
 
 def _write_job(path: Path, payload: Mapping[str, Any]) -> None:
