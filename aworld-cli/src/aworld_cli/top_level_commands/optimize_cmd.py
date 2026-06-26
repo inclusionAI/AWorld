@@ -111,10 +111,8 @@ def render_optimize_summary(report: Any) -> str:
     target_selection_path = _read_report_value(report, "target_selection_path")
     replay_path = _read_report_value(report, "replay_path")
     evaluator_report_paths = _read_report_value(report, "evaluator_report_paths") or []
-    candidate_id = _read_report_value(report, "best_candidate_id") or _read_report_value(
-        report,
-        "selected_candidate_id",
-    )
+    best_candidate_id = _read_report_value(report, "best_candidate_id")
+    selected_candidate_id = _read_report_value(report, "selected_candidate_id")
 
     lines = ["Optimize run submitted."]
     if status:
@@ -129,8 +127,10 @@ def render_optimize_summary(report: Any) -> str:
         for report_path_item in evaluator_report_paths:
             if report_path_item:
                 lines.append(f"Evaluator report: {report_path_item}")
-    if candidate_id:
-        lines.append(f"Best candidate: {candidate_id}")
+    if best_candidate_id:
+        lines.append(f"Best candidate: {best_candidate_id}")
+    elif selected_candidate_id:
+        lines.append(f"Selected candidate: {selected_candidate_id}")
     return "\n".join(lines)
 
 

@@ -230,8 +230,8 @@ class SelfEvolveConfig(BaseConfig):
     requires_post_apply_reevaluation: bool = True
     judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
     replay_enabled: bool = True
-    replay_timeout_seconds: int = 120
-    replay_max_steps: Optional[int] = None
+    replay_timeout_seconds: int = 600
+    replay_max_steps: Optional[int] = 1
     replay_candidate_limit: int = 1
     baseline_replay_repetitions: int = 1
     candidate_replay_repetitions: int = 1

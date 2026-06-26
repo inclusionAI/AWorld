@@ -144,6 +144,17 @@ baseline trajectory as sufficient proof for `auto_verified` apply.
 - **AND** replay cost estimates MUST include baseline repetitions, candidate
   repetitions, and judge repetitions
 
+#### Scenario: Replay runs through the CLI default agent path
+
+- **WHEN** a caller requests `auto_verified` replay without an explicit replay
+  step or timeout budget
+- **THEN** AWorld MUST bound each CLI replay rollout to one direct-run
+  iteration by default
+- **AND** AWorld MUST use a default per-variant replay timeout suitable for
+  real networked agent tasks
+- **AND** callers MAY raise the replay step or timeout budget explicitly for
+  tasks that need multi-iteration evidence
+
 ### Requirement: Auto-verified apply MUST depend on candidate rerun and gates
 
 For skill targets, `auto_verified` MUST apply a candidate only after candidate
