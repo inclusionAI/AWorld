@@ -864,6 +864,11 @@ def optimize_from_cli_request(
             summary["evaluator_report_paths"] = [
                 item for item in evaluator_report_paths if isinstance(item, str)
             ]
+        gate_results = report_payload.get("gate_results")
+        if isinstance(gate_results, list):
+            summary["gate_results"] = [
+                item for item in gate_results if isinstance(item, Mapping)
+            ]
     return summary
 
 

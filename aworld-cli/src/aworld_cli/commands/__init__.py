@@ -14,6 +14,7 @@ Available Commands:
 - /dispatch: Submit task to background execution (tool command)
 - /tasks: Manage background tasks (tool command)
 - /evaluation: Run evaluator flows (tool command)
+- /optimize: Run self-evolve optimization (tool command)
 
 Usage:
     # Import to register all commands
@@ -35,6 +36,7 @@ from . import dispatch
 from . import tasks
 from . import plugins_cmd
 from . import evaluation_cmd
+from . import optimize_cmd
 
 __all__ = [
     "help_cmd",
@@ -47,4 +49,5 @@ __all__ = [
     "tasks",
     "plugins_cmd",
     "evaluation_cmd",
+    "optimize_cmd",
 ]

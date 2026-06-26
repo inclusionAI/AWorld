@@ -15,6 +15,7 @@ from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     _default_post_apply_evaluator,
     optimize_explicit_target,
+    optimize_from_cli_request,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
@@ -1315,6 +1316,107 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     assert replay_max_steps == [1]
     assert report_summary["best_candidate_id"] is None
     assert report_summary["selected_candidate_id"] is not None
+    assert any(
+        gate["gate_name"] == "candidate_replay" and gate["passed"] is False
+        for gate in report_summary["gate_results"]
+    )
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
+
+
+def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(tmp_path: Path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory_log = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        trajectory_log,
+        [
+            {
+                "task_id": f"release-smoke-{index}",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                        "state": {"input": {"content": f"Improve demo guidance {index}."}},
+                        "action": {"content": "demo guidance failed"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            }
+            for index in range(5)
+        ],
+    )
+
+    class SuccessfulReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[
+                        {"state": {"input": request.task_input}, "action": {"content": "old"}}
+                    ],
+                    metrics={"repetition_count": 1},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[
+                        {"state": {"input": request.task_input}, "action": {"content": "new"}}
+                    ],
+                    metrics={"repetition_count": 1},
+                ),
+            )
+
+    class VerifiedEvaluationBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.2, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        from_trajectory=str(trajectory_log),
+        apply_policy="auto_verified",
+        replay_enabled=True,
+        candidate_replay_backend=SuccessfulReplayBackend(),
+        evaluation_backend=VerifiedEvaluationBackend(),
+        min_eval_cases=1,
+    )
+
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    updated_content = skill_path.read_text(encoding="utf-8")
+    candidate_id = report_summary["best_candidate_id"]
+
+    assert report_summary["status"] == "succeeded"
+    assert candidate_id == report["selected_candidate_id"]
+    assert updated_content != original_content
+    assert "Self-Evolve Trace Guidance" in updated_content
+    assert report["post_apply"]["status"] == "accepted"
+    assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert report["post_apply"]["metrics"]["runtime_content_matches"] is True
+    assert report["post_apply"]["metrics"]["loaded_from_real_path"] is True
+    assert Path(report["post_apply"]["backup_path"]).exists()
+    journal = json.loads(Path(report["post_apply"]["journal_path"]).read_text(encoding="utf-8"))
+    assert journal["status"] == "accepted"
+    assert journal["target"]["target_id"] == "demo"

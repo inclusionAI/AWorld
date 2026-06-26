@@ -113,6 +113,7 @@ def render_optimize_summary(report: Any) -> str:
     evaluator_report_paths = _read_report_value(report, "evaluator_report_paths") or []
     best_candidate_id = _read_report_value(report, "best_candidate_id")
     selected_candidate_id = _read_report_value(report, "selected_candidate_id")
+    failed_gate_names = _failed_gate_names(_read_report_value(report, "gate_results"))
 
     lines = ["Optimize run submitted."]
     if status:
@@ -131,6 +132,8 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Best candidate: {best_candidate_id}")
     elif selected_candidate_id:
         lines.append(f"Selected candidate: {selected_candidate_id}")
+    if status == "rejected" and failed_gate_names:
+        lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
     return "\n".join(lines)
 
 
@@ -228,3 +231,18 @@ def _read_report_value(report: Any, key: str) -> Any:
     if isinstance(report, Mapping):
         return report.get(key)
     return getattr(report, key, None)
+
+
+def _failed_gate_names(gate_results: Any) -> list[str]:
+    if not isinstance(gate_results, (list, tuple)):
+        return []
+    names: list[str] = []
+    for item in gate_results:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("passed") is not False:
+            continue
+        gate_name = item.get("gate_name")
+        if isinstance(gate_name, str):
+            names.append(gate_name)
+    return names

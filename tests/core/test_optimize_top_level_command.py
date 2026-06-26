@@ -538,6 +538,27 @@ def test_render_optimize_summary_distinguishes_selected_from_best_candidate() ->
     assert "Best candidate:" not in summary
 
 
+def test_render_optimize_summary_lists_failed_gates_for_rejected_runs() -> None:
+    from aworld_cli.top_level_commands.optimize_cmd import render_optimize_summary
+
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "selected_candidate_id": "cand-selected",
+            "gate_results": [
+                {"gate_name": "score_improvement", "passed": True},
+                {"gate_name": "held_out_verification", "passed": False},
+                {"gate_name": "global_regression_benchmark", "passed": False},
+            ],
+        }
+    )
+
+    assert (
+        "Rejected gates: held_out_verification, global_regression_benchmark"
+        in summary
+    )
+
+
 def test_optimize_command_module_does_not_own_framework_self_evolve_components() -> None:
     import aworld_cli.top_level_commands.optimize_cmd as optimize_cmd
 
