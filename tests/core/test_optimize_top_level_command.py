@@ -523,6 +523,21 @@ def test_render_optimize_summary_includes_status_and_target_selection_path() -> 
     )
 
 
+def test_render_optimize_summary_distinguishes_selected_from_best_candidate() -> None:
+    from aworld_cli.top_level_commands.optimize_cmd import render_optimize_summary
+
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "selected_candidate_id": "cand-selected",
+            "best_candidate_id": None,
+        }
+    )
+
+    assert "Selected candidate: cand-selected" in summary
+    assert "Best candidate:" not in summary
+
+
 def test_optimize_command_module_does_not_own_framework_self_evolve_components() -> None:
     import aworld_cli.top_level_commands.optimize_cmd as optimize_cmd
 

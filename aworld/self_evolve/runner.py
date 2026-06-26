@@ -95,8 +95,8 @@ class SelfEvolveRunner:
         auto_apply_target_types: tuple[str, ...] = ("skill",),
         replay_enabled: bool = False,
         candidate_replay_backend: CandidateReplayBackend | None = None,
-        replay_timeout_seconds: int = 120,
-        replay_max_steps: int | None = None,
+        replay_timeout_seconds: int = 600,
+        replay_max_steps: int | None = 1,
         replay_candidate_limit: int = 1,
         baseline_replay_repetitions: int = 1,
         candidate_replay_repetitions: int = 1,
@@ -633,8 +633,8 @@ def optimize_from_cli_request(
     judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None = None,
     replay_enabled: bool = False,
     candidate_replay_backend: CandidateReplayBackend | None = None,
-    replay_timeout_seconds: int = 120,
-    replay_max_steps: int | None = None,
+    replay_timeout_seconds: int = 600,
+    replay_max_steps: int | None = 1,
     replay_candidate_limit: int = 1,
     baseline_replay_repetitions: int = 1,
     candidate_replay_repetitions: int = 1,
@@ -831,13 +831,19 @@ def optimize_from_cli_request(
         target_provenance_path = run_path / "target_provenance.json"
 
     report_path = run_path / "report.json"
+    selected_candidate_id = (
+        result.selected_candidate.candidate_id
+        if result.selected_candidate is not None
+        else None
+    )
     summary = {
         "report_path": str(report_path),
         "best_candidate_id": (
-            result.selected_candidate.candidate_id
-            if result.selected_candidate is not None
+            selected_candidate_id
+            if result.run.status.value == "succeeded" and apply_policy == "auto_verified"
             else None
         ),
+        "selected_candidate_id": selected_candidate_id,
         "run_id": result.run.run_id,
         "status": result.run.status.value,
     }

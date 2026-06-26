@@ -1268,6 +1268,7 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     ]
     created = {"count": 0}
     replay_agents = []
+    replay_max_steps = []
 
     class FakeDefaultReplayBackend:
         def __init__(self):
@@ -1277,6 +1278,7 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
             from aworld.self_evolve.replay import CandidateReplayResult, ReplayVariantResult
 
             replay_agents.append(request.agent)
+            replay_max_steps.append(request.max_steps)
             return CandidateReplayResult(
                 request=request,
                 baseline=ReplayVariantResult(
@@ -1310,6 +1312,9 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
 
     assert created["count"] == 1
     assert replay_agents == ["Aworld"]
+    assert replay_max_steps == [1]
+    assert report_summary["best_candidate_id"] is None
+    assert report_summary["selected_candidate_id"] is not None
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}

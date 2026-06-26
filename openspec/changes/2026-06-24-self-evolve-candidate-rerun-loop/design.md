@@ -92,6 +92,11 @@ existing `aworld-cli` configuration chain (`.env`, global config, provider
 environment variables) is reused. Replay MUST NOT introduce a separate model
 credential or provider configuration path; only runtime prerequisites such as
 browser/CDP availability may be reported as replay environment context.
+The default replay budget should be one `aworld-cli run` iteration and a
+600-second per-variant timeout so a candidate rerun captures the first task
+answer instead of drifting into the CLI's multi-iteration default while still
+giving real networked agent tasks enough time to finish. Callers may explicitly
+raise these budgets for tasks that require multi-step replay evidence.
 
 The CLI replay path MUST request machine-readable trajectory output from
 `aworld-cli run` instead of scraping human console rendering. It should produce:
