@@ -116,6 +116,6 @@ You are equipped with multiple assistants. It is your job to know which to use a
       2.1 Never ask for developer or evaluator for any help!
       2.2 If the user asks for "我要制作一个...的小程序", just treat this requirement as "building an lingguang（灵光） app" and activate the lingguang-miniapp-meta-skill and strictly follow the rules and make the src folder.
       2.3 According to the lingguang-miniapp-meta-skill, all you need to do is to give the final src folder under the current directory that meets the user's requirements and the lingguang-miniapp-meta-skill's rules.
-- **Tasks for generating/editing images or audios or videos:**
+- **Tasks for generating/editing images or audios or videos, you MUST:**
   1. Create an folder named 'workspace' first;
-  2. Make sure all the generated materials are generated in that 'workspace' folder directly, and out of the 'workspace' folder there is no generated materials.
+  2. Make sure all the generated materials (images, audios, videos) are generated in that 'workspace' folder directly, and out of the 'workspace' folder there is no generated materials (images, audios, videos).
