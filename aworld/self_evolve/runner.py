@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Any
 from pathlib import Path
 from typing import Mapping, Iterable
@@ -70,6 +70,7 @@ from aworld.self_evolve.types import (
     to_json_dict,
 )
 from aworld.skills.compat_provider import build_compat_registry
+from aworld.skills.release import mark_skill_content_verified
 
 
 @dataclass(frozen=True)
@@ -527,8 +528,18 @@ class SelfEvolveRunner:
             status="applying",
             details={"candidate_id": candidate.candidate_id},
         )
-        target.apply_candidate(candidate.content)
-        summary = self.post_apply_evaluator(candidate)
+        applied_candidate = candidate
+        if target.identity.target_type == "skill":
+            applied_candidate = replace(
+                candidate,
+                content=mark_skill_content_verified(
+                    candidate.content,
+                    run_id=run_id,
+                    candidate_id=candidate.candidate_id,
+                ),
+            )
+        target.apply_candidate(applied_candidate.content)
+        summary = self.post_apply_evaluator(applied_candidate)
         if inspect.isawaitable(summary):
             summary = await summary
         if not isinstance(summary, EvaluationSummary):
@@ -536,13 +547,13 @@ class SelfEvolveRunner:
         if summary.metrics.get("post_apply_passed") is True:
             refresh_result: Any = None
             if self.runtime_registry_refresher is not None:
-                refresh_result = self.runtime_registry_refresher(candidate)
+                refresh_result = self.runtime_registry_refresher(applied_candidate)
                 if inspect.isawaitable(refresh_result):
                     refresh_result = await refresh_result
             self.store.update_apply_journal(
                 journal_path,
                 status="accepted",
-                details={"post_apply_passed": True},
+                details={"post_apply_passed": True, "release_state": "verified"},
             )
             result = {
                 "status": "accepted",
@@ -550,6 +561,7 @@ class SelfEvolveRunner:
                 "dataset_split": summary.dataset_split,
                 "backup_path": str(backup_path),
                 "journal_path": str(journal_path),
+                "release_state": "verified",
             }
             if refresh_result is not None:
                 result["refresh"] = (

@@ -81,6 +81,7 @@ def test_registry_builds_compat_skill_config():
         "usage": "# Browser skill",
         "type": "agent",
         "active": True,
+        "self_evolve": {},
         "skill_path": "/tmp/browser-use/SKILL.md",
         "asset_root": "/tmp/browser-use",
         "path_aliases": [

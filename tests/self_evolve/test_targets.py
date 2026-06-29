@@ -53,7 +53,10 @@ def test_skill_text_target_preserves_proposal_without_mutating_source(tmp_path) 
     proposal_path, diff_path = target.preserve_proposal(store, "run-target", candidate)
 
     assert skill_path.read_text(encoding="utf-8") == original_content
-    assert proposal_path.read_text(encoding="utf-8") == candidate.content
+    proposal_content = proposal_path.read_text(encoding="utf-8")
+    assert "release_state: candidate" in proposal_content
+    assert "candidate_id: cand-1" in proposal_content
+    assert "\n---\nUpdated skill text." in proposal_content
     assert "+Updated skill text." in diff_path.read_text(encoding="utf-8")
 
 

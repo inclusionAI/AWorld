@@ -97,6 +97,9 @@ async def test_runner_persists_proposal_artifacts_without_mutating_skill_target(
 
     assert candidate_path.exists()
     assert diff_path.exists()
+    candidate_artifact = candidate_path.read_text(encoding="utf-8")
+    assert "release_state: candidate" in candidate_artifact
+    assert "Mention CDP profile mismatch." in candidate_artifact
     assert "-Old guidance." in diff_path.read_text(encoding="utf-8")
     assert "+Mention CDP profile mismatch." in diff_path.read_text(encoding="utf-8")
     assert json.loads(lineage_path.read_text(encoding="utf-8"))["trainable_case_ids"] == [
@@ -184,7 +187,11 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     )
 
     assert result.run.status.value == "succeeded"
-    assert skill_path.read_text(encoding="utf-8") == candidate_content
+    updated_content = skill_path.read_text(encoding="utf-8")
+    assert "self_evolve:" in updated_content
+    assert "release_state: verified" in updated_content
+    assert "verified_run_id: run-auto-verified" in updated_content
+    assert "# Demo\n\nVerified guidance." in updated_content
     report = json.loads((store.run_path("run-auto-verified") / "report.json").read_text(encoding="utf-8"))
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
@@ -595,7 +602,10 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     )
 
     assert result.run.status.value == "succeeded"
-    assert skill_path.read_text(encoding="utf-8") == candidate_content
+    applied_content = skill_path.read_text(encoding="utf-8")
+    assert "release_state: verified" in applied_content
+    assert "verified_run_id: run-replay-eval" in applied_content
+    assert "# Demo\n\nReplay verified guidance." in applied_content
     assert replay_backend.requests
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
@@ -1053,7 +1063,8 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
         / f"{report['selected_candidate_id']}.md"
     )
     candidate_content = candidate_path.read_text(encoding="utf-8")
-    assert candidate_content.startswith("---\nname: agent-browser\n---")
+    assert candidate_content.startswith("---\nname: agent-browser\nself_evolve:")
+    assert "release_state: candidate" in candidate_content
     assert "Self-Evolve Trace Guidance" in candidate_content
     assert "browser-login-task" in candidate_content
 
@@ -1411,6 +1422,8 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     assert report_summary["status"] == "succeeded"
     assert candidate_id == report["selected_candidate_id"]
     assert updated_content != original_content
+    assert "release_state: verified" in updated_content
+    assert f"verified_run_id: {report['run_id']}" in updated_content
     assert "Self-Evolve Trace Guidance" in updated_content
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True

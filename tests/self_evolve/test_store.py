@@ -83,7 +83,11 @@ def test_store_persists_candidate_report_recipe_and_lineage(tmp_path) -> None:
     lineage_path = store.write_optimizer_lineage(run.run_id, lineage)
 
     assert content_path == tmp_path / ".aworld" / "self_evolve" / "run-002" / "candidates" / "cand-1.md"
-    assert content_path.read_text(encoding="utf-8") == candidate.content
+    candidate_artifact = content_path.read_text(encoding="utf-8")
+    assert "release_state: candidate" in candidate_artifact
+    assert "run_id: run-002" in candidate_artifact
+    assert "candidate_id: cand-1" in candidate_artifact
+    assert "# Demo\n\nUpdated skill text.\n" in candidate_artifact
     assert _read_json(content_path.with_suffix(".json"))["rationale"] == candidate.rationale
     assert _read_json(report_path) == report
     assert _read_json(recipe_path)["held_out_case_ids"] == ["case-3"]

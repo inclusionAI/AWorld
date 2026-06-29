@@ -12,14 +12,26 @@ from aworld_cli.core.skill_activation_resolver import (  # type: ignore[attr-def
 )
 
 
-def _write_skill(root: Path, skill_name: str, description: str | None = None) -> None:
+def _write_skill(
+    root: Path,
+    skill_name: str,
+    description: str | None = None,
+    *,
+    release_state: str | None = None,
+) -> None:
     skill_dir = root / "skills" / skill_name
     skill_dir.mkdir(parents=True)
+    self_evolve_block = (
+        f"self_evolve:\n  release_state: {release_state}\n"
+        if release_state is not None
+        else ""
+    )
     (skill_dir / "SKILL.md").write_text(
         (
             "---\n"
             f"name: {skill_name}\n"
             f"description: {description or skill_name}\n"
+            f"{self_evolve_block}"
             "---\n\n"
             f"# {skill_name}\n"
         ),
@@ -193,6 +205,30 @@ def test_resolver_filters_disabled_skill_names(tmp_path: Path) -> None:
     )
 
     assert "youtube_search" not in result.skill_configs
+
+
+@pytest.mark.parametrize("blocked_state", ["candidate", "rejected", "disabled"])
+def test_resolver_filters_unreleased_self_evolve_skill_candidates(
+    tmp_path: Path,
+    blocked_state: str,
+) -> None:
+    skills_root = tmp_path / "runtime-skills"
+    _write_skill(skills_root, "media_comprehension", release_state=blocked_state)
+    _write_skill(skills_root, "stable_skill", release_state="verified")
+    _write_skill(skills_root, "legacy_skill")
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=tuple(),
+            runtime_scope="workspace",
+            agent_name="developer",
+            compatibility_sources=(str(skills_root / "skills"),),
+        )
+    )
+
+    assert "media_comprehension" not in result.skill_configs
+    assert "stable_skill" in result.skill_configs
+    assert "legacy_skill" in result.skill_configs
 
 
 def test_resolver_preserves_plugin_execution_entrypoint_metadata(tmp_path: Path) -> None:
