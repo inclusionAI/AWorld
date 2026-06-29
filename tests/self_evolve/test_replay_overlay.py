@@ -343,7 +343,14 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_w
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout="human output\n" + json.dumps({"trajectory": trajectory}) + "\n",
+            stdout="human output\n"
+            + json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
             stderr="",
         )
 
@@ -368,6 +375,55 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_w
     assert "--emit-trajectory" in captured["command"]
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert "env" not in captured["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_rejects_summary_synthetic_trajectory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": [
+                        {
+                            "state": {"input": {"content": "Replay this task"}},
+                            "action": {"content": "summary only", "tool_calls": []},
+                            "reward": {"status": "ok"},
+                        }
+                    ],
+                    "trajectory_capture_mode": "summary_synthetic",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            agent="Aworld",
+        )
+    )
+
+    assert result.succeeded is False
+    assert result.failure == {
+        "reason": "trajectory_capture_mode_unsupported",
+        "detail": "self-evolve replay requires TaskResponse.trajectory evidence",
+        "trajectory_capture_mode": "summary_synthetic",
+    }
 
 
 @pytest.mark.asyncio

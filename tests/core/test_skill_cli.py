@@ -592,6 +592,80 @@ def test_run_top_level_command_emits_machine_readable_trajectory(
     assert payload["trajectory"][0]["state"]["input"]["content"] == "Replay this task"
 
 
+def test_run_top_level_command_prefers_task_response_trajectory(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    full_trajectory = [
+        {
+            "id": "step-1",
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "input": {"content": "Replay this task"},
+                "messages": [{"role": "assistant", "content": "tool evidence"}],
+            },
+            "action": {
+                "content": "Replay completed.",
+                "is_agent_finished": "True",
+                "tool_calls": [{"name": "browser", "arguments": {"url": "https://example.com"}}],
+            },
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    async def fake_run_direct_mode(**kwargs):
+        return {
+            "results": [
+                {
+                    "iteration": 1,
+                    "response": "Synthetic fallback should not be used.",
+                    "completed": True,
+                    "success": True,
+                    "trajectory": full_trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_resolve_agent_dirs",
+        lambda agent_dirs: [],
+    )
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+
+    args = SimpleNamespace(
+        task="Replay this task",
+        agent="Aworld",
+        skill=None,
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        env_file=".env",
+        emit_trajectory=True,
+    )
+    context = SimpleNamespace(argv=["aworld-cli", "run", "--emit-trajectory"])
+
+    assert RunTopLevelCommand().run(args, context) == 0
+
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["trajectory_capture_mode"] == "task_response"
+    assert payload["trajectory"] == full_trajectory
+    assert payload["trajectory"][0]["action"]["tool_calls"][0]["name"] == "browser"
+
+
 @pytest.mark.asyncio
 async def test_console_skills_use_sets_pending_override() -> None:
     cli = AWorldCLI()

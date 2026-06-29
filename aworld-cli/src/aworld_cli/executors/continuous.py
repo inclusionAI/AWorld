@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Union, List
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from aworld.utils.serialized_util import to_serializable
 from .base import AgentExecutor
 from .._globals import console as global_console
 
@@ -292,7 +293,7 @@ class ContinuousExecutor:
 
             self.console.print(f"[dim]💰 ({iteration}) Cost: ${cost:.3f}[/dim]")
 
-            return {
+            result = {
                 "iteration": iteration,
                 "response": response,
                 "cost": cost,
@@ -300,6 +301,15 @@ class ContinuousExecutor:
                 "immediate_stop": is_complete and iteration == 1,  # First iteration with definitive answer
                 "success": True
             }
+            task_response = getattr(self.agent_executor, "last_task_response", None)
+            trajectory = getattr(task_response, "trajectory", None)
+            if isinstance(trajectory, list) and trajectory:
+                result["trajectory"] = to_serializable(trajectory)
+                result["trajectory_capture_mode"] = "task_response"
+                llm_calls = getattr(task_response, "llm_calls", None)
+                if isinstance(llm_calls, list) and llm_calls:
+                    result["llm_calls"] = to_serializable(llm_calls)
+            return result
             
         except Exception as e:
             self.console.print(f"[red]❌ ({iteration}) Error: {e}[/red]")
