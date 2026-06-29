@@ -779,6 +779,35 @@ class TestOptimizeCommand:
         assert "Selected candidate: cand-1" in result
 
     @pytest.mark.asyncio
+    async def test_optimize_passes_runtime_skill_registry_refresher(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        class FakeRuntime:
+            def refresh_skill_registry(self, candidate=None):
+                return {"status": "refreshed"}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "succeeded", "report_path": str(tmp_path / "report.json")}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args="--from-trajectory trajectory.log --apply auto_verified",
+                runtime=FakeRuntime(),
+            )
+        )
+
+        assert calls["runtime_registry_refresher"] is not None
+        assert calls["runtime_registry_refresher"](None) == {"status": "refreshed"}
+
+    @pytest.mark.asyncio
     async def test_optimize_drains_pending_jobs(self, monkeypatch, tmp_path):
         cmd = CommandRegistry.get("optimize")
         calls = {}

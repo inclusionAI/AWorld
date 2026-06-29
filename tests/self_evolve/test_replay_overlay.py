@@ -323,7 +323,7 @@ async def test_aworld_cli_candidate_replay_backend_runs_baseline_and_candidate_w
 
 
 @pytest.mark.asyncio
-async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_without_custom_env(
+async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_and_disables_auto_drain(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -374,7 +374,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_w
     assert result.trajectory == trajectory
     assert "--emit-trajectory" in captured["command"]
     assert captured["kwargs"]["cwd"] == str(tmp_path)
-    assert "env" not in captured["kwargs"]
+    assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_AUTO_DRAIN"] == "0"
 
 
 @pytest.mark.asyncio

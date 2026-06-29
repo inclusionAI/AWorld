@@ -95,13 +95,18 @@ class OptimizeCommand(Command):
             return _usage()
 
         if args.drain_pending:
+            runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
+            drain_kwargs = {"workspace_root": context.cwd}
+            if runtime_registry_refresher is not None:
+                drain_kwargs["runtime_registry_refresher"] = runtime_registry_refresher
             drained = await asyncio.to_thread(
                 drain_pending_self_evolve_jobs,
-                workspace_root=context.cwd,
+                **drain_kwargs,
             )
             return f"Drained pending self-evolve jobs: {drained}"
 
         try:
+            runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
             report = await asyncio.to_thread(
                 run_optimize_cli,
                 agent=args.agent,
@@ -120,8 +125,14 @@ class OptimizeCommand(Command):
                 judge_backend_ref=args.judge_backend_ref,
                 replay_timeout_seconds=args.replay_timeout_seconds,
                 replay_max_steps=args.replay_max_steps,
+                runtime_registry_refresher=runtime_registry_refresher,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
             return f"Optimize error: {exc}"
 
         return render_optimize_summary(report)
+
+
+def _runtime_registry_refresher(runtime):
+    refresher = getattr(runtime, "refresh_skill_registry", None)
+    return refresher if callable(refresher) else None

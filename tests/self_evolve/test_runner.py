@@ -1404,6 +1404,12 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
                 dataset_split=request.dataset_split,
             )
 
+    refresh_calls = []
+
+    def refresh_runtime(candidate):
+        refresh_calls.append(candidate.candidate_id)
+        return {"status": "refreshed", "runtime_skill_count": 1}
+
     report_summary = optimize_from_cli_request(
         workspace_root=tmp_path,
         target="skill:demo",
@@ -1413,6 +1419,7 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
         candidate_replay_backend=SuccessfulReplayBackend(),
         evaluation_backend=VerifiedEvaluationBackend(),
         min_eval_cases=1,
+        runtime_registry_refresher=refresh_runtime,
     )
 
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
@@ -1426,6 +1433,11 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     assert f"verified_run_id: {report['run_id']}" in updated_content
     assert "Self-Evolve Trace Guidance" in updated_content
     assert report["post_apply"]["status"] == "accepted"
+    assert refresh_calls == [candidate_id]
+    assert report["post_apply"]["refresh"] == {
+        "status": "refreshed",
+        "runtime_skill_count": 1,
+    }
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True
     assert report["post_apply"]["metrics"]["runtime_content_matches"] is True
     assert report["post_apply"]["metrics"]["loaded_from_real_path"] is True

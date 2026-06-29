@@ -12,7 +12,8 @@ from aworld.config.conf import SelfEvolveConfig
 
 
 WriteJobCallable = Callable[[Path, Mapping[str, Any]], None]
-RunJobCallable = Callable[[Mapping[str, Any]], None]
+RunJobCallable = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
+RuntimeRegistryRefresher = Callable[[Any], Any]
 
 
 @dataclass(frozen=True)
@@ -124,9 +125,16 @@ class SelfEvolveJobWorker:
         *,
         workspace_root: str | Path,
         run_job: RunJobCallable | None = None,
+        runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root)
-        self.run_job = run_job or _run_framework_job
+        self.runtime_registry_refresher = runtime_registry_refresher
+        self.run_job = run_job or (
+            lambda payload: _run_framework_job(
+                payload,
+                runtime_registry_refresher=self.runtime_registry_refresher,
+            )
+        )
 
     def drain_pending_jobs(self, *, max_jobs: int | None = None) -> int:
         if max_jobs is not None and max_jobs <= 0:
@@ -176,25 +184,33 @@ def drain_pending_self_evolve_jobs(
     *,
     workspace_root: str | Path,
     max_jobs: int | None = None,
+    runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
 ) -> int:
-    return SelfEvolveJobWorker(workspace_root=workspace_root).drain_pending_jobs(
-        max_jobs=max_jobs,
-    )
+    return SelfEvolveJobWorker(
+        workspace_root=workspace_root,
+        runtime_registry_refresher=runtime_registry_refresher,
+    ).drain_pending_jobs(max_jobs=max_jobs)
 
 
 async def drain_pending_self_evolve_jobs_async(
     *,
     workspace_root: str | Path,
     max_jobs: int | None = None,
+    runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
 ) -> int:
     return await asyncio.to_thread(
         drain_pending_self_evolve_jobs,
         workspace_root=workspace_root,
         max_jobs=max_jobs,
+        runtime_registry_refresher=runtime_registry_refresher,
     )
 
 
-def _run_framework_job(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+def _run_framework_job(
+    payload: Mapping[str, Any],
+    *,
+    runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+) -> Mapping[str, Any]:
     from aworld.self_evolve.runner import optimize_from_cli_request
 
     raw_config = payload.get("self_evolve_config")
@@ -228,6 +244,7 @@ def _run_framework_job(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         baseline_replay_repetitions=config.baseline_replay_repetitions,
         candidate_replay_repetitions=config.candidate_replay_repetitions,
         replay_stability_margin=config.replay_stability_margin,
+        runtime_registry_refresher=runtime_registry_refresher,
     )
 
 

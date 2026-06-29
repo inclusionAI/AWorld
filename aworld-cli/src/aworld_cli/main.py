@@ -1070,7 +1070,7 @@ async def _run_direct_mode(
     continuous_executor = ContinuousExecutor(agent_executor, console=console)
     
     # Run task execution
-    return await continuous_executor.run_continuous(
+    summary = await continuous_executor.run_continuous(
         prompt=multimodal_prompt,
         agent_name=agent_name,
         requested_skill_names=requested_skill_names,
@@ -1081,6 +1081,14 @@ async def _run_direct_mode(
         completion_signal=completion_signal,
         completion_threshold=completion_threshold
     )
+    drain_pending_self_evolve_jobs = getattr(
+        runtime,
+        "_drain_pending_self_evolve_jobs",
+        None,
+    )
+    if callable(drain_pending_self_evolve_jobs):
+        await drain_pending_self_evolve_jobs()
+    return summary
 
 
 if __name__ == "__main__":
