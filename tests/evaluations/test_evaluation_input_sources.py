@@ -173,6 +173,57 @@ async def test_trajectory_log_source_replays_rollout_state_with_standard_metrics
     assert result["metadata"]["standard_metrics"]["n_tool_calls"] == 1
 
 
+def test_trajectory_log_source_extracts_action_result_tool_evidence(tmp_path: Path) -> None:
+    task_id = "task-action-result"
+    trajectory = [
+        {
+            "state": {
+                "input": {"content": "question"},
+                "messages": [{"role": "system", "content": "system prompt"}],
+            },
+            "meta": {"step": 1, "pre_agent": "runner", "agent_id": "agent"},
+            "action": {
+                "tool_calls": [{"function": {"name": "terminal", "arguments": "{\"cmd\":\"curl\"}"}}],
+                "is_agent_finished": "False",
+            },
+        },
+        {
+            "state": {
+                "input": {
+                    "content": "tool result transport payload",
+                    "action_result": [
+                        {
+                            "action_name": "mcp_execute_command",
+                            "tool_name": "terminal",
+                            "content": "parsed source evidence from webpage",
+                        }
+                    ],
+                },
+                "messages": [{"role": "assistant", "content": "using evidence"}],
+            },
+            "meta": {"step": 2, "pre_agent": "async_mcp", "agent_id": "agent"},
+            "action": {"content": "final answer", "is_agent_finished": "True"},
+        },
+    ]
+    log_path = tmp_path / "trajectory.log"
+    log_path.write_text(
+        repr({"task_id": task_id, "is_sub_task": False, "trajectory": json.dumps(trajectory)}) + "\n",
+        encoding="utf-8",
+    )
+
+    record = next(iter(AWorldTrajectoryLogSource(path=log_path, task_ids=[task_id]).iter_records()))
+
+    assert record.raw_payload["evidence"] == [
+        {
+            "source": "state.input.action_result",
+            "step": 2,
+            "action_name": "mcp_execute_command",
+            "tool_name": "terminal",
+            "content": "parsed source evidence from webpage",
+        }
+    ]
+
+
 def test_judge_schema_normalizer_runs_before_typed_validation() -> None:
     schema = JudgeSchemaDef(
         output_model=_ScoreJudgeOutput,
