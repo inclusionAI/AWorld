@@ -234,6 +234,7 @@ def _run_framework_job(
         min_eval_cases=config.min_eval_cases,
         judge_repetitions=config.judge_repetitions,
         max_run_tokens=config.max_run_tokens,
+        iterations=config.max_iterations,
         min_score_delta=config.min_improvement,
         auto_apply_target_types=config.auto_apply_target_types,
         judge_config=config.judge_config,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import hashlib
+import json
 from dataclasses import dataclass, replace
 from typing import Callable, Any
 from pathlib import Path
@@ -188,41 +189,76 @@ class SelfEvolveRunner:
             self.store.create_run(completed_run)
             return SelfEvolveRunnerResult(run=completed_run, selected_candidate=None)
 
-        optimizer_result = await self.optimizer.propose(
-            OptimizerRequest.from_dataset(
-                target=target.identity,
-                current_content=target.load_current_content(),
-                target_fingerprint=target.fingerprint_current_content(),
-                trace_packs=trace_packs,
-                validation_feedback=(),
-                dataset=dataset,
-            )
-        )
-
-        selected_candidate = optimizer_result.candidates[0] if optimizer_result.candidates else None
-        for candidate in optimizer_result.candidates:
-            target.preserve_proposal(self.store, run_id, candidate)
-        for lineage in optimizer_result.lineage:
-            self.store.write_optimizer_lineage(run_id, lineage)
-
+        selected_candidate: CandidateVariant | None = None
+        validation_feedback: tuple[EvaluationSummary, ...] = ()
+        all_candidates: list[CandidateVariant] = []
+        optimizer_diagnostics: list[dict[str, object]] = []
+        iteration_reports: list[dict[str, object]] = []
+        iteration_states: list[dict[str, object]] = []
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
         held_out_summary: EvaluationSummary | None = None
         replay_result: CandidateReplayResult | None = None
         replay_dataset: SelfEvolveDataset | None = None
-        gate_results = []
-        if selected_candidate is not None:
+        gate_results: list[GateResult] = []
+
+        for iteration_index in range(self.max_iterations):
+            optimizer_result = await self.optimizer.propose(
+                OptimizerRequest.from_dataset(
+                    target=target.identity,
+                    current_content=target.load_current_content(),
+                    target_fingerprint=target.fingerprint_current_content(),
+                    trace_packs=trace_packs,
+                    validation_feedback=validation_feedback,
+                    dataset=dataset,
+                )
+            )
+            optimizer_diagnostics.append(
+                {
+                    "iteration": iteration_index + 1,
+                    "candidate_ids": [
+                        candidate.candidate_id for candidate in optimizer_result.candidates
+                    ],
+                    "diagnostics": dict(optimizer_result.diagnostics),
+                }
+            )
+            for candidate in optimizer_result.candidates:
+                all_candidates.append(candidate)
+                target.preserve_proposal(self.store, run_id, candidate)
+            for lineage in optimizer_result.lineage:
+                self.store.write_optimizer_lineage(run_id, lineage)
+
+            iteration_candidate = (
+                optimizer_result.candidates[0] if optimizer_result.candidates else None
+            )
+            iteration_baseline_summary: EvaluationSummary | None = None
+            iteration_candidate_summary: EvaluationSummary | None = None
+            iteration_held_out_summary: EvaluationSummary | None = None
+            iteration_replay_result: CandidateReplayResult | None = None
+            iteration_replay_dataset: SelfEvolveDataset | None = None
+            iteration_gate_results: list[GateResult] = []
+            if iteration_candidate is None:
+                iteration_reports.append(
+                    {
+                        "iteration": iteration_index + 1,
+                        "candidate_id": None,
+                        "status": "no_candidate",
+                        "failed_gates": [],
+                    }
+                )
+                continue
+
             current_content = target.load_current_content()
-            gate_results.extend(
+            iteration_gate_results.extend(
                 _candidate_gate_results(
-                    selected_candidate,
+                    iteration_candidate,
                     current_content=current_content,
                     workspace_root=self.store.workspace_root,
                     max_chars=self.max_run_tokens,
                     target_provenance=target_provenance,
                 )
             )
-            gate_results.append(
+            iteration_gate_results.append(
                 BudgetGate().evaluate(
                     estimate_replay_cost(
                         dataset=dataset,
@@ -235,117 +271,201 @@ class SelfEvolveRunner:
                     )
                 )
             )
-            replay_result, replay_dataset, replay_gate = await self._replay_selected_candidate(
+            (
+                iteration_replay_result,
+                iteration_replay_dataset,
+                replay_gate,
+            ) = await self._replay_selected_candidate(
                 run_id=run_id,
                 target=target,
                 dataset=dataset,
-                selected_candidate=selected_candidate,
+                selected_candidate=iteration_candidate,
                 apply_policy=apply_policy,
             )
             if replay_gate is not None:
-                gate_results.append(replay_gate)
+                iteration_gate_results.append(replay_gate)
             replay_confidence_gate = _replay_confidence_gate(
-                replay_result,
+                iteration_replay_result,
                 apply_policy=apply_policy,
             )
             if replay_confidence_gate is not None:
-                gate_results.append(replay_confidence_gate)
+                iteration_gate_results.append(replay_confidence_gate)
 
-        evaluation_dataset = replay_dataset or dataset
-        if self.evaluation_backend is not None and selected_candidate is not None:
-            replay_blocked_verified_apply = (
-                apply_policy == "auto_verified"
-                and self.replay_enabled
-                and selected_candidate.target.target_type == "skill"
-                and replay_dataset is None
-            )
-            if not replay_blocked_verified_apply:
-                try:
-                    baseline_summary, candidate_summary = await evaluate_baseline_and_candidate(
-                        self.evaluation_backend,
-                        dataset=evaluation_dataset,
-                        candidate=selected_candidate,
-                        dataset_split="validation",
-                    )
-                    score_gate = ScoreImprovementGate(min_delta=self.min_score_delta).evaluate(
-                        baseline=baseline_summary,
-                        candidate=candidate_summary,
-                    )
-                    cost_latency_gate = CostLatencyRegressionGate(
-                        max_cost_regression_ratio=0.25,
-                        max_latency_regression_ratio=0.5,
-                    ).evaluate(baseline=baseline_summary, candidate=candidate_summary)
-                    gate_results.extend([score_gate, cost_latency_gate])
-                    replay_stability_gate = _replay_stability_gate(
-                        baseline_summary=baseline_summary,
-                        candidate_summary=candidate_summary,
-                        min_score_delta=self.min_score_delta,
-                        replay_stability_margin=self.replay_stability_margin,
-                        replay_used=replay_dataset is not None,
-                    )
-                    if replay_stability_gate is not None:
-                        gate_results.append(replay_stability_gate)
-                    if apply_policy == "auto_verified":
-                        held_out_summary = await self.evaluation_backend.evaluate_variant(
-                            EvaluationRequest(
-                                variant_id=selected_candidate.candidate_id,
-                                candidate=selected_candidate,
+            evaluation_dataset = iteration_replay_dataset or dataset
+            if self.evaluation_backend is not None:
+                replay_blocked_verified_apply = (
+                    apply_policy == "auto_verified"
+                    and self.replay_enabled
+                    and iteration_candidate.target.target_type == "skill"
+                    and iteration_replay_dataset is None
+                )
+                if not replay_blocked_verified_apply:
+                    try:
+                        (
+                            iteration_baseline_summary,
+                            iteration_candidate_summary,
+                        ) = await evaluate_baseline_and_candidate(
+                            self.evaluation_backend,
+                            dataset=evaluation_dataset,
+                            candidate=iteration_candidate,
+                            dataset_split="validation",
+                        )
+                        score_gate = ScoreImprovementGate(
+                            min_delta=self.min_score_delta
+                        ).evaluate(
+                            baseline=iteration_baseline_summary,
+                            candidate=iteration_candidate_summary,
+                        )
+                        cost_latency_gate = CostLatencyRegressionGate(
+                            max_cost_regression_ratio=0.25,
+                            max_latency_regression_ratio=0.5,
+                        ).evaluate(
+                            baseline=iteration_baseline_summary,
+                            candidate=iteration_candidate_summary,
+                        )
+                        iteration_gate_results.extend([score_gate, cost_latency_gate])
+                        replay_stability_gate = _replay_stability_gate(
+                            baseline_summary=iteration_baseline_summary,
+                            candidate_summary=iteration_candidate_summary,
+                            min_score_delta=self.min_score_delta,
+                            replay_stability_margin=self.replay_stability_margin,
+                            replay_used=iteration_replay_dataset is not None,
+                        )
+                        if replay_stability_gate is not None:
+                            iteration_gate_results.append(replay_stability_gate)
+                        if apply_policy == "auto_verified":
+                            iteration_held_out_summary = await self.evaluation_backend.evaluate_variant(
+                                EvaluationRequest(
+                                    variant_id=iteration_candidate.candidate_id,
+                                    candidate=iteration_candidate,
+                                    dataset=evaluation_dataset,
+                                    dataset_split="held_out",
+                                )
+                            )
+                            confidence = determine_candidate_confidence(
                                 dataset=evaluation_dataset,
-                                dataset_split="held_out",
+                                validation_summary=iteration_candidate_summary,
+                                held_out_summary=iteration_held_out_summary,
+                                min_eval_cases=self.min_eval_cases,
+                            )
+                            iteration_gate_results.extend(
+                                [
+                                    RequiredVerificationGate().evaluate(
+                                        iteration_held_out_summary
+                                    ),
+                                    HeldOutVerificationGate(
+                                        min_eval_cases=self.min_eval_cases
+                                    ).evaluate(confidence),
+                                    JudgeOnlySignalGate().evaluate(confidence),
+                                    GlobalRegressionBenchmarkGate().evaluate(
+                                        iteration_candidate,
+                                        iteration_held_out_summary,
+                                    ),
+                                ]
+                            )
+                    except Exception as exc:
+                        iteration_gate_results.append(
+                            GateResult(
+                                gate_name="evaluation",
+                                passed=False,
+                                reason="evaluation backend failed",
+                                details={
+                                    "type": type(exc).__name__,
+                                    "reason": str(exc),
+                                },
                             )
                         )
-                        confidence = determine_candidate_confidence(
-                            dataset=evaluation_dataset,
-                            validation_summary=candidate_summary,
-                            held_out_summary=held_out_summary,
-                            min_eval_cases=self.min_eval_cases,
-                        )
-                        gate_results.extend(
-                            [
-                                RequiredVerificationGate().evaluate(held_out_summary),
-                                HeldOutVerificationGate(min_eval_cases=self.min_eval_cases).evaluate(confidence),
-                                JudgeOnlySignalGate().evaluate(confidence),
-                                GlobalRegressionBenchmarkGate().evaluate(
-                                    selected_candidate,
-                                    held_out_summary,
-                                ),
-                            ]
-                        )
-                except Exception as exc:
-                    gate_results.append(
-                        GateResult(
-                            gate_name="evaluation",
-                            passed=False,
-                            reason="evaluation backend failed",
-                            details={
-                                "type": type(exc).__name__,
-                                "reason": str(exc),
-                            },
-                        )
+            elif apply_policy == "auto_verified":
+                iteration_gate_results.append(
+                    GateResult(
+                        gate_name="auto_verified_evaluation",
+                        passed=False,
+                        reason="auto_verified apply policy requires evaluation backend",
                     )
-        elif apply_policy == "auto_verified" and selected_candidate is not None:
+                )
+
+            if apply_policy == "auto_verified":
+                iteration_gate_results.append(
+                    GateResult(
+                        gate_name="auto_apply_target_type",
+                        passed=target.identity.target_type in self.auto_apply_target_types,
+                        reason=(
+                            "target type is allowlisted for auto apply"
+                            if target.identity.target_type in self.auto_apply_target_types
+                            else "target type is not allowlisted for auto apply"
+                        ),
+                        details={
+                            "target_type": target.identity.target_type,
+                            "auto_apply_target_types": list(self.auto_apply_target_types),
+                        },
+                    )
+                )
+
+            failed_gates = [gate for gate in iteration_gate_results if not gate.passed]
+            iteration_status = (
+                "accepted"
+                if apply_policy != "auto_verified" or not failed_gates
+                else "rejected"
+            )
+            iteration_reports.append(
+                {
+                    "iteration": iteration_index + 1,
+                    "candidate_id": iteration_candidate.candidate_id,
+                    "status": iteration_status,
+                    "baseline_metrics": (
+                        dict(iteration_baseline_summary.metrics)
+                        if iteration_baseline_summary is not None
+                        else None
+                    ),
+                    "candidate_metrics": (
+                        dict(iteration_candidate_summary.metrics)
+                        if iteration_candidate_summary is not None
+                        else None
+                    ),
+                    "held_out_metrics": (
+                        dict(iteration_held_out_summary.metrics)
+                        if iteration_held_out_summary is not None
+                        else None
+                    ),
+                    "failed_gates": [gate.gate_name for gate in failed_gates],
+                }
+            )
+            iteration_states.append(
+                {
+                    "candidate": iteration_candidate,
+                    "baseline_summary": iteration_baseline_summary,
+                    "candidate_summary": iteration_candidate_summary,
+                    "held_out_summary": iteration_held_out_summary,
+                    "replay_result": iteration_replay_result,
+                    "replay_dataset": iteration_replay_dataset,
+                    "gate_results": iteration_gate_results,
+                    "status": iteration_status,
+                }
+            )
+            validation_feedback = _iteration_validation_feedback(
+                candidate=iteration_candidate,
+                candidate_summary=iteration_candidate_summary,
+                held_out_summary=iteration_held_out_summary,
+                failed_gates=failed_gates,
+            )
+            if iteration_status == "accepted":
+                break
+
+        selected_state = _select_iteration_state(iteration_states)
+        if selected_state is not None:
+            selected_candidate = selected_state["candidate"]  # type: ignore[assignment]
+            baseline_summary = selected_state["baseline_summary"]  # type: ignore[assignment]
+            candidate_summary = selected_state["candidate_summary"]  # type: ignore[assignment]
+            held_out_summary = selected_state["held_out_summary"]  # type: ignore[assignment]
+            replay_result = selected_state["replay_result"]  # type: ignore[assignment]
+            replay_dataset = selected_state["replay_dataset"]  # type: ignore[assignment]
+            gate_results = list(selected_state["gate_results"])  # type: ignore[arg-type]
+        elif apply_policy == "auto_verified":
             gate_results.append(
                 GateResult(
                     gate_name="auto_verified_evaluation",
                     passed=False,
-                    reason="auto_verified apply policy requires evaluation backend",
-                )
-            )
-
-        if apply_policy == "auto_verified" and selected_candidate is not None:
-            gate_results.append(
-                GateResult(
-                    gate_name="auto_apply_target_type",
-                    passed=target.identity.target_type in self.auto_apply_target_types,
-                    reason=(
-                        "target type is allowlisted for auto apply"
-                        if target.identity.target_type in self.auto_apply_target_types
-                        else "target type is not allowlisted for auto apply"
-                    ),
-                    details={
-                        "target_type": target.identity.target_type,
-                        "auto_apply_target_types": list(self.auto_apply_target_types),
-                    },
+                    reason="auto_verified apply policy requires a candidate",
                 )
             )
 
@@ -369,13 +489,18 @@ class SelfEvolveRunner:
             },
             "apply_policy": apply_policy,
             "candidate_ids": [
-                candidate.candidate_id for candidate in optimizer_result.candidates
+                candidate.candidate_id for candidate in all_candidates
             ],
             "selected_candidate_id": (
                 selected_candidate.candidate_id if selected_candidate is not None else None
             ),
             "status": final_status.value,
-            "optimizer_diagnostics": optimizer_result.diagnostics,
+            "optimizer_diagnostics": (
+                optimizer_diagnostics[0]["diagnostics"]
+                if len(optimizer_diagnostics) == 1
+                else {"iterations": optimizer_diagnostics}
+            ),
+            "iterations": iteration_reports,
         }
         if target_selection_report is not None:
             report["target_selection"] = to_json_dict(target_selection_report)
@@ -784,6 +909,7 @@ def optimize_from_cli_request(
         candidate_content = _default_cli_skill_candidate(
             current_content=current_content,
             trace_packs=trace_packs,
+            mutation_prompt=prompt,
         )
         return {
             "content": candidate_content,
@@ -814,6 +940,7 @@ def optimize_from_cli_request(
             evaluation_backend=evaluation_backend,
             post_apply_evaluator=post_apply_evaluator,
             min_score_delta=min_score_delta,
+            max_iterations=iterations or 1,
             min_eval_cases=min_eval_cases,
             judge_repetitions=judge_repetitions,
             max_run_tokens=max_run_tokens,
@@ -1136,12 +1263,116 @@ def _metric_number(metrics: Mapping[str, Any], key: str) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def _iteration_validation_feedback(
+    *,
+    candidate: CandidateVariant,
+    candidate_summary: EvaluationSummary | None,
+    held_out_summary: EvaluationSummary | None,
+    failed_gates: list[GateResult],
+) -> tuple[EvaluationSummary, ...]:
+    feedback: list[EvaluationSummary] = []
+    if candidate_summary is not None:
+        feedback.append(
+            EvaluationSummary(
+                variant_id=candidate_summary.variant_id,
+                metrics={
+                    **dict(candidate_summary.metrics),
+                    "failed_gates": [gate.gate_name for gate in failed_gates],
+                },
+                dataset_split=candidate_summary.dataset_split,
+            )
+        )
+    if held_out_summary is not None:
+        feedback.append(
+            EvaluationSummary(
+                variant_id=held_out_summary.variant_id,
+                metrics={
+                    **dict(held_out_summary.metrics),
+                    "failed_gates": [gate.gate_name for gate in failed_gates],
+                },
+                dataset_split=held_out_summary.dataset_split,
+            )
+        )
+    if feedback:
+        return tuple(feedback)
+    return (
+        EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={
+                "failed_gates": [gate.gate_name for gate in failed_gates],
+                "candidate_status": "rejected" if failed_gates else "accepted",
+            },
+            dataset_split="validation",
+        ),
+    )
+
+
+def _select_iteration_state(
+    iteration_states: list[dict[str, object]],
+) -> dict[str, object] | None:
+    if not iteration_states:
+        return None
+    for state in iteration_states:
+        if state.get("status") == "accepted":
+            return state
+    return max(iteration_states, key=_iteration_candidate_score)
+
+
+def _iteration_candidate_score(state: Mapping[str, object]) -> float:
+    summary = state.get("candidate_summary")
+    if isinstance(summary, EvaluationSummary):
+        score = _metric_number(summary.metrics, "score")
+        if score is not None:
+            return score
+    return float("-inf")
+
+
+def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
+    if not prompt:
+        return []
+    start = prompt.find("{")
+    if start < 0:
+        return []
+    try:
+        payload = json.loads(prompt[start:])
+    except json.JSONDecodeError:
+        return []
+    feedback_items = payload.get("validation_feedback") if isinstance(payload, Mapping) else None
+    if not isinstance(feedback_items, list):
+        return []
+
+    guidance: list[str] = []
+    for item in feedback_items[-3:]:
+        if not isinstance(item, Mapping):
+            continue
+        metrics = item.get("metrics")
+        metrics = metrics if isinstance(metrics, Mapping) else {}
+        parts = []
+        score = metrics.get("score")
+        if isinstance(score, (int, float)):
+            parts.append(f"score={score}")
+        failed_gates = metrics.get("failed_gates")
+        if isinstance(failed_gates, list) and failed_gates:
+            parts.append(
+                "failed_gates="
+                + ",".join(str(gate) for gate in failed_gates if gate)
+            )
+        if not parts:
+            continue
+        split = item.get("dataset_split") or "validation"
+        variant_id = item.get("variant_id") or "candidate"
+        guidance.append(f"{variant_id} on {split}: {'; '.join(parts)}")
+    return guidance
+
+
 def _default_cli_skill_candidate(
     *,
     current_content: str,
     trace_packs: tuple[TracePack, ...],
+    mutation_prompt: str | None = None,
 ) -> str:
-    if not trace_packs:
+    feedback_guidance = _feedback_guidance_from_mutation_prompt(mutation_prompt)
+    if not trace_packs and not feedback_guidance:
         return current_content
 
     evidence_ids = [
@@ -1165,6 +1396,9 @@ def _default_cli_skill_candidate(
         f"- Evidence steps: {', '.join(evidence_ids)}",
     ]
     section.extend(f"- {item}" for item in guidance)
+    if feedback_guidance:
+        section.append("- Previous validation feedback:")
+        section.extend(f"  - {item}" for item in feedback_guidance)
 
     heading = "\n## Self-Evolve Trace Guidance\n"
     prefix = current_content.rstrip()
