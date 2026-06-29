@@ -295,13 +295,33 @@ class AWorldCliReplayExecutor:
 
         stdout = _text_output(completed.stdout)
         stderr = _text_output(completed.stderr)
-        trajectory = _extract_trajectory_from_stdout(stdout)
+        trajectory_payload = _extract_trajectory_payload_from_stdout(stdout)
+        trajectory = trajectory_payload["trajectory"]
+        capture_mode = trajectory_payload["trajectory_capture_mode"]
+        metrics = {
+            "returncode": completed.returncode,
+            "trajectory_capture_mode": capture_mode,
+        }
+        if completed.returncode == 0 and trajectory and capture_mode != "task_response":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=trajectory,
+                stdout=stdout,
+                stderr=stderr,
+                metrics=metrics,
+                failure={
+                    "reason": "trajectory_capture_mode_unsupported",
+                    "detail": "self-evolve replay requires TaskResponse.trajectory evidence",
+                    "trajectory_capture_mode": capture_mode,
+                },
+            )
         if completed.returncode != 0:
             return ReplayExecutionResult(
                 status="failed",
                 trajectory=trajectory,
                 stdout=stdout,
                 stderr=stderr,
+                metrics=metrics,
                 failure={
                     "type": "ProcessError",
                     "reason": "aworld-cli run failed",
@@ -314,7 +334,7 @@ class AWorldCliReplayExecutor:
             trajectory=trajectory,
             stdout=stdout,
             stderr=stderr,
-            metrics={"returncode": completed.returncode},
+            metrics=metrics,
         )
 
 
@@ -384,6 +404,10 @@ def _task_text(task_input: Any) -> str:
 
 
 def _extract_trajectory_from_stdout(stdout: str) -> list[Mapping[str, Any]]:
+    return _extract_trajectory_payload_from_stdout(stdout)["trajectory"]
+
+
+def _extract_trajectory_payload_from_stdout(stdout: str) -> dict[str, Any]:
     for line in reversed(stdout.splitlines()):
         line = line.strip()
         if not line:
@@ -394,8 +418,14 @@ def _extract_trajectory_from_stdout(stdout: str) -> list[Mapping[str, Any]]:
             continue
         trajectory = payload.get("trajectory") if isinstance(payload, Mapping) else None
         if isinstance(trajectory, list):
-            return [item for item in trajectory if isinstance(item, Mapping)]
-    return []
+            capture_mode = str(
+                payload.get("trajectory_capture_mode") or "unknown"
+            ).strip()
+            return {
+                "trajectory": [item for item in trajectory if isinstance(item, Mapping)],
+                "trajectory_capture_mode": capture_mode or "unknown",
+            }
+    return {"trajectory": [], "trajectory_capture_mode": "unavailable"}
 
 
 def _text_output(value: Any) -> str:

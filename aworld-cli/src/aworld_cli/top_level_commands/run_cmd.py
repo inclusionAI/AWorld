@@ -90,17 +90,15 @@ class RunTopLevelCommand:
             )
         )
         if args.emit_trajectory:
-            from aworld_cli.main import _trajectory_from_direct_run_summary
+            from aworld_cli.main import _trajectory_payload_from_direct_run_summary
 
             print(
                 json.dumps(
-                    {
-                        "trajectory": _trajectory_from_direct_run_summary(
-                            summary,
-                            prompt=args.task,
-                            agent_name=agent_name,
-                        )
-                    },
+                    _trajectory_payload_from_direct_run_summary(
+                        summary,
+                        prompt=args.task,
+                        agent_name=agent_name,
+                    ),
                     ensure_ascii=False,
                 )
             )
