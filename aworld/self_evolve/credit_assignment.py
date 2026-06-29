@@ -53,6 +53,24 @@ class LLMTargetDiagnosis:
 LLMTargetDiagnoser = Callable[[TracePack, TargetInventory], LLMTargetDiagnosis | None]
 
 
+_WEAK_SKILL_ALIAS_TOKENS = {
+    "agent",
+    "assistant",
+    "audio",
+    "content",
+    "document",
+    "documents",
+    "extension",
+    "files",
+    "image",
+    "images",
+    "media",
+    "skill",
+    "specialized",
+    "video",
+}
+
+
 class TrajectoryCreditAssigner:
     def __init__(
         self,
@@ -401,14 +419,18 @@ def _skill_entries_from_workspace(root: Path) -> tuple[TargetInventoryEntry, ...
 
 def _skill_match_aliases(entry: TargetInventoryEntry) -> tuple[str, ...]:
     aliases = [entry.target.target_id]
-    aliases.extend(entry.aliases)
+    aliases.extend(alias for alias in entry.aliases[:2] if alias)
     normalized: list[str] = []
     for alias in aliases:
         lowered = alias.strip().lower()
         if not lowered:
             continue
         normalized.append(lowered)
-        normalized.extend(token for token in re.findall(r"[a-z0-9]+", lowered) if len(token) >= 5)
+        normalized.extend(
+            token
+            for token in re.findall(r"[a-z0-9]+", lowered)
+            if len(token) >= 5 and token not in _WEAK_SKILL_ALIAS_TOKENS
+        )
     return tuple(dict.fromkeys(normalized))
 
 
@@ -432,12 +454,7 @@ def _pack_text(trace_pack: TracePack) -> str:
     payload = {
         "task_id": trace_pack.task_id,
         "steps": [
-            {
-                "state": step.state,
-                "action": step.action,
-                "reward": step.reward,
-                "tool_names": step.tool_names,
-            }
+            _target_evidence_payload(step)
             for step in trace_pack.steps
         ],
         "compression_summary": trace_pack.compression_summary,
@@ -567,12 +584,64 @@ def _dedupe(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _step_text(step: TraceEvidenceStep) -> str:
-    return json.dumps(
-        {
-            "state": step.state,
-            "action": step.action,
-            "reward": step.reward,
-            "tool_names": step.tool_names,
-        },
-        ensure_ascii=False,
-    ).lower()
+    return json.dumps(_target_evidence_payload(step), ensure_ascii=False).lower()
+
+
+def _target_evidence_payload(step: TraceEvidenceStep) -> Mapping[str, Any]:
+    return {
+        "state": _target_evidence_state(step),
+        "action": step.action,
+        "reward": step.reward,
+        "tool_names": step.tool_names,
+    }
+
+
+def _target_evidence_state(step: TraceEvidenceStep) -> Mapping[str, Any]:
+    filtered: dict[str, Any] = {}
+    for key, value in step.state.items():
+        if key == "messages":
+            messages = _target_evidence_messages(value)
+            if messages:
+                filtered[key] = messages
+            continue
+        if key == "input" and _is_tool_result_step(step):
+            input_meta = _target_evidence_input_metadata(value)
+            if input_meta:
+                filtered[key] = input_meta
+            continue
+        filtered[key] = value
+    return filtered
+
+
+def _target_evidence_messages(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(value, list):
+        return ()
+    messages: list[Mapping[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        role = str(item.get("role", "")).lower()
+        if role in {"system", "developer", "tool"}:
+            continue
+        messages.append(item)
+    return tuple(messages)
+
+
+def _is_tool_result_step(step: TraceEvidenceStep) -> bool:
+    pre_agent = (step.pre_agent or "").lower()
+    agent_id = (step.agent_id or "").lower()
+    if not pre_agent or pre_agent == "runner":
+        return False
+    if agent_id and pre_agent == agent_id:
+        return False
+    return True
+
+
+def _target_evidence_input_metadata(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key): item
+        for key, item in value.items()
+        if key in {"from_agent_name", "to_agent_name"}
+    }

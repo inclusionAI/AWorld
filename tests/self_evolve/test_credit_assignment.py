@@ -237,6 +237,90 @@ def test_credit_assigner_selects_installed_skill_by_generic_trajectory_evidence(
     assert "skill_alias_match:web-navigator" in report.signals
 
 
+def test_credit_assigner_ignores_skill_catalog_mentions_in_system_messages(tmp_path) -> None:
+    _write_skill(
+        tmp_path,
+        "media_comprehension",
+        description="Use for image, audio, and video media analysis.",
+    )
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {
+                    "input": {
+                        "content": (
+                            "https://www.xiaoyuzhoufm.com/episode/demo，"
+                            "这个播客的核心内容与关键洞察是什么？"
+                        )
+                    },
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Available skills include media_comprehension. "
+                                "Use for image, audio, and video media analysis."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "https://www.xiaoyuzhoufm.com/episode/demo，"
+                                "这个播客的核心内容与关键洞察是什么？"
+                            ),
+                        },
+                    ],
+                },
+                "action": {
+                    "content": "I will fetch the page HTML with curl.",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "mcp",
+                                "arguments": "{\"command\":\"curl -s https://example.test\"}",
+                            }
+                        }
+                    ],
+                    "is_agent_finished": False,
+                },
+                "reward": {"status": "ok"},
+            },
+            {
+                "meta": {"step": 2, "agent_id": "agent", "pre_agent": "mcp"},
+                "state": {
+                    "input": {
+                        "content": (
+                            '<meta property="og:audio" '
+                            'content="https://media.xyzcdn.net/demo/audio.m4a"/> '
+                            '<meta property="twitter:image" '
+                            'content="https://image.xyzcdn.net/demo.png"/> '
+                            "/Users/me/Documents/workspace/aworld/episode.html"
+                        )
+                    },
+                    "messages": [],
+                },
+                "action": {
+                    "content": "The page has podcast metadata but no transcript.",
+                    "tool_calls": [],
+                    "is_agent_finished": True,
+                },
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="podcast-task",
+    )
+    assigner = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    )
+
+    report = assigner.assign(pack)
+
+    assert report.selected_target is None
+    assert report.failure_category == "no_target"
+    assert "skill_alias_match:media_comprehension" not in report.signals
+
+
 def test_credit_assigner_reports_llm_usage_and_generated_artifact_references(tmp_path) -> None:
     pack = build_trace_pack(
         [
