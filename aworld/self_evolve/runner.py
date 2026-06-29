@@ -651,6 +651,7 @@ def optimize_from_cli_request(
     baseline_replay_repetitions: int = 1,
     candidate_replay_repetitions: int = 1,
     replay_stability_margin: float = 0.0,
+    runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
@@ -826,6 +827,7 @@ def optimize_from_cli_request(
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
             replay_agent=agent,
+            runtime_registry_refresher=runtime_registry_refresher,
         ).run_explicit_target(
             run_id=run_id,
             target=target_adapter,

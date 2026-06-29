@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import subprocess
 import sys
 import time
@@ -283,6 +284,10 @@ class AWorldCliReplayExecutor:
                 text=True,
                 capture_output=True,
                 timeout=request.timeout_seconds,
+                env={
+                    **os.environ,
+                    "AWORLD_SELF_EVOLVE_AUTO_DRAIN": "0",
+                },
             )
         except subprocess.TimeoutExpired as exc:
             return ReplayExecutionResult(

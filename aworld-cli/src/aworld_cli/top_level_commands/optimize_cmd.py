@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Callable
 
 
 SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified"}
@@ -155,6 +155,7 @@ def run_optimize_cli(
     judge_backend_ref: str | None = None,
     replay_timeout_seconds: int | None = None,
     replay_max_steps: int | None = None,
+    runtime_registry_refresher: Callable[[Any], Any] | None = None,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
@@ -177,6 +178,7 @@ def run_optimize_cli(
         workspace_root=workspace_root,
         judge_config=judge_config,
         replay_enabled=apply == "auto_verified",
+        runtime_registry_refresher=runtime_registry_refresher,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
@@ -197,10 +199,17 @@ def _replay_options(
     return options
 
 
-def drain_pending_self_evolve_jobs(*, workspace_root: str) -> int:
+def drain_pending_self_evolve_jobs(
+    *,
+    workspace_root: str,
+    runtime_registry_refresher: Callable[[Any], Any] | None = None,
+) -> int:
     import aworld.self_evolve as self_evolve
 
-    return self_evolve.drain_pending_self_evolve_jobs(workspace_root=workspace_root)
+    return self_evolve.drain_pending_self_evolve_jobs(
+        workspace_root=workspace_root,
+        runtime_registry_refresher=runtime_registry_refresher,
+    )
 
 
 def _judge_config_from_cli(

@@ -485,6 +485,48 @@ def test_job_worker_persists_framework_result_and_replay_diagnostics(tmp_path) -
     assert saved["replay_diagnostics"]["failed_gates"][0]["gate_name"] == "candidate_replay"
 
 
+def test_job_worker_forwards_runtime_registry_refresher_to_framework_job(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    result = scheduler.enqueue(
+        SelfEvolveRunContext(
+            agent_id="agent",
+            task_id="task",
+            workspace_root=str(tmp_path),
+            trajectory=_trajectory(),
+            self_evolve_config=SelfEvolveConfig(
+                mode="shadow",
+                apply_policy="auto_verified",
+                replay_enabled=False,
+            ),
+        )
+    )
+    assert result.accepted is True
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"status": "succeeded"}
+
+    def refresh_runtime(candidate):
+        return {"status": "refreshed"}
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.runner.optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+    )
+
+    drained = SelfEvolveJobWorker(
+        workspace_root=tmp_path,
+        runtime_registry_refresher=refresh_runtime,
+    ).drain_pending_jobs()
+
+    assert drained == 1
+    assert calls["runtime_registry_refresher"] is refresh_runtime
+
+
 def test_job_worker_recovers_interrupted_apply_before_draining(tmp_path) -> None:
     from aworld.self_evolve.store import FilesystemSelfEvolveStore
     from aworld.self_evolve.types import CandidateVariant, SelfEvolveRun, SelfEvolveTargetRef
@@ -555,9 +597,15 @@ def test_async_drain_entrypoint_offloads_sync_worker(monkeypatch, tmp_path) -> N
 
     calls = {}
 
-    def fake_drain_pending_self_evolve_jobs(*, workspace_root, max_jobs=None):
+    def fake_drain_pending_self_evolve_jobs(
+        *,
+        workspace_root,
+        max_jobs=None,
+        runtime_registry_refresher=None,
+    ):
         calls["workspace_root"] = workspace_root
         calls["max_jobs"] = max_jobs
+        calls["runtime_registry_refresher"] = runtime_registry_refresher
         return 3
 
     monkeypatch.setattr(
@@ -570,4 +618,8 @@ def test_async_drain_entrypoint_offloads_sync_worker(monkeypatch, tmp_path) -> N
     )
 
     assert drained == 3
-    assert calls == {"workspace_root": tmp_path, "max_jobs": 2}
+    assert calls == {
+        "workspace_root": tmp_path,
+        "max_jobs": 2,
+        "runtime_registry_refresher": None,
+    }

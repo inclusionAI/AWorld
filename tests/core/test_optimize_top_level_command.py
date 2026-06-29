@@ -382,6 +382,46 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["judge_config"].agent_path == "agent.md"
 
 
+def test_run_optimize_cli_forwards_runtime_registry_refresher(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    def refresh_runtime(candidate):
+        return {"status": "refreshed", "candidate_id": candidate.candidate_id}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:workflow-helper",
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=None,
+        apply="auto_verified",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        runtime_registry_refresher=refresh_runtime,
+    )
+
+    assert calls["runtime_registry_refresher"] is refresh_runtime
+
+
 def test_run_optimize_cli_maps_judge_backend_ref_to_framework_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
