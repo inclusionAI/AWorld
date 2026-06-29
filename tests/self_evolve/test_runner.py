@@ -7,12 +7,14 @@ import pytest
 
 from aworld.self_evolve.datasets import SelfEvolveEvalSourceConfig, build_dataset_from_source
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.replay import (
     CandidateReplayResult,
     ReplayVariantResult,
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
+    _default_cli_skill_candidate,
     _default_post_apply_evaluator,
     optimize_explicit_target,
     optimize_from_cli_request,
@@ -211,6 +213,117 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert journal["status"] == "accepted"
     assert journal["target"]["target_id"] == "demo"
     assert journal["backup_path"].endswith(".backup.md")
+
+
+@pytest.mark.asyncio
+async def test_runner_refines_candidates_across_iterations_with_validation_feedback(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix evidence handling."}},
+            "action": {"content": "Evidence was missing."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="iter-task")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="iter-task",
+    )
+    bad_candidate = CandidateVariant(
+        candidate_id="candidate-1",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nWeak guidance.\n",
+        rationale="first attempt",
+        target_fingerprint="fingerprint",
+    )
+    good_candidate = CandidateVariant(
+        candidate_id="candidate-2",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nVerified guidance.\n",
+        rationale="refined attempt",
+        parent_candidate_ids=("candidate-1",),
+        target_fingerprint="fingerprint",
+    )
+
+    class IteratingOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            candidate = bad_candidate if len(self.requests) == 1 else good_candidate
+            return OptimizerResult(candidates=(candidate,))
+
+    class IteratingBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.5, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            score = 0.4 if request.candidate.candidate_id == "candidate-1" else 0.9
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": score,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": score >= 0.9,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
+
+    optimizer = IteratingOptimizer()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        post_apply_evaluator=post_apply,
+        evaluation_backend=IteratingBackend(),
+        min_eval_cases=0,
+        max_iterations=2,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-iterative",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert result.selected_candidate is good_candidate
+    assert len(optimizer.requests) == 2
+    assert optimizer.requests[0].validation_feedback == ()
+    assert optimizer.requests[1].validation_feedback
+    assert optimizer.requests[1].validation_feedback[0].variant_id == "candidate-1"
+    assert optimizer.requests[1].validation_feedback[0].metrics["score"] == 0.4
+    assert "Verified guidance." in skill_path.read_text(encoding="utf-8")
+    report = json.loads((store.run_path("run-iterative") / "report.json").read_text(encoding="utf-8"))
+    assert report["candidate_ids"] == ["candidate-1", "candidate-2"]
+    assert report["selected_candidate_id"] == "candidate-2"
+    assert report["iterations"][0]["candidate_id"] == "candidate-1"
+    assert report["iterations"][0]["status"] == "rejected"
+    assert report["iterations"][1]["candidate_id"] == "candidate-2"
+    assert report["iterations"][1]["status"] == "accepted"
 
 
 @pytest.mark.asyncio
@@ -1067,6 +1180,40 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
     assert "release_state: candidate" in candidate_content
     assert "Self-Evolve Trace Guidance" in candidate_content
     assert "browser-login-task" in candidate_content
+
+
+def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "validation_feedback": [
+                    {
+                        "variant_id": "candidate-1",
+                        "dataset_split": "held_out",
+                        "metrics": {
+                            "score": 68.0,
+                            "failed_gates": [
+                                "held_out_verification",
+                                "global_regression_benchmark",
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "Previous validation feedback" in candidate_content
+    assert "score=68.0" in candidate_content
+    assert "held_out_verification" in candidate_content
 
 
 def test_optimize_cli_request_persists_unsupported_inferred_target(tmp_path) -> None:
