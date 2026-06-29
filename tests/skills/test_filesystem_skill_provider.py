@@ -63,6 +63,29 @@ def test_filesystem_provider_parses_declared_execution_assets(tmp_path: Path) ->
     assert descriptor.execution_assets["relative_paths"] == ["notes.md", "scripts/run"]
 
 
+def test_filesystem_provider_exposes_self_evolve_release_state(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "browser-use"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "description: Browser automation\n"
+            "self_evolve:\n"
+            "  release_state: candidate\n"
+            "  run_id: run-1\n"
+            "---\n\n"
+            "# Usage\nUse browser tools.\n"
+        ),
+        encoding="utf-8",
+    )
+
+    provider = FilesystemSkillProvider(provider_id="local", root=tmp_path / "skills")
+    descriptor = provider.list_descriptors()[0]
+
+    assert descriptor.metadata["self_evolve"]["release_state"] == "candidate"
+    assert descriptor.metadata["self_evolve"]["run_id"] == "run-1"
+
+
 def test_collect_skill_docs_exposes_execution_entrypoint_from_usage_reference(
     tmp_path: Path,
 ) -> None:

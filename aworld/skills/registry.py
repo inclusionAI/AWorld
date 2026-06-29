@@ -53,6 +53,9 @@ class SkillRegistry:
                 if active_override is not None
                 else bool(metadata.get("active", False))
             ),
+            "self_evolve": dict(metadata.get("self_evolve", {}))
+            if isinstance(metadata.get("self_evolve"), dict)
+            else {},
             "skill_path": descriptor.skill_file,
             "asset_root": descriptor.asset_root,
             "path_aliases": build_skill_path_aliases(

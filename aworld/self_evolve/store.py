@@ -14,6 +14,7 @@ from aworld.self_evolve.types import (
     SelfEvolveRun,
     to_json_dict,
 )
+from aworld.skills.release import mark_skill_content_candidate
 
 
 class FilesystemSelfEvolveStore:
@@ -42,7 +43,14 @@ class FilesystemSelfEvolveStore:
         candidate_dir = self.run_path(run_id) / "candidates"
         candidate_dir.mkdir(parents=True, exist_ok=True)
         content_path = candidate_dir / f"{candidate.candidate_id}.md"
-        content_path.write_text(candidate.content, encoding="utf-8")
+        content = candidate.content
+        if candidate.target.target_type == "skill":
+            content = mark_skill_content_candidate(
+                candidate.content,
+                run_id=run_id,
+                candidate_id=candidate.candidate_id,
+            )
+        content_path.write_text(content, encoding="utf-8")
         self._write_json(content_path.with_suffix(".json"), candidate)
         return content_path
 
