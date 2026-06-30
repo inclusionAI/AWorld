@@ -327,6 +327,150 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
 
 
 @pytest.mark.asyncio
+async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-run"
+    historical_dir.mkdir(parents=True)
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "candidate_ids": ["candidate-dup"],
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-dup",
+                        "status": "rejected",
+                        "candidate_metrics": {
+                            "score": 35.0,
+                            "A1_groundedness": 1.0,
+                            "evidence_compacted": True,
+                        },
+                        "failed_gates": ["evidence_quality", "score_improvement"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix evidence handling."}},
+            "action": {"content": "Evidence was missing."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="history-task")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="history-task",
+    )
+    duplicate_candidate = CandidateVariant(
+        candidate_id="candidate-dup",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nDuplicate guidance.\n",
+        rationale="repeated historical failure",
+        target_fingerprint="fingerprint",
+    )
+    fresh_candidate = CandidateVariant(
+        candidate_id="candidate-fresh",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nFresh guidance.\n",
+        rationale="uses historical failure feedback",
+        target_fingerprint="fingerprint",
+    )
+
+    class HistoryAwareOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            return OptimizerResult(
+                candidates=(
+                    duplicate_candidate
+                    if len(self.requests) == 1
+                    else fresh_candidate,
+                )
+            )
+
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.2, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
+
+    optimizer = HistoryAwareOptimizer()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        post_apply_evaluator=post_apply,
+        evaluation_backend=VerifiedBackend(),
+        min_eval_cases=0,
+        max_iterations=2,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="new-run",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert result.selected_candidate is fresh_candidate
+    assert len(optimizer.requests) == 2
+    assert optimizer.requests[0].prior_feedback
+    assert optimizer.requests[0].prior_feedback[0].variant_id == "candidate-dup"
+    assert optimizer.requests[0].prior_feedback[0].metrics["failed_gates"] == [
+        "evidence_quality",
+        "score_improvement",
+    ]
+    assert optimizer.requests[1].validation_feedback[0].metrics["failed_gates"] == [
+        "duplicate_rejected_candidate"
+    ]
+    report = json.loads((tmp_path / ".aworld" / "self_evolve" / "new-run" / "report.json").read_text())
+    assert report["iterations"][0]["status"] == "rejected"
+    assert report["iterations"][0]["failed_gates"] == ["duplicate_rejected_candidate"]
+    assert report["iterations"][1]["status"] == "accepted"
+
+
+@pytest.mark.asyncio
 async def test_runner_auto_verified_rejects_without_evaluation_backend(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)

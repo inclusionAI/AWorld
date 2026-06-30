@@ -291,6 +291,7 @@ def test_run_optimize_cli_uses_stable_auto_verified_defaults(
     assert calls["judge_repetitions"] == 3
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
+    assert calls["iterations"] == 3
 
 
 def test_run_optimize_cli_keeps_proposal_defaults_cheap(
