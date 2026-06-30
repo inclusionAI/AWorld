@@ -46,6 +46,9 @@ class CandidateConfidenceDecision:
     verification_split: str | None
     deterministic_signal_present: bool
     held_out_case_count: int
+    verification_mode: str = "held_out"
+    baseline_replay_count: int = 0
+    candidate_replay_count: int = 0
 
 
 class EvaluationBackend(Protocol):
@@ -458,6 +461,7 @@ def determine_candidate_confidence(
     min_eval_cases: int,
 ) -> CandidateConfidenceDecision:
     held_out_case_count = len(dataset.recipe.held_out_case_ids)
+    baseline_replay_count, candidate_replay_count = _single_case_replay_counts(dataset)
     deterministic_signal_present = _has_deterministic_signal(
         validation_summary,
         held_out_summary,
@@ -466,6 +470,25 @@ def determine_candidate_confidence(
     verification_split = held_out_summary.dataset_split if held_out_summary is not None else None
 
     if held_out_case_count < min_eval_cases or held_out_summary is None:
+        if (
+            held_out_summary is not None
+            and deterministic_signal_present
+            and _has_sufficient_single_case_replay(
+                baseline_replay_count=baseline_replay_count,
+                candidate_replay_count=candidate_replay_count,
+            )
+        ):
+            return CandidateConfidenceDecision(
+                confidence="verified",
+                reason="single-case replay verification is sufficient",
+                selection_split=selection_split,
+                verification_split="single_case_replay",
+                deterministic_signal_present=True,
+                held_out_case_count=held_out_case_count,
+                verification_mode="single_case_replay",
+                baseline_replay_count=baseline_replay_count,
+                candidate_replay_count=candidate_replay_count,
+            )
         return CandidateConfidenceDecision(
             confidence="limited",
             reason="insufficient held-out eval cases for verified confidence",
@@ -473,6 +496,8 @@ def determine_candidate_confidence(
             verification_split=None,
             deterministic_signal_present=deterministic_signal_present,
             held_out_case_count=held_out_case_count,
+            baseline_replay_count=baseline_replay_count,
+            candidate_replay_count=candidate_replay_count,
         )
 
     if not deterministic_signal_present:
@@ -483,6 +508,8 @@ def determine_candidate_confidence(
             verification_split=verification_split,
             deterministic_signal_present=False,
             held_out_case_count=held_out_case_count,
+            baseline_replay_count=baseline_replay_count,
+            candidate_replay_count=candidate_replay_count,
         )
 
     return CandidateConfidenceDecision(
@@ -492,7 +519,58 @@ def determine_candidate_confidence(
         verification_split=verification_split,
         deterministic_signal_present=True,
         held_out_case_count=held_out_case_count,
+        verification_mode="held_out",
+        baseline_replay_count=baseline_replay_count,
+        candidate_replay_count=candidate_replay_count,
     )
+
+
+def _has_sufficient_single_case_replay(
+    *,
+    baseline_replay_count: int,
+    candidate_replay_count: int,
+) -> bool:
+    return baseline_replay_count >= 2 and candidate_replay_count >= 3
+
+
+def _single_case_replay_counts(dataset: SelfEvolveDataset) -> tuple[int, int]:
+    if len(dataset.cases) != 1:
+        return 0, 0
+    if dataset.recipe.source.get("paired_replay") is not True:
+        return 0, 0
+    replay = dataset.cases[0].metadata.get("replay")
+    if not isinstance(replay, Mapping):
+        return 0, 0
+    return (
+        _successful_replay_count(replay.get("baseline")),
+        _successful_replay_count(replay.get("candidate")),
+    )
+
+
+def _successful_replay_count(payload: Any) -> int:
+    if not isinstance(payload, Mapping):
+        return 0
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return 0
+    successful_count = _int_metric(metrics, "successful_repetition_count")
+    repetition_count = _int_metric(metrics, "repetition_count")
+    if successful_count is None:
+        return repetition_count or 0
+    if repetition_count is None:
+        return successful_count
+    return min(successful_count, repetition_count)
+
+
+def _int_metric(metrics: Mapping[str, Any], key: str) -> int | None:
+    value = metrics.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
 
 
 def _summary_metrics(result: Any) -> Mapping[str, Any]:

@@ -240,6 +240,30 @@ def test_held_out_and_global_regression_gates_require_independent_verification()
     ).passed is True
 
 
+def test_held_out_gate_accepts_stable_single_case_replay_verification() -> None:
+    gate = HeldOutVerificationGate(min_eval_cases=30)
+
+    result = gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="verified",
+            reason="single-case replay verification is sufficient",
+            selection_split="validation",
+            verification_split="single_case_replay",
+            deterministic_signal_present=True,
+            held_out_case_count=0,
+            verification_mode="single_case_replay",
+            baseline_replay_count=2,
+            candidate_replay_count=3,
+        )
+    )
+
+    assert result.passed is True
+    assert result.reason == "candidate is verified by stable single-case replay"
+    assert result.details["verification_mode"] == "single_case_replay"
+    assert result.details["baseline_replay_count"] == 2
+    assert result.details["candidate_replay_count"] == 3
+
+
 def test_trust_provenance_gate_rejects_protected_generated_and_external_targets() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     gate = TrustProvenanceGate()

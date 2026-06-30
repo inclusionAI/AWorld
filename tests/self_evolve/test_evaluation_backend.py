@@ -646,3 +646,113 @@ def test_candidate_confidence_requires_sufficient_held_out_and_deterministic_sig
     assert verified.confidence == "verified"
     assert verified.reason == "held-out deterministic evaluation is sufficient"
     assert verified.verification_split == "held_out"
+
+
+def test_candidate_confidence_accepts_stable_single_case_replay() -> None:
+    single_case_replay_dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": {
+                            "status": "succeeded",
+                            "metrics": {
+                                "repetition_count": 2,
+                                "successful_repetition_count": 2,
+                            },
+                        },
+                        "candidate": {
+                            "status": "succeeded",
+                            "metrics": {
+                                "repetition_count": 3,
+                                "successful_repetition_count": 3,
+                            },
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log", "case_count": 1, "paired_replay": True},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=(),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=single_case_replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"score_delta": 0.4, "deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"score_delta": 0.4, "deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.reason == "single-case replay verification is sufficient"
+    assert decision.verification_split == "single_case_replay"
+    assert decision.verification_mode == "single_case_replay"
+    assert decision.held_out_case_count == 0
+    assert decision.baseline_replay_count == 2
+    assert decision.candidate_replay_count == 3
+
+
+def test_candidate_confidence_keeps_single_case_replay_limited_when_repetitions_are_low() -> None:
+    single_case_replay_dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": {
+                            "metrics": {
+                                "repetition_count": 1,
+                                "successful_repetition_count": 1,
+                            },
+                        },
+                        "candidate": {
+                            "metrics": {
+                                "repetition_count": 1,
+                                "successful_repetition_count": 1,
+                            },
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log", "case_count": 1, "paired_replay": True},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=(),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=single_case_replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"score_delta": 0.4, "deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"score_delta": 0.4, "deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "limited"
+    assert decision.reason == "insufficient held-out eval cases for verified confidence"
+    assert decision.verification_mode == "held_out"
