@@ -746,6 +746,144 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
 
 
 @pytest.mark.asyncio
+async def test_runner_auto_verified_accepts_stable_single_case_replay(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="single-replay-task")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="single-replay-task",
+    )
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nStable single-case replay guidance.\n"
+
+    async def mutate(prompt: str) -> dict:
+        return {"content": candidate_content, "rationale": "Stable replay candidate."}
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True, "deterministic_signal": True},
+            dataset_split="post_apply",
+        )
+
+    class StableReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[
+                        {"state": {"input": request.task_input}, "action": {"content": "old"}}
+                    ],
+                    metrics={
+                        "score": 0.3,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                        "repetition_count": request.baseline_repetitions,
+                        "successful_repetition_count": request.baseline_repetitions,
+                    },
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[
+                        {"state": {"input": request.task_input}, "action": {"content": "new"}}
+                    ],
+                    metrics={
+                        "score": 0.9,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                        "repetition_count": request.candidate_repetitions,
+                        "successful_repetition_count": request.candidate_repetitions,
+                    },
+                ),
+            )
+
+    class PositiveReplayEvaluationBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={
+                        "score": 0.3,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                        "deterministic_signal": True,
+                        "command_case_count": 1,
+                        "command_pass_count": 1,
+                        "global_regression_passed": True,
+                    },
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=PositiveReplayEvaluationBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=30,
+        replay_enabled=True,
+        candidate_replay_backend=StableReplayBackend(),
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-single-case-replay-verified",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert skill_path.read_text(encoding="utf-8") != original_content
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-single-case-replay-verified"
+            / "report.json"
+        ).read_text()
+    )
+    assert report["post_apply"]["status"] == "accepted"
+    assert any(
+        gate["gate_name"] == "held_out_verification"
+        and gate["passed"] is True
+        and gate["details"]["verification_mode"] == "single_case_replay"
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_runner_auto_verified_rejects_single_candidate_rerun_without_baseline_rerun(
     tmp_path,
 ) -> None:

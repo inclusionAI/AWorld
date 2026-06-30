@@ -390,25 +390,39 @@ class HeldOutVerificationGate:
         self.min_eval_cases = min_eval_cases
 
     def evaluate(self, decision: CandidateConfidenceDecision) -> GateResult:
-        passed = (
+        held_out_passed = (
             decision.confidence == "verified"
             and decision.verification_split == "held_out"
             and decision.held_out_case_count >= self.min_eval_cases
             and decision.deterministic_signal_present
         )
+        single_case_replay_passed = (
+            decision.confidence == "verified"
+            and decision.verification_mode == "single_case_replay"
+            and decision.verification_split == "single_case_replay"
+            and decision.deterministic_signal_present
+            and decision.baseline_replay_count >= 2
+            and decision.candidate_replay_count >= 3
+        )
+        passed = held_out_passed or single_case_replay_passed
+        if held_out_passed:
+            reason = "candidate is verified on sufficient held-out cases"
+        elif single_case_replay_passed:
+            reason = "candidate is verified by stable single-case replay"
+        else:
+            reason = "candidate is not verified on sufficient held-out cases"
         return GateResult(
             gate_name="held_out_verification",
             passed=passed,
-            reason=(
-                "candidate is verified on sufficient held-out cases"
-                if passed
-                else "candidate is not verified on sufficient held-out cases"
-            ),
+            reason=reason,
             details={
                 "confidence": decision.confidence,
                 "held_out_case_count": decision.held_out_case_count,
                 "min_eval_cases": self.min_eval_cases,
                 "verification_split": decision.verification_split,
+                "verification_mode": decision.verification_mode,
+                "baseline_replay_count": decision.baseline_replay_count,
+                "candidate_replay_count": decision.candidate_replay_count,
             },
         )
 
