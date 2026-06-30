@@ -555,6 +555,17 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
             "B3_compliance": "integer 1-5",
             "B4_robustness": "integer 1-5",
             "veto_triggered": "boolean",
+            "has_evidence": "boolean, true only when extracted_trajectory.evidence contains usable source evidence",
+            "evidence_block_count": "integer count of extracted_trajectory.evidence blocks",
+            "evidence_compacted": "boolean, true when any evidence block is a compacted/truncated preview",
+            "evidence_incomplete": "boolean, true when available evidence is insufficient to support specific final-answer claims",
+            "evidence_quality": {
+                "has_evidence": "boolean",
+                "evidence_block_count": "integer",
+                "evidence_compacted": "boolean",
+                "evidence_incomplete": "boolean",
+                "evidence_issues": "array of short strings",
+            },
         },
         "instruction": (
             "Apply the trajectory evaluator contract to the extracted trajectory. "

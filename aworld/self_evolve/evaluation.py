@@ -534,9 +534,14 @@ def _has_sufficient_single_case_replay(
 
 
 def _single_case_replay_counts(dataset: SelfEvolveDataset) -> tuple[int, int]:
-    if len(dataset.cases) != 1:
-        return 0, 0
     if dataset.recipe.source.get("paired_replay") is not True:
+        return 0, 0
+    original_case_count = dataset.recipe.source.get("original_case_count")
+    if original_case_count is None:
+        original_case_count = len(dataset.cases)
+    if original_case_count != 1:
+        return 0, 0
+    if not dataset.cases:
         return 0, 0
     replay = dataset.cases[0].metadata.get("replay")
     if not isinstance(replay, Mapping):
@@ -682,6 +687,7 @@ def _aworld_evaluator_metrics(
             for metric_name, aggregate in suite_summary.items():
                 if isinstance(aggregate, Mapping) and isinstance(aggregate.get("mean"), (int, float)):
                     metrics[str(metric_name)] = float(aggregate["mean"])
+    metrics.update(_aworld_evidence_quality_metrics(report))
 
     gate = report.get("gate")
     gate_status = gate.get("status") if isinstance(gate, Mapping) else None
@@ -732,6 +738,22 @@ def _aggregate_aworld_evaluator_metrics(
         values = [metrics[key] for metrics in per_run if key in metrics]
         if not values:
             continue
+        if key in {"evidence_compacted", "evidence_incomplete"}:
+            aggregated[key] = any(_truthy_metric(value) for value in values)
+            continue
+        if key == "has_evidence":
+            aggregated[key] = all(_truthy_metric(value) for value in values)
+            continue
+        if key == "evidence_block_count" and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in values
+        ):
+            numeric_values = [float(value) for value in values]
+            aggregated[key] = min(numeric_values)
+            aggregated[f"{key}_min"] = min(numeric_values)
+            aggregated[f"{key}_max"] = max(numeric_values)
+            aggregated[f"{key}_std"] = statistics.pstdev(numeric_values)
+            continue
         if all(isinstance(value, bool) for value in values):
             aggregated[key] = all(bool(value) for value in values)
             continue
@@ -759,6 +781,91 @@ def _aggregate_aworld_evaluator_metrics(
     aggregated["command_failure_count"] = 0 if gate_passed else case_count
     aggregated["command_pass_rate"] = 1.0 if gate_passed else 0.0
     return aggregated
+
+
+def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any]:
+    records: list[Mapping[str, Any]] = []
+    top_level = report.get("evidence_quality")
+    if isinstance(top_level, Mapping):
+        records.append(top_level)
+
+    results = report.get("results")
+    if isinstance(results, list):
+        for result in results:
+            if not isinstance(result, Mapping):
+                continue
+            judge = result.get("judge")
+            if not isinstance(judge, Mapping):
+                continue
+            record: dict[str, Any] = {}
+            nested = judge.get("evidence_quality")
+            if isinstance(nested, Mapping):
+                record.update(dict(nested))
+            for key in (
+                "has_evidence",
+                "evidence_block_count",
+                "evidence_compacted",
+                "evidence_incomplete",
+                "evidence_issues",
+            ):
+                if key in judge:
+                    record[key] = judge[key]
+            if record:
+                records.append(record)
+
+    if not records:
+        return {}
+
+    metrics: dict[str, Any] = {}
+    has_evidence_values = [
+        _truthy_metric(record.get("has_evidence"))
+        for record in records
+        if record.get("has_evidence") is not None
+    ]
+    block_counts = [
+        int(record.get("evidence_block_count"))
+        for record in records
+        if isinstance(record.get("evidence_block_count"), (int, float))
+        and not isinstance(record.get("evidence_block_count"), bool)
+    ]
+    compacted_values = [
+        _truthy_metric(record.get("evidence_compacted"))
+        for record in records
+        if record.get("evidence_compacted") is not None
+    ]
+    incomplete_values = [
+        _truthy_metric(record.get("evidence_incomplete"))
+        for record in records
+        if record.get("evidence_incomplete") is not None
+    ]
+    issues: list[str] = []
+    for record in records:
+        record_issues = record.get("evidence_issues")
+        if isinstance(record_issues, list):
+            issues.extend(str(issue) for issue in record_issues if issue)
+
+    if has_evidence_values:
+        metrics["has_evidence"] = 1.0 if all(has_evidence_values) else 0.0
+    if block_counts:
+        metrics["evidence_block_count"] = min(block_counts)
+        metrics["evidence_block_count_total"] = sum(block_counts)
+    if compacted_values:
+        metrics["evidence_compacted"] = any(compacted_values)
+    if incomplete_values:
+        metrics["evidence_incomplete"] = any(incomplete_values)
+    if issues:
+        metrics["evidence_issues"] = issues
+    return metrics
+
+
+def _truthy_metric(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "pass", "passed"}
+    return bool(value)
 
 
 def _failed_aworld_evaluator_metrics(

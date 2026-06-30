@@ -32,6 +32,7 @@ from aworld.self_evolve.evaluation import (
 from aworld.self_evolve.gates import (
     BudgetGate,
     CostLatencyRegressionGate,
+    EvidenceQualityGate,
     ExternalCodeEvolutionGate,
     GlobalRegressionBenchmarkGate,
     HeldOutVerificationGate,
@@ -348,8 +349,21 @@ class SelfEvolveRunner:
                                 held_out_summary=iteration_held_out_summary,
                                 min_eval_cases=self.min_eval_cases,
                             )
+                            evidence_quality_gates = [
+                                gate
+                                for gate in (
+                                    _evidence_quality_gate(
+                                        iteration_candidate_summary
+                                    ),
+                                    _evidence_quality_gate(
+                                        iteration_held_out_summary
+                                    ),
+                                )
+                                if gate is not None
+                            ]
                             iteration_gate_results.extend(
                                 [
+                                    *evidence_quality_gates,
                                     RequiredVerificationGate().evaluate(
                                         iteration_held_out_summary
                                     ),
@@ -1171,6 +1185,26 @@ def _evaluator_report_paths(
         if isinstance(path, str) and path not in paths:
             paths.append(path)
     return paths
+
+
+def _evidence_quality_gate(summary: EvaluationSummary) -> GateResult | None:
+    metrics = summary.metrics
+    requires_evidence_quality = (
+        metrics.get("evaluator_mode") == "aworld_trajectory_evaluator"
+        or metrics.get("evaluator_source_kind") == "trajectory"
+        or any(
+            key in metrics
+            for key in (
+                "has_evidence",
+                "evidence_block_count",
+                "evidence_compacted",
+                "evidence_incomplete",
+            )
+        )
+    )
+    if not requires_evidence_quality:
+        return None
+    return EvidenceQualityGate().evaluate(summary)
 
 
 def _load_json_mapping(path: Path) -> Mapping[str, Any]:

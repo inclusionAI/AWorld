@@ -43,6 +43,7 @@ class ReplayVariantResult:
     stdout_path: str | None = None
     stderr_path: str | None = None
     failure: Mapping[str, Any] | None = None
+    repetition_results: tuple["ReplayVariantResult", ...] = ()
 
     @property
     def succeeded(self) -> bool:
@@ -518,6 +519,7 @@ def _aggregate_variant_results(
         stdout_path=selected.stdout_path,
         stderr_path=selected.stderr_path,
         failure=failure,
+        repetition_results=tuple(results),
     )
 
 
@@ -534,40 +536,57 @@ def build_paired_replay_dataset(
 
     cases: list[EvalCase] = []
     for case in dataset.cases:
-        metadata = dict(case.metadata)
-        metadata["variant_trajectories"] = {
-            "baseline": replay_result.baseline.trajectory,
-            candidate.candidate_id: replay_result.candidate.trajectory,
-        }
-        metadata["replay"] = {
-            "request": {
-                "run_id": replay_result.request.run_id,
-                "task_id": replay_result.request.task_id,
-                "candidate_id": replay_result.request.candidate_id,
-                "overlay_skill_root": replay_result.request.overlay_skill_root,
-            },
-            "baseline": {
-                "status": replay_result.baseline.status,
-                "metrics": dict(replay_result.baseline.metrics),
-                "failure": replay_result.baseline.failure,
-            },
-            "candidate": {
-                "status": replay_result.candidate.status,
-                "metrics": dict(replay_result.candidate.metrics),
-                "failure": replay_result.candidate.failure,
-            },
-        }
-        cases.append(
-            EvalCase(
-                case_id=case.case_id,
-                input=case.input,
-                expected_output=case.expected_output,
-                verification_command=case.verification_command,
-                metadata=metadata,
-                trace_pack=case.trace_pack,
-                source=case.source,
+        baseline_results = _evaluation_repetition_results(replay_result.baseline)
+        candidate_results = _evaluation_repetition_results(replay_result.candidate)
+        replay_case_count = max(len(baseline_results), len(candidate_results))
+        for index in range(replay_case_count):
+            baseline_result = baseline_results[index % len(baseline_results)]
+            candidate_result = candidate_results[index % len(candidate_results)]
+            metadata = dict(case.metadata)
+            metadata["variant_trajectories"] = {
+                "baseline": baseline_result.trajectory,
+                candidate.candidate_id: candidate_result.trajectory,
+            }
+            metadata["replay"] = {
+                "request": {
+                    "run_id": replay_result.request.run_id,
+                    "task_id": replay_result.request.task_id,
+                    "candidate_id": replay_result.request.candidate_id,
+                    "overlay_skill_root": replay_result.request.overlay_skill_root,
+                },
+                "baseline": {
+                    "status": replay_result.baseline.status,
+                    "metrics": dict(replay_result.baseline.metrics),
+                    "failure": replay_result.baseline.failure,
+                    "variant_id": baseline_result.variant_id,
+                },
+                "candidate": {
+                    "status": replay_result.candidate.status,
+                    "metrics": dict(replay_result.candidate.metrics),
+                    "failure": replay_result.candidate.failure,
+                    "variant_id": candidate_result.variant_id,
+                },
+                "repetition_index": index + 1,
+                "replay_case_count": replay_case_count,
+            }
+            case_id = (
+                case.case_id
+                if replay_case_count == 1
+                else f"{case.case_id}__replay_{index + 1}"
             )
-        )
+            cases.append(
+                EvalCase(
+                    case_id=case_id,
+                    input=case.input,
+                    expected_output=case.expected_output,
+                    verification_command=case.verification_command,
+                    metadata=metadata,
+                    trace_pack=case.trace_pack,
+                    source=case.source,
+                )
+            )
+
+    case_ids = [case.case_id for case in cases]
 
     return SelfEvolveDataset(
         cases=tuple(cases),
@@ -576,11 +595,22 @@ def build_paired_replay_dataset(
                 **dict(dataset.recipe.source),
                 "paired_replay": True,
                 "candidate_id": candidate.candidate_id,
+                "original_case_count": len(dataset.cases),
+                "replay_case_count": len(cases),
             },
             split_seed=dataset.recipe.split_seed,
-            splits=dataset.recipe.splits,
+            splits={"train": case_ids, "validation": [], "held_out": []},
             synthetic_generation_policy=dataset.recipe.synthetic_generation_policy,
-            trainable_case_ids=dataset.recipe.trainable_case_ids,
+            trainable_case_ids=tuple(case_ids),
             held_out_case_ids=dataset.recipe.held_out_case_ids,
         ),
     )
+
+
+def _evaluation_repetition_results(
+    result: ReplayVariantResult,
+) -> tuple[ReplayVariantResult, ...]:
+    successful = tuple(item for item in result.repetition_results if item.succeeded)
+    if successful:
+        return successful
+    return (result,)

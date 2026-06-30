@@ -631,23 +631,59 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
 
         async def replay_candidate(self, request, *, candidate, dataset):
             self.requests.append(request)
+            baseline_repetitions = tuple(
+                ReplayVariantResult(
+                    variant_id=f"baseline-{index}",
+                    status="succeeded",
+                    trajectory=[
+                        {
+                            "state": {"input": request.task_input},
+                            "action": {"content": f"old-{index}"},
+                        }
+                    ],
+                )
+                for index in range(1, request.baseline_repetitions + 1)
+            )
+            candidate_repetitions = tuple(
+                ReplayVariantResult(
+                    variant_id=f"{candidate.candidate_id}-{index}",
+                    status="succeeded",
+                    trajectory=[
+                        {
+                            "state": {"input": request.task_input},
+                            "action": {"content": f"new-{index}"},
+                        }
+                    ],
+                )
+                for index in range(1, request.candidate_repetitions + 1)
+            )
             return CandidateReplayResult(
                 request=request,
                 baseline=ReplayVariantResult(
                     variant_id="baseline",
                     status="succeeded",
-                    trajectory=[
-                        {"state": {"input": request.task_input}, "action": {"content": "old"}}
-                    ],
-                    metrics={"score": 0.4, "latency_ms": 100.0, "cost_usd": 1.0},
+                    trajectory=baseline_repetitions[-1].trajectory,
+                    metrics={
+                        "score": 0.4,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                        "repetition_count": len(baseline_repetitions),
+                        "successful_repetition_count": len(baseline_repetitions),
+                    },
+                    repetition_results=baseline_repetitions,
                 ),
                 candidate=ReplayVariantResult(
                     variant_id=candidate.candidate_id,
                     status="succeeded",
-                    trajectory=[
-                        {"state": {"input": request.task_input}, "action": {"content": "new"}}
-                    ],
-                    metrics={"score": 0.9, "latency_ms": 100.0, "cost_usd": 1.0},
+                    trajectory=candidate_repetitions[-1].trajectory,
+                    metrics={
+                        "score": 0.9,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                        "repetition_count": len(candidate_repetitions),
+                        "successful_repetition_count": len(candidate_repetitions),
+                    },
+                    repetition_results=candidate_repetitions,
                 ),
             )
 
@@ -657,10 +693,12 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
 
         async def evaluate_variant(self, request):
             self.requests.append(request)
-            case = request.dataset.cases[0]
-            variants = case.metadata["variant_trajectories"]
             if request.candidate is None:
-                assert variants["baseline"][0]["action"]["content"] == "old"
+                baseline_outputs = [
+                    case.metadata["variant_trajectories"]["baseline"][0]["action"]["content"]
+                    for case in request.dataset.cases
+                ]
+                assert baseline_outputs == ["old-1", "old-2", "old-1"]
                 return EvaluationSummary(
                     variant_id="baseline",
                     metrics={
@@ -668,14 +706,20 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
                         "latency_ms": 100.0,
                         "cost_usd": 1.0,
                         "deterministic_signal": True,
-                        "command_case_count": 1,
-                        "command_pass_count": 1,
+                        "command_case_count": len(request.dataset.cases),
+                        "command_pass_count": len(request.dataset.cases),
                         "global_regression_passed": True,
                         "report_path": str(tmp_path / "baseline-eval-report.json"),
                     },
                     dataset_split=request.dataset_split,
                 )
-            assert variants[request.candidate.candidate_id][0]["action"]["content"] == "new"
+            candidate_outputs = [
+                case.metadata["variant_trajectories"][request.candidate.candidate_id][0][
+                    "action"
+                ]["content"]
+                for case in request.dataset.cases
+            ]
+            assert candidate_outputs == ["new-1", "new-2", "new-3"]
             return EvaluationSummary(
                 variant_id=request.candidate.candidate_id,
                 metrics={
@@ -683,8 +727,8 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
                     "latency_ms": 100.0,
                     "cost_usd": 1.0,
                     "deterministic_signal": True,
-                    "command_case_count": 1,
-                    "command_pass_count": 1,
+                    "command_case_count": len(request.dataset.cases),
+                    "command_pass_count": len(request.dataset.cases),
                     "global_regression_passed": True,
                     "report_path": str(tmp_path / "candidate-eval-report.json"),
                 },
@@ -728,6 +772,7 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
         request.dataset.cases[0].metadata["variant_trajectories"]
         for request in evaluation_backend.requests
     )
+    assert len(evaluation_backend.requests[0].dataset.cases) == 3
     report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-replay-eval" / "report.json").read_text())
     assert report["replay"]["candidate"]["status"] == "succeeded"
     assert report["replay"]["overlay_skill_root"] == replay_backend.requests[0].overlay_skill_root
@@ -879,6 +924,155 @@ async def test_runner_auto_verified_accepts_stable_single_case_replay(
         gate["gate_name"] == "held_out_verification"
         and gate["passed"] is True
         and gate["details"]["verification_mode"] == "single_case_replay"
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_verified_rejects_compacted_evaluator_evidence(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(trajectory, source_kind="current_trajectory", task_id="compacted-evidence-task")
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="compacted-evidence-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+            "rationale": "Candidate with compacted evidence.",
+        }
+
+    async def post_apply(candidate):
+        pytest.fail("compacted evaluator evidence must not auto apply")
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            baseline_repetitions = tuple(
+                ReplayVariantResult(
+                    variant_id=f"baseline-{index}",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": f"old-{index}"}}],
+                )
+                for index in range(1, request.baseline_repetitions + 1)
+            )
+            candidate_repetitions = tuple(
+                ReplayVariantResult(
+                    variant_id=f"{candidate.candidate_id}-{index}",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": f"new-{index}"}}],
+                )
+                for index in range(1, request.candidate_repetitions + 1)
+            )
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=baseline_repetitions[-1].trajectory,
+                    metrics={
+                        "repetition_count": len(baseline_repetitions),
+                        "successful_repetition_count": len(baseline_repetitions),
+                    },
+                    repetition_results=baseline_repetitions,
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=candidate_repetitions[-1].trajectory,
+                    metrics={
+                        "repetition_count": len(candidate_repetitions),
+                        "successful_repetition_count": len(candidate_repetitions),
+                    },
+                    repetition_results=candidate_repetitions,
+                ),
+            )
+
+    class CompactedEvidenceBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={
+                        "score": 0.2,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                        "deterministic_signal": True,
+                        "command_case_count": len(request.dataset.cases),
+                        "command_pass_count": len(request.dataset.cases),
+                        "global_regression_passed": True,
+                        "has_evidence": 1.0,
+                        "evidence_block_count": 1,
+                        "evidence_compacted": False,
+                    },
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": len(request.dataset.cases),
+                    "command_pass_count": len(request.dataset.cases),
+                    "global_regression_passed": True,
+                    "has_evidence": 1.0,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=CompactedEvidenceBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=30,
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-compacted-evidence",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-compacted-evidence"
+            / "report.json"
+        ).read_text()
+    )
+    assert any(
+        gate["gate_name"] == "evidence_quality"
+        and gate["passed"] is False
+        and gate["reason"] == "evaluation evidence is compacted or incomplete"
         for gate in report["gate_results"]
     )
 

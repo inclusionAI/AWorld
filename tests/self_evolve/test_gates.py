@@ -4,6 +4,7 @@ from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCos
 from aworld.self_evolve.gates import (
     BudgetGate,
     CostLatencyRegressionGate,
+    EvidenceQualityGate,
     ExternalCodeEvolutionGate,
     GlobalRegressionBenchmarkGate,
     HeldOutVerificationGate,
@@ -134,6 +135,75 @@ def test_required_verification_gate_requires_all_commands_to_pass() -> None:
     assert failed.reason == "required verification commands did not all pass"
     assert missing.passed is False
     assert missing.reason == "required deterministic verification command was not run"
+
+
+def test_evidence_quality_gate_rejects_compacted_tool_evidence() -> None:
+    summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={
+            "score": 90.0,
+            "has_evidence": 1.0,
+            "evidence_compacted": True,
+            "evidence_block_count": 1,
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(summary)
+
+    assert result.passed is False
+    assert result.reason == "evaluation evidence is compacted or incomplete"
+    assert result.details["evidence_compacted"] is True
+
+
+def test_evidence_quality_gate_requires_evidence_blocks_for_verified_apply() -> None:
+    missing = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"has_evidence": 0.0, "evidence_block_count": 0},
+        )
+    )
+    present = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 2,
+                "evidence_compacted": False,
+            },
+        )
+    )
+
+    assert missing.passed is False
+    assert missing.reason == "verified apply requires replay tool evidence"
+    assert present.passed is True
+
+
+def test_evidence_quality_gate_rejects_incomplete_or_truncated_evidence() -> None:
+    incomplete = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 1,
+                "evidence_incomplete": True,
+            },
+        )
+    )
+    truncated = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 1,
+                "evidence_preview": "... [truncated 1200 chars from tool evidence] ...",
+            },
+        )
+    )
+
+    assert incomplete.passed is False
+    assert incomplete.reason == "evaluation evidence is compacted or incomplete"
+    assert truncated.passed is False
+    assert truncated.reason == "evaluation evidence is compacted or incomplete"
 
 
 def test_protected_path_gate_blocks_product_and_app_evaluator_paths() -> None:
