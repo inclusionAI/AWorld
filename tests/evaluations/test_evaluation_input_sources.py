@@ -301,9 +301,23 @@ def test_trajectory_judge_schema_normalizes_dimensions_report() -> None:
                 "B4_robustness": {"score": 3},
             },
             "veto_triggered": False,
+            "has_evidence": True,
+            "evidence_block_count": 2,
+            "evidence_compacted": False,
+            "evidence_incomplete": False,
+            "evidence_quality": {
+                "has_evidence": True,
+                "evidence_block_count": 2,
+                "evidence_compacted": False,
+                "evidence_incomplete": False,
+            },
         }
     )
 
     assert payload["score"] == 76
     assert payload["A1_groundedness"] == 4
     assert payload["B2_efficiency"] == 2
+    assert payload["has_evidence"] is True
+    assert payload["evidence_block_count"] == 2
+    assert payload["evidence_compacted"] is False
+    assert payload["evidence_quality"]["evidence_block_count"] == 2

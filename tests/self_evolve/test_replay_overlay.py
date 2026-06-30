@@ -141,6 +141,97 @@ def test_paired_replay_dataset_maps_baseline_and_candidate_trajectories() -> Non
     assert paired.cases[0].metadata["replay"]["candidate"]["metrics"]["latency_ms"] == 120.0
 
 
+def test_paired_replay_dataset_expands_repetition_trajectories_into_eval_cases() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input={"content": "task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    baseline_1 = ReplayVariantResult(
+        variant_id="baseline-1",
+        status="succeeded",
+        trajectory=[{"action": {"content": "baseline-1"}}],
+    )
+    baseline_2 = ReplayVariantResult(
+        variant_id="baseline-2",
+        status="succeeded",
+        trajectory=[{"action": {"content": "baseline-2"}}],
+    )
+    candidate_1 = ReplayVariantResult(
+        variant_id="cand-1-1",
+        status="succeeded",
+        trajectory=[{"action": {"content": "candidate-1"}}],
+    )
+    candidate_2 = ReplayVariantResult(
+        variant_id="cand-1-2",
+        status="succeeded",
+        trajectory=[{"action": {"content": "candidate-2"}}],
+    )
+    candidate_3 = ReplayVariantResult(
+        variant_id="cand-1-3",
+        status="succeeded",
+        trajectory=[{"action": {"content": "candidate-3"}}],
+    )
+    replay = CandidateReplayResult(
+        request=CandidateReplayRequest(
+            run_id="run-1",
+            task_id="task-1",
+            workspace_root=str(Path("/tmp/workspace")),
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+            candidate_id="cand-1",
+            overlay_skill_root="/tmp/overlay",
+            task_input={"content": "task"},
+            baseline_repetitions=2,
+            candidate_repetitions=3,
+        ),
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=baseline_2.trajectory,
+            metrics={"repetition_count": 2, "successful_repetition_count": 2},
+            repetition_results=(baseline_1, baseline_2),
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="cand-1",
+            status="succeeded",
+            trajectory=candidate_3.trajectory,
+            metrics={"repetition_count": 3, "successful_repetition_count": 3},
+            repetition_results=(candidate_1, candidate_2, candidate_3),
+        ),
+    )
+
+    paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=replay,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+    )
+
+    assert [case.case_id for case in paired.cases] == [
+        "task-1__replay_1",
+        "task-1__replay_2",
+        "task-1__replay_3",
+    ]
+    assert [
+        case.metadata["variant_trajectories"]["baseline"][0]["action"]["content"]
+        for case in paired.cases
+    ] == ["baseline-1", "baseline-2", "baseline-1"]
+    assert [
+        case.metadata["variant_trajectories"]["cand-1"][0]["action"]["content"]
+        for case in paired.cases
+    ] == ["candidate-1", "candidate-2", "candidate-3"]
+    assert paired.recipe.source["paired_replay"] is True
+    assert paired.recipe.source["original_case_count"] == 1
+    assert paired.recipe.source["replay_case_count"] == 3
+    assert paired.recipe.splits["train"] == [
+        "task-1__replay_1",
+        "task-1__replay_2",
+        "task-1__replay_3",
+    ]
+
+
 def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
     dataset = SelfEvolveDataset(
         cases=(EvalCase(case_id="task-1", input="task"),),
@@ -246,6 +337,11 @@ async def test_aworld_cli_candidate_replay_backend_aggregates_repetitions(
     assert result.candidate.variant_id == "cand-1"
     assert result.candidate.metrics["repetition_count"] == 3
     assert result.candidate.metrics["score"] == pytest.approx(0.9)
+    assert [item.variant_id for item in result.candidate.repetition_results] == [
+        "cand-1-1",
+        "cand-1-2",
+        "cand-1-3",
+    ]
     assert result.candidate.trajectory[0]["action"]["content"] == "cand-1-3"
 
 

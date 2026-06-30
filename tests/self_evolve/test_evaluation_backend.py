@@ -211,6 +211,107 @@ async def test_aworld_trajectory_evaluator_backend_aggregates_judge_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_extracts_evidence_quality_metrics(tmp_path) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+
+    def evidence_quality_report(**kwargs):
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 84.0}}},
+            "results": [
+                {
+                    "case_id": "task-eval",
+                    "judge": {
+                        "score": 84.0,
+                        "verdict": "Pass",
+                        "evidence_quality": {
+                            "has_evidence": True,
+                            "evidence_block_count": 2,
+                            "evidence_compacted": False,
+                            "evidence_incomplete": False,
+                        },
+                    },
+                }
+            ],
+            "gate": {"status": "pass", "metric_name": "score", "value": 84.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=evidence_quality_report,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["has_evidence"] == 1.0
+    assert summary.metrics["evidence_block_count"] == 2
+    assert summary.metrics["evidence_compacted"] is False
+    assert summary.metrics["evidence_incomplete"] is False
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_preserves_any_compacted_repetition(tmp_path) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    compacted_values = [False, True]
+
+    def repeated_evidence_report(**kwargs):
+        compacted = compacted_values.pop(0)
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 84.0}}},
+            "results": [
+                {
+                    "case_id": "task-eval",
+                    "judge": {
+                        "score": 84.0,
+                        "verdict": "Pass",
+                        "evidence_quality": {
+                            "has_evidence": True,
+                            "evidence_block_count": 1,
+                            "evidence_compacted": compacted,
+                            "evidence_incomplete": False,
+                        },
+                    },
+                }
+            ],
+            "gate": {"status": "pass", "metric_name": "score", "value": 84.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=repeated_evidence_report,
+        judge_repetitions=2,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert compacted_values == []
+    assert summary.metrics["has_evidence"] is True
+    assert summary.metrics["evidence_block_count"] == 1
+    assert summary.metrics["evidence_compacted"] is True
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_degrades_when_all_judge_attempts_fail(tmp_path) -> None:
     dataset = _dataset(
         (

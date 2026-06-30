@@ -310,6 +310,51 @@ class RequiredVerificationGate:
         )
 
 
+class EvidenceQualityGate:
+    _COMPACTED_CONTEXT_MARKER = "tool output compacted for context reuse"
+    _TRUNCATED_EVIDENCE_MARKERS = ("truncated", "tool evidence")
+    _PREVIEW_MARKERS = (
+        "original size:",
+        "preview:",
+    )
+
+    def evaluate(self, summary: EvaluationSummary) -> GateResult:
+        evidence_block_count = int(_number_metric(summary.metrics, "evidence_block_count") or 0)
+        has_evidence = summary.metrics.get("has_evidence") == 1.0 or evidence_block_count > 0
+        compacted = _bool_metric(summary.metrics, "evidence_compacted")
+        if compacted is None:
+            compacted = _contains_compacted_evidence_marker(summary.metrics)
+        incomplete = _bool_metric(summary.metrics, "evidence_incomplete")
+        if incomplete is None:
+            incomplete = False
+        details = {
+            "has_evidence": has_evidence,
+            "evidence_block_count": evidence_block_count,
+            "evidence_compacted": compacted,
+            "evidence_incomplete": incomplete,
+        }
+        if not has_evidence:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="verified apply requires replay tool evidence",
+                details=details,
+            )
+        if compacted or incomplete:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="evaluation evidence is compacted or incomplete",
+                details=details,
+            )
+        return GateResult(
+            gate_name="evidence_quality",
+            passed=True,
+            reason="evaluation evidence is present and not compacted",
+            details=details,
+        )
+
+
 class JudgeOnlySignalGate:
     def evaluate(self, decision: CandidateConfidenceDecision) -> GateResult:
         passed = decision.deterministic_signal_present
@@ -496,6 +541,33 @@ class GlobalRegressionBenchmarkGate:
 def _number_metric(metrics: dict[str, Any] | Any, key: str) -> float | None:
     value = metrics.get(key) if hasattr(metrics, "get") else None
     return float(value) if isinstance(value, (int, float)) else None
+
+
+def _bool_metric(metrics: dict[str, Any] | Any, key: str) -> bool | None:
+    value = metrics.get(key) if hasattr(metrics, "get") else None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    return None
+
+
+def _contains_compacted_evidence_marker(value: Any) -> bool:
+    if isinstance(value, str):
+        lowered = value.lower()
+        return (
+            EvidenceQualityGate._COMPACTED_CONTEXT_MARKER in lowered
+            or all(marker in lowered for marker in EvidenceQualityGate._TRUNCATED_EVIDENCE_MARKERS)
+            or all(marker in lowered for marker in EvidenceQualityGate._PREVIEW_MARKERS)
+        )
+    if isinstance(value, dict):
+        return any(_contains_compacted_evidence_marker(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_compacted_evidence_marker(item) for item in value)
+    return False
 
 
 def _regression_ratio(
