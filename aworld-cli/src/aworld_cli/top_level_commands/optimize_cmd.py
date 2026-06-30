@@ -5,6 +5,9 @@ from typing import Any, Callable
 
 
 SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified"}
+AUTO_VERIFIED_JUDGE_REPETITIONS = 3
+AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS = 2
+AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS = 3
 
 
 class OptimizeTopLevelCommand:
@@ -52,6 +55,24 @@ class OptimizeTopLevelCommand:
             help="Maximum aworld-cli run iterations for each self-evolve replay rollout.",
         )
         parser.add_argument(
+            "--judge-repetitions",
+            type=int,
+            dest="judge_repetitions",
+            help="Number of successful judge samples to aggregate per evaluator call.",
+        )
+        parser.add_argument(
+            "--baseline-replay-repetitions",
+            type=int,
+            dest="baseline_replay_repetitions",
+            help="Number of baseline replay rollouts to aggregate.",
+        )
+        parser.add_argument(
+            "--candidate-replay-repetitions",
+            type=int,
+            dest="candidate_replay_repetitions",
+            help="Number of candidate replay rollouts to aggregate.",
+        )
+        parser.add_argument(
             "--drain-pending",
             action="store_true",
             dest="drain_pending",
@@ -94,8 +115,11 @@ class OptimizeTopLevelCommand:
                 judge_agent=getattr(args, "judge_agent", None),
                 judge_agent_name=getattr(args, "judge_agent_name", None),
                 judge_backend_ref=getattr(args, "judge_backend_ref", None),
+                judge_repetitions=getattr(args, "judge_repetitions", None),
                 replay_timeout_seconds=getattr(args, "replay_timeout_seconds", None),
                 replay_max_steps=getattr(args, "replay_max_steps", None),
+                baseline_replay_repetitions=getattr(args, "baseline_replay_repetitions", None),
+                candidate_replay_repetitions=getattr(args, "candidate_replay_repetitions", None),
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
             print(f"Optimize error: {exc}")
@@ -153,12 +177,30 @@ def run_optimize_cli(
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
     judge_backend_ref: str | None = None,
+    judge_repetitions: int | None = None,
     replay_timeout_seconds: int | None = None,
     replay_max_steps: int | None = None,
+    baseline_replay_repetitions: int | None = None,
+    candidate_replay_repetitions: int | None = None,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
+    judge_repetitions = _auto_verified_default(
+        apply,
+        judge_repetitions,
+        AUTO_VERIFIED_JUDGE_REPETITIONS,
+    )
+    baseline_replay_repetitions = _auto_verified_default(
+        apply,
+        baseline_replay_repetitions,
+        AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS,
+    )
+    candidate_replay_repetitions = _auto_verified_default(
+        apply,
+        candidate_replay_repetitions,
+        AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS,
+    )
     judge_config = _judge_config_from_cli(
         judge_agent=judge_agent,
         judge_agent_name=judge_agent_name,
@@ -177,25 +219,51 @@ def run_optimize_cli(
         infer_target=infer_target,
         workspace_root=workspace_root,
         judge_config=judge_config,
+        **_judge_options(judge_repetitions=judge_repetitions),
         replay_enabled=apply == "auto_verified",
         runtime_registry_refresher=runtime_registry_refresher,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
+            baseline_replay_repetitions=baseline_replay_repetitions,
+            candidate_replay_repetitions=candidate_replay_repetitions,
         ),
     )
+
+
+def _auto_verified_default(
+    apply_policy: str,
+    value: int | None,
+    default: int,
+) -> int | None:
+    if value is not None or apply_policy != "auto_verified":
+        return value
+    return default
+
+
+def _judge_options(*, judge_repetitions: int | None) -> dict[str, int]:
+    options: dict[str, int] = {}
+    if judge_repetitions is not None:
+        options["judge_repetitions"] = judge_repetitions
+    return options
 
 
 def _replay_options(
     *,
     replay_timeout_seconds: int | None,
     replay_max_steps: int | None,
+    baseline_replay_repetitions: int | None,
+    candidate_replay_repetitions: int | None,
 ) -> dict[str, int]:
     options: dict[str, int] = {}
     if replay_timeout_seconds is not None:
         options["replay_timeout_seconds"] = replay_timeout_seconds
     if replay_max_steps is not None:
         options["replay_max_steps"] = replay_max_steps
+    if baseline_replay_repetitions is not None:
+        options["baseline_replay_repetitions"] = baseline_replay_repetitions
+    if candidate_replay_repetitions is not None:
+        options["candidate_replay_repetitions"] = candidate_replay_repetitions
     return options
 
 

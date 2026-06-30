@@ -236,6 +236,12 @@ def test_optimize_command_passes_replay_runtime_limits(
             "300",
             "--replay-max-runs",
             "1",
+            "--judge-repetitions",
+            "5",
+            "--baseline-replay-repetitions",
+            "2",
+            "--candidate-replay-repetitions",
+            "3",
         ]
     )
 
@@ -243,6 +249,86 @@ def test_optimize_command_passes_replay_runtime_limits(
     assert calls["agent"] is None
     assert calls["replay_timeout_seconds"] == 300
     assert calls["replay_max_steps"] == 1
+    assert calls["judge_repetitions"] == 5
+    assert calls["baseline_replay_repetitions"] == 2
+    assert calls["candidate_replay_repetitions"] == 3
+
+
+def test_run_optimize_cli_uses_stable_auto_verified_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory="trajectory.log",
+        batch_config=None,
+        iterations=None,
+        apply="auto_verified",
+        infer_target=True,
+        workspace_root=str(tmp_path),
+        judge_agent="agent.md",
+    )
+
+    assert calls["judge_repetitions"] == 3
+    assert calls["baseline_replay_repetitions"] == 2
+    assert calls["candidate_replay_repetitions"] == 3
+
+
+def test_run_optimize_cli_keeps_proposal_defaults_cheap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:demo",
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=None,
+        apply="proposal",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+    )
+
+    assert "judge_repetitions" not in calls
+    assert "baseline_replay_repetitions" not in calls
+    assert "candidate_replay_repetitions" not in calls
 
 
 def test_optimize_command_passes_judge_backend_ref_selector(

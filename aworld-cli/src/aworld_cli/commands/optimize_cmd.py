@@ -45,6 +45,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-backend-ref", dest="judge_backend_ref")
     parser.add_argument("--replay-timeout", type=int, dest="replay_timeout_seconds")
     parser.add_argument("--replay-max-runs", type=int, dest="replay_max_steps")
+    parser.add_argument("--judge-repetitions", type=int, dest="judge_repetitions")
+    parser.add_argument("--baseline-replay-repetitions", type=int, dest="baseline_replay_repetitions")
+    parser.add_argument("--candidate-replay-repetitions", type=int, dest="candidate_replay_repetitions")
     parser.add_argument("--drain-pending", action="store_true", dest="drain_pending")
     parser.add_argument("--help", action="store_true")
     return parser
@@ -123,8 +126,11 @@ class OptimizeCommand(Command):
                 judge_agent=args.judge_agent,
                 judge_agent_name=args.judge_agent_name,
                 judge_backend_ref=args.judge_backend_ref,
+                judge_repetitions=args.judge_repetitions,
                 replay_timeout_seconds=args.replay_timeout_seconds,
                 replay_max_steps=args.replay_max_steps,
+                baseline_replay_repetitions=args.baseline_replay_repetitions,
+                candidate_replay_repetitions=args.candidate_replay_repetitions,
                 runtime_registry_refresher=runtime_registry_refresher,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
