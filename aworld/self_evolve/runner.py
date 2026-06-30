@@ -202,6 +202,16 @@ class SelfEvolveRunner:
         replay_result: CandidateReplayResult | None = None
         replay_dataset: SelfEvolveDataset | None = None
         gate_results: list[GateResult] = []
+        prior_feedback = _load_prior_rejected_feedback(
+            self.store,
+            target.identity,
+            current_run_id=run_id,
+        )
+        rejected_candidate_ids = {
+            feedback.variant_id
+            for feedback in prior_feedback
+            if feedback.metrics.get("candidate_status") == "rejected"
+        }
 
         for iteration_index in range(self.max_iterations):
             optimizer_result = await self.optimizer.propose(
@@ -211,6 +221,7 @@ class SelfEvolveRunner:
                     target_fingerprint=target.fingerprint_current_content(),
                     trace_packs=trace_packs,
                     validation_feedback=validation_feedback,
+                    prior_feedback=prior_feedback,
                     dataset=dataset,
                 )
             )
@@ -259,6 +270,16 @@ class SelfEvolveRunner:
                     target_provenance=target_provenance,
                 )
             )
+            duplicate_gate = _duplicate_rejected_candidate_gate(
+                iteration_candidate,
+                rejected_candidate_ids=rejected_candidate_ids,
+                apply_policy=apply_policy,
+            )
+            if duplicate_gate is not None:
+                iteration_gate_results.append(duplicate_gate)
+            duplicate_blocked = (
+                duplicate_gate is not None and not duplicate_gate.passed
+            )
             iteration_gate_results.append(
                 BudgetGate().evaluate(
                     estimate_replay_cost(
@@ -272,28 +293,29 @@ class SelfEvolveRunner:
                     )
                 )
             )
-            (
-                iteration_replay_result,
-                iteration_replay_dataset,
-                replay_gate,
-            ) = await self._replay_selected_candidate(
-                run_id=run_id,
-                target=target,
-                dataset=dataset,
-                selected_candidate=iteration_candidate,
-                apply_policy=apply_policy,
-            )
-            if replay_gate is not None:
-                iteration_gate_results.append(replay_gate)
-            replay_confidence_gate = _replay_confidence_gate(
-                iteration_replay_result,
-                apply_policy=apply_policy,
-            )
-            if replay_confidence_gate is not None:
-                iteration_gate_results.append(replay_confidence_gate)
+            if not duplicate_blocked:
+                (
+                    iteration_replay_result,
+                    iteration_replay_dataset,
+                    replay_gate,
+                ) = await self._replay_selected_candidate(
+                    run_id=run_id,
+                    target=target,
+                    dataset=dataset,
+                    selected_candidate=iteration_candidate,
+                    apply_policy=apply_policy,
+                )
+                if replay_gate is not None:
+                    iteration_gate_results.append(replay_gate)
+                replay_confidence_gate = _replay_confidence_gate(
+                    iteration_replay_result,
+                    apply_policy=apply_policy,
+                )
+                if replay_confidence_gate is not None:
+                    iteration_gate_results.append(replay_confidence_gate)
 
             evaluation_dataset = iteration_replay_dataset or dataset
-            if self.evaluation_backend is not None:
+            if self.evaluation_backend is not None and not duplicate_blocked:
                 replay_blocked_verified_apply = (
                     apply_policy == "auto_verified"
                     and self.replay_enabled
@@ -389,7 +411,7 @@ class SelfEvolveRunner:
                                 },
                             )
                         )
-            elif apply_policy == "auto_verified":
+            elif apply_policy == "auto_verified" and not duplicate_blocked:
                 iteration_gate_results.append(
                     GateResult(
                         gate_name="auto_verified_evaluation",
@@ -462,6 +484,8 @@ class SelfEvolveRunner:
                 held_out_summary=iteration_held_out_summary,
                 failed_gates=failed_gates,
             )
+            if failed_gates:
+                rejected_candidate_ids.add(iteration_candidate.candidate_id)
             if iteration_status == "accepted":
                 break
 
@@ -514,6 +538,7 @@ class SelfEvolveRunner:
                 if len(optimizer_diagnostics) == 1
                 else {"iterations": optimizer_diagnostics}
             ),
+            "prior_feedback_count": len(prior_feedback),
             "iterations": iteration_reports,
         }
         if target_selection_report is not None:
@@ -1187,6 +1212,124 @@ def _evaluator_report_paths(
     return paths
 
 
+def _duplicate_rejected_candidate_gate(
+    candidate: CandidateVariant,
+    *,
+    rejected_candidate_ids: set[str],
+    apply_policy: str,
+) -> GateResult | None:
+    if apply_policy != "auto_verified":
+        return None
+    duplicated = candidate.candidate_id in rejected_candidate_ids
+    if not duplicated:
+        return GateResult(
+            gate_name="duplicate_rejected_candidate",
+            passed=True,
+            reason="candidate has not been previously rejected for this target",
+        )
+    return GateResult(
+        gate_name="duplicate_rejected_candidate",
+        passed=False,
+        reason="candidate repeats a previously rejected candidate for this target",
+        details={"candidate_id": candidate.candidate_id},
+    )
+
+
+def _load_prior_rejected_feedback(
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTargetRef,
+    *,
+    current_run_id: str,
+    limit: int = 12,
+) -> tuple[EvaluationSummary, ...]:
+    root = store.artifact_root
+    if not root.exists():
+        return ()
+    feedback: list[EvaluationSummary] = []
+    report_paths = sorted(
+        root.glob("*/report.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for report_path in report_paths:
+        if report_path.parent.name == current_run_id:
+            continue
+        try:
+            report = _load_json_mapping(report_path)
+        except Exception:
+            continue
+        if not _report_matches_target(report, target):
+            continue
+        for item in _feedback_from_report(report, report_path=report_path):
+            feedback.append(item)
+            if len(feedback) >= limit:
+                return tuple(feedback)
+    return tuple(feedback)
+
+
+def _report_matches_target(
+    report: Mapping[str, Any],
+    target: SelfEvolveTargetRef,
+) -> bool:
+    payload = report.get("target")
+    if not isinstance(payload, Mapping):
+        return False
+    return (
+        payload.get("target_type") == target.target_type
+        and payload.get("target_id") == target.target_id
+        and (
+            target.path is None
+            or payload.get("path") is None
+            or str(payload.get("path")) == str(target.path)
+        )
+    )
+
+
+def _feedback_from_report(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+) -> tuple[EvaluationSummary, ...]:
+    items: list[EvaluationSummary] = []
+    iterations = report.get("iterations")
+    if isinstance(iterations, list):
+        for iteration in iterations:
+            if not isinstance(iteration, Mapping):
+                continue
+            if iteration.get("status") != "rejected":
+                continue
+            candidate_id = iteration.get("candidate_id")
+            if not isinstance(candidate_id, str) or not candidate_id:
+                continue
+            metrics = _historical_feedback_metrics(iteration)
+            metrics["candidate_status"] = "rejected"
+            metrics["run_id"] = report.get("run_id")
+            metrics["report_path"] = str(report_path)
+            items.append(
+                EvaluationSummary(
+                    variant_id=candidate_id,
+                    metrics=metrics,
+                    dataset_split="historical",
+                )
+            )
+    return tuple(items)
+
+
+def _historical_feedback_metrics(iteration: Mapping[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    candidate_metrics = iteration.get("candidate_metrics")
+    if isinstance(candidate_metrics, Mapping):
+        metrics.update(dict(candidate_metrics))
+    held_out_metrics = iteration.get("held_out_metrics")
+    if isinstance(held_out_metrics, Mapping):
+        for key, value in held_out_metrics.items():
+            metrics.setdefault(f"held_out_{key}", value)
+    failed_gates = iteration.get("failed_gates")
+    if isinstance(failed_gates, list):
+        metrics["failed_gates"] = [str(gate) for gate in failed_gates if gate]
+    return metrics
+
+
 def _evidence_quality_gate(summary: EvaluationSummary) -> GateResult | None:
     metrics = summary.metrics
     requires_evidence_quality = (
@@ -1376,8 +1519,16 @@ def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
         payload = json.loads(prompt[start:])
     except json.JSONDecodeError:
         return []
-    feedback_items = payload.get("validation_feedback") if isinstance(payload, Mapping) else None
-    if not isinstance(feedback_items, list):
+    if not isinstance(payload, Mapping):
+        return []
+    feedback_items: list[object] = []
+    prior_feedback = payload.get("prior_feedback")
+    if isinstance(prior_feedback, list):
+        feedback_items.extend(prior_feedback[-3:])
+    validation_feedback = payload.get("validation_feedback")
+    if isinstance(validation_feedback, list):
+        feedback_items.extend(validation_feedback[-3:])
+    if not feedback_items:
         return []
 
     guidance: list[str] = []

@@ -201,6 +201,11 @@ def run_optimize_cli(
         candidate_replay_repetitions,
         AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS,
     )
+    iterations = _auto_verified_default(
+        apply,
+        iterations,
+        3,
+    )
     judge_config = _judge_config_from_cli(
         judge_agent=judge_agent,
         judge_agent_name=judge_agent_name,

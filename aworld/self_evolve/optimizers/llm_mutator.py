@@ -87,6 +87,14 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
             }
             for feedback in request.validation_feedback
         ],
+        "prior_feedback": [
+            {
+                "variant_id": feedback.variant_id,
+                "metrics": feedback.metrics,
+                "dataset_split": feedback.dataset_split,
+            }
+            for feedback in request.prior_feedback
+        ],
         "trainable_cases": [
             {
                 "case_id": case.case_id,

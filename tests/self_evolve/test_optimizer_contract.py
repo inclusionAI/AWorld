@@ -73,6 +73,7 @@ def test_optimizer_request_exposes_trainable_cases_without_held_out_leakage() ->
 
     assert [case.case_id for case in request.trainable_cases] == ["train-1", "valid-1"]
     assert "held-1" not in repr(request)
+    assert request.prior_feedback == ()
 
 
 @pytest.mark.asyncio
@@ -98,6 +99,16 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
                 dataset_split="validation",
             ),
         ),
+        prior_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-previous",
+                metrics={
+                    "score": 35.0,
+                    "failed_gates": ["evidence_quality"],
+                },
+                dataset_split="historical",
+            ),
+        ),
         trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
         max_candidates=1,
     )
@@ -115,6 +126,9 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
     assert result.lineage[0].optimizer_name == "trace-reflective-llm-mutator"
     assert result.lineage[0].trainable_case_ids == ("train-1",)
     assert "optimizer-task:step-2" in prompts[0]
+    assert "prior_feedback" in prompts[0]
+    assert "candidate-previous" in prompts[0]
+    assert "evidence_quality" in prompts[0]
     assert "held-1" not in prompts[0]
 
 

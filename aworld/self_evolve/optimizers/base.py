@@ -20,6 +20,7 @@ class OptimizerRequest:
     target_fingerprint: str
     trace_packs: tuple[TracePack, ...]
     validation_feedback: tuple[EvaluationSummary, ...] = ()
+    prior_feedback: tuple[EvaluationSummary, ...] = ()
     trainable_cases: tuple[EvalCase, ...] = ()
     max_candidates: int = 1
 
@@ -32,6 +33,7 @@ class OptimizerRequest:
         target_fingerprint: str,
         trace_packs: tuple[TracePack, ...],
         validation_feedback: tuple[EvaluationSummary, ...],
+        prior_feedback: tuple[EvaluationSummary, ...] = (),
         dataset: SelfEvolveDataset,
         max_candidates: int = 1,
     ) -> "OptimizerRequest":
@@ -42,6 +44,7 @@ class OptimizerRequest:
             target_fingerprint=target_fingerprint,
             trace_packs=trace_packs,
             validation_feedback=validation_feedback,
+            prior_feedback=prior_feedback,
             trainable_cases=tuple(
                 case for case in dataset.cases if case.case_id in trainable_ids
             ),
