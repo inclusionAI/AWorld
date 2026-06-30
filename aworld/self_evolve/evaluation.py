@@ -5,6 +5,7 @@ import inspect
 import json
 import subprocess
 import time
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
@@ -217,6 +218,8 @@ class AWorldTrajectoryEvaluatorBackend:
         judge_backend_ref: str | None = None,
         agent: str | None = None,
         run_evaluator_source: Callable[..., Any] | None = None,
+        judge_repetitions: int = 1,
+        judge_failure_retries: int = 2,
     ) -> None:
         selector_count = sum(
             bool(value)
@@ -230,6 +233,12 @@ class AWorldTrajectoryEvaluatorBackend:
         self.judge_backend_ref = judge_backend_ref
         self.agent = agent
         self.run_evaluator_source = run_evaluator_source
+        if judge_repetitions <= 0:
+            raise ValueError("judge_repetitions must be positive")
+        if judge_failure_retries < 0:
+            raise ValueError("judge_failure_retries must be non-negative")
+        self.judge_repetitions = judge_repetitions
+        self.judge_failure_retries = judge_failure_retries
 
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         if not request.dataset.cases:
@@ -266,6 +275,67 @@ class AWorldTrajectoryEvaluatorBackend:
             "task_id": task_id,
             "agent": self.agent,
         }
+        reports: list[Mapping[str, Any]] = []
+        failures: list[Mapping[str, Any]] = []
+        max_attempts = self.judge_repetitions + self.judge_failure_retries
+        for attempt_index in range(1, max_attempts + 1):
+            try:
+                report = await self._run_evaluator_source(
+                    runner,
+                    runner_kwargs=runner_kwargs,
+                )
+            except Exception as exc:
+                failures.append(
+                    {
+                        "attempt": attempt_index,
+                        "type": type(exc).__name__,
+                        "reason": str(exc),
+                    }
+                )
+                continue
+            if not isinstance(report, Mapping):
+                failures.append(
+                    {
+                        "attempt": attempt_index,
+                        "type": type(report).__name__,
+                        "reason": "AWorld trajectory evaluator report must be a mapping",
+                    }
+                )
+                continue
+            reports.append(report)
+            if len(reports) >= self.judge_repetitions:
+                break
+        if reports:
+            metrics = _aggregate_aworld_evaluator_metrics(
+                reports,
+                case_count=len(request.dataset.cases),
+                input_path=log_path,
+            )
+            metrics["judge_attempt_count"] = len(reports) + len(failures)
+            metrics["judge_success_count"] = len(reports)
+            metrics["judge_failure_count"] = len(failures)
+            metrics["judge_repetitions"] = self.judge_repetitions
+            if failures:
+                metrics["judge_failures"] = failures
+        else:
+            metrics = _failed_aworld_evaluator_metrics(
+                failures=failures,
+                case_count=len(request.dataset.cases),
+                input_path=log_path,
+                judge_repetitions=self.judge_repetitions,
+            )
+        return EvaluationSummary(
+            variant_id=request.variant_id,
+            dataset_split=request.dataset_split,
+            metrics=metrics,
+        )
+
+    async def _run_evaluator_source(
+        self,
+        runner: Callable[..., Any],
+        *,
+        runner_kwargs: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
         if self.run_evaluator_source is None:
             report = await asyncio.to_thread(runner, **runner_kwargs)
         else:
@@ -274,15 +344,7 @@ class AWorldTrajectoryEvaluatorBackend:
                 report = await report
         if not isinstance(report, Mapping):
             raise ValueError("AWorld trajectory evaluator report must be a mapping")
-        return EvaluationSummary(
-            variant_id=request.variant_id,
-            dataset_split=request.dataset_split,
-            metrics=_aworld_evaluator_metrics(
-                report,
-                case_count=len(request.dataset.cases),
-                input_path=log_path,
-            ),
-        )
+        return report
 
 
 async def evaluate_baseline_and_candidate(
@@ -566,6 +628,88 @@ def _aworld_evaluator_metrics(
     if isinstance(report_path, str):
         metrics["report_path"] = report_path
     return metrics
+
+
+def _aggregate_aworld_evaluator_metrics(
+    reports: list[Mapping[str, Any]],
+    *,
+    case_count: int,
+    input_path: Path,
+) -> dict[str, Any]:
+    per_run = [
+        dict(_aworld_evaluator_metrics(report, case_count=case_count, input_path=input_path))
+        for report in reports
+    ]
+    if len(per_run) == 1:
+        return per_run[0]
+
+    aggregated: dict[str, Any] = {
+        "evaluator_mode": "aworld_trajectory_evaluator",
+        "evaluator_source_kind": "trajectory",
+        "evaluation_agent_signal": True,
+        "input_path": str(input_path),
+    }
+    keys = {key for metrics in per_run for key in metrics}
+    for key in sorted(keys):
+        values = [metrics[key] for metrics in per_run if key in metrics]
+        if not values:
+            continue
+        if all(isinstance(value, bool) for value in values):
+            aggregated[key] = all(bool(value) for value in values)
+            continue
+        if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+            numeric_values = [float(value) for value in values]
+            aggregated[key] = sum(numeric_values) / len(numeric_values)
+            aggregated[f"{key}_min"] = min(numeric_values)
+            aggregated[f"{key}_max"] = max(numeric_values)
+            aggregated[f"{key}_std"] = statistics.pstdev(numeric_values)
+            continue
+        if key == "report_path":
+            report_paths = [str(value) for value in values if isinstance(value, str)]
+            if report_paths:
+                aggregated["report_path"] = report_paths[-1]
+                aggregated["report_paths"] = report_paths
+            continue
+        if all(value == values[0] for value in values):
+            aggregated[key] = values[0]
+
+    gate_passed = bool(aggregated.get("evaluator_gate_passed"))
+    aggregated["global_regression_passed"] = gate_passed
+    aggregated["deterministic_signal"] = gate_passed
+    aggregated["command_case_count"] = case_count
+    aggregated["command_pass_count"] = case_count if gate_passed else 0
+    aggregated["command_failure_count"] = 0 if gate_passed else case_count
+    aggregated["command_pass_rate"] = 1.0 if gate_passed else 0.0
+    return aggregated
+
+
+def _failed_aworld_evaluator_metrics(
+    *,
+    failures: list[Mapping[str, Any]],
+    case_count: int,
+    input_path: Path,
+    judge_repetitions: int,
+) -> dict[str, Any]:
+    return {
+        "evaluator_mode": "aworld_trajectory_evaluator",
+        "evaluator_source_kind": "trajectory",
+        "evaluation_agent_signal": False,
+        "input_path": str(input_path),
+        "score": 0.0,
+        "evaluator_gate_status": "fail",
+        "evaluator_gate_passed": False,
+        "global_regression_passed": False,
+        "deterministic_signal": False,
+        "command_case_count": case_count,
+        "command_pass_count": 0,
+        "command_failure_count": case_count,
+        "command_pass_rate": 0.0,
+        "judge_attempt_count": len(failures),
+        "judge_success_count": 0,
+        "judge_failure_count": len(failures),
+        "judge_repetitions": judge_repetitions,
+        "judge_failures": list(failures),
+    }
 
 
 def _safe_path_component(value: str | None) -> str:

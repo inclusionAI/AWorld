@@ -925,6 +925,7 @@ def optimize_from_cli_request(
         evaluation_backend = _evaluation_backend_from_judge_config(
             judge_config,
             workspace_root=workspace_root,
+            judge_repetitions=judge_repetitions,
         )
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
@@ -1017,6 +1018,7 @@ def _evaluation_backend_from_judge_config(
     judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None,
     *,
     workspace_root: str | Path,
+    judge_repetitions: int = 1,
 ) -> EvaluationBackend:
     if judge_config is None:
         return SkillCandidateOverlayBackend()
@@ -1033,6 +1035,7 @@ def _evaluation_backend_from_judge_config(
         return AWorldTrajectoryEvaluatorBackend(
             workspace_root=workspace_root,
             judge_agent=config.agent_path,
+            judge_repetitions=judge_repetitions,
         )
     if config.mode == "custom_agent":
         if not config.agent_id:
@@ -1040,6 +1043,7 @@ def _evaluation_backend_from_judge_config(
         return AWorldTrajectoryEvaluatorBackend(
             workspace_root=workspace_root,
             judge_agent_name=config.agent_id,
+            judge_repetitions=judge_repetitions,
         )
     if config.mode == "backend_ref":
         if not config.backend_ref:
@@ -1047,6 +1051,7 @@ def _evaluation_backend_from_judge_config(
         return AWorldTrajectoryEvaluatorBackend(
             workspace_root=workspace_root,
             judge_backend_ref=config.backend_ref,
+            judge_repetitions=judge_repetitions,
         )
     if config.mode == "disabled":
         raise ValueError("auto_verified self-evolve requires an evaluation backend")

@@ -119,6 +119,133 @@ async def test_aworld_trajectory_evaluator_backend_uses_existing_source_runtime(
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_retries_transient_judge_parse_failure(tmp_path) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    calls = []
+
+    def flaky_run_evaluator_source(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise ValueError("judge response does not contain a valid JSON object")
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 84.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 84.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=flaky_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=1,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert len(calls) == 2
+    assert summary.metrics["score"] == 84.0
+    assert summary.metrics["evaluator_gate_passed"] is True
+    assert summary.metrics["judge_attempt_count"] == 2
+    assert summary.metrics["judge_success_count"] == 1
+    assert summary.metrics["judge_failure_count"] == 1
+    assert summary.metrics["judge_failures"][0]["type"] == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_aggregates_judge_repetitions(tmp_path) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    scores = [40.0, 60.0, 80.0]
+
+    def variable_run_evaluator_source(**kwargs):
+        score = scores.pop(0)
+        return {
+            "summary": {
+                "trajectory-source-evaluator": {
+                    "score": {"mean": score},
+                    "A1_groundedness": {"mean": score / 20.0},
+                }
+            },
+            "gate": {
+                "status": "pass",
+                "metric_name": "score",
+                "value": score,
+            },
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=variable_run_evaluator_source,
+        judge_repetitions=3,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert scores == []
+    assert summary.metrics["score"] == 60.0
+    assert summary.metrics["score_std"] > 0
+    assert summary.metrics["A1_groundedness"] == 3.0
+    assert summary.metrics["judge_repetitions"] == 3
+    assert summary.metrics["judge_success_count"] == 3
+    assert summary.metrics["evaluator_gate_passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_degrades_when_all_judge_attempts_fail(tmp_path) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+
+    def failing_run_evaluator_source(**kwargs):
+        raise ValueError("judge response does not contain a valid JSON object")
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=failing_run_evaluator_source,
+        judge_repetitions=2,
+        judge_failure_retries=1,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["score"] == 0.0
+    assert summary.metrics["evaluator_gate_passed"] is False
+    assert summary.metrics["deterministic_signal"] is False
+    assert summary.metrics["judge_attempt_count"] == 3
+    assert summary.metrics["judge_success_count"] == 0
+    assert summary.metrics["judge_failure_count"] == 3
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_runs_default_source_runtime_outside_active_loop(
     tmp_path, monkeypatch
 ) -> None:
