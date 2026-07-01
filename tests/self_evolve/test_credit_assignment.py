@@ -302,7 +302,13 @@ def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> 
     assert report.selected_target.target_type == "skill"
     assert report.selected_target.target_id == "web-content-grounding"
     assert report.selected_target.path == str(
-        tmp_path / "aworld-skills" / "web-content-grounding" / "SKILL.md"
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "drafts"
+        / "skills"
+        / "web-content-grounding"
+        / "SKILL.md"
     )
     assert report.failure_category == "skill"
     assert report.confidence == 0.85

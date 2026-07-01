@@ -109,6 +109,7 @@ class DraftSkillTextTarget(SkillTextTarget):
         skill_path: str | Path,
         *,
         target_id: str,
+        release_path: str | Path,
         allow_auto_apply: bool = False,
     ) -> None:
         super().__init__(
@@ -116,7 +117,16 @@ class DraftSkillTextTarget(SkillTextTarget):
             target_id=target_id,
             allow_auto_apply=allow_auto_apply,
         )
+        self.release_path = Path(release_path)
         self._rollback_existed: bool | None = None
+
+    @property
+    def runtime_skill_path(self) -> Path:
+        return self.release_path
+
+    @property
+    def baseline_skill_roots(self) -> tuple[Path, ...]:
+        return (self.release_path.parent.parent,)
 
     def load_current_content(self) -> str:
         if self.path.exists():
@@ -126,21 +136,23 @@ class DraftSkillTextTarget(SkillTextTarget):
     def apply_candidate(self, candidate_content: str) -> None:
         if not self.allow_auto_apply:
             raise PermissionError(f"target {self._target_id!r} is not allowlisted for auto apply")
-        self._rollback_existed = self.path.exists()
-        self._rollback_content = self.path.read_text(encoding="utf-8") if self._rollback_existed else None
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(candidate_content, encoding="utf-8")
+        self._rollback_existed = self.release_path.exists()
+        self._rollback_content = (
+            self.release_path.read_text(encoding="utf-8") if self._rollback_existed else None
+        )
+        self.release_path.parent.mkdir(parents=True, exist_ok=True)
+        self.release_path.write_text(candidate_content, encoding="utf-8")
 
     def rollback(self) -> None:
         if self._rollback_existed is None:
             return
         if self._rollback_existed:
             assert self._rollback_content is not None
-            self.path.write_text(self._rollback_content, encoding="utf-8")
+            self.release_path.write_text(self._rollback_content, encoding="utf-8")
         else:
-            self.path.unlink(missing_ok=True)
+            self.release_path.unlink(missing_ok=True)
             try:
-                self.path.parent.rmdir()
+                self.release_path.parent.rmdir()
             except OSError:
                 pass
         self._rollback_content = None

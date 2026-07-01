@@ -396,6 +396,7 @@ def build_replay_request(
     max_cost_usd: float | None = None,
     baseline_repetitions: int = 1,
     candidate_repetitions: int = 1,
+    baseline_skill_root: str | Path | None = None,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -407,7 +408,11 @@ def build_replay_request(
         target=target,
         candidate_id=candidate.candidate_id,
         overlay_skill_root=str(Path(overlay_skill_root)),
-        baseline_skill_root=_infer_baseline_skill_root_from_target(target),
+        baseline_skill_root=(
+            str(Path(baseline_skill_root))
+            if baseline_skill_root is not None
+            else _infer_baseline_skill_root_from_target(target)
+        ),
         task_input=case.input,
         agent=agent,
         timeout_seconds=timeout_seconds,

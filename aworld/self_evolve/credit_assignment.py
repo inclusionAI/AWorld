@@ -357,7 +357,10 @@ def build_default_target_inventory(workspace_root: str | Path) -> TargetInventor
             aliases=("btc_monitor", "api sources timed out"),
         )
     )
-    return TargetInventory(entries=tuple(entries), draft_skill_root=str(root / "aworld-skills"))
+    return TargetInventory(
+        entries=tuple(entries),
+        draft_skill_root=str(root / ".aworld" / "self_evolve" / "drafts" / "skills"),
+    )
 
 
 @dataclass(frozen=True)
