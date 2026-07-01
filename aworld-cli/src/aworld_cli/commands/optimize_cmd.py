@@ -46,6 +46,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--replay-timeout", type=int, dest="replay_timeout_seconds")
     parser.add_argument("--replay-max-runs", type=int, dest="replay_max_steps")
     parser.add_argument("--judge-repetitions", type=int, dest="judge_repetitions")
+    parser.add_argument("--judge-timeout", type=int, dest="judge_timeout_seconds")
     parser.add_argument("--baseline-replay-repetitions", type=int, dest="baseline_replay_repetitions")
     parser.add_argument("--candidate-replay-repetitions", type=int, dest="candidate_replay_repetitions")
     parser.add_argument("--drain-pending", action="store_true", dest="drain_pending")
@@ -127,6 +128,7 @@ class OptimizeCommand(Command):
                 judge_agent_name=args.judge_agent_name,
                 judge_backend_ref=args.judge_backend_ref,
                 judge_repetitions=args.judge_repetitions,
+                judge_timeout_seconds=args.judge_timeout_seconds,
                 replay_timeout_seconds=args.replay_timeout_seconds,
                 replay_max_steps=args.replay_max_steps,
                 baseline_replay_repetitions=args.baseline_replay_repetitions,

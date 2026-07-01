@@ -330,7 +330,13 @@ def _load_source_judge_backend_ref(ref: str) -> JudgeBackend:
     return _coerce_source_judge_backend(value, backend_id=f"judge-backend-ref:{ref}")
 
 
-def _build_cli_agent_judge_backend(*, agent_name: str, backend_id: str, prompt_builder):
+def _build_cli_agent_judge_backend(
+    *,
+    agent_name: str,
+    backend_id: str,
+    prompt_builder,
+    judge_timeout_seconds: float | None = None,
+):
     executor_cache: dict[str, Any] = {}
 
     async def _executor(prompt, system_prompt):
@@ -352,6 +358,7 @@ def _build_cli_agent_judge_backend(*, agent_name: str, backend_id: str, prompt_b
         system_prompt=f"CLI agent judge loaded from {agent_name}",
         executor=_executor,
         prompt_builder=prompt_builder,
+        timeout_seconds=judge_timeout_seconds,
     )
 
 
@@ -363,12 +370,14 @@ def _resolve_source_judge_backend(
     file_backend_id: str,
     named_backend_prefix: str,
     prompt_builder,
+    judge_timeout_seconds: float | None = None,
 ) -> JudgeBackend:
     if judge_agent_path is not None:
         return AgentJudgeBackend.from_agent_markdown(
             judge_agent_path,
             backend_id=file_backend_id,
             prompt_builder=prompt_builder,
+            timeout_seconds=judge_timeout_seconds,
         )
     if judge_agent_name is not None and str(judge_agent_name).strip():
         resolved_name = str(judge_agent_name).strip()
@@ -376,6 +385,7 @@ def _resolve_source_judge_backend(
             agent_name=resolved_name,
             backend_id=f"{named_backend_prefix}:{resolved_name}",
             prompt_builder=prompt_builder,
+            judge_timeout_seconds=judge_timeout_seconds,
         )
     if judge_backend_ref is not None and str(judge_backend_ref).strip():
         return _load_source_judge_backend_ref(str(judge_backend_ref).strip())
@@ -589,6 +599,7 @@ def _build_source_suite(
     answer_field: str,
     out_dir: str | None,
     agent: str | None = None,
+    judge_timeout_seconds: float | None = None,
 ):
     agent_name = agent or "Aworld"
     trajectory_gate = GatePolicyDef(
@@ -635,6 +646,7 @@ def _build_source_suite(
             file_backend_id="source-agent-md",
             named_backend_prefix="source-agent",
             prompt_builder=_build_source_prompt,
+            judge_timeout_seconds=judge_timeout_seconds,
         )
         return create_source_eval_suite(
             suite_id="task-source-evaluator",
@@ -660,6 +672,7 @@ def _build_source_suite(
             file_backend_id="source-agent-md",
             named_backend_prefix="source-agent",
             prompt_builder=_build_source_prompt,
+            judge_timeout_seconds=judge_timeout_seconds,
         )
         return create_source_eval_suite(
             suite_id="answer-source-evaluator",
@@ -691,6 +704,7 @@ def _build_source_suite(
             file_backend_id="trajectory-evaluator-agent-md",
             named_backend_prefix="trajectory-evaluator-agent",
             prompt_builder=_build_trajectory_prompt,
+            judge_timeout_seconds=judge_timeout_seconds,
         )
         return create_source_eval_suite(
             suite_id="trajectory-source-evaluator",
@@ -721,6 +735,7 @@ def run_evaluator_source_cli(
     task_field: str = "input",
     answer_field: str = "answer",
     interactive_approval: bool = False,
+    judge_timeout_seconds: float | None = None,
 ) -> dict:
     hooks = _load_evaluator_hooks()
     kind = (kind or "").strip().lower()
@@ -748,6 +763,7 @@ def run_evaluator_source_cli(
         "agent": agent,
         "workspace_path": workspace_path,
         "output_path": str(Path(output).expanduser().resolve()) if output else None,
+        "judge_timeout_seconds": judge_timeout_seconds,
     }
     hook_state = _run_evaluator_hooks(
         hooks,
@@ -763,6 +779,7 @@ def run_evaluator_source_cli(
             "judge_backend_ref": judge_backend_ref,
             "agent": agent,
             "interactive_approval": interactive_approval,
+            "judge_timeout_seconds": judge_timeout_seconds,
         },
     )
     suite = _build_source_suite(
@@ -777,6 +794,7 @@ def run_evaluator_source_cli(
         answer_field=answer_field,
         out_dir=out_dir,
         agent=agent,
+        judge_timeout_seconds=judge_timeout_seconds,
     )
     agent_name = agent or "Aworld"
     executes_agent = kind == "task" or (kind == "trajectory" and not task_id)
@@ -789,6 +807,7 @@ def run_evaluator_source_cli(
         "judge_agent_name": judge_agent_name,
         "judge_backend_ref": judge_backend_ref,
         "agent": agent_name if executes_agent else agent,
+        "judge_timeout_seconds": judge_timeout_seconds,
     }
     for key, value in hook_state.items():
         if key not in {
@@ -801,6 +820,7 @@ def run_evaluator_source_cli(
             "judge_backend_ref",
             "agent",
             "interactive_approval",
+            "judge_timeout_seconds",
             "summary_suffix",
         }:
             target_info[key] = value
@@ -831,6 +851,7 @@ def run_evaluator_source_cli(
         "judge_agent_name": judge_agent_name,
         "judge_backend_ref": judge_backend_ref,
         "agent": agent_name if executes_agent else agent,
+        "judge_timeout_seconds": judge_timeout_seconds,
     }
     report["automation"] = _build_automation_summary(report)
     output_path = _source_report_path(

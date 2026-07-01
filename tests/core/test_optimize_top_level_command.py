@@ -238,6 +238,8 @@ def test_optimize_command_passes_replay_runtime_limits(
             "1",
             "--judge-repetitions",
             "5",
+            "--judge-timeout",
+            "120",
             "--baseline-replay-repetitions",
             "2",
             "--candidate-replay-repetitions",
@@ -250,6 +252,7 @@ def test_optimize_command_passes_replay_runtime_limits(
     assert calls["replay_timeout_seconds"] == 300
     assert calls["replay_max_steps"] == 1
     assert calls["judge_repetitions"] == 5
+    assert calls["judge_timeout_seconds"] == 120
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
 
@@ -289,6 +292,7 @@ def test_run_optimize_cli_uses_stable_auto_verified_defaults(
     )
 
     assert calls["judge_repetitions"] == 3
+    assert calls["judge_timeout_seconds"] == 300
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
     assert calls["iterations"] == 3
@@ -328,6 +332,7 @@ def test_run_optimize_cli_keeps_proposal_defaults_cheap(
     )
 
     assert "judge_repetitions" not in calls
+    assert "judge_timeout_seconds" not in calls
     assert "baseline_replay_repetitions" not in calls
     assert "candidate_replay_repetitions" not in calls
 

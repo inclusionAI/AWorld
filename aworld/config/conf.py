@@ -206,6 +206,7 @@ class SelfEvolveConfig(BaseConfig):
     max_run_cost_usd: Optional[float] = None
     min_eval_cases: int = 30
     judge_repetitions: int = 3
+    judge_timeout_seconds: int = 300
     cooldown_seconds: int = 0
     max_iterations: int = 1
     min_improvement: float = 0.0
@@ -249,6 +250,8 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("baseline_replay_repetitions must be positive")
         if self.candidate_replay_repetitions <= 0:
             raise ValueError("candidate_replay_repetitions must be positive")
+        if self.judge_timeout_seconds <= 0:
+            raise ValueError("judge_timeout_seconds must be positive")
         if self.replay_timeout_seconds <= 0:
             raise ValueError("replay_timeout_seconds must be positive")
         if self.replay_stability_margin < 0:

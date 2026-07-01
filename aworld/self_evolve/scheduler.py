@@ -233,6 +233,7 @@ def _run_framework_job(
         infer_target=True,
         min_eval_cases=config.min_eval_cases,
         judge_repetitions=config.judge_repetitions,
+        judge_timeout_seconds=config.judge_timeout_seconds,
         max_run_tokens=config.max_run_tokens,
         iterations=config.max_iterations,
         min_score_delta=config.min_improvement,

@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified"}
 AUTO_VERIFIED_JUDGE_REPETITIONS = 3
+AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS = 300
 AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS = 2
 AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS = 3
 
@@ -59,6 +60,12 @@ class OptimizeTopLevelCommand:
             type=int,
             dest="judge_repetitions",
             help="Number of successful judge samples to aggregate per evaluator call.",
+        )
+        parser.add_argument(
+            "--judge-timeout",
+            type=int,
+            dest="judge_timeout_seconds",
+            help="Timeout in seconds for each self-evolve judge attempt.",
         )
         parser.add_argument(
             "--baseline-replay-repetitions",
@@ -116,6 +123,7 @@ class OptimizeTopLevelCommand:
                 judge_agent_name=getattr(args, "judge_agent_name", None),
                 judge_backend_ref=getattr(args, "judge_backend_ref", None),
                 judge_repetitions=getattr(args, "judge_repetitions", None),
+                judge_timeout_seconds=getattr(args, "judge_timeout_seconds", None),
                 replay_timeout_seconds=getattr(args, "replay_timeout_seconds", None),
                 replay_max_steps=getattr(args, "replay_max_steps", None),
                 baseline_replay_repetitions=getattr(args, "baseline_replay_repetitions", None),
@@ -178,6 +186,7 @@ def run_optimize_cli(
     judge_agent_name: str | None = None,
     judge_backend_ref: str | None = None,
     judge_repetitions: int | None = None,
+    judge_timeout_seconds: int | None = None,
     replay_timeout_seconds: int | None = None,
     replay_max_steps: int | None = None,
     baseline_replay_repetitions: int | None = None,
@@ -190,6 +199,11 @@ def run_optimize_cli(
         apply,
         judge_repetitions,
         AUTO_VERIFIED_JUDGE_REPETITIONS,
+    )
+    judge_timeout_seconds = _auto_verified_default(
+        apply,
+        judge_timeout_seconds,
+        AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS,
     )
     baseline_replay_repetitions = _auto_verified_default(
         apply,
@@ -224,7 +238,10 @@ def run_optimize_cli(
         infer_target=infer_target,
         workspace_root=workspace_root,
         judge_config=judge_config,
-        **_judge_options(judge_repetitions=judge_repetitions),
+        **_judge_options(
+            judge_repetitions=judge_repetitions,
+            judge_timeout_seconds=judge_timeout_seconds,
+        ),
         replay_enabled=apply == "auto_verified",
         runtime_registry_refresher=runtime_registry_refresher,
         **_replay_options(
@@ -246,10 +263,16 @@ def _auto_verified_default(
     return default
 
 
-def _judge_options(*, judge_repetitions: int | None) -> dict[str, int]:
+def _judge_options(
+    *,
+    judge_repetitions: int | None,
+    judge_timeout_seconds: int | None,
+) -> dict[str, int]:
     options: dict[str, int] = {}
     if judge_repetitions is not None:
         options["judge_repetitions"] = judge_repetitions
+    if judge_timeout_seconds is not None:
+        options["judge_timeout_seconds"] = judge_timeout_seconds
     return options
 
 

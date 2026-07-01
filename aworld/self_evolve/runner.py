@@ -803,6 +803,7 @@ def optimize_from_cli_request(
     post_apply_evaluator: Callable[[CandidateVariant], Any] | None = None,
     min_eval_cases: int = 30,
     judge_repetitions: int = 3,
+    judge_timeout_seconds: float | None = 300.0,
     max_run_tokens: int = 500_000,
     min_score_delta: float = 0.0,
     auto_apply_target_types: tuple[str, ...] = ("skill",),
@@ -965,6 +966,7 @@ def optimize_from_cli_request(
             judge_config,
             workspace_root=workspace_root,
             judge_repetitions=judge_repetitions,
+            judge_timeout_seconds=judge_timeout_seconds,
         )
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
@@ -1058,6 +1060,7 @@ def _evaluation_backend_from_judge_config(
     *,
     workspace_root: str | Path,
     judge_repetitions: int = 1,
+    judge_timeout_seconds: float | None = 300.0,
 ) -> EvaluationBackend:
     if judge_config is None:
         return SkillCandidateOverlayBackend()
@@ -1075,6 +1078,7 @@ def _evaluation_backend_from_judge_config(
             workspace_root=workspace_root,
             judge_agent=config.agent_path,
             judge_repetitions=judge_repetitions,
+            judge_timeout_seconds=judge_timeout_seconds,
         )
     if config.mode == "custom_agent":
         if not config.agent_id:
@@ -1083,6 +1087,7 @@ def _evaluation_backend_from_judge_config(
             workspace_root=workspace_root,
             judge_agent_name=config.agent_id,
             judge_repetitions=judge_repetitions,
+            judge_timeout_seconds=judge_timeout_seconds,
         )
     if config.mode == "backend_ref":
         if not config.backend_ref:
@@ -1091,6 +1096,7 @@ def _evaluation_backend_from_judge_config(
             workspace_root=workspace_root,
             judge_backend_ref=config.backend_ref,
             judge_repetitions=judge_repetitions,
+            judge_timeout_seconds=judge_timeout_seconds,
         )
     if config.mode == "disabled":
         raise ValueError("auto_verified self-evolve requires an evaluation backend")

@@ -112,6 +112,7 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
         kind="answer",
         judge_agent=str(judge_agent),
         output=str(output),
+        judge_timeout_seconds=12.5,
     )
 
     flow = captured["flow"]
@@ -120,7 +121,9 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
     assert flow.suite.cases[0].case_id == "case-1"
     assert flow.suite.cases[0].input == {"input": "question"}
     assert flow.suite.judge_backend.backend_id == "source-agent-md"
+    assert flow.suite.judge_backend.timeout_seconds == 12.5
     assert report["source_selection"]["kind"] == "answer"
+    assert report["source_selection"]["judge_timeout_seconds"] == 12.5
     assert report["automation"]["source_kind"] == "answer"
     assert output.exists()
 
