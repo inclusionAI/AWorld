@@ -419,6 +419,62 @@ async def test_aworld_cli_candidate_replay_backend_runs_baseline_and_candidate_w
 
 
 @pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_leaves_baseline_loader_default(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    async def fake_executor(request):
+        calls.append(request)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input={"content": "Replay this task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-1",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="draft-skill",
+            path=str(
+                tmp_path
+                / ".aworld"
+                / "self_evolve"
+                / "drafts"
+                / "skills"
+                / "draft-skill"
+                / "SKILL.md"
+            ),
+        ),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        baseline_skill_root=None,
+        task_input={"content": "Replay this task"},
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=_candidate("---\nname: draft-skill\n---\n# Draft\n", candidate_id="cand-1"),
+        dataset=dataset,
+    )
+
+    assert result.succeeded is True
+    assert [call.variant_id for call in calls] == ["baseline", "cand-1"]
+    assert calls[0].skill_root is None
+    assert calls[1].skill_root == str(tmp_path / "overlay-skills")
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_candidate_replay_backend_logs_replay_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

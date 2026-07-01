@@ -396,7 +396,6 @@ def build_replay_request(
     max_cost_usd: float | None = None,
     baseline_repetitions: int = 1,
     candidate_repetitions: int = 1,
-    baseline_skill_root: str | Path | None = None,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -408,11 +407,7 @@ def build_replay_request(
         target=target,
         candidate_id=candidate.candidate_id,
         overlay_skill_root=str(Path(overlay_skill_root)),
-        baseline_skill_root=(
-            str(Path(baseline_skill_root))
-            if baseline_skill_root is not None
-            else _infer_baseline_skill_root_from_target(target)
-        ),
+        baseline_skill_root=_infer_baseline_skill_root_from_target(target),
         task_input=case.input,
         agent=agent,
         timeout_seconds=timeout_seconds,
@@ -436,7 +431,18 @@ def _infer_baseline_skill_root_from_target(target: SelfEvolveTargetRef) -> str |
     path = Path(target.path)
     if path.name.lower() != "skill.md":
         return None
+    if _is_self_evolve_draft_skill_path(path):
+        return None
     return str(path.parent.parent)
+
+
+def _is_self_evolve_draft_skill_path(path: Path) -> bool:
+    normalized_parts = tuple(part.lower() for part in path.parts)
+    marker = (".aworld", "self_evolve", "drafts", "skills")
+    return any(
+        normalized_parts[index : index + len(marker)] == marker
+        for index in range(0, len(normalized_parts) - len(marker) + 1)
+    )
 
 
 def _task_text(task_input: Any) -> str:

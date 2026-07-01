@@ -1857,7 +1857,7 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
     assert replay_backend.requests
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
-    assert replay_backend.requests[0].baseline_skill_root == str(tmp_path / "aworld-skills")
+    assert replay_backend.requests[0].baseline_skill_root is None
     assert Path(
         replay_backend.requests[0].overlay_skill_root,
         "web-content-grounding",

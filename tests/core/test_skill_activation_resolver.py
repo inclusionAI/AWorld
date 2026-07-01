@@ -207,7 +207,7 @@ def test_resolver_filters_disabled_skill_names(tmp_path: Path) -> None:
     assert "youtube_search" not in result.skill_configs
 
 
-@pytest.mark.parametrize("blocked_state", ["candidate", "rejected", "disabled"])
+@pytest.mark.parametrize("blocked_state", ["draft", "candidate", "rejected", "disabled"])
 def test_resolver_filters_unreleased_self_evolve_skill_candidates(
     tmp_path: Path,
     blocked_state: str,

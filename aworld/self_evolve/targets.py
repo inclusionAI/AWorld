@@ -124,10 +124,6 @@ class DraftSkillTextTarget(SkillTextTarget):
     def runtime_skill_path(self) -> Path:
         return self.release_path
 
-    @property
-    def baseline_skill_roots(self) -> tuple[Path, ...]:
-        return (self.release_path.parent.parent,)
-
     def load_current_content(self) -> str:
         if self.path.exists():
             return self.path.read_text(encoding="utf-8")

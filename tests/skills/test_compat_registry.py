@@ -80,6 +80,30 @@ def test_compat_registry_excludes_unreleased_self_evolve_candidate_skills(
     assert registry.get_skill("candidate") is None
 
 
+def test_compat_registry_excludes_self_evolve_draft_release_state(
+    tmp_path: Path,
+) -> None:
+    draft_dir = tmp_path / "draft"
+    draft_dir.mkdir(parents=True)
+    (draft_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "description: Draft skill\n"
+            "self_evolve:\n"
+            "  release_state: draft\n"
+            "---\n\n"
+            "# Draft\n"
+        ),
+        encoding="utf-8",
+    )
+
+    registry = CompatSkillRegistry()
+    count = registry.register_source(tmp_path)
+
+    assert count == 0
+    assert registry.get_skill("draft") is None
+
+
 def test_skill_loader_re_exports_framework_compat_registry_without_legacy_class() -> None:
     assert LegacySkillRegistry is CompatSkillRegistry
     assert "class SkillRegistry" not in inspect.getsource(skill_loader_module)

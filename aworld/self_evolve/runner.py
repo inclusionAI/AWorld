@@ -643,7 +643,6 @@ class SelfEvolveRunner:
             target_skill_path=target.identity.path,
             baseline_skill_roots=getattr(target, "baseline_skill_roots", ()),
         )
-        baseline_skill_roots = tuple(getattr(target, "baseline_skill_roots", ()))
         request = build_replay_request(
             run_id=run_id,
             workspace_root=self.store.workspace_root,
@@ -657,7 +656,6 @@ class SelfEvolveRunner:
             max_tokens=self.max_run_tokens,
             baseline_repetitions=self.baseline_replay_repetitions,
             candidate_repetitions=self.candidate_replay_repetitions,
-            baseline_skill_root=baseline_skill_roots[0] if baseline_skill_roots else None,
         )
         replay_result = await self.candidate_replay_backend.replay_candidate(
             request,
