@@ -86,6 +86,36 @@ def test_filesystem_provider_exposes_self_evolve_release_state(tmp_path: Path) -
     assert descriptor.metadata["self_evolve"]["run_id"] == "run-1"
 
 
+def test_filesystem_provider_skips_self_evolve_draft_paths_even_without_metadata(
+    tmp_path: Path,
+) -> None:
+    stable_dir = tmp_path / "skills" / "stable"
+    stable_dir.mkdir(parents=True)
+    (stable_dir / "SKILL.md").write_text(
+        "---\ndescription: Stable skill\n---\n\n# Stable\n",
+        encoding="utf-8",
+    )
+    draft_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "drafts"
+        / "skills"
+        / "draft-skill"
+    )
+    draft_dir.mkdir(parents=True)
+    (draft_dir / "SKILL.md").write_text(
+        "---\ndescription: Draft skill\n---\n\n# Draft\n",
+        encoding="utf-8",
+    )
+
+    provider = FilesystemSkillProvider(provider_id="local", root=tmp_path)
+    skill_names = [descriptor.skill_name for descriptor in provider.list_descriptors()]
+
+    assert skill_names == ["stable"]
+    assert "draft-skill" not in collect_skill_docs(tmp_path)
+
+
 def test_collect_skill_docs_exposes_execution_entrypoint_from_usage_reference(
     tmp_path: Path,
 ) -> None:

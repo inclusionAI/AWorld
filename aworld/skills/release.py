@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
 
-BLOCKED_SELF_EVOLVE_RELEASE_STATES = frozenset({"candidate", "rejected", "disabled"})
+BLOCKED_SELF_EVOLVE_RELEASE_STATES = frozenset({"draft", "candidate", "rejected", "disabled"})
 
 
 def extract_self_evolve_metadata(front_matter: Mapping[str, Any]) -> dict[str, Any]:
@@ -22,6 +23,15 @@ def is_self_evolve_release_visible(metadata: Mapping[str, Any]) -> bool:
         return True
     state = str(raw.get("release_state", "")).strip().lower()
     return state not in BLOCKED_SELF_EVOLVE_RELEASE_STATES
+
+
+def is_self_evolve_draft_path(path: str | Path) -> bool:
+    normalized_parts = tuple(part.lower() for part in Path(path).parts)
+    marker = (".aworld", "self_evolve", "drafts", "skills")
+    return any(
+        normalized_parts[index : index + len(marker)] == marker
+        for index in range(0, len(normalized_parts) - len(marker) + 1)
+    )
 
 
 def mark_skill_content_verified(
