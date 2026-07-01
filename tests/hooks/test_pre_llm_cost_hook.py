@@ -62,3 +62,30 @@ async def test_pre_llm_cost_hook_resolves_current_agent_for_llm_sender(monkeypat
     assert result is message
     assert looked_up == ["real_agent"]
     assert "Agent llm_model not found" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_pre_llm_cost_hook_skips_llm_sender_without_current_agent(monkeypatch, caplog):
+    from aworld_cli.executors import pre_llm_cost_hook
+    from aworld_cli.executors.pre_llm_cost_hook import PreLlmCostHook
+
+    looked_up = []
+
+    def fake_agent_instance(name):
+        looked_up.append(name)
+        return None
+
+    monkeypatch.setattr(pre_llm_cost_hook.AgentFactory, "agent_instance", fake_agent_instance)
+
+    message = Message(
+        category="agent_hook",
+        payload={"event": "before_llm_call"},
+        sender="llm_model",
+        headers={},
+    )
+
+    result = await PreLlmCostHook().exec(message, context=SimpleNamespace(agent_info=None))
+
+    assert result is message
+    assert looked_up == []
+    assert "Agent llm_model not found" not in caplog.text

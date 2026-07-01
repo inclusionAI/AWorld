@@ -1700,12 +1700,193 @@ def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
     assert "held_out_verification" in candidate_content
 
 
+def test_auto_verified_inferred_target_can_create_new_skill_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    skill_path = tmp_path / "aworld-skills" / "agent-browser" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: agent-browser\n---\n# Browser\n\nOriginal guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {
+                "input": {
+                    "content": (
+                        "Summarize this podcast page with grounded evidence: "
+                        "https://www.xiaoyuzhoufm.com/episode/6a26b911b30e1571aea2c09d"
+                    )
+                }
+            },
+            "action": {"content": "The final answer drifted away from the podcast evidence."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    new_skill_path = tmp_path / "aworld-skills" / "web-content-grounding" / "SKILL.md"
+    inferred_target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="web-content-grounding",
+        path=str(new_skill_path),
+    )
+
+    def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
+        return (
+            TargetSelectionReport(
+                selected_target=inferred_target,
+                confidence=0.95,
+                evidence_step_ids=("weak-task:step-1",),
+                failure_category="skill",
+                signals=("new_skill_candidate",),
+                diagnostics={"rationale": "task needs a dedicated grounded web-summary skill"},
+            ),
+            None,
+        )
+
+    class FakeReplayBackend:
+        def __init__(self):
+            self.requests = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
+            baseline_repetitions = tuple(
+                ReplayVariantResult(
+                    variant_id=f"baseline-{index}",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": f"baseline-{index}"}}],
+                )
+                for index in range(1, request.baseline_repetitions + 1)
+            )
+            candidate_repetitions = tuple(
+                ReplayVariantResult(
+                    variant_id=f"{candidate.candidate_id}-{index}",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": f"candidate-{index}"}}],
+                )
+                for index in range(1, request.candidate_repetitions + 1)
+            )
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=baseline_repetitions[-1].trajectory,
+                    metrics={
+                        "repetition_count": len(baseline_repetitions),
+                        "successful_repetition_count": len(baseline_repetitions),
+                    },
+                    repetition_results=baseline_repetitions,
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=candidate_repetitions[-1].trajectory,
+                    metrics={
+                        "repetition_count": len(candidate_repetitions),
+                        "successful_repetition_count": len(candidate_repetitions),
+                    },
+                    repetition_results=candidate_repetitions,
+                ),
+            )
+
+    class PositiveEvaluationBackend:
+        def __init__(self):
+            self.requests = []
+
+        async def evaluate_variant(self, request):
+            self.requests.append(request)
+            score = 0.4 if request.candidate is None else 0.9
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": score,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "global_regression_passed": True,
+                    "command_case_count": len(request.dataset.cases),
+                    "command_pass_count": len(request.dataset.cases),
+                    "report_path": str(tmp_path / f"{request.variant_id}-{request.dataset_split}.json"),
+                },
+            )
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            dataset_split="post_apply",
+            metrics={"post_apply_passed": True},
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "_infer_target_from_trace_packs",
+        fake_infer_target_from_trace_packs,
+    )
+
+    replay_backend = FakeReplayBackend()
+    evaluation_backend = PositiveEvaluationBackend()
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        current_trajectory=trajectory,
+        task="weak-task",
+        target=None,
+        apply_policy="auto_verified",
+        infer_target=True,
+        candidate_replay_backend=replay_backend,
+        evaluation_backend=evaluation_backend,
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+    )
+
+    assert report_summary["status"] == "succeeded"
+    assert replay_backend.requests
+    assert replay_backend.requests[0].baseline_repetitions == 2
+    assert replay_backend.requests[0].candidate_repetitions == 3
+    assert Path(
+        replay_backend.requests[0].overlay_skill_root,
+        "web-content-grounding",
+        "SKILL.md",
+    ).exists()
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    assert [request.dataset_split for request in evaluation_backend.requests] == [
+        "validation",
+        "validation",
+    ]
+    assert new_skill_path.exists()
+    assert "release_state: verified" in new_skill_path.read_text(encoding="utf-8")
+    assert "web-content-grounding" in new_skill_path.read_text(encoding="utf-8")
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["apply_policy"] == "auto_verified"
+    assert report["target"]["target_id"] == "web-content-grounding"
+    assert report["candidate_ids"]
+    assert report["selected_candidate_id"] == report["candidate_ids"][0]
+    assert report["target_selection"]["selected_target"]["target_id"] == "web-content-grounding"
+    assert report["target_selection"]["confidence"] == 0.95
+    assert "low_confidence" not in report["target_selection"]["signals"]
+    assert report["replay"]["baseline"]["status"] == "succeeded"
+    assert report["replay"]["candidate"]["status"] == "succeeded"
+    assert any(
+        gate["gate_name"] == "held_out_verification" and gate["passed"] is True
+        for gate in report["gate_results"]
+    )
+    assert report["post_apply"]["status"] == "accepted"
+
+
 def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
     import aworld.self_evolve.runner as runner_module
 
+    skill_path = tmp_path / "aworld-skills" / "agent-browser" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: agent-browser\n---\n# Browser\n", encoding="utf-8")
     trajectory = [
         {
             "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
@@ -1717,7 +1898,7 @@ def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
     inferred_target = SelfEvolveTargetRef(
         target_type="skill",
         target_id="agent-browser",
-        path=str(tmp_path / "aworld-skills" / "agent-browser" / "SKILL.md"),
+        path=str(skill_path),
     )
 
     def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
@@ -1760,6 +1941,8 @@ def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
     assert report["target_selection"]["no_target_reason"] == (
         "auto_verified target inference requires confidence >= 0.9 without low_confidence signal"
     )
+    assert "auto_verified_low_confidence_blocked" in report["target_selection"]["signals"]
+    assert report["target_selection"]["diagnostics"]["blocked_selected_target"]["target_id"] == "agent-browser"
 
 
 def test_optimize_cli_request_persists_unsupported_inferred_target(tmp_path) -> None:

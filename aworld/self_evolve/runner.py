@@ -61,7 +61,7 @@ from aworld.self_evolve.replay import (
     build_replay_request,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.targets import SelfEvolveTarget, SkillTextTarget
+from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget, SkillTextTarget
 from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -1685,6 +1685,19 @@ def _target_from_ref(
     allow_auto_apply: bool = False,
 ) -> SelfEvolveTarget:
     if target_ref.target_type == "skill":
+        if target_ref.path:
+            path = Path(target_ref.path)
+            if path.exists():
+                return SkillTextTarget(
+                    path,
+                    target_id=target_ref.target_id,
+                    allow_auto_apply=allow_auto_apply,
+                )
+            return DraftSkillTextTarget(
+                path,
+                target_id=target_ref.target_id,
+                allow_auto_apply=allow_auto_apply,
+            )
         return _skill_target_from_id(
             target_ref.target_id,
             workspace_root=workspace_root,
@@ -1702,7 +1715,7 @@ def _skill_target_from_id(
     *,
     workspace_root: str | Path,
     allow_auto_apply: bool = False,
-) -> SkillTextTarget:
+) -> SelfEvolveTarget:
     workspace = Path(workspace_root)
     candidates = (
         workspace / "aworld-skills" / target_id / "SKILL.md",

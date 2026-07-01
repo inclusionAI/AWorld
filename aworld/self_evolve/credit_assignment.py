@@ -21,6 +21,7 @@ class TargetInventoryEntry:
 @dataclass(frozen=True)
 class TargetInventory:
     entries: tuple[TargetInventoryEntry, ...]
+    draft_skill_root: str | None = None
 
     def find(self, target_type: str, target_id: str) -> TargetInventoryEntry | None:
         for entry in self.entries:
@@ -94,6 +95,13 @@ class TrajectoryCreditAssigner:
             llm_report = self._assign_from_llm(trace_pack, signals)
             if llm_report is not None:
                 return llm_report
+            draft_skill_report = self._assign_new_skill_candidate(
+                trace_pack,
+                serialized=serialized,
+                existing_signals=signals,
+            )
+            if draft_skill_report is not None:
+                return draft_skill_report
             skill_report = self._assign_from_skill_inventory(
                 trace_pack,
                 serialized=serialized,
@@ -133,6 +141,49 @@ class TrajectoryCreditAssigner:
             failure_category=signal.failure_category,
             signals=signals,
             diagnostics={"pack_id": trace_pack.pack_id},
+            )
+
+    def _assign_new_skill_candidate(
+        self,
+        trace_pack: TracePack,
+        *,
+        serialized: str,
+        existing_signals: tuple[str, ...],
+    ) -> TargetSelectionReport | None:
+        if self.inventory.draft_skill_root is None:
+            return None
+        target_id = _draft_skill_target_id(serialized)
+        if target_id is None:
+            return None
+        if self.inventory.find("skill", target_id) is not None:
+            return None
+
+        target_path = Path(self.inventory.draft_skill_root) / target_id / "SKILL.md"
+        evidence_ids = _matching_evidence_ids(
+            trace_pack,
+            ("http", "podcast", "播客", "xiaoyuzhou", "grounding", "evidence"),
+        )
+        signals = _dedupe(
+            existing_signals
+            + (
+                "new_skill_candidate",
+                f"draft_skill_target:{target_id}",
+            )
+        )
+        return TargetSelectionReport(
+            selected_target=SelfEvolveTargetRef(
+                target_type="skill",
+                target_id=target_id,
+                path=str(target_path),
+            ),
+            confidence=0.85,
+            evidence_step_ids=evidence_ids,
+            failure_category="skill",
+            signals=signals,
+            diagnostics={
+                "pack_id": trace_pack.pack_id,
+                "draft_skill_reason": "trajectory indicates a reusable web evidence grounding gap",
+            },
         )
 
     def _assign_from_skill_inventory(
@@ -306,7 +357,7 @@ def build_default_target_inventory(workspace_root: str | Path) -> TargetInventor
             aliases=("btc_monitor", "api sources timed out"),
         )
     )
-    return TargetInventory(entries=tuple(entries))
+    return TargetInventory(entries=tuple(entries), draft_skill_root=str(root / "aworld-skills"))
 
 
 @dataclass(frozen=True)
@@ -384,6 +435,28 @@ def _deterministic_signal(serialized: str) -> _Signal:
         keywords=(),
         reason="deterministic signals did not identify a supported self-evolve target",
     )
+
+
+def _draft_skill_target_id(serialized: str) -> str | None:
+    has_web_source = "http://" in serialized or "https://" in serialized
+    if not has_web_source:
+        return None
+    web_grounding_markers = (
+        "podcast",
+        "播客",
+        "xiaoyuzhou",
+        "shownotes",
+        "show notes",
+        "audio",
+        "核心内容",
+        "关键洞察",
+        "grounded evidence",
+        "source evidence",
+        "evidence grounding",
+    )
+    if any(marker in serialized for marker in web_grounding_markers):
+        return "web-content-grounding"
+    return None
 
 
 def _skill_entries_from_workspace(root: Path) -> tuple[TargetInventoryEntry, ...]:
