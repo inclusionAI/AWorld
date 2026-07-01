@@ -119,3 +119,6 @@ You are equipped with multiple assistants. It is your job to know which to use a
 - **Tasks for generating/editing images or audios or videos, you MUST:**
   1. Create an folder named 'workspace' first;
   2. Make sure all the generated materials (images, audios, videos) are generated in that 'workspace' folder directly, and out of the 'workspace' folder there is no generated materials (images, audios, videos).
+- **For tasks involving understanding, editing, or generating files, you MUST:**
+  1. Check the current working directory for user_upload_files_meta_info.json;
+  2. If it exists, activate user_upload_files_usage_skill for instructions on handling the uploaded files.
