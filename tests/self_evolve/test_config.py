@@ -15,6 +15,7 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.max_run_tokens == 500_000
     assert config.self_evolve_config.min_eval_cases == 30
     assert config.self_evolve_config.judge_repetitions == 3
+    assert config.self_evolve_config.judge_timeout_seconds == 300
     assert config.self_evolve_config.auto_apply_target_types == ("skill",)
     assert config.self_evolve_config.require_deterministic_signal_for_verified is True
     assert config.self_evolve_config.max_iterations == 1
@@ -54,6 +55,7 @@ def test_self_evolve_budget_fields_parse() -> None:
         max_run_cost_usd=1.25,
         min_eval_cases=5,
         judge_repetitions=3,
+        judge_timeout_seconds=120,
         cooldown_seconds=600,
         auto_apply_target_types=("skill", "prompt-section"),
         require_deterministic_signal_for_verified=False,
@@ -75,6 +77,7 @@ def test_self_evolve_budget_fields_parse() -> None:
     assert config.max_run_cost_usd == 1.25
     assert config.min_eval_cases == 5
     assert config.judge_repetitions == 3
+    assert config.judge_timeout_seconds == 120
     assert config.cooldown_seconds == 600
     assert config.auto_apply_target_types == ("skill", "prompt-section")
     assert config.require_deterministic_signal_for_verified is False

@@ -760,7 +760,8 @@ class TestOptimizeCommand:
                 cwd=str(tmp_path),
                 user_args=(
                     f"--from-trajectory {trajectory_path} --apply auto_verified "
-                    f"--judge-agent {judge_path} --replay-timeout 600 --replay-max-runs 1"
+                    f"--judge-agent {judge_path} --replay-timeout 600 "
+                    "--replay-max-runs 1 --judge-timeout 120"
                 ),
             )
         )
@@ -775,6 +776,7 @@ class TestOptimizeCommand:
         assert calls["judge_backend_ref"] is None
         assert calls["replay_timeout_seconds"] == 600
         assert calls["replay_max_steps"] == 1
+        assert calls["judge_timeout_seconds"] == 120
         assert "Status: rejected" in result
         assert "Selected candidate: cand-1" in result
 

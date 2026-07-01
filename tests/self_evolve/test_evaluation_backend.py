@@ -347,6 +347,46 @@ async def test_aworld_trajectory_evaluator_backend_degrades_when_all_judge_attem
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_times_out_hung_judge_call(tmp_path) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+
+    async def hanging_run_evaluator_source(**kwargs):
+        await asyncio.sleep(60)
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=hanging_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=0,
+        judge_timeout_seconds=0.01,
+    )
+
+    summary = await asyncio.wait_for(
+        backend.evaluate_variant(
+            EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+        ),
+        timeout=1.0,
+    )
+
+    assert summary.metrics["score"] == 0.0
+    assert summary.metrics["evaluator_gate_passed"] is False
+    assert summary.metrics["judge_attempt_count"] == 1
+    assert summary.metrics["judge_success_count"] == 0
+    assert summary.metrics["judge_failure_count"] == 1
+    assert summary.metrics["judge_failures"][0]["type"] == "TimeoutError"
+    assert "timed out after 0.01s" in summary.metrics["judge_failures"][0]["reason"]
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_runs_default_source_runtime_outside_active_loop(
     tmp_path, monkeypatch
 ) -> None:

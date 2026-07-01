@@ -223,6 +223,7 @@ class AWorldTrajectoryEvaluatorBackend:
         run_evaluator_source: Callable[..., Any] | None = None,
         judge_repetitions: int = 1,
         judge_failure_retries: int = 2,
+        judge_timeout_seconds: float | None = 300.0,
     ) -> None:
         selector_count = sum(
             bool(value)
@@ -240,8 +241,11 @@ class AWorldTrajectoryEvaluatorBackend:
             raise ValueError("judge_repetitions must be positive")
         if judge_failure_retries < 0:
             raise ValueError("judge_failure_retries must be non-negative")
+        if judge_timeout_seconds is not None and judge_timeout_seconds <= 0:
+            raise ValueError("judge_timeout_seconds must be positive")
         self.judge_repetitions = judge_repetitions
         self.judge_failure_retries = judge_failure_retries
+        self.judge_timeout_seconds = judge_timeout_seconds
 
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         if not request.dataset.cases:
@@ -277,16 +281,29 @@ class AWorldTrajectoryEvaluatorBackend:
             "output": str(report_path),
             "task_id": task_id,
             "agent": self.agent,
+            "judge_timeout_seconds": self.judge_timeout_seconds,
         }
         reports: list[Mapping[str, Any]] = []
         failures: list[Mapping[str, Any]] = []
         max_attempts = self.judge_repetitions + self.judge_failure_retries
         for attempt_index in range(1, max_attempts + 1):
             try:
-                report = await self._run_evaluator_source(
+                report = await self._run_evaluator_source_with_timeout(
                     runner,
                     runner_kwargs=runner_kwargs,
                 )
+            except asyncio.TimeoutError:
+                failures.append(
+                    {
+                        "attempt": attempt_index,
+                        "type": "TimeoutError",
+                        "reason": (
+                            "AWorld trajectory judge timed out after "
+                            f"{self.judge_timeout_seconds:g}s"
+                        ),
+                    }
+                )
+                continue
             except Exception as exc:
                 failures.append(
                     {
@@ -332,6 +349,17 @@ class AWorldTrajectoryEvaluatorBackend:
             dataset_split=request.dataset_split,
             metrics=metrics,
         )
+
+    async def _run_evaluator_source_with_timeout(
+        self,
+        runner: Callable[..., Any],
+        *,
+        runner_kwargs: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        call = self._run_evaluator_source(runner, runner_kwargs=runner_kwargs)
+        if self.judge_timeout_seconds is None:
+            return await call
+        return await asyncio.wait_for(call, timeout=self.judge_timeout_seconds)
 
     async def _run_evaluator_source(
         self,
