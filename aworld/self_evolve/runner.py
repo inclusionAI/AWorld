@@ -641,7 +641,9 @@ class SelfEvolveRunner:
             run_id=run_id,
             candidate=selected_candidate,
             target_skill_path=target.identity.path,
+            baseline_skill_roots=getattr(target, "baseline_skill_roots", ()),
         )
+        baseline_skill_roots = tuple(getattr(target, "baseline_skill_roots", ()))
         request = build_replay_request(
             run_id=run_id,
             workspace_root=self.store.workspace_root,
@@ -655,6 +657,7 @@ class SelfEvolveRunner:
             max_tokens=self.max_run_tokens,
             baseline_repetitions=self.baseline_replay_repetitions,
             candidate_repetitions=self.candidate_replay_repetitions,
+            baseline_skill_root=baseline_skill_roots[0] if baseline_skill_roots else None,
         )
         replay_result = await self.candidate_replay_backend.replay_candidate(
             request,
@@ -701,7 +704,11 @@ class SelfEvolveRunner:
             run_id,
             candidate=candidate,
             original_content=original_content,
-            target_path=target.identity.path,
+            target_path=(
+                str(_target_runtime_skill_path(target))
+                if _target_runtime_skill_path(target) is not None
+                else target.identity.path
+            ),
         )
         self.store.update_apply_journal(
             journal_path,
@@ -1136,12 +1143,16 @@ def _default_post_apply_evaluator(
     target: SelfEvolveTarget,
 ) -> Callable[[CandidateVariant], EvaluationSummary]:
     def evaluate(candidate: CandidateVariant) -> EvaluationSummary:
-        target_path = Path(target.identity.path).resolve() if target.identity.path else None
+        target_path = _target_runtime_skill_path(target)
         loaded_skill_path: str | None = None
         runtime_skill_found = False
         loaded_from_real_path = False
         runtime_content_matches = False
-        content_matches_target_file = target.load_current_content() == candidate.content
+        content_matches_target_file = (
+            target_path.read_text(encoding="utf-8") == candidate.content
+            if target_path is not None and target_path.exists()
+            else False
+        )
 
         if target_path is not None:
             registry = build_compat_registry(target_path.parent.parent)
@@ -1186,6 +1197,13 @@ def _default_post_apply_evaluator(
         )
 
     return evaluate
+
+
+def _target_runtime_skill_path(target: SelfEvolveTarget) -> Path | None:
+    runtime_path = getattr(target, "runtime_skill_path", None)
+    if runtime_path is not None:
+        return Path(runtime_path).resolve()
+    return Path(target.identity.path).resolve() if target.identity.path else None
 
 
 def _content_fingerprint(content: str) -> str:
@@ -1696,6 +1714,12 @@ def _target_from_ref(
             return DraftSkillTextTarget(
                 path,
                 target_id=target_ref.target_id,
+                release_path=(
+                    Path(workspace_root)
+                    / "aworld-skills"
+                    / target_ref.target_id
+                    / "SKILL.md"
+                ),
                 allow_auto_apply=allow_auto_apply,
             )
         return _skill_target_from_id(
@@ -1790,6 +1814,8 @@ def _no_evidence_target_selection_report(source_kind: str) -> TargetSelectionRep
 
 
 def _inferred_target_confident_for_auto_apply(report: TargetSelectionReport) -> bool:
+    if "new_skill_candidate" in report.signals and report.selected_target is not None:
+        return report.selected_target.target_type == "skill"
     return report.confidence >= 0.9 and "low_confidence" not in report.signals
 
 

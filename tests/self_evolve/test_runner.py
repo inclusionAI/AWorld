@@ -1725,21 +1725,30 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
             "reward": {"status": "failed"},
         }
     ]
+    draft_skill_path = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "drafts"
+        / "skills"
+        / "web-content-grounding"
+        / "SKILL.md"
+    )
     new_skill_path = tmp_path / "aworld-skills" / "web-content-grounding" / "SKILL.md"
     inferred_target = SelfEvolveTargetRef(
         target_type="skill",
         target_id="web-content-grounding",
-        path=str(new_skill_path),
+        path=str(draft_skill_path),
     )
 
     def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
         return (
             TargetSelectionReport(
                 selected_target=inferred_target,
-                confidence=0.95,
+                confidence=0.85,
                 evidence_step_ids=("weak-task:step-1",),
                 failure_category="skill",
-                signals=("new_skill_candidate",),
+                signals=("low_confidence", "new_skill_candidate"),
                 diagnostics={"rationale": "task needs a dedicated grounded web-summary skill"},
             ),
             None,
@@ -1848,6 +1857,7 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
     assert replay_backend.requests
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
+    assert replay_backend.requests[0].baseline_skill_root == str(tmp_path / "aworld-skills")
     assert Path(
         replay_backend.requests[0].overlay_skill_root,
         "web-content-grounding",
@@ -1864,11 +1874,13 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["apply_policy"] == "auto_verified"
     assert report["target"]["target_id"] == "web-content-grounding"
+    assert report["target"]["path"] == str(draft_skill_path)
     assert report["candidate_ids"]
     assert report["selected_candidate_id"] == report["candidate_ids"][0]
     assert report["target_selection"]["selected_target"]["target_id"] == "web-content-grounding"
-    assert report["target_selection"]["confidence"] == 0.95
-    assert "low_confidence" not in report["target_selection"]["signals"]
+    assert report["target_selection"]["selected_target"]["path"] == str(draft_skill_path)
+    assert report["target_selection"]["confidence"] == 0.85
+    assert "low_confidence" in report["target_selection"]["signals"]
     assert report["replay"]["baseline"]["status"] == "succeeded"
     assert report["replay"]["candidate"]["status"] == "succeeded"
     assert any(
