@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
+from aworld.logs.util import logger
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
@@ -131,6 +132,13 @@ class AWorldCliCandidateReplayBackend:
         )
         replay_dir.mkdir(parents=True, exist_ok=True)
         _write_json(replay_dir / "request.json", request)
+        logger.info(
+            "self_evolve.replay.start "
+            f"run_id={request.run_id} task_id={request.task_id} "
+            f"candidate_id={candidate.candidate_id} "
+            f"baseline_repetitions={request.baseline_repetitions} "
+            f"candidate_repetitions={request.candidate_repetitions}"
+        )
 
         baseline = await self._run_repetitions(
             request,
@@ -145,6 +153,12 @@ class AWorldCliCandidateReplayBackend:
             skill_root=request.overlay_skill_root,
             artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
             repetitions=request.candidate_repetitions,
+        )
+        logger.info(
+            "self_evolve.replay.end "
+            f"run_id={request.run_id} task_id={request.task_id} "
+            f"candidate_id={candidate.candidate_id} "
+            f"baseline_status={baseline.status} candidate_status={candidate_result.status}"
         )
         return CandidateReplayResult(
             request=request,
@@ -164,9 +178,19 @@ class AWorldCliCandidateReplayBackend:
         if repetitions <= 0:
             raise ValueError("replay repetitions must be positive")
         results: list[ReplayVariantResult] = []
+        logger.info(
+            "self_evolve.replay.repetitions.start "
+            f"run_id={request.run_id} task_id={request.task_id} "
+            f"variant_id={base_variant_id} repetitions={repetitions}"
+        )
         for index in range(1, repetitions + 1):
             variant_id = base_variant_id if repetitions == 1 else f"{base_variant_id}-{index}"
             repetition_dir = artifact_dir if repetitions == 1 else artifact_dir / str(index)
+            logger.info(
+                "self_evolve.replay.repetition.start "
+                f"run_id={request.run_id} task_id={request.task_id} "
+                f"variant_id={variant_id} index={index}/{repetitions}"
+            )
             results.append(
                 await self._run_variant(
                     request,
@@ -175,11 +199,24 @@ class AWorldCliCandidateReplayBackend:
                     artifact_dir=repetition_dir,
                 )
             )
-        return _aggregate_variant_results(
+            logger.info(
+                "self_evolve.replay.repetition.end "
+                f"run_id={request.run_id} task_id={request.task_id} "
+                f"variant_id={variant_id} index={index}/{repetitions} "
+                f"status={results[-1].status}"
+            )
+        aggregated = _aggregate_variant_results(
             base_variant_id=base_variant_id,
             results=results,
             artifact_dir=artifact_dir,
         )
+        logger.info(
+            "self_evolve.replay.repetitions.end "
+            f"run_id={request.run_id} task_id={request.task_id} "
+            f"variant_id={base_variant_id} repetitions={repetitions} "
+            f"status={aggregated.status}"
+        )
+        return aggregated
 
     async def _run_variant(
         self,

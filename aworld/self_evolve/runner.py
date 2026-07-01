@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Mapping, Iterable
 
 from aworld.config.conf import SelfEvolveJudgeConfig
+from aworld.logs.util import logger
 from aworld.self_evolve.credit_assignment import (
     TargetInventoryEntry,
     TargetSelectionReport,
@@ -332,6 +333,7 @@ class SelfEvolveRunner:
                             dataset=evaluation_dataset,
                             candidate=iteration_candidate,
                             dataset_split="validation",
+                            artifact_namespace=run_id,
                         )
                         score_gate = ScoreImprovementGate(
                             min_delta=self.min_score_delta
@@ -357,14 +359,28 @@ class SelfEvolveRunner:
                         if replay_stability_gate is not None:
                             iteration_gate_results.append(replay_stability_gate)
                         if apply_policy == "auto_verified":
-                            iteration_held_out_summary = await self.evaluation_backend.evaluate_variant(
-                                EvaluationRequest(
-                                    variant_id=iteration_candidate.candidate_id,
-                                    candidate=iteration_candidate,
-                                    dataset=evaluation_dataset,
-                                    dataset_split="held_out",
+                            if _can_reuse_single_case_replay_validation(
+                                evaluation_dataset
+                            ):
+                                logger.info(
+                                    "self_evolve.evaluator.held_out.skip "
+                                    f"run_id={run_id} candidate_id={iteration_candidate.candidate_id} "
+                                    "reason=single_case_replay_validation_reused"
                                 )
-                            )
+                                iteration_held_out_summary = replace(
+                                    iteration_candidate_summary,
+                                    dataset_split="single_case_replay",
+                                )
+                            else:
+                                iteration_held_out_summary = await self.evaluation_backend.evaluate_variant(
+                                    EvaluationRequest(
+                                        variant_id=iteration_candidate.candidate_id,
+                                        candidate=iteration_candidate,
+                                        dataset=evaluation_dataset,
+                                        dataset_split="held_out",
+                                        artifact_namespace=run_id,
+                                    )
+                                )
                             confidence = determine_candidate_confidence(
                                 dataset=evaluation_dataset,
                                 validation_summary=iteration_candidate_summary,
@@ -898,6 +914,19 @@ def optimize_from_cli_request(
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
             )
+        if apply_policy == "auto_verified" and not _inferred_target_confident_for_auto_apply(
+            target_selection_report
+        ):
+            target_selection_report = _blocked_low_confidence_target_selection_report(
+                target_selection_report
+            )
+            return _persist_no_target_cli_result(
+                store=store,
+                run_id=run_id,
+                dataset=built_dataset,
+                target_selection_report=target_selection_report,
+                apply_policy=apply_policy,
+            )
         if inventory_entry is not None:
             target_provenance = inventory_entry.provenance
         try:
@@ -1356,6 +1385,14 @@ def _evidence_quality_gate(summary: EvaluationSummary) -> GateResult | None:
     return EvidenceQualityGate().evaluate(summary)
 
 
+def _can_reuse_single_case_replay_validation(dataset: SelfEvolveDataset) -> bool:
+    return (
+        bool(dataset.recipe.source.get("paired_replay"))
+        and dataset.recipe.source.get("original_case_count") == 1
+        and not dataset.recipe.held_out_case_ids
+    )
+
+
 def _load_json_mapping(path: Path) -> Mapping[str, Any]:
     import json
 
@@ -1736,6 +1773,29 @@ def _no_evidence_target_selection_report(source_kind: str) -> TargetSelectionRep
         signals=("missing_trajectory_evidence",),
         no_target_reason="target inference requires trajectory evidence",
         diagnostics={"source_kind": source_kind},
+    )
+
+
+def _inferred_target_confident_for_auto_apply(report: TargetSelectionReport) -> bool:
+    return report.confidence >= 0.9 and "low_confidence" not in report.signals
+
+
+def _blocked_low_confidence_target_selection_report(
+    report: TargetSelectionReport,
+) -> TargetSelectionReport:
+    diagnostics = dict(report.diagnostics or {})
+    if report.selected_target is not None:
+        diagnostics["blocked_selected_target"] = to_json_dict(report.selected_target)
+    return TargetSelectionReport(
+        selected_target=None,
+        confidence=report.confidence,
+        evidence_step_ids=report.evidence_step_ids,
+        failure_category=report.failure_category,
+        signals=tuple(report.signals) + ("auto_verified_low_confidence_blocked",),
+        no_target_reason=(
+            "auto_verified target inference requires confidence >= 0.9 without low_confidence signal"
+        ),
+        diagnostics=diagnostics,
     )
 
 

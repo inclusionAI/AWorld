@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from aworld.config.conf import EvaluationConfig
+from aworld.logs.util import logger
 from aworld.runners.evaluate_runner import EvaluateRunner
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary
@@ -23,6 +24,7 @@ class EvaluationRequest:
     dataset: SelfEvolveDataset
     eval_config: EvaluationConfig | None = None
     dataset_split: str = "all"
+    artifact_namespace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +257,11 @@ class AWorldTrajectoryEvaluatorBackend:
             / ".aworld"
             / "self_evolve"
             / "evaluator"
+        )
+        if request.artifact_namespace:
+            eval_dir = eval_dir / _safe_path_component(request.artifact_namespace)
+        eval_dir = (
+            eval_dir
             / _safe_path_component(request.variant_id)
             / _safe_path_component(request.dataset_split)
         )
@@ -286,7 +293,18 @@ class AWorldTrajectoryEvaluatorBackend:
         reports: list[Mapping[str, Any]] = []
         failures: list[Mapping[str, Any]] = []
         max_attempts = self.judge_repetitions + self.judge_failure_retries
+        logger.info(
+            "self_evolve.evaluator.start "
+            f"variant_id={request.variant_id} split={request.dataset_split} "
+            f"cases={len(request.dataset.cases)} repetitions={self.judge_repetitions} "
+            f"max_attempts={max_attempts} namespace={request.artifact_namespace or '-'}"
+        )
         for attempt_index in range(1, max_attempts + 1):
+            logger.info(
+                "self_evolve.evaluator.attempt.start "
+                f"variant_id={request.variant_id} split={request.dataset_split} "
+                f"attempt={attempt_index}/{max_attempts}"
+            )
             try:
                 report = await self._run_evaluator_source_with_timeout(
                     runner,
@@ -303,6 +321,11 @@ class AWorldTrajectoryEvaluatorBackend:
                         ),
                     }
                 )
+                logger.info(
+                    "self_evolve.evaluator.attempt.end "
+                    f"variant_id={request.variant_id} split={request.dataset_split} "
+                    f"attempt={attempt_index}/{max_attempts} status=timeout"
+                )
                 continue
             except Exception as exc:
                 failures.append(
@@ -311,6 +334,12 @@ class AWorldTrajectoryEvaluatorBackend:
                         "type": type(exc).__name__,
                         "reason": str(exc),
                     }
+                )
+                logger.info(
+                    "self_evolve.evaluator.attempt.end "
+                    f"variant_id={request.variant_id} split={request.dataset_split} "
+                    f"attempt={attempt_index}/{max_attempts} status=failed "
+                    f"error_type={type(exc).__name__}"
                 )
                 continue
             if not isinstance(report, Mapping):
@@ -321,8 +350,19 @@ class AWorldTrajectoryEvaluatorBackend:
                         "reason": "AWorld trajectory evaluator report must be a mapping",
                     }
                 )
+                logger.info(
+                    "self_evolve.evaluator.attempt.end "
+                    f"variant_id={request.variant_id} split={request.dataset_split} "
+                    f"attempt={attempt_index}/{max_attempts} status=invalid_report "
+                    f"report_type={type(report).__name__}"
+                )
                 continue
             reports.append(report)
+            logger.info(
+                "self_evolve.evaluator.attempt.end "
+                f"variant_id={request.variant_id} split={request.dataset_split} "
+                f"attempt={attempt_index}/{max_attempts} status=succeeded"
+            )
             if len(reports) >= self.judge_repetitions:
                 break
         if reports:
@@ -344,6 +384,12 @@ class AWorldTrajectoryEvaluatorBackend:
                 input_path=log_path,
                 judge_repetitions=self.judge_repetitions,
             )
+        logger.info(
+            "self_evolve.evaluator.end "
+            f"variant_id={request.variant_id} split={request.dataset_split} "
+            f"successes={len(reports)} failures={len(failures)} "
+            f"gate_passed={metrics.get('evaluator_gate_passed')}"
+        )
         return EvaluationSummary(
             variant_id=request.variant_id,
             dataset_split=request.dataset_split,
@@ -386,6 +432,7 @@ async def evaluate_baseline_and_candidate(
     eval_config: EvaluationConfig | None = None,
     dataset_split: str = "validation",
     baseline_variant_id: str = "baseline",
+    artifact_namespace: str | None = None,
 ) -> tuple[EvaluationSummary, EvaluationSummary]:
     baseline_summary = await backend.evaluate_variant(
         EvaluationRequest(
@@ -394,6 +441,7 @@ async def evaluate_baseline_and_candidate(
             dataset=dataset,
             eval_config=eval_config,
             dataset_split=dataset_split,
+            artifact_namespace=artifact_namespace,
         )
     )
     candidate_summary = await backend.evaluate_variant(
@@ -403,6 +451,7 @@ async def evaluate_baseline_and_candidate(
             dataset=dataset,
             eval_config=eval_config,
             dataset_split=dataset_split,
+            artifact_namespace=artifact_namespace,
         )
     )
     return baseline_summary, candidate_summary

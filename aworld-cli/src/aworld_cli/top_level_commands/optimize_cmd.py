@@ -5,10 +5,10 @@ from typing import Any, Callable
 
 
 SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified"}
-AUTO_VERIFIED_JUDGE_REPETITIONS = 3
+AUTO_VERIFIED_JUDGE_REPETITIONS = 1
 AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS = 300
-AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS = 2
-AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS = 3
+AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS = 1
+AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS = 1
 
 
 class OptimizeTopLevelCommand:
@@ -218,7 +218,7 @@ def run_optimize_cli(
     iterations = _auto_verified_default(
         apply,
         iterations,
-        3,
+        1,
     )
     judge_config = _judge_config_from_cli(
         judge_agent=judge_agent,

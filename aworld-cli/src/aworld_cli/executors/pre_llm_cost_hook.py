@@ -34,6 +34,22 @@ def _get_limit_strategy() -> str:
     return s if s in ("compress", "terminate") else "compress"
 
 
+def _context_current_agent_id(context: Context = None) -> str | None:
+    if not context:
+        return None
+
+    agent_info = getattr(context, "agent_info", None)
+    if not agent_info:
+        return None
+
+    if isinstance(agent_info, dict):
+        current_agent_id = agent_info.get("current_agent_id")
+    else:
+        current_agent_id = getattr(agent_info, "current_agent_id", None)
+
+    return current_agent_id if isinstance(current_agent_id, str) and current_agent_id else None
+
+
 @HookFactory.register(name="PreLlmCostHook")
 class PreLlmCostHook(PreLLMCallHook):
     """
@@ -60,9 +76,13 @@ class PreLlmCostHook(PreLLMCallHook):
         if not console and global_console:
             console = global_console
 
-        agent = AgentFactory.agent_instance(message.sender)
+        agent_id = message.sender
+        if message.sender == "llm_model":
+            agent_id = _context_current_agent_id(context) or message.sender
+
+        agent = AgentFactory.agent_instance(agent_id)
         if not agent:
-            logger.warning(f"Agent {message.sender} not found")
+            logger.warning(f"Agent {agent_id} not found")
             return message
 
         if not context:
@@ -121,7 +141,7 @@ class PreLlmCostHook(PreLLMCallHook):
                         console.print(
                             f"[dim]Context limit exceeded, compressing: {total:,} → <= {limit:,} tokens...[/dim]"
                         )
-                    ok, tokens_before, tokens_after, msg, compressed_content = await run_context_optimization(message.sender, context)
+                    ok, tokens_before, tokens_after, msg, compressed_content = await run_context_optimization(agent_id, context)
                     if ok:
                         ratio = ((tokens_before - tokens_after) / tokens_before) * 100 if tokens_before > 0 else 0
                         if console:
