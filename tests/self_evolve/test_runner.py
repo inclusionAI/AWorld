@@ -22,6 +22,7 @@ from aworld.self_evolve.runner import (
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
+from aworld.self_evolve.credit_assignment import TargetSelectionReport
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
 
 
@@ -1002,8 +1003,11 @@ async def test_runner_auto_verified_accepts_stable_single_case_replay(
                 ),
             )
 
+    evaluation_calls = []
+
     class PositiveReplayEvaluationBackend:
         async def evaluate_variant(self, request):
+            evaluation_calls.append((request.variant_id, request.dataset_split))
             if request.candidate is None:
                 return EvaluationSummary(
                     variant_id="baseline",
@@ -1070,6 +1074,10 @@ async def test_runner_auto_verified_accepts_stable_single_case_replay(
         and gate["details"]["verification_mode"] == "single_case_replay"
         for gate in report["gate_results"]
     )
+    assert evaluation_calls == [
+        ("baseline", "validation"),
+        (report["selected_candidate_id"], "validation"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1690,6 +1698,68 @@ def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
     assert "Previous validation feedback" in candidate_content
     assert "score=68.0" in candidate_content
     assert "held_out_verification" in candidate_content
+
+
+def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix browser workflow."}},
+            "action": {"content": "Browser alias matched, but evidence is weak."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    inferred_target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="agent-browser",
+        path=str(tmp_path / "aworld-skills" / "agent-browser" / "SKILL.md"),
+    )
+
+    def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
+        return (
+            TargetSelectionReport(
+                selected_target=inferred_target,
+                confidence=0.85,
+                evidence_step_ids=("weak-task:step-1",),
+                failure_category="skill",
+                signals=("low_confidence", "skill_alias_match:agent-browser"),
+                diagnostics={"matched_aliases": ["browser"]},
+            ),
+            None,
+        )
+
+    def fail_if_target_is_loaded(*args, **kwargs):
+        pytest.fail("low-confidence inferred targets must not be loaded for auto apply")
+
+    monkeypatch.setattr(
+        runner_module,
+        "_infer_target_from_trace_packs",
+        fake_infer_target_from_trace_packs,
+    )
+    monkeypatch.setattr(runner_module, "_target_from_ref", fail_if_target_is_loaded)
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        current_trajectory=trajectory,
+        task="weak-task",
+        target=None,
+        apply_policy="auto_verified",
+        infer_target=True,
+    )
+
+    assert report_summary["status"] == "rejected"
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["target"]["target_type"] == "no_target"
+    assert report["target_selection"]["selected_target"] is None
+    assert report["target_selection"]["confidence"] == 0.85
+    assert report["target_selection"]["no_target_reason"] == (
+        "auto_verified target inference requires confidence >= 0.9 without low_confidence signal"
+    )
 
 
 def test_optimize_cli_request_persists_unsupported_inferred_target(tmp_path) -> None:

@@ -488,6 +488,67 @@ async def test_aworld_trajectory_evaluator_backend_compares_variant_trajectories
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_scopes_artifacts_by_namespace(tmp_path) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    input_paths = []
+
+    def fake_run_evaluator_source(**kwargs):
+        input_paths.append(kwargs["input"])
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 82.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 82.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=fake_run_evaluator_source,
+    )
+
+    for namespace in ("run-a", "run-b"):
+        await backend.evaluate_variant(
+            EvaluationRequest(
+                variant_id="baseline",
+                candidate=None,
+                dataset=dataset,
+                dataset_split="validation",
+                artifact_namespace=namespace,
+            )
+        )
+
+    assert input_paths == [
+        str(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "evaluator"
+            / "run-a"
+            / "baseline"
+            / "validation"
+            / "trajectory.log"
+        ),
+        str(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "evaluator"
+            / "run-b"
+            / "baseline"
+            / "validation"
+            / "trajectory.log"
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_accepts_backend_ref(tmp_path) -> None:
     dataset = _dataset(
         (

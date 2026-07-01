@@ -419,6 +419,65 @@ async def test_aworld_cli_candidate_replay_backend_runs_baseline_and_candidate_w
 
 
 @pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_logs_replay_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages = []
+    monkeypatch.setattr(
+        "aworld.self_evolve.replay.logger.info",
+        messages.append,
+    )
+
+    async def fake_executor(request):
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": request.variant_id},
+                    "reward": {"status": "ok"},
+                }
+            ],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input="Replay this task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-logs",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        task_input="Replay this task",
+    )
+
+    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+        dataset=dataset,
+    )
+
+    assert any("self_evolve.replay.start" in message for message in messages)
+    assert any(
+        "self_evolve.replay.repetition.start" in message and "variant_id=baseline" in message
+        for message in messages
+    )
+    assert any(
+        "self_evolve.replay.repetition.end" in message and "variant_id=cand-1" in message
+        for message in messages
+    )
+    assert any("self_evolve.replay.end" in message for message in messages)
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_and_disables_auto_drain(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
