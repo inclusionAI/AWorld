@@ -78,7 +78,10 @@ class PreLlmCostHook(PreLLMCallHook):
 
         agent_id = message.sender
         if message.sender == "llm_model":
-            agent_id = _context_current_agent_id(context) or message.sender
+            agent_id = _context_current_agent_id(context)
+            if not agent_id:
+                logger.debug("PreLlmCostHook skipped llm_model event without current agent id")
+                return message
 
         agent = AgentFactory.agent_instance(agent_id)
         if not agent:

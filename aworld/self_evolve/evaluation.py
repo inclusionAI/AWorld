@@ -546,6 +546,26 @@ def determine_candidate_confidence(
     selection_split = validation_summary.dataset_split
     verification_split = held_out_summary.dataset_split if held_out_summary is not None else None
 
+    if (
+        verification_split == "single_case_replay"
+        and deterministic_signal_present
+        and _has_sufficient_single_case_replay(
+            baseline_replay_count=baseline_replay_count,
+            candidate_replay_count=candidate_replay_count,
+        )
+    ):
+        return CandidateConfidenceDecision(
+            confidence="verified",
+            reason="single-case replay verification is sufficient",
+            selection_split=selection_split,
+            verification_split="single_case_replay",
+            deterministic_signal_present=True,
+            held_out_case_count=held_out_case_count,
+            verification_mode="single_case_replay",
+            baseline_replay_count=baseline_replay_count,
+            candidate_replay_count=candidate_replay_count,
+        )
+
     if held_out_case_count < min_eval_cases or held_out_summary is None:
         if (
             held_out_summary is not None
