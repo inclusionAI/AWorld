@@ -55,6 +55,7 @@ from aworld_cli.plugin_capabilities.hooks import PluginHookResult, load_plugin_h
 
 _CLI_AGENT_RUNTIME_BOOTSTRAPPED = False
 _SUPPORTED_SOURCE_KINDS = ("task", "answer", "trajectory")
+_MAX_PROMPT_EVIDENCE_CONTENT_CHARS = 4000
 
 
 def _sanitize_path_token(value: str) -> str:
@@ -555,10 +556,13 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         target=target,
         extracted_payload=extracted_payload,
     )
+    prompt_trajectory, evidence_summary = _trajectory_prompt_payload(extracted_payload)
     payload = {
         "case": {key: value for key, value in case_input.items() if not str(key).startswith("_")},
+        "evaluation_runtime_contract": _evaluation_runtime_contract(),
         "runtime_context": runtime_context,
-        "extracted_trajectory": extracted_payload,
+        "extracted_trajectory": prompt_trajectory,
+        "evidence_summary": evidence_summary,
         "required_output_schema": {
             "score": "number, weighted score from 0 to 100",
             "verdict": "Excellent|Pass|Marginal|Fail",
@@ -589,6 +593,7 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
             "for judge agents that expect TRAJECTORY_LOG, TASK_ID, or OUT_DIR. "
             "Do not ask the user for TRAJECTORY_LOG, TASK_ID, OUT_DIR, report paths, or other parameters. "
             "Do not call tools and do not re-read the raw log; all required evidence is in extracted_trajectory. "
+            "Evidence content may be bounded for prompt size; use evidence_summary to account for compaction. "
             "If extracted_trajectory is insufficient, return a valid JSON failure assessment instead of requesting more input. "
             "Return only one compact JSON object matching required_output_schema. "
             "Do not include analysis, rationale prose, or tables. "
@@ -597,6 +602,81 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         ),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _evaluation_runtime_contract() -> dict[str, object]:
+    return {
+        "inputs_are_complete": True,
+        "primary_evaluation_input": "extracted_trajectory",
+        "runtime_context_is_informational": True,
+        "do_not_request_missing_parameters": True,
+        "do_not_call_tools": True,
+        "do_not_reread_raw_log": True,
+        "output_format": "single_json_object",
+        "on_insufficient_evidence": "return_valid_json_failure_assessment",
+    }
+
+
+def _trajectory_prompt_payload(extracted_payload: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload = dict(extracted_payload or {})
+    evidence_items = []
+    for item in payload.get("evidence") or []:
+        if isinstance(item, Mapping):
+            evidence_items.append(_compact_prompt_evidence(item))
+    payload["evidence"] = evidence_items
+    return payload, _summarize_prompt_evidence(evidence_items)
+
+
+def _compact_prompt_evidence(item: Mapping[str, Any]) -> dict[str, Any]:
+    compacted = dict(item)
+    content = str(compacted.get("content") or "")
+    original_length = compacted.get("original_length")
+    if not isinstance(original_length, int):
+        original_length = len(content)
+    compacted["original_length"] = original_length
+    compacted["prompt_content_length"] = len(content)
+    if len(content) <= _MAX_PROMPT_EVIDENCE_CONTENT_CHARS:
+        compacted.setdefault("prompt_compacted", False)
+        return compacted
+
+    edge_chars = _MAX_PROMPT_EVIDENCE_CONTENT_CHARS // 2
+    omitted = len(content) - (edge_chars * 2)
+    compacted["content"] = (
+        f"{content[:edge_chars]}\n"
+        f"... [omitted {omitted} chars from evidence for prompt] ...\n"
+        f"{content[-edge_chars:]}"
+    )
+    compacted["prompt_compacted"] = True
+    compacted["prompt_content_length"] = len(compacted["content"])
+    return compacted
+
+
+def _summarize_prompt_evidence(evidence_items: list[Mapping[str, Any]]) -> dict[str, Any]:
+    sources = []
+    total_original_chars = 0
+    prompt_compacted_count = 0
+    source_truncated_count = 0
+    for item in evidence_items:
+        source = str(item.get("source") or "")
+        if source and source not in sources:
+            sources.append(source)
+        original_length = item.get("original_length")
+        if isinstance(original_length, int):
+            total_original_chars += original_length
+        else:
+            total_original_chars += len(str(item.get("content") or ""))
+        if item.get("prompt_compacted"):
+            prompt_compacted_count += 1
+        if item.get("truncated"):
+            source_truncated_count += 1
+    return {
+        "evidence_block_count": len(evidence_items),
+        "sources": sources,
+        "total_original_chars": total_original_chars,
+        "prompt_compacted_count": prompt_compacted_count,
+        "source_truncated_count": source_truncated_count,
+        "max_prompt_evidence_content_chars": _MAX_PROMPT_EVIDENCE_CONTENT_CHARS,
+    }
 
 
 def _trajectory_runtime_context(
