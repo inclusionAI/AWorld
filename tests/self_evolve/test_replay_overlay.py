@@ -346,6 +346,87 @@ async def test_aworld_cli_candidate_replay_backend_aggregates_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_allows_partial_repetition_success(
+    tmp_path: Path,
+) -> None:
+    async def fake_executor(request):
+        if request.variant_id == "baseline-2":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+                metrics={"latency_ms": 600000},
+            )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": request.variant_id},
+                    "reward": {"status": "ok"},
+                }
+            ],
+            metrics={"latency_ms": 1000},
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input="Replay this task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-partial-repetitions",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        task_input="Replay this task",
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+        dataset=dataset,
+    )
+
+    assert result.succeeded is True
+    assert result.baseline.succeeded is True
+    assert result.baseline.metrics["repetition_count"] == 2
+    assert result.baseline.metrics["successful_repetition_count"] == 1
+    assert result.baseline.metrics["failed_repetition_count"] == 1
+    assert result.baseline.metrics["repetition_failures"] == [
+        {"type": "TimeoutExpired", "reason": "replay timed out"}
+    ]
+    assert result.baseline.trajectory[0]["action"]["content"] == "baseline-1"
+    assert result.baseline.failure is None
+
+    paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=result,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+    )
+
+    assert [case.case_id for case in paired.cases] == [
+        "task-1__replay_1",
+        "task-1__replay_2",
+        "task-1__replay_3",
+    ]
+    assert {
+        case.metadata["variant_trajectories"]["baseline"][0]["action"]["content"]
+        for case in paired.cases
+    } == {"baseline-1"}
+    assert paired.cases[0].metadata["replay"]["baseline"]["metrics"][
+        "failed_repetition_count"
+    ] == 1
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_candidate_replay_backend_runs_baseline_and_candidate_with_skill_roots(
     tmp_path: Path,
 ) -> None:
