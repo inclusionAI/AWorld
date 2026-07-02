@@ -32,6 +32,7 @@ Example usage:
     )
 """
 
+import base64
 import mimetypes
 import os
 import traceback

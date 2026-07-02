@@ -20,6 +20,9 @@ from aworld.logs.util import logger
 
 from .stats import StreamTokenStats, format_elapsed
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
+_ANSI_REMAINDER_RE = re.compile(r"\??\[(?:[0-9;?]*\d[0-9;?]*)[A-Za-z]")
+
 
 def get_terminal_size() -> tuple[int, int]:
     """Get (cols, rows). Fallback to 80x24 on error."""
@@ -137,6 +140,82 @@ class StreamDisplayBuffer:
         return bool(self.accumulated_tool_result_lines and self.displayed_tool_result_lines < len(self.accumulated_tool_result_lines))
 
 
+@dataclass
+class ActiveSteeringCommitBuffer:
+    max_full_result_lines: int = 8
+    max_summary_lines: int = 4
+    message_chunks: list[str] = field(default_factory=list)
+
+    def has_pending_message(self) -> bool:
+        return bool(self.message_chunks)
+
+    def reset(self) -> None:
+        self.message_chunks.clear()
+
+    def append_message_delta(self, text: str) -> None:
+        if text:
+            self.message_chunks.append(text)
+
+    def commit_message(
+        self,
+        text: str | None = None,
+        *,
+        agent_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        combined = "".join(self.message_chunks)
+        if text:
+            combined += text
+        self.message_chunks.clear()
+        sanitized = self._sanitize(combined)
+        if not sanitized:
+            return None
+        committed: dict[str, Any] = {
+            "kind": "message_committed",
+            "text": sanitized,
+        }
+        if agent_name:
+            committed["agent_name"] = agent_name
+        return committed
+
+    def commit_tool_result(
+        self,
+        lines: list[str],
+        *,
+        exit_code: int | None = None,
+    ) -> dict[str, Any] | None:
+        cleaned_lines = self._sanitize("\n".join(lines)).splitlines()
+        if not cleaned_lines:
+            return None
+        if len(cleaned_lines) <= self.max_full_result_lines:
+            text = "\n".join(cleaned_lines)
+        else:
+            content_lines = []
+            if exit_code:
+                content_lines.append(f"Exit code: {exit_code}")
+            content_lines.extend(cleaned_lines[:self.max_summary_lines])
+            remaining = len(cleaned_lines) - self.max_summary_lines
+            content_lines.append(f"... ({remaining} more lines)")
+            text = "\n".join(content_lines)
+        return {
+            "kind": "tool_result_committed",
+            "text": text,
+        }
+
+    def _sanitize(self, text: str) -> str:
+        if not text:
+            return ""
+        text = text.replace("\t", "    ")
+        text = _ANSI_ESCAPE_RE.sub("", text)
+        text = _ANSI_REMAINDER_RE.sub("", text)
+        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+        lines = text.splitlines()
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines)
+
+
 def _compute_chars_per_render(buffer: StreamDisplayBuffer, config: StreamDisplayConfig) -> int:
     """Dynamically increase chars per render when content backlog is large."""
     if not buffer.accumulated_content:
@@ -163,6 +242,7 @@ def build_stream_renderable(
     format_tool_calls_fn: Callable[[List[Any]], List[str]],
     format_elapsed_fn: Callable[[float], str],
     config: StreamDisplayConfig,
+    show_stats_line: bool = True,
 ) -> Group:
     """
     Build the combined Rich renderable for Live display.
@@ -172,7 +252,7 @@ def build_stream_renderable(
     elapsed_str = format_elapsed_fn(
         (datetime.now() - status_start_time).total_seconds()
     ) if status_start_time else "0.0s"
-    msg = stream_token_stats.format_streaming_line(elapsed_str)
+    msg = stream_token_stats.format_streaming_line(elapsed_str) if show_stats_line else None
     if msg:
         parts.append(Text.from_markup(msg))
     stats = stream_token_stats.get_current_stats()
@@ -299,6 +379,7 @@ def print_buffer_to_console(
     format_tool_calls_fn: Callable[[List[Any]], List[str]],
     status_start_time: Optional[datetime] = None,
     format_elapsed_fn: Optional[Callable[[float], str]] = None,
+    show_stats_line: bool = True,
 ) -> None:
     """Print buffer content to console so it persists after Live stops."""
     if not (buffer.has_content() or buffer.has_tool_calls() or buffer.has_tool_results()):
@@ -307,7 +388,7 @@ def print_buffer_to_console(
     aname = (stats or {}).get("agent_name") or "Assistant"
     # Print stats line first (before clear) so it persists in re-output
     # Only show stats when we have content or tool_calls; skip when buffer has ONLY tool results
-    if status_start_time and format_elapsed_fn and stats and (buffer.has_content() or buffer.has_tool_calls()):
+    if show_stats_line and status_start_time and format_elapsed_fn and stats and (buffer.has_content() or buffer.has_tool_calls()):
         elapsed_str = format_elapsed_fn(
             (datetime.now() - status_start_time).total_seconds()
         )
@@ -346,12 +427,16 @@ class StreamDisplayController:
         format_tool_calls_fn: Callable[[List[Any]], List[str]],
         format_elapsed_fn: Callable[[float], str] = format_elapsed,
         config: Optional[StreamDisplayConfig] = None,
+        show_stats_line: bool = True,
+        loading_enabled: bool = True,
     ):
         self.console = console
         self.stream_token_stats = stream_token_stats
         self.format_tool_calls_fn = format_tool_calls_fn
         self.format_elapsed_fn = format_elapsed_fn
         self.config = config or StreamDisplayConfig()
+        self.show_stats_line = show_stats_line
+        self.loading_enabled = loading_enabled
 
         self.buffer = StreamDisplayBuffer()
         self.loading_status: Optional[Status] = None
@@ -371,7 +456,13 @@ class StreamDisplayController:
         if not self.console:
             return
         self.base_message = message
-        self.status_start_time = datetime.now()
+        if self.loading_enabled:
+            self.status_start_time = datetime.now()
+        elif self.status_start_time is None:
+            self.status_start_time = datetime.now()
+            return
+        else:
+            return
         msg = f"{message} [0.0s]" if ("Thinking" in message or "Calling tool" in message) else message
         if self.loading_status:
             self.loading_status.update(f"[dim]{msg}[/dim]")
@@ -409,6 +500,7 @@ class StreamDisplayController:
                     self.format_tool_calls_fn,
                     status_start_time=self.status_start_time,
                     format_elapsed_fn=self.format_elapsed_fn,
+                    show_stats_line=self.show_stats_line,
                 )
                 self.buffer.clear()
             self.stream_live.stop()
@@ -452,6 +544,7 @@ class StreamDisplayController:
             self.format_tool_calls_fn,
             self.format_elapsed_fn,
             self.config,
+            show_stats_line=self.show_stats_line,
         )
         tool_lines = self.format_tool_calls_fn(self.buffer.accumulated_tool_calls) if self.buffer.accumulated_tool_calls else []
         if (
@@ -481,6 +574,7 @@ class StreamDisplayController:
                     self.format_tool_calls_fn,
                     status_start_time=self.status_start_time,
                     format_elapsed_fn=self.format_elapsed_fn,
+                    show_stats_line=self.show_stats_line,
                 )
             self.stream_token_stats.clear()
             self.buffer.clear()
@@ -540,7 +634,7 @@ class StreamDisplayController:
                 continue
             if self.loading_status:
                 if self.streaming_mode:
-                    msg = self.stream_token_stats.format_streaming_line(elapsed_str)
+                    msg = self.stream_token_stats.format_streaming_line(elapsed_str) if self.show_stats_line else None
                     status_msg = f"[dim]{msg}[/dim]" if msg else f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
                 else:
                     status_msg = f"[dim]   {self.base_message} [{elapsed_str}][/dim]"

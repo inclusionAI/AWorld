@@ -1,0 +1,18 @@
+{
+  "id": "ralph-like",
+  "name": "ralph-like",
+  "version": "1.0.0",
+  "entrypoints": {
+    "hooks": [
+      {
+        "id": "loop-stop",
+        "name": "loop-stop",
+        "target": "hooks/stop_hook.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "stop"
+        }
+      }
+    ]
+  }
+}

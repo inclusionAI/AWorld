@@ -1,0 +1,23 @@
+version: "2"
+hooks:
+  user_input_received:
+    - name: block-user-input
+      type: command
+      enabled: true
+      command: ./hooks/block_user_input.sh
+    - name: rewrite-user-input
+      type: command
+      enabled: true
+      command: ./hooks/rewrite_user_input.sh
+
+  before_tool_call:
+    - name: block-rm-rf
+      type: command
+      enabled: true
+      command: ./hooks/block_rm_rf.sh
+
+  after_tool_call:
+    - name: audit-tool-output
+      type: command
+      enabled: true
+      command: ./hooks/audit_tool_output.sh

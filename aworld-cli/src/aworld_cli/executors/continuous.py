@@ -2,7 +2,7 @@
 Continuous execution executor for running agents in a loop.
 """
 import asyncio
-import time
+import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
 from rich.console import Console
@@ -39,6 +39,20 @@ class ContinuousExecutor:
         self.total_cost: float = 0.0
         self.start_time: Optional[datetime] = None
         self.response_history: List[str] = []  # Track recent responses for repetition detection
+
+    def _active_steering_runtime(self, *, non_interactive: bool) -> Any | None:
+        if non_interactive or not sys.stdin.isatty():
+            return None
+
+        runtime = getattr(self.agent_executor, "_base_runtime", None)
+        cli = getattr(runtime, "cli", None) if runtime is not None else None
+        if cli is None:
+            return None
+        if not callable(getattr(cli, "_build_session_completer", None)):
+            return None
+        if not callable(getattr(cli, "_run_executor_with_active_steering", None)):
+            return None
+        return runtime
         
     def _parse_duration(self, duration_str: str) -> timedelta:
         """
@@ -103,7 +117,15 @@ class ContinuousExecutor:
             return False
         return self.total_cost >= max_cost
     
-    async def run_iteration(self, iteration: int, prompt: Union[str, tuple[str, List[str]]], completion_signal: Optional[str] = None) -> Dict[str, Any]:
+    async def run_iteration(
+        self,
+        iteration: int,
+        prompt: Union[str, tuple[str, List[str]]],
+        completion_signal: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        show_iteration_header: bool = True,
+        **chat_kwargs,
+    ) -> Dict[str, Any]:
         """
         Run a single iteration.
         
@@ -117,7 +139,8 @@ class ContinuousExecutor:
         """
 
         session_id = getattr(self.agent_executor, 'session_id', 'unknown')
-        self.console.print(f"\n[bold cyan]🔄({iteration}) Starting iteration  session: {session_id}[/bold cyan]")
+        if show_iteration_header:
+            self.console.print(f"\n[bold cyan]🔄({iteration}) Starting iteration  session: {session_id}[/bold cyan]")
         
         try:
             # Ensure agent_executor uses the same console for output rendering
@@ -130,7 +153,32 @@ class ContinuousExecutor:
                 if self.agent_executor.console is not global_console:
                     self.console.print(f"[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
             
-            response = await self.agent_executor.chat(prompt)
+            non_interactive = bool(chat_kwargs.pop("non_interactive", False))
+            runtime = self._active_steering_runtime(non_interactive=non_interactive)
+            if runtime is not None:
+                cli = runtime.cli
+                completer = cli._build_session_completer(
+                    agent_names=[agent_name] if agent_name else [],
+                    agent_name=agent_name,
+                    executor_instance=self.agent_executor,
+                    runtime=runtime,
+                    event_loop=asyncio.get_running_loop(),
+                )
+
+                async def _run_prompt(text: str):
+                    return await self.agent_executor.chat(text, **chat_kwargs)
+
+                response = await cli._run_executor_with_active_steering(
+                    prompt=prompt,
+                    executor=_run_prompt,
+                    completer=completer,
+                    runtime=runtime,
+                    agent_name=agent_name or "Aworld",
+                    executor_instance=self.agent_executor,
+                    is_terminal=True,
+                )
+            else:
+                response = await self.agent_executor.chat(prompt, **chat_kwargs)
 
             # Check for completion signal (only check if response is string)
             is_complete = False
@@ -274,6 +322,9 @@ class ContinuousExecutor:
         max_duration: Optional[str] = None,
         completion_signal: Optional[str] = None,
         completion_threshold: int = 3,
+        show_start_banner: bool = True,
+        show_iteration_header: bool = True,
+        echo_prompt_as_turn: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -314,27 +365,29 @@ class ContinuousExecutor:
         else:
             prompt_display = prompt
         
-        # Display start banner with adaptive layout
-        from rich.table import Table
-        from rich import box
+        if echo_prompt_as_turn:
+            self.console.print(f"You: {prompt_display}")
+            self.console.print()
 
-        start_table = Table(show_header=False, box=None, padding=(0, 1))
-        start_table.add_column("Label", style="bold", no_wrap=True)
-        start_table.add_column("Value", style="cyan")
+        if show_start_banner:
+            # Display start banner with adaptive layout
+            start_table = Table(show_header=False, box=None, padding=(0, 1))
+            start_table.add_column("Label", style="bold", no_wrap=True)
+            start_table.add_column("Value", style="cyan")
 
-        start_table.add_row("Mode", "Continuous Execution")
-        start_table.add_row("Agent", f"[cyan]{agent_name}[/cyan]")
-        start_table.add_row("Prompt", f"[yellow]{prompt_display}[/yellow]")
-        start_table.add_row("Max Runs", str(max_runs if max_runs else '∞'))
-        start_table.add_row("Max Cost", f"${max_cost if max_cost else '∞'}")
-        start_table.add_row("Max Duration", str(max_duration if max_duration else '∞'))
+            start_table.add_row("Mode", "Continuous Execution")
+            start_table.add_row("Agent", f"[cyan]{agent_name}[/cyan]")
+            start_table.add_row("Prompt", f"[yellow]{prompt_display}[/yellow]")
+            start_table.add_row("Max Runs", str(max_runs if max_runs else '∞'))
+            start_table.add_row("Max Cost", f"${max_cost if max_cost else '∞'}")
+            start_table.add_row("Max Duration", str(max_duration if max_duration else '∞'))
 
-        self.console.print(Panel(
-            start_table,
-            title="🚀 Starting",
-            border_style="blue",
-            expand=False
-        ))
+            self.console.print(Panel(
+                start_table,
+                title="🚀 Starting",
+                border_style="blue",
+                expand=False
+            ))
         
         iteration = 0
         consecutive_completions = 0
@@ -358,7 +411,14 @@ class ContinuousExecutor:
                     break
                 
                 # Run iteration
-                result = await self.run_iteration(iteration, prompt, completion_signal)
+                result = await self.run_iteration(
+                    iteration,
+                    prompt,
+                    completion_signal,
+                    agent_name=agent_name,
+                    show_iteration_header=show_iteration_header,
+                    **kwargs,
+                )
                 results.append(result)
 
                 self.total_cost += result["cost"]
@@ -413,4 +473,3 @@ class ContinuousExecutor:
         }
 
 __all__ = ["ContinuousExecutor"]
-

@@ -5,6 +5,7 @@ from typing import List, Optional
 from ... import ApplicationContext
 from . import Neuron
 from .neuron_factory import neuron_factory
+from aworld.memory.main import MemoryFactory
 from aworld.logs.util import logger
 
 AWORLD_FILE_NEURON_NAME = "aworld_file"
@@ -62,6 +63,13 @@ class AWORLDFileNeuron(Neuron):
         
         logger.debug("No AWORLD.md file found")
         return None
+
+    def _workspace_path(self, context: ApplicationContext) -> str:
+        return (
+            getattr(context, "workspace_path", None)
+            or getattr(context, "working_directory", None)
+            or os.getcwd()
+        )
     
     def _resolve_import_path(self, import_path: str, base_path: Path) -> Optional[Path]:
         """
@@ -170,6 +178,14 @@ class AWORLDFileNeuron(Neuron):
         items = []
         
         try:
+            memory = MemoryFactory.instance()
+            if hasattr(memory, "get_instruction_context"):
+                instruction = memory.get_instruction_context(self._workspace_path(context))
+                if getattr(instruction, "warning", None):
+                    logger.warning(instruction.warning)
+                if getattr(instruction, "texts", None):
+                    return list(instruction.texts)
+
             # Find AWORLD.md file
             file_path = self._find_aworld_file(context)
             

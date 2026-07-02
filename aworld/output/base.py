@@ -357,6 +357,8 @@ class MessageOutput(Output):
 
 
 class StepOutput(Output):
+    step_id: Optional[str] = Field(default=None, description="stable step id")
+    parent_step_id: Optional[str] = Field(default=None, description="parent step id")
     name: str
     step_num: int
     alias_name: Optional[str] = Field(default=None, description="alias_name of the step")
@@ -370,16 +372,69 @@ class StepOutput(Output):
         return self
 
     @classmethod
-    def build_start_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
-        return cls(name=name, step_num=step_num, alias_name=alias_name, data=data, task_id=task_id)
+    def build_start_output(
+        cls,
+        name,
+        step_num,
+        alias_name=None,
+        data=None,
+        task_id: str = None,
+        step_id: str | None = None,
+        parent_step_id: str | None = None,
+    ):
+        return cls(
+            name=name,
+            step_num=step_num,
+            alias_name=alias_name,
+            data=data,
+            task_id=task_id,
+            step_id=step_id,
+            parent_step_id=parent_step_id,
+        )
 
     @classmethod
-    def build_finished_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
-        return cls(name=name, step_num=step_num, alias_name=alias_name, status='FINISHED', data=data, task_id=task_id)
+    def build_finished_output(
+        cls,
+        name,
+        step_num,
+        alias_name=None,
+        data=None,
+        task_id: str = None,
+        step_id: str | None = None,
+        parent_step_id: str | None = None,
+    ):
+        return cls(
+            name=name,
+            step_num=step_num,
+            alias_name=alias_name,
+            status='FINISHED',
+            data=data,
+            task_id=task_id,
+            step_id=step_id,
+            parent_step_id=parent_step_id,
+        )
 
     @classmethod
-    def build_failed_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
-        return cls(name=name, step_num=step_num, alias_name=alias_name, status='FAILED', data=data, task_id=task_id)
+    def build_failed_output(
+        cls,
+        name,
+        step_num,
+        alias_name=None,
+        data=None,
+        task_id: str = None,
+        step_id: str | None = None,
+        parent_step_id: str | None = None,
+    ):
+        return cls(
+            name=name,
+            step_num=step_num,
+            alias_name=alias_name,
+            status='FAILED',
+            data=data,
+            task_id=task_id,
+            step_id=step_id,
+            parent_step_id=parent_step_id,
+        )
 
     @property
     def show_name(self):

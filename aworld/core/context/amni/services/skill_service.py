@@ -14,6 +14,8 @@ from aworld.core.context.amni.config import ContextEnvConfig
 
 SKILL_LIST_KEY = "skill_list"
 ACTIVE_SKILLS_KEY = "active_skills"
+SKILL_CONTENT_CACHE_KEY = "skill_content_cache"
+SKILL_CONTENT_STAGING_KEY = "skill_content_staging"
 
 
 class ISkillService(abc.ABC):
@@ -141,10 +143,64 @@ class SkillService(ISkillService):
             context: ApplicationContext instance that provides access to context state and swarm
         """
         self._context = context
+
+    def _split_skill_config(
+        self, skill_config: Dict[str, Any]
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        descriptor = dict(skill_config)
+        content = {
+            "usage": skill_config.get("usage", ""),
+            "tool_list": dict(skill_config.get("tool_list", {}) or {}),
+        }
+        descriptor["usage"] = ""
+        descriptor["tool_list"] = {}
+        return descriptor, content
+
+    def _get_skill_descriptors(self, namespace: str) -> Dict[str, Any]:
+        return self._context.get(SKILL_LIST_KEY, namespace=namespace) or {}
+
+    def _get_loaded_content_cache(self, namespace: str) -> Dict[str, Any]:
+        return self._context.get(SKILL_CONTENT_CACHE_KEY, namespace=namespace) or {}
+
+    def _get_staged_content(self, namespace: str) -> Dict[str, Any]:
+        return self._context.get(SKILL_CONTENT_STAGING_KEY, namespace=namespace) or {}
+
+    def _merge_skill_config(
+        self,
+        descriptor: Dict[str, Any],
+        content: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        merged = dict(descriptor)
+        if content:
+            merged.update(content)
+        return merged
+
+    def _promote_skill_content(self, skill_name: str, namespace: str) -> Dict[str, Any]:
+        loaded = dict(self._get_loaded_content_cache(namespace))
+        if skill_name in loaded:
+            return loaded[skill_name]
+
+        staged = dict(self._get_staged_content(namespace))
+        content = dict(staged.get(skill_name, {}))
+        if not content:
+            return {}
+
+        loaded[skill_name] = content
+        self._context.put(SKILL_CONTENT_CACHE_KEY, loaded, namespace=namespace)
+        return content
     
     async def init_skill_list(self, skill_list: Dict[str, Any], namespace: str) -> None:
         """Initialize skill list from agent configuration."""
-        self._context.put(SKILL_LIST_KEY, skill_list, namespace=namespace)
+        descriptors: Dict[str, Any] = {}
+        staged_content: Dict[str, Any] = {}
+        for skill_name, skill_config in skill_list.items():
+            descriptor, content = self._split_skill_config(skill_config)
+            descriptors[skill_name] = descriptor
+            staged_content[skill_name] = content
+
+        self._context.put(SKILL_LIST_KEY, descriptors, namespace=namespace)
+        self._context.put(SKILL_CONTENT_CACHE_KEY, {}, namespace=namespace)
+        self._context.put(SKILL_CONTENT_STAGING_KEY, staged_content, namespace=namespace)
         for skill_name, skill_config in skill_list.items():
             if skill_config.get('active', False):
                 await self.active_skill(skill_name, namespace)
@@ -214,18 +270,30 @@ class SkillService(ISkillService):
     
     async def get_skill_list(self, namespace: str) -> Dict[str, Any]:
         """Get the complete skill list for the namespace."""
-        return self._context.get(SKILL_LIST_KEY, namespace=namespace)
+        descriptors = self._get_skill_descriptors(namespace)
+        loaded = self._get_loaded_content_cache(namespace)
+        return {
+            skill_name: self._merge_skill_config(
+                descriptor,
+                loaded.get(skill_name),
+            )
+            for skill_name, descriptor in descriptors.items()
+        }
     
     async def get_skill(self, skill_name: str, namespace: str) -> Dict[str, Any]:
         """Get a specific skill configuration."""
-        skills = await self.get_skill_list(namespace)
-        if not skills:
+        descriptors = self._get_skill_descriptors(namespace)
+        if not descriptors:
             return {}
-        return skills.get(skill_name, {})
+        descriptor = descriptors.get(skill_name)
+        if not descriptor:
+            return {}
+        content = self._promote_skill_content(skill_name, namespace)
+        return self._merge_skill_config(descriptor, content)
     
     async def get_skill_name_list(self, namespace: str) -> List[str]:
         """Get list of all available skill names for the namespace."""
-        agent_skills = self._context.get(SKILL_LIST_KEY, namespace=namespace)
+        agent_skills = self._get_skill_descriptors(namespace)
         skill_names = []
         if not agent_skills:
             return []
@@ -242,4 +310,3 @@ class SkillService(ISkillService):
                 import json
                 return json.load(f)
         return {}
-

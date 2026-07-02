@@ -300,6 +300,13 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         self.session_id = self._generate_session_id()
         self._add_session_to_history(self.session_id)
 
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is not None and hasattr(runtime, "reset_hud_session"):
+            try:
+                runtime.reset_hud_session(session_id=self.session_id)
+            except Exception:
+                pass
+
         # Restart tool logging for new session
         self._start_tool_logging()
 
@@ -974,7 +981,12 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         
         return answer, message_content
 
-    def _filter_file_line_info(self, content: str) -> str:
+    def _filter_file_line_info(
+        self,
+        content: str,
+        *,
+        preserve_lines: bool = False,
+    ) -> str:
         """
         Filter out file:line information and other unwanted text from tool result content.
         Removes patterns like "server.py:619", "main.py:123", "Processing request of type", etc.
@@ -1003,12 +1015,24 @@ class BaseAgentExecutor(ABC, AgentExecutor):
 
         # Clean up extra whitespace and empty lines that might be left behind
         filtered_content = re.sub(r'\n\s*\n', '\n', filtered_content)  # Remove empty lines
-        filtered_content = re.sub(r'\s+', ' ', filtered_content)  # Normalize whitespace
-        filtered_content = filtered_content.strip()
+        if preserve_lines:
+            filtered_lines = [
+                re.sub(r'[ \t]+', ' ', line).strip()
+                for line in filtered_content.splitlines()
+            ]
+            filtered_content = "\n".join(line for line in filtered_lines if line)
+        else:
+            filtered_content = re.sub(r'\s+', ' ', filtered_content)  # Normalize whitespace
+            filtered_content = filtered_content.strip()
 
         return filtered_content
 
-    def _format_tool_result_display_lines(self, output) -> List[str]:
+    def _format_tool_result_display_lines(
+        self,
+        output,
+        *,
+        truncate: bool = True,
+    ) -> List[str]:
         """
         Format ToolResultOutput into display lines (markup strings) for stream buffer.
         Returns empty list for human tools or invalid output.
@@ -1042,15 +1066,22 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if hasattr(output, 'metadata') and output.metadata:
             summary = output.metadata.get('summary')
 
+        preserve_lines = not truncate
         result_content = ""
         if hasattr(output, 'data') and output.data:
             data_str = str(output.data)
             if data_str.strip():
-                result_content = self._filter_file_line_info(data_str)
+                result_content = self._filter_file_line_info(
+                    data_str,
+                    preserve_lines=preserve_lines,
+                )
 
         display_content = None
         if summary:
-            display_content = self._filter_file_line_info(summary)
+            display_content = self._filter_file_line_info(
+                summary,
+                preserve_lines=preserve_lines,
+            )
         elif result_content:
             try:
                 parsed = json.loads(result_content)
@@ -1095,7 +1126,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 display_content = result_content
 
         no_truncate = env_stream_no_truncate()
-        max_lines = None if no_truncate else 3
+        max_lines = None if (no_truncate or not truncate) else 3
         max_chars_per_line = None if no_truncate else 500
 
         lines = []

@@ -1,0 +1,18 @@
+{
+  "id": "context-like",
+  "name": "context-like",
+  "version": "1.0.0",
+  "entrypoints": {
+    "contexts": [
+      {
+        "id": "workspace-memory",
+        "name": "workspace-memory",
+        "target": "contexts/lifecycle.py",
+        "scope": "workspace",
+        "metadata": {
+          "phases": ["schema", "bootstrap", "enrich", "propagate", "persist"]
+        }
+      }
+    ]
+  }
+}

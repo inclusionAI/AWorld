@@ -5,8 +5,10 @@ import importlib.util
 import inspect
 import os
 import sys
+import tempfile
 import uuid
-
+import getpass
+from pathlib import Path
 from typing import Callable, Any, get_type_hints, get_origin, get_args
 
 from pydantic import create_model, Field, BaseModel
@@ -19,7 +21,50 @@ from aworld.core.tool.action_template import ACTION_TEMPLATE
 from aworld.core.tool.base import ToolFactory
 from aworld.core.tool.tool_template import TOOL_TEMPLATE
 from aworld.logs.util import logger
-from aworld.tools import LOCAL_TOOLS_ENV_VAR
+from aworld.tools import LOCAL_TOOLS_ENV_VAR, encode_local_tool_entry
+
+
+GENERATED_TOOL_DIR_ENV_VAR = "AWORLD_TOOL_TMP_DIR"
+
+
+def _get_generated_tool_dir_name() -> str:
+    """Return a user-scoped directory name for runtime-generated tool modules."""
+    username = (getpass.getuser() or "unknown").strip() or "unknown"
+    safe_username = "".join(
+        ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
+        for ch in username
+    )
+    uid_getter = getattr(os, "getuid", None)
+    uid_suffix = f"_{uid_getter()}" if callable(uid_getter) else ""
+    return f"aworld_local_tools_{safe_username}{uid_suffix}"
+
+
+def _get_generated_tool_dir() -> Path:
+    """Return the directory used for runtime-generated tool modules."""
+    configured_dir = (os.environ.get(GENERATED_TOOL_DIR_ENV_VAR) or "").strip()
+    if configured_dir:
+        output_dir = Path(os.path.expanduser(configured_dir))
+    else:
+        output_dir = Path(tempfile.gettempdir()) / _get_generated_tool_dir_name()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def _load_module_from_path(module_name: str, file_path: str):
+    """Load a module from an absolute or resolved file path.
+
+    Plain importlib.import_module() only searches sys.path; @be_tool writes
+    generated files outside the repo workspace, so direct path loading is
+    required even when cwd is not on sys.path.
+    """
+    path = os.path.abspath(file_path)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module {module_name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load_module_from_path(module_name: str, file_path: str):
@@ -110,6 +155,7 @@ def function_to_tool(
     action_name = name or func.__name__
 
     postfix = f"{uuid.uuid4().hex[0:6]}__tmp"
+    output_dir = _get_generated_tool_dir()
 
     action_module_name = f"{action_name}{postfix}_action"
     action_py_path = os.path.abspath(f"{action_module_name}.py")
@@ -169,6 +215,7 @@ def function_to_tool(
     tool_py_path = os.path.abspath(f"{tool_name}{postfix}.py")
     expected_action_cls = f"{tool_name}Action"
     existing_module = sys.modules.get(module_name)
+    tool_module_name = f"{tool_name}{postfix}"
     if existing_module is None or not hasattr(existing_module, expected_action_cls):
         params = {}
         if parameters:
@@ -208,7 +255,10 @@ def function_to_tool(
         val = os.environ.get(LOCAL_TOOLS_ENV_VAR, "")
         if val:
             val = val + ";"
-        os.environ[LOCAL_TOOLS_ENV_VAR] = val + sys.modules[action_module_name].__file__
+        os.environ[LOCAL_TOOLS_ENV_VAR] = val + encode_local_tool_entry(
+            sys.modules[action_module_name].__file__,
+            sys.modules[tool_module_name].__file__,
+        )
         logger.debug(f'add {sys.modules[action_module_name].__file__}')
 
 

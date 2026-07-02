@@ -1,0 +1,14 @@
+{
+  "topology": "distributed",
+  "command": "python -m aworld_cli.main --no-banner acp",
+  "cwd": "${AWORLD_WORKER_WORKSPACE}",
+  "profile": "self-test",
+  "sessionParams": {
+    "cwd": "${AWORLD_WORKER_WORKSPACE}",
+    "mcpServers": []
+  },
+  "env": {
+    "PYTHONPATH": "${AWORLD_WORKER_WORKSPACE}/aworld-cli/src:${AWORLD_WORKER_WORKSPACE}",
+    "AWORLD_ACP_SELF_TEST_BRIDGE": "1"
+  }
+}

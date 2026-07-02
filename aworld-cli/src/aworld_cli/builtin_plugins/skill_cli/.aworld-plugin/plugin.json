@@ -1,0 +1,56 @@
+{
+  "id": "aworld-skill-cli",
+  "name": "aworld-skill-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "skill_commands": [
+      {
+        "id": "use",
+        "name": "use",
+        "target": "skill_commands/use.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
+      },
+      {
+        "id": "clear",
+        "name": "clear",
+        "target": "skill_commands/clear.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
+      },
+      {
+        "id": "enable",
+        "name": "enable",
+        "target": "skill_commands/enable.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
+      },
+      {
+        "id": "disable",
+        "name": "disable",
+        "target": "skill_commands/disable.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ],
+    "cli_commands": [
+      {
+        "id": "skill",
+        "name": "skill",
+        "target": "cli_commands/skill.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

@@ -3,8 +3,10 @@
 """
 Cron slash command - /cron for quick task management.
 """
+import asyncio
 from typing import List, Optional
 
+from rich.markup import escape
 from aworld.tools.cron_tool import cron_tool
 
 from aworld_cli.core.command_system import Command, CommandContext, register_command
@@ -72,6 +74,15 @@ class CronCommand(Command):
             if not job_id:
                 return "请提供要查看的任务 ID。用法：/cron show <job_id>"
             result = await cron_tool(action="show", job_id=job_id)
+            job = result.get("job") if result.get("success") else None
+            runtime = getattr(context, "runtime", None)
+            if (
+                job
+                and job.get("running")
+                and runtime is not None
+                and hasattr(runtime, "_get_cron_progress_logs")
+            ):
+                return await self._follow_running_job(context, job_id, job)
             return self._format_result("show", result)
 
         elif action == "inbox":
@@ -163,6 +174,7 @@ class CronCommand(Command):
                 f"- name: {job.get('name')}\n"
                 f"- schedule: {job.get('schedule')}\n"
                 f"- enabled: {job.get('enabled')}\n"
+                f"- running: {job.get('running')}\n"
                 f"- next_run: {job.get('next_run')}\n"
                 f"- last_run: {job.get('last_run')}\n"
                 f"- max_runs: {job.get('max_runs')}\n"
@@ -173,10 +185,18 @@ class CronCommand(Command):
             )
 
         if action == "add":
-            return (
-                f"{result.get('message')}\n"
-                f"next_run: {result.get('next_run')}"
-            )
+            lines = [
+                result.get("message"),
+                f"next_run: {result.get('next_run')}",
+            ]
+            advance_reminder = result.get("advance_reminder")
+            if advance_reminder:
+                lines.append(
+                    "advance_reminder: "
+                    f"{advance_reminder.get('next_run')} "
+                    f"(lead={advance_reminder.get('lead_minutes')}m)"
+                )
+            return "\n".join(lines)
 
         return result.get("message", "操作成功")
 
@@ -209,13 +229,95 @@ class CronCommand(Command):
             lines.append(f"  summary: {getattr(item, 'summary', '')}")
             detail = getattr(item, "detail", None)
             if detail:
-                lines.append(f"  content: {detail}")
+                detail_lines = str(detail).splitlines() or [""]
+                lines.append(f"  content: {detail_lines[0]}")
+                for extra_line in detail_lines[1:]:
+                    lines.append(f"           {extra_line}")
             if next_run_at:
                 lines.append(f"  next_run: {next_run_at}")
             created_at = getattr(item, "created_at", None)
             if created_at:
                 lines.append(f"  created_at: {created_at}")
         return "\n".join(lines)
+
+    async def _follow_running_job(self, context: CommandContext, job_id: str, initial_job: dict) -> str:
+        """Follow a running cron job and print live execution logs."""
+        from rich.console import Console as RichConsole
+
+        runtime = getattr(context, "runtime", None)
+        runtime_console = getattr(getattr(runtime, "cli", None), "console", None)
+        console = runtime_console or RichConsole()
+
+        console.print(f"\n[bold cyan]🔄 跟踪定时任务执行：{job_id}[/bold cyan]")
+        console.print(f"[dim]任务名称：{initial_job.get('name')}[/dim]")
+        console.print("[yellow]Press Ctrl+C to stop following[/yellow] [dim](任务仍会继续执行)[/dim]\n")
+        console.print(self._format_result("show", {"success": True, "job": initial_job}))
+        console.print("[dim]--- Live Execution Logs ---[/dim]")
+
+        seen_log_ids = set()
+        showed_waiting_hint = False
+
+        try:
+            while True:
+                progress_logs = []
+                if runtime and hasattr(runtime, "_get_cron_progress_logs"):
+                    progress_logs = runtime._get_cron_progress_logs(job_id) or []
+
+                new_logs = [log for log in progress_logs if getattr(log, "id", None) not in seen_log_ids]
+                if new_logs:
+                    for log in new_logs:
+                        seen_log_ids.add(getattr(log, "id", ""))
+                        self._print_progress_log(console, log)
+                    showed_waiting_hint = False
+                elif not showed_waiting_hint:
+                    console.print("[dim]等待执行日志...[/dim]")
+                    showed_waiting_hint = True
+
+                result = await cron_tool(action="show", job_id=job_id)
+                if result.get("success"):
+                    job = result.get("job") or {}
+                    if not job.get("running"):
+                        console.print(
+                            f"\n[bold green]✅ 定时任务执行结束[/bold green] "
+                            f"(status={job.get('last_status')})"
+                        )
+                        if job.get("last_result_summary"):
+                            console.print(f"[bold]结果：[/bold]{job.get('last_result_summary')}")
+                        if job.get("last_error"):
+                            console.print(f"[bold red]错误：[/bold red]{job.get('last_error')}")
+                        return ""
+                else:
+                    latest_log = progress_logs[-1] if progress_logs else None
+                    if latest_log and getattr(latest_log, "terminal", False):
+                        console.print("\n[bold green]✅ 定时任务执行结束[/bold green]")
+                        return ""
+
+                await asyncio.sleep(0.2)
+
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            console.print(f"\n[yellow]⏸ 已停止跟踪 {job_id}[/yellow]")
+            console.print("[dim]任务仍在后台继续执行[/dim]")
+            console.print(f"[cyan]→ /cron show {job_id}[/cyan]  [dim]重新查看状态[/dim]")
+            return ""
+
+    def _print_progress_log(self, console, log) -> None:
+        """Render a progress log entry with multiline-safe formatting."""
+        time_text = str(getattr(log, "created_at", ""))[11:19] or "--:--:--"
+        level = getattr(log, "level", "info")
+        color = {
+            "info": "cyan",
+            "warning": "yellow",
+            "error": "red",
+            "success": "green",
+        }.get(level, "white")
+        message = str(getattr(log, "message", "") or "")
+        lines = message.splitlines() or [""]
+
+        prefix = f"[{time_text}] "
+        indent = " " * len(prefix)
+        console.print(f"[dim]{escape(prefix)}[/dim][{color}]{escape(lines[0])}[/{color}]")
+        for line in lines[1:]:
+            console.print(f"[dim]{escape(indent)}[/dim][{color}]{escape(line)}[/{color}]")
 
     def get_help(self) -> str:
         """Return help information."""

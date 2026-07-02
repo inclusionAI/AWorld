@@ -12,7 +12,6 @@ Subcommands:
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Confirm
-from rich.console import Group
 from rich import box
 from io import StringIO
 from rich.console import Console as RichConsole

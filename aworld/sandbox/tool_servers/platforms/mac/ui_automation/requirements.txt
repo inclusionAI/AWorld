@@ -1,0 +1,5 @@
+# aworld-macos-ui-automation-server dependencies (from pyproject.toml)
+# Install: pip install -r requirements.txt
+mcp
+pydantic>=2.11.7
+fastmcp~=2.11.3

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aworld-cli/acp/stdio-host-contract.schema.json",
+  "title": "ACP Stdio Host Validation Config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "topology": {
+      "type": "string",
+      "enum": ["base", "same-host", "distributed"]
+    },
+    "command": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "sessionParams": {
+      "type": "object"
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "startupTimeoutSeconds": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "startupRetries": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "oneOf": [
+    {
+      "required": ["topology"]
+    },
+    {
+      "required": ["command", "cwd", "profile", "sessionParams", "env"]
+    }
+  ]
+}

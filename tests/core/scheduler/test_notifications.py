@@ -122,6 +122,26 @@ async def test_notification_center_tracks_unread_count_until_drain():
 
 
 @pytest.mark.asyncio
+async def test_notification_center_skips_non_user_visible_notifications():
+    """Silent internal notifications should not surface in the user-facing queue."""
+    center = CronNotificationCenter(max_size=10)
+
+    await center.publish({
+        'job_id': 'job1',
+        'job_name': 'sample monitor',
+        'status': 'ok',
+        'summary': 'silent cleanup',
+        'created_at': datetime.now(pytz.UTC).isoformat(),
+        'user_visible': False,
+    })
+
+    notifications = await center.drain()
+
+    assert notifications == []
+    assert center.get_unread_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_scheduler_publishes_on_success():
     """Successful non-reminder jobs should publish and persist their result summary."""
     import tempfile
@@ -135,7 +155,7 @@ async def test_scheduler_publishes_on_success():
         # Mock executor
         executor = AsyncMock(spec=CronExecutor)
         executor.execute_with_retry = AsyncMock(
-            return_value=TaskResponse(success=True, msg="BTC 当前价格 68000 USDT")
+            return_value=TaskResponse(success=True, msg="当前结果 68000 units")
         )
 
         # Mock notification sink
@@ -169,11 +189,11 @@ async def test_scheduler_publishes_on_success():
         assert call_args['job_name'] == 'test-job'
         assert call_args['status'] == 'ok'
         assert 'completed' in call_args['summary']
-        assert call_args['detail'] == "BTC 当前价格 68000 USDT"
+        assert call_args['detail'] == "当前结果 68000 units"
 
         persisted_job = await store.get_job(job.id)
         assert persisted_job is not None
-        assert persisted_job.state.last_result_summary == "BTC 当前价格 68000 USDT"
+        assert persisted_job.state.last_result_summary == "当前结果 68000 units"
 
 
 @pytest.mark.asyncio
@@ -213,6 +233,213 @@ async def test_scheduler_publishes_reminder_detail_on_success():
         call_args = notification_sink.call_args[0][0]
         assert call_args['status'] == 'ok'
         assert call_args['detail'] == "提醒我喝水"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_success_can_stay_silent_without_user_visible_notification():
+    """Recurring jobs may complete successfully without surfacing a user-visible notification."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(
+                success=True,
+                msg="本次检查未产生命中事件",
+                user_visible=False,
+            )
+        )
+
+        notification_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, notification_sink=notification_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="silent-recurring-job",
+            schedule=CronSchedule(kind="every", every_seconds=10),
+            payload=CronPayload(message="run periodic task"),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=(now + timedelta(seconds=10)).isoformat(),
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        notification_sink.assert_not_called()
+        persisted_job = await store.get_job(job.id)
+        assert persisted_job is not None
+        assert persisted_job.enabled is True
+        assert persisted_job.state.next_run_at is not None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_recurring_job_can_publish_event_notification_without_stopping():
+    """Recurring jobs may surface a user-visible event and continue scheduling later runs."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(
+                success=True,
+                msg="条件命中告警",
+                answer="条件命中告警\n明细：发生了用户可见事件",
+                user_visible=True,
+            )
+        )
+
+        notification_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, notification_sink=notification_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="eventful-recurring-job",
+            schedule=CronSchedule(kind="every", every_seconds=10),
+            payload=CronPayload(message="run periodic task"),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=(now + timedelta(seconds=10)).isoformat(),
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        notification_sink.assert_called_once()
+        call_args = notification_sink.call_args[0][0]
+        assert call_args["status"] == "ok"
+        assert call_args["user_visible"] is True
+        assert "completed" in call_args["summary"]
+        assert "用户可见事件" in call_args["detail"]
+
+        persisted_job = await store.get_job(job.id)
+        assert persisted_job is not None
+        assert persisted_job.enabled is True
+        assert persisted_job.state.next_run_at is not None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_publishes_full_result_detail_for_deleted_one_time_job():
+    """One-time jobs should still publish full result detail even after deletion."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(
+                success=True,
+                msg="Task completed",
+                answer="已保存 200 条内容\n输出文件：twitter_for_you_posts_200.md\n日志：twitter_scraper_200.log",
+            )
+        )
+
+        notification_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, notification_sink=notification_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="twitter_scraper_200_posts",
+            delete_after_run=True,
+            schedule=CronSchedule(kind="at", at=now.isoformat()),
+            payload=CronPayload(message="run scraper", tool_names=["bash"]),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=None,
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        notification_sink.assert_called_once()
+        call_args = notification_sink.call_args[0][0]
+        assert call_args["status"] == "ok"
+        assert "最终回答：" in call_args["detail"]
+        assert "twitter_for_you_posts_200.md" in call_args["detail"]
+        assert await store.get_job(job.id) is None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_publishes_live_progress_logs():
+    """Scheduler should publish live execution progress for `/cron show` follow mode."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+
+        async def fake_execute_with_retry(job, progress_callback=None, **kwargs):
+            if progress_callback:
+                await progress_callback("info", "子步骤：准备执行")
+            return TaskResponse(success=True, msg="执行完成")
+
+        executor.execute_with_retry = AsyncMock(side_effect=fake_execute_with_retry)
+
+        progress_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, progress_sink=progress_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="live-job",
+            schedule=CronSchedule(kind="at", at=now.isoformat()),
+            payload=CronPayload(message="test"),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=None,
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        assert progress_sink.await_count >= 3
+        messages = [call.args[0]["message"] for call in progress_sink.await_args_list]
+        assert any("任务开始执行" in message for message in messages)
+        assert any("子步骤：准备执行" in message for message in messages)
+        assert any("任务执行完成" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_notification_center_logs_warning_when_progress_store_fails(monkeypatch):
+    """Progress-log buffering failures should be surfaced as warnings."""
+    center = CronNotificationCenter()
+    warnings = []
+
+    monkeypatch.setattr(
+        "aworld_cli.runtime.cron_notifications.logger.warning",
+        lambda message: warnings.append(message),
+    )
+    monkeypatch.setattr(center, "_progress_logs", None)
+
+    await center.publish_progress({
+        "job_id": "job-1",
+        "job_name": "test",
+        "message": "step",
+    })
+
+    assert len(warnings) == 1
+    assert "Failed to store cron progress log" in warnings[0]
 
 
 @pytest.mark.asyncio
@@ -319,7 +546,7 @@ async def test_scheduler_publishes_on_timeout():
         store = FileBasedCronStore(str(store_path))
 
         # Mock executor that times out
-        async def timeout_executor(job):
+        async def timeout_executor(job, progress_callback=None):
             await asyncio.sleep(10)  # Will be cancelled by timeout
             return TaskResponse(success=True, msg="Should not reach here")
 
@@ -521,7 +748,240 @@ def test_console_formats_information_style_status_bar_with_unread_cron_notificat
     assert "Cron: 1 unread" in toolbar
     assert "Workspace: aworld" in toolbar
     assert "Branch: feat/subagent-optimization-clean" in toolbar
-    assert "Hint: /cron inbox" in toolbar
+    assert "Hint: /cron inbox" not in toolbar
+
+
+@pytest.mark.asyncio
+async def test_notification_poller_keeps_unread_notifications_when_hud_is_active():
+    center = CronNotificationCenter()
+    await center.publish({
+        "job_id": "job-hud",
+        "job_name": "HUD Job",
+        "status": "ok",
+        "summary": "HUD Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        async def _drain_notifications(self):
+            return await center.drain()
+
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+    cli = AWorldCLI()
+    buffer = StringIO()
+    cli.console = Console(file=buffer, force_terminal=False, color_system=None)
+    stop_event = asyncio.Event()
+
+    task = asyncio.create_task(cli._notification_poller(FakeRuntime(), poll_interval=0.01, stop_event=stop_event))
+    await asyncio.sleep(0.03)
+    stop_event.set()
+    await task
+
+    assert center.get_unread_count() == 1
+    assert buffer.getvalue() == ""
+
+
+@pytest.mark.asyncio
+async def test_notification_poller_drains_and_renders_without_hud():
+    center = CronNotificationCenter()
+    await center.publish({
+        "job_id": "job-inline",
+        "job_name": "Inline Job",
+        "status": "ok",
+        "summary": "Inline Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        async def _drain_notifications(self):
+            return await center.drain()
+
+        def active_plugin_capabilities(self):
+            return ()
+
+    cli = AWorldCLI()
+    buffer = StringIO()
+    cli.console = Console(file=buffer, force_terminal=False, color_system=None)
+    stop_event = asyncio.Event()
+
+    task = asyncio.create_task(cli._notification_poller(FakeRuntime(), poll_interval=0.01, stop_event=stop_event))
+    await asyncio.sleep(0.03)
+    stop_event.set()
+    await task
+
+    assert center.get_unread_count() == 0
+    assert "Inline Job completed" in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_notification_poller_uses_prompt_safe_rendering_without_hud_when_prompt_is_active(monkeypatch):
+    center = CronNotificationCenter()
+    await center.publish({
+        "job_id": "job-inline-active",
+        "job_name": "Inline Active Job",
+        "status": "ok",
+        "summary": "Inline Active Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        async def _drain_notifications(self):
+            return await center.drain()
+
+        def active_plugin_capabilities(self):
+            return ()
+
+    cli = AWorldCLI()
+    buffer = StringIO()
+    cli.console = Console(file=buffer, force_terminal=False, color_system=None)
+    cli._active_prompt_session = MagicMock()
+    stop_event = asyncio.Event()
+    calls = []
+
+    async def fake_run_in_terminal(func, render_cli_done=False, in_executor=False):
+        calls.append((render_cli_done, in_executor))
+        func()
+
+    monkeypatch.setattr("aworld_cli.console.run_in_terminal", fake_run_in_terminal, raising=False)
+
+    task = asyncio.create_task(cli._notification_poller(FakeRuntime(), poll_interval=0.01, stop_event=stop_event))
+    await asyncio.sleep(0.03)
+    stop_event.set()
+    await task
+
+    assert center.get_unread_count() == 0
+    assert calls == [(False, False)]
+    assert "Inline Active Job completed" in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_ensure_notification_poller_starts_once_and_stops_cleanly():
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = object()
+
+    cli = AWorldCLI()
+    starts = []
+
+    async def fake_poller(runtime, poll_interval=2.0, stop_event=None):
+        starts.append((runtime, stop_event))
+        await stop_event.wait()
+
+    cli._notification_poller = fake_poller
+
+    await cli._ensure_notification_poller(FakeRuntime())
+    first_task = cli._notification_poll_task
+    await asyncio.sleep(0)
+
+    assert first_task is not None
+    assert len(starts) == 1
+
+    await cli._ensure_notification_poller(FakeRuntime())
+    assert cli._notification_poll_task is first_task
+    assert len(starts) == 1
+
+    await cli._stop_notification_poller()
+    assert cli._notification_poll_task is None
+    assert cli._notification_stop_event is None
+
+
+@pytest.mark.asyncio
+async def test_notification_poller_invalidates_active_prompt_when_hud_is_active():
+    center = CronNotificationCenter()
+    await center.publish({
+        "job_id": "job-hud-refresh",
+        "job_name": "HUD Refresh Job",
+        "status": "ok",
+        "summary": "HUD Refresh Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        async def _drain_notifications(self):
+            return await center.drain()
+
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+    class FakeApp:
+        def __init__(self):
+            self.invalidate_calls = 0
+
+        def invalidate(self):
+            self.invalidate_calls += 1
+
+    class FakeSession:
+        def __init__(self):
+            self.app = FakeApp()
+
+    cli = AWorldCLI()
+    cli._active_prompt_session = FakeSession()
+    stop_event = asyncio.Event()
+
+    task = asyncio.create_task(cli._notification_poller(FakeRuntime(), poll_interval=0.01, stop_event=stop_event))
+    await asyncio.sleep(0.03)
+    stop_event.set()
+    await task
+
+    assert center.get_unread_count() == 1
+    assert cli._active_prompt_session.app.invalidate_calls > 0
+
+
+@pytest.mark.asyncio
+async def test_notification_publish_immediately_invalidates_active_prompt_when_hud_is_active():
+    center = CronNotificationCenter()
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+    class FakeApp:
+        def __init__(self):
+            self.invalidate_calls = 0
+
+        def invalidate(self):
+            self.invalidate_calls += 1
+
+    class FakeSession:
+        def __init__(self):
+            self.app = FakeApp()
+
+    cli = AWorldCLI()
+    cli._active_prompt_session = FakeSession()
+
+    await cli._ensure_notification_poller(FakeRuntime())
+    await asyncio.sleep(0)
+    baseline_calls = cli._active_prompt_session.app.invalidate_calls
+
+    await center.publish({
+        "job_id": "job-immediate-refresh",
+        "job_name": "Immediate Refresh Job",
+        "status": "ok",
+        "summary": "Immediate Refresh Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+    await asyncio.sleep(0.05)
+
+    await cli._stop_notification_poller()
+
+    assert cli._active_prompt_session.app.invalidate_calls > baseline_calls
 
 
 def test_console_formats_information_style_status_bar_when_cron_queue_is_clear():
@@ -541,7 +1001,7 @@ def test_console_formats_information_style_status_bar_when_cron_queue_is_clear()
     assert "Cron: clear" in toolbar
     assert "Workspace: aworld" in toolbar
     assert "Branch: main" in toolbar
-    assert "Hint: /cron inbox" in toolbar
+    assert "Hint: /cron inbox" not in toolbar
 
 
 if __name__ == "__main__":
