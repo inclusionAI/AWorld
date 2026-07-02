@@ -301,7 +301,7 @@ class AWorldCliReplayExecutor:
             "aworld_cli.main",
             "run",
             "--task",
-            request.task_text,
+            _replay_task_text(request.task_text),
             "--non-interactive",
             "--emit-trajectory",
         ]
@@ -341,9 +341,15 @@ class AWorldCliReplayExecutor:
         trajectory_payload = _extract_trajectory_payload_from_stdout(stdout)
         trajectory = trajectory_payload["trajectory"]
         capture_mode = trajectory_payload["trajectory_capture_mode"]
+        evidence_metrics = _replay_evidence_metrics(
+            stdout=stdout,
+            stderr=stderr,
+            trajectory=trajectory,
+        )
         metrics = {
             "returncode": completed.returncode,
             "trajectory_capture_mode": capture_mode,
+            **evidence_metrics,
         }
         if completed.returncode == 0 and trajectory and capture_mode != "task_response":
             return ReplayExecutionResult(
@@ -457,6 +463,24 @@ def _task_text(task_input: Any) -> str:
     return str(task_input)
 
 
+_REPLAY_EVIDENCE_POLICY = """
+
+Self-evolve replay evidence requirements:
+- Preserve the original user task above, but execute it with artifact-first evidence handling.
+- Do not stream large raw tool outputs, full pages, full documents, large JSON, or long logs directly into the conversation.
+- Persist large or unknown-size source material to a file or artifact first, then emit only bounded structured summaries with source identifiers, locations, and short excerpts.
+- If any tool result is compacted, truncated, schema-invalid, or too large to inspect, treat that result as unusable evidence and retry with a narrower extraction strategy before answering.
+- Keep a concise evidence ledger mapping important final-answer claims to non-compacted extracts or artifact references.
+- Before finalizing, perform a claim-by-claim check and omit claims that are not supported by non-compacted evidence captured in the trajectory.
+""".strip()
+
+
+def _replay_task_text(task_text: str) -> str:
+    if "Self-evolve replay evidence requirements:" in task_text:
+        return task_text
+    return task_text.rstrip() + "\n\n" + _REPLAY_EVIDENCE_POLICY
+
+
 def _extract_trajectory_from_stdout(stdout: str) -> list[Mapping[str, Any]]:
     return _extract_trajectory_payload_from_stdout(stdout)["trajectory"]
 
@@ -480,6 +504,44 @@ def _extract_trajectory_payload_from_stdout(stdout: str) -> dict[str, Any]:
                 "trajectory_capture_mode": capture_mode or "unknown",
             }
     return {"trajectory": [], "trajectory_capture_mode": "unavailable"}
+
+
+def _replay_evidence_metrics(
+    *,
+    stdout: str,
+    stderr: str,
+    trajectory: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    signal_text = "\n".join(
+        text
+        for text in (
+            stdout,
+            stderr,
+            json.dumps(to_json_dict(trajectory), ensure_ascii=False),
+        )
+        if text
+    ).lower()
+    signals: list[str] = []
+    compacted_markers = (
+        "tool output compacted",
+        "compacted for context reuse",
+        "compacted_string_field",
+    )
+    if any(marker in signal_text for marker in compacted_markers):
+        signals.append("tool_output_compacted")
+    truncated_markers = (
+        "truncated",
+        "too large to inspect",
+        "output was truncated",
+    )
+    if any(marker in signal_text for marker in truncated_markers):
+        signals.append("tool_output_truncated")
+    compacted = bool(signals)
+    return {
+        "evidence_compacted": compacted,
+        "evidence_strategy_passed": not compacted,
+        "evidence_compaction_signals": signals,
+    }
 
 
 def _text_output(value: Any) -> str:
@@ -540,9 +602,21 @@ def _aggregate_variant_results(
     failed = [result for result in results if not result.succeeded]
     status = "succeeded" if successful else "failed"
     numeric_metrics: dict[str, list[float]] = {}
+    evidence_compaction_signals: list[str] = []
+    evidence_compacted_values: list[bool] = []
+    evidence_strategy_passed_values: list[bool] = []
     for result in results:
         for key, value in result.metrics.items():
-            if isinstance(value, (int, float)):
+            if key == "evidence_compacted" and isinstance(value, bool):
+                evidence_compacted_values.append(value)
+            elif key == "evidence_strategy_passed" and isinstance(value, bool):
+                evidence_strategy_passed_values.append(value)
+            elif key == "evidence_compaction_signals" and isinstance(value, list):
+                for item in value:
+                    signal = str(item).strip()
+                    if signal and signal not in evidence_compaction_signals:
+                        evidence_compaction_signals.append(signal)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
                 numeric_metrics.setdefault(str(key), []).append(float(value))
     metrics: dict[str, Any] = {
         "repetition_count": len(results),
@@ -554,6 +628,12 @@ def _aggregate_variant_results(
     ]
     if repetition_failures:
         metrics["repetition_failures"] = repetition_failures
+    if evidence_compacted_values:
+        metrics["evidence_compacted"] = any(evidence_compacted_values)
+    if evidence_strategy_passed_values:
+        metrics["evidence_strategy_passed"] = all(evidence_strategy_passed_values)
+    if evidence_compaction_signals:
+        metrics["evidence_compaction_signals"] = evidence_compaction_signals
     for key, values in numeric_metrics.items():
         if values:
             metrics[key] = sum(values) / len(values)

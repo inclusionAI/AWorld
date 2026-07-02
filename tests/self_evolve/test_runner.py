@@ -472,6 +472,161 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_runner_replays_duplicate_rejected_candidate_before_final_gate(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    helper_path = tmp_path / "skills" / "helper" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    helper_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nDuplicate guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    helper_path.write_text("---\nname: helper\n---\n# Helper\n", encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-run"
+    historical_dir.mkdir(parents=True)
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "candidate_ids": ["candidate-dup"],
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-dup",
+                        "status": "rejected",
+                        "candidate_metrics": {"score": 0.3},
+                        "failed_gates": ["evidence_quality"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix evidence handling."}},
+            "action": {"content": "Evidence was missing."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="duplicate-replay-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="duplicate-replay-task",
+    )
+
+    duplicate_candidate = CandidateVariant(
+        candidate_id="candidate-dup",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content=candidate_content,
+        rationale="repeat candidate under a changed replay environment",
+        target_fingerprint="fingerprint",
+    )
+
+    class DuplicateOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(duplicate_candidate,))
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "old"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "new"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+            )
+
+    class VerifiedBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def evaluate_variant(self, request):
+            self.requests.append(request)
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate else 0.2,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": len(request.dataset.cases),
+                    "command_pass_count": len(request.dataset.cases),
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    async def post_apply(candidate):
+        pytest.fail("duplicate rejected candidate must not auto apply")
+
+    replay_backend = ReplayBackend()
+    evaluation_backend = VerifiedBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=DuplicateOptimizer(),
+        evaluation_backend=evaluation_backend,
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-duplicate-replay",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert replay_backend.requests
+    assert evaluation_backend.requests
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-duplicate-replay"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["replay"]["candidate"]["status"] == "succeeded"
+    assert "duplicate_rejected_candidate" in report["iterations"][0]["failed_gates"]
+
+
+@pytest.mark.asyncio
 async def test_runner_auto_verified_rejects_without_evaluation_backend(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)

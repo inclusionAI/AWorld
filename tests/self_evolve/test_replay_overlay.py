@@ -427,6 +427,62 @@ async def test_aworld_cli_candidate_replay_backend_allows_partial_repetition_suc
 
 
 @pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_aggregates_evidence_metrics(
+    tmp_path: Path,
+) -> None:
+    async def fake_executor(request):
+        compacted = request.variant_id == "cand-1-2"
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": request.variant_id},
+                    "reward": {"status": "ok"},
+                }
+            ],
+            metrics={
+                "evidence_compacted": compacted,
+                "evidence_strategy_passed": not compacted,
+                "evidence_compaction_signals": (
+                    ["tool_output_compacted"] if compacted else []
+                ),
+            },
+        )
+
+    request = CandidateReplayRequest(
+        run_id="run-evidence-metrics",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        task_input="Replay this task",
+        baseline_repetitions=1,
+        candidate_repetitions=3,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+        dataset=SelfEvolveDataset(
+            cases=(EvalCase(case_id="task-1", input="Replay this task"),),
+            recipe=DatasetRecipe(
+                source={"kind": "test", "case_count": 1},
+                split_seed="seed",
+                splits={"train": ["task-1"], "validation": [], "held_out": []},
+            ),
+        ),
+    )
+
+    assert result.candidate.metrics["evidence_compacted"] is True
+    assert result.candidate.metrics["evidence_strategy_passed"] is False
+    assert result.candidate.metrics["evidence_compaction_signals"] == [
+        "tool_output_compacted"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_candidate_replay_backend_runs_baseline_and_candidate_with_skill_roots(
     tmp_path: Path,
 ) -> None:
@@ -665,8 +721,74 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert result.succeeded is True
     assert result.trajectory == trajectory
     assert "--emit-trajectory" in captured["command"]
+    task_index = captured["command"].index("--task") + 1
+    task_text = captured["command"][task_index]
+    assert task_text.startswith("Replay this task")
+    assert "Self-evolve replay evidence requirements" in task_text
+    assert "artifact-first" in task_text
+    assert "bounded structured summaries" in task_text
+    assert "compacted" in task_text
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_AUTO_DRAIN"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_marks_compacted_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "Tool output compacted for context reuse.",
+                    }
+                ]
+            },
+            "action": {"content": "Replay completed.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Tool output compacted for context reuse.\n"
+            + json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["evidence_compacted"] is True
+    assert result.metrics["evidence_strategy_passed"] is False
+    assert result.metrics["evidence_compaction_signals"] == [
+        "tool_output_compacted"
+    ]
 
 
 @pytest.mark.asyncio
