@@ -1354,6 +1354,61 @@ The candidate should not pass.
 
 
 @pytest.mark.asyncio
+async def test_agent_judge_backend_prefers_complete_judge_payload_over_nested_score_objects() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+The groundedness dimension is:
+
+```json
+{
+  "score": 3,
+  "weight": 0.25,
+  "evidence": ["partial support"],
+  "rationale": "This is only a nested dimension object."
+}
+```
+
+Final report:
+
+```json
+{
+  "task_id": "case-1",
+  "score": 74.6,
+  "verdict": "Pass",
+  "veto_triggered": false,
+  "has_evidence": true,
+  "evidence_block_count": 5,
+  "A1_groundedness": 3,
+  "A2_completeness": 5,
+  "A3_relevance": 5,
+  "A4_readability": 4,
+  "B1_tool_use": 3,
+  "B2_efficiency": 3,
+  "B3_compliance": 5,
+  "B4_robustness": 4
+}
+```
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(74.6)
+    assert payload["verdict"] == "Pass"
+    assert payload["A1_groundedness"] == 3
+
+
+@pytest.mark.asyncio
 async def test_builtin_app_evaluator_can_use_injected_judge_backend() -> None:
     class StubBackend:
         backend_id = "stub-agent"

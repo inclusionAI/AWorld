@@ -1602,7 +1602,10 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         if "results" in candidate:
             return candidate
     for candidate in candidates:
-        if "score" in candidate or "verdict" in candidate:
+        if "score" in candidate and "verdict" in candidate:
+            return candidate
+    for candidate in candidates:
+        if "score" in candidate and "rank" in candidate:
             return candidate
     if candidates:
         return candidates[0]
