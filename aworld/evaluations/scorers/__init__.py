@@ -14,6 +14,7 @@ class ScorerFactory(Factory):
     def __init__(self, type_name: str = None):
         super().__init__(type_name)
         self._metric_to_scorers: Dict[str, Type[Scorer]] = {}
+        self._name_to_scorers: Dict[str, Type[Scorer]] = {}
         self._default_scorer_params: Dict[int, Dict[str, Any]] = {}
 
     def __call__(self, name: str = None, criterias: Union[EvalCriteria, List[EvalCriteria]] = None, *args, **kwargs):
@@ -41,6 +42,8 @@ class ScorerFactory(Factory):
 
         if name not in self._metric_to_scorers:
             self._metric_to_scorers[name] = scorer_cls
+            self._name_to_scorers[scorer_cls.__name__] = scorer_cls
+            self._name_to_scorers[f"{scorer_cls.__module__}.{scorer_cls.__name__}"] = scorer_cls
         else:
             raise ValueError(f'Scorer class {scorer_cls.__name__} already registered for metric {name}')
 
@@ -50,6 +53,9 @@ class ScorerFactory(Factory):
         scorer_id = id(scorer_cls)
         if scorer_id in self._metric_to_scorers:
             del self._default_scorer_params[scorer_id]
+
+    def get_scorer_class(self, metric_name: str) -> Type[Scorer] | None:
+        return self._metric_to_scorers.get(metric_name)
 
     def create_scorer_instance(self, scorer_class: Type[Scorer], criteria: EvalCriteria = None) -> Scorer:
         """Create a scorer instance using parameters from EvalCriteria and defaults.
@@ -84,11 +90,17 @@ class ScorerFactory(Factory):
 
         for criteria in criterias:
             scorer_class = self._metric_to_scorers.get(criteria.metric_name)
+            if not scorer_class and criteria.scorer_class:
+                scorer_class = self._name_to_scorers.get(criteria.scorer_class)
             if not scorer_class:
                 logger.error(f'No scorer class found for metric {criteria.metric_name}')
                 raise ValueError(f'No scorer class found for metric {criteria.metric_name}')
 
-            if criteria.scorer_class and  scorer_class.__name__ != criteria.scorer_class:
+            scorer_class_names = {
+                scorer_class.__name__,
+                f"{scorer_class.__module__}.{scorer_class.__name__}",
+            }
+            if criteria.scorer_class and criteria.scorer_class not in scorer_class_names:
                 raise ValueError(f"registered scorer class {scorer_class.__name__} does not match criteria {criteria.scorer_class}")
 
             if scorer_class not in scorer_instances:

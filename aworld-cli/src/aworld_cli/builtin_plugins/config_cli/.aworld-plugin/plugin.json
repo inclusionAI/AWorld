@@ -1,0 +1,19 @@
+{
+  "id": "aworld-config-cli",
+  "name": "aworld-config-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "config",
+        "name": "config",
+        "target": "cli_commands/config.py",
+        "scope": "workspace",
+        "visibility": "hidden",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

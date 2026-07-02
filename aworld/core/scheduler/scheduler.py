@@ -5,6 +5,7 @@ Cron scheduler - timer loop with startup recovery.
 """
 import asyncio
 import re
+import traceback
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List, Callable, Any, Awaitable, Literal
 import pytz
@@ -35,7 +36,8 @@ class CronScheduler:
         store: FileBasedCronStore,
         executor: CronExecutor,
         max_concurrent: int = 5,
-        notification_sink: Optional[Callable[[Any], Awaitable[None]]] = None
+        notification_sink: Optional[Callable[[Any], Awaitable[None]]] = None,
+        progress_sink: Optional[Callable[[Any], Awaitable[None]]] = None,
     ):
         """
         Initialize scheduler.
@@ -52,6 +54,30 @@ class CronScheduler:
         self.running = False
         self._timer_task: Optional[asyncio.Task] = None
         self.notification_sink = notification_sink
+        self.progress_sink = progress_sink
+
+    async def _publish_progress(
+        self,
+        job: CronJob,
+        level: Literal["info", "warning", "error", "success"],
+        message: str,
+        terminal: bool = False,
+    ) -> None:
+        """Publish live execution logs for `/cron show` follow mode."""
+        if not self.progress_sink:
+            return
+
+        try:
+            await self.progress_sink({
+                "job_id": job.id,
+                "job_name": job.name,
+                "level": level,
+                "message": message,
+                "terminal": terminal,
+                "created_at": datetime.now(pytz.UTC).isoformat(),
+            })
+        except Exception as e:
+            logger.warning(f"Failed to publish progress for job {job.id}: {e}")
 
     async def start(self):
         """Start scheduler with recovery."""
@@ -143,19 +169,7 @@ class CronScheduler:
                 next_job, wait_seconds = self._find_next_job(jobs)
 
                 if next_job and wait_seconds <= 0:
-                    # Job is due - calculate next run time and claim atomically
-                    now = datetime.now(pytz.UTC)
-                    now_iso = now.isoformat()
-                    next_run = self._calculate_claim_next_run(next_job, now)
-                    next_run_iso = next_run.isoformat() if next_run else None
-
-                    claimed_job = await self.store.claim_due_job(next_job.id, now_iso, next_run_iso)
-
-                    if claimed_job:
-                        # Successfully claimed - trigger execution (non-blocking)
-                        asyncio.create_task(self._execute_claimed_job(claimed_job))
-                    else:
-                        logger.debug(f"Failed to claim job {next_job.id} (may be claimed by another tick)")
+                    await self._claim_and_dispatch_due_job(next_job)
 
                     await asyncio.sleep(0.1)  # Brief pause before next check
                 else:
@@ -164,8 +178,39 @@ class CronScheduler:
                     await asyncio.sleep(sleep_time)
 
             except Exception as e:
-                logger.error(f"Scheduler loop error: {e}", exc_info=True)
+                logger.error(f"Scheduler loop error\n{traceback.format_exc()}")
                 await asyncio.sleep(5)  # Brief pause before retry
+
+    async def _claim_and_dispatch_due_job(self, job: CronJob) -> bool:
+        """
+        Claim a due job only after reserving an execution slot.
+
+        This prevents jobs from being marked running while they are still waiting
+        behind unrelated long-running work.
+        """
+        await self.semaphore.acquire()
+        claimed = False
+
+        try:
+            now = datetime.now(pytz.UTC)
+            now_iso = now.isoformat()
+            next_run = self._calculate_claim_next_run(job, now)
+            next_run_iso = next_run.isoformat() if next_run else None
+
+            claimed_job = await self.store.claim_due_job(job.id, now_iso, next_run_iso)
+
+            if not claimed_job:
+                logger.debug(f"Failed to claim job {job.id} (may be claimed by another tick)")
+                return False
+
+            asyncio.create_task(
+                self._execute_claimed_job(claimed_job, execution_slot_reserved=True)
+            )
+            claimed = True
+            return True
+        finally:
+            if not claimed:
+                self.semaphore.release()
 
     def _find_next_job(self, jobs: List[CronJob]) -> Tuple[Optional[CronJob], float]:
         """
@@ -378,6 +423,20 @@ class CronScheduler:
             return f"{text[:277]}..."
         return text
 
+    def _stringify_result_detail(self, value: Any, limit: int = 4000) -> Optional[str]:
+        """Best-effort conversion of task output to a richer multiline detail string."""
+        if value is None:
+            return None
+
+        text = value if isinstance(value, str) else str(value)
+        text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            return None
+
+        if len(text) > limit:
+            return f"{text[:limit - 3]}..."
+        return text
+
     def _get_result_summary(self, result: Any) -> Optional[str]:
         """Extract a short execution summary from TaskResponse-like objects."""
         if result is None:
@@ -388,6 +447,32 @@ class CronScheduler:
             return answer_text
 
         return self._stringify_result_value(getattr(result, "msg", None))
+
+    def _get_result_detail(self, result: Any) -> Optional[str]:
+        """Extract a richer notification detail from TaskResponse-like objects."""
+        if result is None:
+            return None
+
+        answer_text = self._stringify_result_detail(getattr(result, "answer", None))
+        msg_text = self._stringify_result_detail(getattr(result, "msg", None), limit=1000)
+        generic_msgs = {"ok", "success", "task completed", "执行完成"}
+
+        if answer_text:
+            normalized_answer = answer_text.strip().lower()
+            normalized_msg = (msg_text or "").strip().lower()
+            if (
+                msg_text
+                and normalized_msg
+                and normalized_msg not in generic_msgs
+                and normalized_msg not in normalized_answer
+            ):
+                return f"最终回答：\n{answer_text}\n\n结果消息：\n{msg_text}"
+            return f"最终回答：\n{answer_text}"
+
+        if msg_text:
+            return msg_text
+
+        return None
 
     async def _execute_job_payload(self, job: CronJob):
         """Execute a job or short-circuit legacy stop-task payloads."""
@@ -410,9 +495,21 @@ class CronScheduler:
 
         reminder_detail = self._get_reminder_detail(job)
         if reminder_detail:
+            await self._publish_progress(job, "info", "识别为提醒类任务，直接生成提醒内容")
             return TaskResponse(success=True, msg=reminder_detail, answer=reminder_detail)
 
-        return await self.executor.execute_with_retry(job)
+        progress_callback = lambda level, message: self._publish_progress(job, level, message)
+        try:
+            return await self.executor.execute_with_retry(
+                job,
+                progress_callback=progress_callback,
+            )
+        except TypeError as exc:
+            # Older mocks/tests may still stub execute_with_retry(job) without the
+            # newer progress_callback keyword. Fall back to the legacy call shape.
+            if "progress_callback" not in str(exc) or "unexpected keyword argument" not in str(exc):
+                raise
+            return await self.executor.execute_with_retry(job)
 
     async def _persist_job_result(self, job: CronJob, result) -> tuple[Optional[CronJob], bool]:
         """Persist terminal execution state and return the updated job."""
@@ -449,7 +546,8 @@ class CronScheduler:
         self,
         job: CronJob,
         status: Literal["ok", "error", "timeout"],
-        error: Optional[str] = None
+        result: Optional[Any] = None,
+        user_visible: bool = True,
     ):
         """
         Publish notification if sink is configured.
@@ -457,7 +555,6 @@ class CronScheduler:
         Args:
             job: Job that reached terminal state
             status: Terminal status (ok/error/timeout)
-            error: Optional error message (for persistence, not notification display)
 
         Note:
             Per design doc Section 8.4, notification summary uses fixed templates
@@ -482,7 +579,7 @@ class CronScheduler:
                 # Fixed template - do NOT include raw error text in notification
                 summary = f'Cron task "{job.name}" failed'
 
-            detail = self._build_notification_detail(job, status)
+            detail = self._build_notification_detail(job, status, result=result)
 
             notification_data = {
                 'job_id': job.id,
@@ -491,7 +588,8 @@ class CronScheduler:
                 'summary': summary,
                 'detail': detail,
                 'created_at': datetime.now(pytz.UTC).isoformat(),
-                'next_run_at': job.state.next_run_at
+                'next_run_at': job.state.next_run_at,
+                'user_visible': user_visible,
             }
 
             await self.notification_sink(notification_data)
@@ -504,6 +602,7 @@ class CronScheduler:
         self,
         job: CronJob,
         status: Literal["ok", "error", "timeout"],
+        result: Optional[Any] = None,
     ) -> Optional[str]:
         """
         Build optional user-facing detail for notifications.
@@ -518,9 +617,121 @@ class CronScheduler:
         if reminder_detail:
             return reminder_detail
 
+        result_detail = self._get_result_detail(result)
+        if result_detail:
+            return result_detail
+
         return job.state.last_result_summary
 
-    async def _execute_claimed_job(self, job: CronJob):
+    async def _run_claimed_job(self, job: CronJob):
+        """Run a previously claimed job using an already-reserved execution slot."""
+        try:
+            logger.info(f"Executing claimed cron job: {job.id} ({job.name})")
+            tools_text = job.payload.tool_names if job.payload.tool_names else "auto"
+            await self._publish_progress(
+                job,
+                "info",
+                f"任务开始执行，agent={job.payload.agent_name}，tools={tools_text}",
+            )
+
+            # Execute with timeout
+            timeout = job.payload.timeout_seconds or 600
+            result = await asyncio.wait_for(
+                self._execute_job_payload(job),
+                timeout=timeout
+            )
+
+            persisted_job, removed = await self._persist_job_result(job, result)
+            notification_job = persisted_job or job
+            user_visible = bool(getattr(result, "user_visible", True))
+
+            # Publish notification (after state persistence and deletion)
+            if result.success:
+                success_summary = self._get_result_summary(result)
+                if user_visible:
+                    success_message = (
+                        f"任务执行完成：{success_summary}"
+                        if success_summary else
+                        "任务执行完成"
+                    )
+                    await self._publish_progress(notification_job, "success", success_message, terminal=True)
+                    await self._publish_notification(
+                        notification_job,
+                        "ok",
+                        result=result,
+                        user_visible=True,
+                    )
+                else:
+                    quiet_message = success_summary or getattr(result, "msg", None) or "本次检查未触发通知"
+                    await self._publish_progress(
+                        notification_job,
+                        "info",
+                        quiet_message,
+                        terminal=bool(notification_job.state.next_run_at is None),
+                    )
+                    if notification_job.state.next_run_at is None:
+                        await self._publish_notification(
+                            notification_job,
+                            "ok",
+                            result=result,
+                            user_visible=False,
+                        )
+                if removed:
+                    logger.info(f"Deleted one-time job: {job.id}")
+            else:
+                await self._publish_progress(
+                    notification_job,
+                    "error",
+                    f"任务执行失败：{result.msg}",
+                    terminal=True,
+                )
+                await self._publish_notification(notification_job, "error", result=result)
+
+        except asyncio.TimeoutError:
+            logger.error(f"Job {job.id} execution timeout")
+            await self.store.update_job(
+                job.id,
+                state={
+                    "running": False,
+                    "last_status": "timeout",
+                    "last_error": f"Execution timeout after {job.payload.timeout_seconds or 600}s",
+                    "last_result_summary": None,
+                    "consecutive_errors": job.state.consecutive_errors + 1,
+                }
+            )
+            await self._publish_progress(
+                job,
+                "error",
+                f"任务执行超时：{job.payload.timeout_seconds or 600}s",
+                terminal=True,
+            )
+
+            # Publish timeout notification
+            await self._publish_notification(job, "timeout")
+
+        except Exception as e:
+            logger.error(f"Job {job.id} trigger error\n{traceback.format_exc()}")
+            await self.store.update_job(
+                job.id,
+                state={
+                    "running": False,
+                    "last_status": "error",
+                    "last_error": str(e),
+                    "last_result_summary": None,
+                    "consecutive_errors": job.state.consecutive_errors + 1,
+                }
+            )
+            await self._publish_progress(
+                job,
+                "error",
+                f"任务执行异常：{e}",
+                terminal=True,
+            )
+
+            # Publish error notification
+            await self._publish_notification(job, "error")
+
+    async def _execute_claimed_job(self, job: CronJob, execution_slot_reserved: bool = False):
         """
         Execute a job that has already been claimed.
 
@@ -529,60 +740,17 @@ class CronScheduler:
 
         Args:
             job: Already claimed job (running=True, last_run_at set)
+            execution_slot_reserved: True when the caller already acquired semaphore capacity
         """
-        async with self.semaphore:  # Concurrency control
+        if execution_slot_reserved:
             try:
-                logger.info(f"Executing claimed cron job: {job.id} ({job.name})")
+                await self._run_claimed_job(job)
+            finally:
+                self.semaphore.release()
+            return
 
-                # Execute with timeout
-                timeout = job.payload.timeout_seconds or 600
-                result = await asyncio.wait_for(
-                    self._execute_job_payload(job),
-                    timeout=timeout
-                )
-
-                persisted_job, removed = await self._persist_job_result(job, result)
-                notification_job = persisted_job or job
-
-                # Publish notification (after state persistence and deletion)
-                if result.success:
-                    await self._publish_notification(notification_job, "ok")
-                    if removed:
-                        logger.info(f"Deleted one-time job: {job.id}")
-                else:
-                    await self._publish_notification(notification_job, "error", result.msg)
-
-            except asyncio.TimeoutError:
-                logger.error(f"Job {job.id} execution timeout")
-                await self.store.update_job(
-                    job.id,
-                    state={
-                        "running": False,
-                        "last_status": "timeout",
-                        "last_error": f"Execution timeout after {job.payload.timeout_seconds or 600}s",
-                        "last_result_summary": None,
-                        "consecutive_errors": job.state.consecutive_errors + 1,
-                    }
-                )
-
-                # Publish timeout notification
-                await self._publish_notification(job, "timeout")
-
-            except Exception as e:
-                logger.error(f"Job {job.id} trigger error: {e}", exc_info=True)
-                await self.store.update_job(
-                    job.id,
-                    state={
-                        "running": False,
-                        "last_status": "error",
-                        "last_error": str(e),
-                        "last_result_summary": None,
-                        "consecutive_errors": job.state.consecutive_errors + 1,
-                    }
-                )
-
-                # Publish error notification
-                await self._publish_notification(job, "error", str(e))
+        async with self.semaphore:  # Concurrency control
+            await self._run_claimed_job(job)
 
     # Public API
 
@@ -610,11 +778,30 @@ class CronScheduler:
         if not current_job:
             return None
 
-        if updates.get("enabled") is True and not current_job.enabled:
-            now = datetime.now(pytz.UTC)
-            recalculated_next_run = self._calculate_next_run(current_job, now)
+        should_recalculate_next_run = (
+            "schedule" in updates
+            or (updates.get("enabled") is True and not current_job.enabled)
+        )
+        if should_recalculate_next_run:
+            candidate = CronJob(
+                id=current_job.id,
+                name=updates.get("name", current_job.name),
+                description=updates.get("description", current_job.description),
+                enabled=updates.get("enabled", current_job.enabled),
+                delete_after_run=updates.get("delete_after_run", current_job.delete_after_run),
+                schedule=updates.get("schedule", current_job.schedule),
+                payload=updates.get("payload", current_job.payload),
+                state=current_job.state,
+                created_at=current_job.created_at,
+                updated_at=current_job.updated_at,
+            )
             state_updates = dict(updates.get("state") or {})
-            state_updates["next_run_at"] = recalculated_next_run.isoformat() if recalculated_next_run else None
+            if candidate.enabled:
+                now = datetime.now(pytz.UTC)
+                recalculated_next_run = self._calculate_next_run(candidate, now)
+                state_updates["next_run_at"] = recalculated_next_run.isoformat() if recalculated_next_run else None
+            else:
+                state_updates.setdefault("next_run_at", None)
             updates["state"] = state_updates
 
         return await self.store.update_job(job_id, **updates)
@@ -662,6 +849,12 @@ class CronScheduler:
         async with self.semaphore:
             try:
                 logger.info(f"Manually running job: {job_id}")
+                tools_text = updated_job.payload.tool_names if updated_job.payload.tool_names else "auto"
+                await self._publish_progress(
+                    updated_job,
+                    "info",
+                    f"手动触发执行，agent={updated_job.payload.agent_name}，tools={tools_text}",
+                )
                 timeout = job.payload.timeout_seconds or 600
                 result = await asyncio.wait_for(
                     self._execute_job_payload(updated_job),
@@ -673,9 +866,22 @@ class CronScheduler:
 
                 # Publish notification for manual run
                 if result.success:
-                    await self._publish_notification(notification_job, "ok")
+                    success_summary = self._get_result_summary(result)
+                    success_message = (
+                        f"任务执行完成：{success_summary}"
+                        if success_summary else
+                        "任务执行完成"
+                    )
+                    await self._publish_progress(notification_job, "success", success_message, terminal=True)
+                    await self._publish_notification(notification_job, "ok", result=result)
                 else:
-                    await self._publish_notification(notification_job, "error", result.msg)
+                    await self._publish_progress(
+                        notification_job,
+                        "error",
+                        f"任务执行失败：{result.msg}",
+                        terminal=True,
+                    )
+                    await self._publish_notification(notification_job, "error")
 
                 return result
 
@@ -691,6 +897,12 @@ class CronScheduler:
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
                 )
+                await self._publish_progress(
+                    updated_job,
+                    "error",
+                    f"任务执行超时：{job.payload.timeout_seconds or 600}s",
+                    terminal=True,
+                )
 
                 # Publish timeout notification for manual run
                 await self._publish_notification(job, "timeout")
@@ -698,7 +910,9 @@ class CronScheduler:
                 return TaskResponse(success=False, msg="Execution timeout")
 
             except Exception as e:
-                logger.error(f"Manual job {job_id} execution error: {e}", exc_info=True)
+                logger.error(
+                    f"Manual job {job_id} execution error\n{traceback.format_exc()}"
+                )
                 await self.store.update_job(
                     job_id,
                     state={
@@ -709,9 +923,15 @@ class CronScheduler:
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
                 )
+                await self._publish_progress(
+                    updated_job,
+                    "error",
+                    f"任务执行异常：{e}",
+                    terminal=True,
+                )
 
                 # Publish error notification for manual run
-                await self._publish_notification(job, "error", str(e))
+                await self._publish_notification(job, "error")
 
                 return TaskResponse(success=False, msg=f"Execution error: {str(e)}")
 

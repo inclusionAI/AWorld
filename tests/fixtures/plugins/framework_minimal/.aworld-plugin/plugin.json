@@ -1,0 +1,15 @@
+{
+  "id": "framework-minimal",
+  "name": "framework-minimal",
+  "version": "0.1.0",
+  "entrypoints": {
+    "commands": [
+      {
+        "id": "echo",
+        "name": "Echo Command",
+        "target": "commands/echo.md"
+      }
+    ],
+    "hud": []
+  }
+}

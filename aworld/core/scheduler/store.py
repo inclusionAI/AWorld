@@ -14,6 +14,7 @@ from typing import List, Optional, Dict, Any, Iterator
 from datetime import UTC, datetime
 
 from aworld.logs.util import logger
+from .normalization import normalize_tool_names
 from .types import CronJob, CronSchedule, CronPayload, CronJobState
 
 
@@ -34,14 +35,7 @@ def _coerce_bool(value: Any) -> bool:
 
 
 def _coerce_tool_names(value: Any) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    if isinstance(value, str):
-        stripped = value.strip()
-        return [stripped] if stripped else []
-    return [str(value)]
+    return normalize_tool_names(value)
 
 
 def _coerce_optional_int(value: Any) -> Optional[int]:
@@ -305,6 +299,22 @@ class FileBasedCronStore:
                             if key == "state":
                                 # Merge state updates
                                 job_dict["state"].update(value)
+                            elif key == "schedule":
+                                job_dict["schedule"] = {
+                                    "kind": value.kind,
+                                    "at": value.at,
+                                    "every_seconds": value.every_seconds,
+                                    "cron_expr": value.cron_expr,
+                                    "timezone": value.timezone,
+                                }
+                            elif key == "payload":
+                                job_dict["payload"] = {
+                                    "message": value.message,
+                                    "agent_name": value.agent_name,
+                                    "tool_names": value.tool_names,
+                                    "timeout_seconds": value.timeout_seconds,
+                                    "max_runs": value.max_runs,
+                                }
                             else:
                                 job_dict[key] = value
 

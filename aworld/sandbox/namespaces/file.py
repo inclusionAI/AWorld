@@ -32,6 +32,10 @@ class FileNamespace(ToolNamespace):
         """Write content to file."""
         return await self._call_tool("write_file", path=path, content=content)
 
+    async def write_file_base64(self, path: str, content_base64: str) -> Dict[str, Any]:
+        """Write base64-decoded binary content to file."""
+        return await self._call_tool("write_file_base64", path=path, content_base64=content_base64)
+
     async def edit_file(
         self,
         path: str,
