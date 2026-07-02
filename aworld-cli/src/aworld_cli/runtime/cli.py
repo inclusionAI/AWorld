@@ -21,6 +21,8 @@ from ..models import AgentInfo
 from ..executors import AgentExecutor
 from ..executors.local import LocalAgentExecutor
 from ..executors.remote import RemoteAgentExecutor
+from ..core.session_restore import restore_session_to_executor
+from ..core.session_store import CliSessionRecord, CliSessionStore
 from ..core.agent_registry import LocalAgentRegistry
 from aworld.core.context.amni import ApplicationContext, TaskInput
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
@@ -61,6 +63,11 @@ class CliRuntime(BaseCliRuntime):
         local_dirs: Optional[List[str]] = None,
         session_id: Optional[str] = None,
         disable_live_display: bool = False,
+        resume_record: CliSessionRecord | None = None,
+        session_store: CliSessionStore | None = None,
+        require_same_resume_agent: bool = True,
+        resume_cwd: str | None = None,
+        fail_on_missing_agent: bool = False,
     ):
         """
         Initialize CLI Runtime.
@@ -72,6 +79,11 @@ class CliRuntime(BaseCliRuntime):
             session_id: Optional session ID to use when creating executors
             disable_live_display: If True, remote executors will not use Rich Status/Live
                 (for batch/concurrent mode to avoid "Only one live display may be active at once")
+            resume_record: Optional session record to restore into created executors
+            session_store: Store that owns resume_record
+            require_same_resume_agent: Whether restored executor must use record.agent_name
+            resume_cwd: Current cwd used for explicit cross-workspace warnings
+            fail_on_missing_agent: Return without selecting a fallback agent when agent_name is unavailable
         """
         super().__init__(agent_name)
         self._parse_config(remote_backends, local_dirs)
@@ -81,6 +93,11 @@ class CliRuntime(BaseCliRuntime):
         # Store session_id for executor creation
         self._session_id = session_id
         self._disable_live_display = disable_live_display
+        self._resume_record = resume_record
+        self._session_store = session_store
+        self._require_same_resume_agent = require_same_resume_agent
+        self._resume_cwd = resume_cwd
+        self._fail_on_missing_agent = fail_on_missing_agent
     
     def _parse_config(
         self, 
@@ -327,13 +344,15 @@ class CliRuntime(BaseCliRuntime):
                 # Get swarm with context
                 swarm = await local_agent.get_swarm(temp_context)
             
-            return LocalAgentExecutor(
+            executor = LocalAgentExecutor(
                 swarm, 
                 context_config=context_config, 
                 console=self.cli.console,
                 session_id=self._session_id,
                 hooks=hooks
             )
+            self._annotate_executor_source(executor, source_info)
+            return executor
             
         except Exception as e:
             self.cli.console.print(f"[red]❌ Failed to initialize local agent session: {e}[/red]")
@@ -357,13 +376,47 @@ class CliRuntime(BaseCliRuntime):
             RemoteAgentExecutor instance
         """
         backend_url = source_info["location"]
-        return RemoteAgentExecutor(
+        executor = RemoteAgentExecutor(
             backend_url,
             agent.name,
             console=self.cli.console,
             session_id=self._session_id,
             disable_live_display=self._disable_live_display,
         )
+        self._annotate_executor_source(executor, source_info)
+        return executor
+
+    def _annotate_executor_source(self, executor: AgentExecutor, source_info: Dict) -> None:
+        executor._session_source_type = source_info.get("type")
+        executor._session_source_location = source_info.get("location")
+
+    def _restore_executor_session(self, executor: AgentExecutor, current_agent_name: str | None = None) -> None:
+        if self._resume_record is None or self._session_store is None:
+            session_id = getattr(executor, "session_id", None)
+            if not session_id:
+                return
+            try:
+                CliSessionStore().ensure_session(
+                    session_id=session_id,
+                    cwd=os.getcwd(),
+                    agent_name=current_agent_name or self.agent_name or "Aworld",
+                    mode=getattr(executor, "_session_mode", "interactive"),
+                    source_type=getattr(executor, "_session_source_type", None),
+                    source_location=getattr(executor, "_session_source_location", None),
+                )
+            except Exception:
+                pass
+            return
+        result = restore_session_to_executor(
+            record=self._resume_record,
+            executor_instance=executor,
+            session_store=self._session_store,
+            current_agent_name=current_agent_name,
+            current_cwd=self._resume_cwd,
+            require_same_agent=self._require_same_resume_agent,
+        )
+        if result.warning and hasattr(self, "cli") and getattr(self.cli, "console", None):
+            self.cli.console.print(f"[yellow]{result.warning}[/yellow]")
     
     def _get_source_type(self) -> str:
         """Get source type for display."""

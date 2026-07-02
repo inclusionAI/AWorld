@@ -31,6 +31,7 @@ class CommandContext:
     user_args: str
     sandbox: Optional[Any] = None
     agent_config: Optional[Any] = None
+    executor: Optional[Any] = None
     runtime: Optional[Any] = None
     session_id: Optional[str] = None
 
@@ -39,6 +40,18 @@ class CommandContext:
         if not self.cwd:
             import os
             self.cwd = os.getcwd()
+
+    @property
+    def background_task_manager(self) -> Optional[Any]:
+        """
+        Get background task manager from executor.
+
+        Returns:
+            BackgroundTaskManager instance or None if executor not available
+        """
+        if self.executor and hasattr(self.executor, 'background_task_manager'):
+            return self.executor.background_task_manager
+        return None
 
 
 class Command(ABC):
