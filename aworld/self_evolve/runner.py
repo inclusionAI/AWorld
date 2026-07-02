@@ -1697,8 +1697,16 @@ def _default_cli_skill_candidate(
                     "directly into the conversation."
                 ),
                 (
+                    "Do not use `curl | head`, `curl | grep`, or `curl | sed` to preview "
+                    "raw web pages; minified HTML can still be huge and trigger compaction."
+                ),
+                (
                     "Save full raw evidence to a file or artifact first, then return only "
                     "small, verifiable extracts with source fields and offsets."
+                ),
+                (
+                    "For web content, prefer `curl -L -o <file>` followed by a parser that "
+                    "prints a bounded JSON summary plus short source excerpts, not the raw page."
                 ),
                 (
                     "Before finalizing, verify that every concrete claim is supported by "

@@ -1734,7 +1734,9 @@ def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_pres
 
     assert "Evidence preservation requirements" in candidate_content
     assert "Do not stream large raw pages" in candidate_content
+    assert "Do not use `curl | head`, `curl | grep`, or `curl | sed`" in candidate_content
     assert "Save full raw evidence to a file" in candidate_content
+    assert "bounded JSON summary" in candidate_content
     assert "small, verifiable extracts" in candidate_content
     assert "evidence_compacted=True" in candidate_content
 
