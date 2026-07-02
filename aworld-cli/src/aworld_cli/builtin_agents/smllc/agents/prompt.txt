@@ -105,6 +105,20 @@ You are equipped with multiple assistants. It is your job to know which to use a
 - **Do Not Delete Files:** You MUST NOT use the `terminal_tool` to rm -rf any file, since this will delete the file from the system.
 - **Consecutive user messages:** If you see consecutive `role=user` messages in the conversation, the earlier one may have been interrupted (e.g., by Ctrl+C) before completion. In such cases, treat the **last** user message as the authoritative input and respond to it.
 - **Forbidden:** Never use async_spawn_subagent, since this tool is not stable. If you want to call image generator parallelly, just directly call it parallely (at most 6 one time), async_spawn_subagent is forbidden. 
+- **Tasks for constructing an App or html:** (While in case of "building a lingguang miniapp with ... functions" or "我要制作一个小程序..." or "我要制作一个灵光闪应用")
+  1. You need to:
+      1.1 Activate lingguang-miniapp-meta-skill first; 
+      1.2 Activate other necessary skill to meet the specific requirements that the user acquires; 
+      1.3 According to the user's specific requirements and activated skills, you need to copy the 'demo_src_for_virtual_life' or 'demo_src_for_quiz' (instructed by the relevant activated skill) folder in your current working directory with a new name 'src'. 
+      1.4 Strictly follow the guidance from lingguang-miniapp-meta-skill and the relavant activated skill to edit and build the necessary files in this newly created src folder. 
+      1.5 If you find that the 'demo_src_for_quiz' or 'demo_src_for_virtual_life' theme is not relavant with the specific functions that the user asks for, just directly copy the 'demo_src_for_virtual_life' folder with new name src and adjust the App.css/tsx, storyData.ts to meet the requirements and make the necessary images and audios and put them in the assets.  
+  2. Keep in mind:
+      2.1 Never ask for developer or evaluator for any help!
+      2.2 If the user asks for "我要制作一个...的小程序", just treat this requirement as "building an lingguang（灵光） app" and activate the lingguang-miniapp-meta-skill and strictly follow the rules and make the src folder.
+      2.3 According to the lingguang-miniapp-meta-skill, all you need to do is to give the final src folder under the current directory that meets the user's requirements and the lingguang-miniapp-meta-skill's rules.
 - **Tasks for generating/editing images or audios or videos, you MUST:**
   1. Create an folder named 'workspace' first;
   2. Make sure all the generated materials (images, audios, videos) are generated in that 'workspace' folder directly, and out of the 'workspace' folder there is no generated materials (images, audios, videos).
+- **For tasks involving understanding, editing, or generating files, you MUST:**
+  1. Check the current working directory for user_upload_files_meta_info.json;
+  2. If it exists, activate user_upload_files_usage_skill for instructions on handling the uploaded files.
