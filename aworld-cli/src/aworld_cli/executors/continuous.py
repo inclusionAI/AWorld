@@ -123,6 +123,7 @@ class ContinuousExecutor:
         prompt: Union[str, tuple[str, List[str]]],
         completion_signal: Optional[str] = None,
         agent_name: Optional[str] = None,
+        show_iteration_header: bool = True,
         **chat_kwargs,
     ) -> Dict[str, Any]:
         """
@@ -138,7 +139,8 @@ class ContinuousExecutor:
         """
 
         session_id = getattr(self.agent_executor, 'session_id', 'unknown')
-        self.console.print(f"\n[bold cyan]🔄({iteration}) Starting iteration  session: {session_id}[/bold cyan]")
+        if show_iteration_header:
+            self.console.print(f"\n[bold cyan]🔄({iteration}) Starting iteration  session: {session_id}[/bold cyan]")
         
         try:
             # Ensure agent_executor uses the same console for output rendering
@@ -320,6 +322,9 @@ class ContinuousExecutor:
         max_duration: Optional[str] = None,
         completion_signal: Optional[str] = None,
         completion_threshold: int = 3,
+        show_start_banner: bool = True,
+        show_iteration_header: bool = True,
+        echo_prompt_as_turn: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -360,27 +365,29 @@ class ContinuousExecutor:
         else:
             prompt_display = prompt
         
-        # Display start banner with adaptive layout
-        from rich.table import Table
-        from rich import box
+        if echo_prompt_as_turn:
+            self.console.print(f"You: {prompt_display}")
+            self.console.print()
 
-        start_table = Table(show_header=False, box=None, padding=(0, 1))
-        start_table.add_column("Label", style="bold", no_wrap=True)
-        start_table.add_column("Value", style="cyan")
+        if show_start_banner:
+            # Display start banner with adaptive layout
+            start_table = Table(show_header=False, box=None, padding=(0, 1))
+            start_table.add_column("Label", style="bold", no_wrap=True)
+            start_table.add_column("Value", style="cyan")
 
-        start_table.add_row("Mode", "Continuous Execution")
-        start_table.add_row("Agent", f"[cyan]{agent_name}[/cyan]")
-        start_table.add_row("Prompt", f"[yellow]{prompt_display}[/yellow]")
-        start_table.add_row("Max Runs", str(max_runs if max_runs else '∞'))
-        start_table.add_row("Max Cost", f"${max_cost if max_cost else '∞'}")
-        start_table.add_row("Max Duration", str(max_duration if max_duration else '∞'))
+            start_table.add_row("Mode", "Continuous Execution")
+            start_table.add_row("Agent", f"[cyan]{agent_name}[/cyan]")
+            start_table.add_row("Prompt", f"[yellow]{prompt_display}[/yellow]")
+            start_table.add_row("Max Runs", str(max_runs if max_runs else '∞'))
+            start_table.add_row("Max Cost", f"${max_cost if max_cost else '∞'}")
+            start_table.add_row("Max Duration", str(max_duration if max_duration else '∞'))
 
-        self.console.print(Panel(
-            start_table,
-            title="🚀 Starting",
-            border_style="blue",
-            expand=False
-        ))
+            self.console.print(Panel(
+                start_table,
+                title="🚀 Starting",
+                border_style="blue",
+                expand=False
+            ))
         
         iteration = 0
         consecutive_completions = 0
@@ -409,6 +416,7 @@ class ContinuousExecutor:
                     prompt,
                     completion_signal,
                     agent_name=agent_name,
+                    show_iteration_header=show_iteration_header,
                     **kwargs,
                 )
                 results.append(result)

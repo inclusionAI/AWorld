@@ -96,6 +96,7 @@ class InteractiveTopLevelCommand:
                 remote_backends=invocation_args.remote_backend,
                 local_dirs=_resolve_agent_dirs(invocation_args.agent_dir),
                 agent_files=invocation_args.agent_file,
+                session_id=None,
             )
         )
         return 0
