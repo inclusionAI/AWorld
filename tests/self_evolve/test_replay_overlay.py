@@ -794,11 +794,87 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
         tmp_path / "artifacts" / "evidence_manifest.jsonl"
     )
     assert "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR" in task_text
+    assert str(tmp_path / "artifacts") in task_text
+    assert str(tmp_path / "artifacts" / "evidence_manifest.jsonl") in task_text
     assert "evidence_manifest.jsonl" in task_text
 
 
 @pytest.mark.asyncio
-async def test_aworld_cli_replay_executor_marks_compacted_evidence(
+async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "Tool output compacted for context reuse.",
+                    }
+                ]
+            },
+            "action": {"content": "Replay completed.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        evidence_path = artifact_dir / "episode_extract.txt"
+        evidence_path.write_text("bounded non-compacted evidence excerpt", encoding="utf-8")
+        (artifact_dir / "evidence_manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "source_id": "episode",
+                    "artifact_path": str(evidence_path),
+                    "extraction_method": "bounded_extract",
+                    "excerpt": "bounded non-compacted evidence excerpt",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Tool output compacted for context reuse.\n"
+            + json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["evidence_compacted"] is True
+    assert result.metrics["evidence_strategy_passed"] is True
+    assert result.metrics["evidence_manifest_present"] is True
+    assert result.metrics["evidence_manifest_entry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_rejects_compacted_evidence_without_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
