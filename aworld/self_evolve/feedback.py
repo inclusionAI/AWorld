@@ -30,6 +30,8 @@ _EVIDENCE_METRIC_KEYS = {
     "evidence_incomplete",
 }
 
+_LOW_EFFICIENCY_THRESHOLD = 3.0
+
 
 def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
     """Compress evaluator feedback into a stable optimizer-facing schema."""
@@ -39,6 +41,7 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
     required_behaviors = _required_behaviors(
         failed_gates=failed_gates,
         evidence=evidence,
+        metrics=metrics,
     )
     return {
         "variant_id": feedback.variant_id,
@@ -75,19 +78,56 @@ def _required_behaviors(
     *,
     failed_gates: list[str],
     evidence: Mapping[str, Any],
+    metrics: Mapping[str, Any],
 ) -> list[str]:
+    behaviors: list[str] = []
     has_evidence_failure = "evidence_quality" in set(failed_gates)
     has_evidence_compaction = evidence.get("evidence_compacted") is True
     has_incomplete_evidence = evidence.get("evidence_incomplete") is True
-    if not (has_evidence_failure or has_evidence_compaction or has_incomplete_evidence):
-        return []
-    return [
-        "artifact_first",
-        "bounded_structured_summary",
-        "non_compacted_evidence",
-        "claim_evidence_ledger",
-        "claim_by_claim_verification",
-    ]
+    if has_evidence_failure or has_evidence_compaction or has_incomplete_evidence:
+        behaviors.extend(
+            [
+                "artifact_first",
+                "bounded_structured_summary",
+                "non_compacted_evidence",
+                "claim_evidence_ledger",
+                "claim_by_claim_verification",
+            ]
+        )
+
+    if _has_efficiency_improvement_issue(failed_gates=failed_gates, metrics=metrics):
+        behaviors.extend(
+            [
+                "plan_before_tools",
+                "prefer_direct_structured_extraction",
+                "minimize_failed_attempts",
+                "avoid_repeated_paths",
+                "stop_after_sufficient_evidence",
+            ]
+        )
+    return list(dict.fromkeys(behaviors))
+
+
+def _has_efficiency_improvement_issue(
+    *,
+    failed_gates: list[str],
+    metrics: Mapping[str, Any],
+) -> bool:
+    if "score_improvement" in set(failed_gates):
+        return True
+    efficiency = metrics.get("B2_efficiency")
+    if isinstance(efficiency, (int, float)) and efficiency < _LOW_EFFICIENCY_THRESHOLD:
+        return True
+    score_delta = metrics.get("score_delta")
+    if isinstance(score_delta, (int, float)) and score_delta <= 0:
+        return True
+    baseline_score = metrics.get("baseline_score")
+    candidate_score = metrics.get("candidate_score")
+    return (
+        isinstance(baseline_score, (int, float))
+        and isinstance(candidate_score, (int, float))
+        and candidate_score <= baseline_score
+    )
 
 
 def _string_list(value: Any) -> list[str]:

@@ -192,6 +192,75 @@ async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_turns_low_efficiency_feedback_into_generic_strategy() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nUse a shortest-path evidence plan before tool calls.\n",
+            "rationale": "Low efficiency feedback requires a tighter acquisition strategy.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-low-efficiency",
+                metrics={
+                    "score": 69.3,
+                    "baseline_score": 70.2,
+                    "candidate_score": 69.3,
+                    "score_delta": -0.9,
+                    "failed_gates": ["score_improvement"],
+                    "B2_efficiency": 2.0,
+                    "B1_tool_use": 3.0,
+                    "A1_groundedness": 4.0,
+                },
+                dataset_split="validation",
+            ),
+        ),
+        prior_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-history",
+                metrics={
+                    "score": 70.3,
+                    "baseline_score": 75.4,
+                    "candidate_score": 70.3,
+                    "score_delta": -5.1,
+                    "failed_gates": ["score_improvement"],
+                    "B2_efficiency": 2.7,
+                },
+                dataset_split="historical",
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    await optimizer.propose(request)
+
+    prompt = prompts[0]
+    instruction_text = prompt[: prompt.find("{")]
+    assert "efficiency-improvement" in prompt
+    assert "score_improvement" in prompt
+    assert "B2_efficiency" in prompt
+    assert "plan_before_tools" in prompt
+    assert "minimize_failed_attempts" in prompt
+    assert "avoid_repeated_paths" in prompt
+    assert "stop_after_sufficient_evidence" in prompt
+    assert "prefer_direct_structured_extraction" in prompt
+    assert "shortest viable evidence path" in prompt
+    assert "xiaoyuzhou" not in instruction_text.lower()
+    assert "podcast" not in instruction_text.lower()
+    assert "curl" not in instruction_text.lower()
+    assert "cdp" not in instruction_text.lower()
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_filters_noop_candidates() -> None:
     async def mutate(prompt: str) -> dict:
         return {"content": "# Demo\n\nOld guidance.\n", "rationale": "No change."}
