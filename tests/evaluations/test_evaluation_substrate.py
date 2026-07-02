@@ -1450,6 +1450,33 @@ Final answer:
 
 
 @pytest.mark.asyncio
+async def test_agent_judge_backend_does_not_fallback_when_schema_matches_no_json_payload() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+```json
+{"has_evidence": true, "evidence_block_count": 3}
+```
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    with pytest.raises(ValueError, match="no JSON object matches judge schema"):
+        await backend.judge(
+            case_input={"query": "evaluate"},
+            target={"answer": "done"},
+            suite=EvalSuiteDef(
+                suite_id="generic-json-judge",
+                judge_schema=JudgeSchemaDef(output_model=GenericJudgeOutput),
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_builtin_app_evaluator_can_use_injected_judge_backend() -> None:
     class StubBackend:
         backend_id = "stub-agent"

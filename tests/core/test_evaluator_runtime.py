@@ -698,6 +698,9 @@ def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
     assert extracted["final_answer"] == "final answer"
     assert extracted["evidence"][0]["content"] == "evidence"
     assert extracted["steps"][0]["tool_calls"] == [{"name": "search", "arguments": "{}"}]
+    assert "Return only one compact JSON object" in prompt["instruction"]
+    assert "Do not include analysis" in prompt["instruction"]
+    assert "Do not include markdown" in prompt["instruction"]
 
 
 def test_run_evaluator_source_cli_passes_source_fields_to_hooks(

@@ -580,7 +580,10 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         "instruction": (
             "Apply the trajectory evaluator contract to the extracted trajectory. "
             "Do not call tools and do not re-read the raw log; all required evidence is in extracted_trajectory. "
-            "Return exactly one JSON object matching required_output_schema, with no markdown."
+            "Return only one compact JSON object matching required_output_schema. "
+            "Do not include analysis, rationale prose, or tables. "
+            "Do not include markdown, fenced code blocks, or extra JSON objects. "
+            "Keep arrays short: at most 3 evidence_issues and no long quotes."
         ),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)

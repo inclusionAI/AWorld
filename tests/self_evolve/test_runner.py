@@ -1700,6 +1700,45 @@ def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
     assert "held_out_verification" in candidate_content
 
 
+def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_preservation_guidance() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "variant_id": "candidate-1",
+                        "dataset_split": "historical",
+                        "metrics": {
+                            "score": 45.0,
+                            "failed_gates": ["evidence_quality"],
+                            "evidence_compacted": True,
+                            "evidence_incomplete": True,
+                            "evidence_issues": [
+                                "tool output compacted for context reuse",
+                                "final answer claims not verifiable from available evidence",
+                            ],
+                        },
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "Evidence preservation requirements" in candidate_content
+    assert "Do not stream large raw pages" in candidate_content
+    assert "Save full raw evidence to a file" in candidate_content
+    assert "small, verifiable extracts" in candidate_content
+    assert "evidence_compacted=True" in candidate_content
+
+
 def test_auto_verified_inferred_target_can_create_new_skill_draft(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

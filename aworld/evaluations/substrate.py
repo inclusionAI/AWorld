@@ -1617,6 +1617,8 @@ def _extract_json_object(
                 return judge_schema.validate_payload(_candidate_judge_payload(candidate))
             except Exception:
                 continue
+        if candidates:
+            raise ValueError("no JSON object matches judge schema")
 
     for candidate in candidates:
         if "results" in candidate:

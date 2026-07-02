@@ -129,6 +129,7 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
     assert "prior_feedback" in prompts[0]
     assert "candidate-previous" in prompts[0]
     assert "evidence_quality" in prompts[0]
+    assert "evidence-preservation" in prompts[0]
     assert "held-1" not in prompts[0]
 
 
