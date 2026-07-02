@@ -354,7 +354,11 @@ class AWorldCliReplayExecutor:
             "aworld_cli.main",
             "run",
             "--task",
-            _replay_task_text(request.task_text),
+            _replay_task_text(
+                request.task_text,
+                artifact_dir=artifact_dir,
+                evidence_manifest=evidence_manifest,
+            ),
             "--non-interactive",
             "--emit-trajectory",
         ]
@@ -400,6 +404,8 @@ class AWorldCliReplayExecutor:
             stdout=stdout,
             stderr=stderr,
             trajectory=trajectory,
+            artifact_dir=artifact_dir,
+            evidence_manifest=evidence_manifest,
         )
         metrics = {
             "returncode": completed.returncode,
@@ -533,8 +539,11 @@ _REPLAY_EVIDENCE_POLICY = """
 Self-evolve replay evidence requirements:
 - Preserve the original user task above, but execute it with artifact-first evidence handling.
 - Do not stream large raw tool outputs, full pages, full documents, large JSON, or long logs directly into the conversation.
-- Persist large or unknown-size source material under the directory named by AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR before inspecting or summarizing it.
-- Append one JSON object per evidence source to AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST (the replay evidence_manifest.jsonl file), including source_id, artifact_path, extraction_method, and the bounded excerpt or field list used for the final answer.
+- Persist large or unknown-size source material under this exact artifact directory before inspecting or summarizing it: {artifact_dir}
+- Also export or use AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR={artifact_dir} when invoking tools that can receive environment variables.
+- Append one JSON object per evidence source to this exact replay evidence_manifest.jsonl file: {evidence_manifest}
+- Also export or use AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST={evidence_manifest} when invoking tools that can receive environment variables.
+- Each manifest object must include source_id, artifact_path, extraction_method, and the bounded excerpt or field list used for the final answer.
 - Emit only bounded structured summaries with source identifiers, locations, and short excerpts.
 - If any tool result is compacted, truncated, schema-invalid, or too large to inspect, treat that result as unusable evidence and retry with a narrower extraction strategy before answering.
 - Keep a concise evidence ledger mapping important final-answer claims to non-compacted extracts or artifact references.
@@ -542,10 +551,24 @@ Self-evolve replay evidence requirements:
 """.strip()
 
 
-def _replay_task_text(task_text: str) -> str:
+def _replay_task_text(
+    task_text: str,
+    *,
+    artifact_dir: Path | None = None,
+    evidence_manifest: Path | None = None,
+) -> str:
     if "Self-evolve replay evidence requirements:" in task_text:
         return task_text
-    return task_text.rstrip() + "\n\n" + _REPLAY_EVIDENCE_POLICY
+    artifact_dir_text = str(artifact_dir) if artifact_dir is not None else "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"
+    evidence_manifest_text = (
+        str(evidence_manifest)
+        if evidence_manifest is not None
+        else "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST"
+    )
+    return task_text.rstrip() + "\n\n" + _REPLAY_EVIDENCE_POLICY.format(
+        artifact_dir=artifact_dir_text,
+        evidence_manifest=evidence_manifest_text,
+    )
 
 
 def _extract_trajectory_from_stdout(stdout: str) -> list[Mapping[str, Any]]:
@@ -578,6 +601,8 @@ def _replay_evidence_metrics(
     stdout: str,
     stderr: str,
     trajectory: list[Mapping[str, Any]],
+    artifact_dir: Path | None = None,
+    evidence_manifest: Path | None = None,
 ) -> dict[str, Any]:
     signal_text = "\n".join(
         text
@@ -604,17 +629,95 @@ def _replay_evidence_metrics(
     if any(marker in signal_text for marker in truncated_markers):
         signals.append("tool_output_truncated")
     compacted = bool(signals)
+    manifest_metrics = _evidence_manifest_metrics(
+        artifact_dir=artifact_dir,
+        evidence_manifest=evidence_manifest,
+    )
+    manifest_valid = manifest_metrics.get("evidence_manifest_valid") is True
     return {
         "evidence_compacted": compacted,
-        "evidence_strategy_passed": not compacted,
+        "evidence_strategy_passed": (not compacted) or manifest_valid,
         "evidence_compaction_signals": signals,
+        **manifest_metrics,
     }
+
+
+def _evidence_manifest_metrics(
+    *,
+    artifact_dir: Path | None,
+    evidence_manifest: Path | None,
+) -> dict[str, Any]:
+    if evidence_manifest is None:
+        return {}
+    metrics: dict[str, Any] = {
+        "evidence_manifest_path": str(evidence_manifest),
+        "evidence_manifest_present": evidence_manifest.exists(),
+        "evidence_manifest_valid": False,
+        "evidence_manifest_entry_count": 0,
+    }
+    if not evidence_manifest.exists():
+        return metrics
+    entries: list[Mapping[str, Any]] = []
+    invalid_reasons: list[str] = []
+    for line_number, line in enumerate(
+        evidence_manifest.read_text(encoding="utf-8", errors="replace").splitlines(),
+        start=1,
+    ):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            invalid_reasons.append(f"line {line_number}: {exc.msg}")
+            continue
+        if not isinstance(entry, Mapping):
+            invalid_reasons.append(f"line {line_number}: entry is not an object")
+            continue
+        reason = _invalid_evidence_manifest_entry_reason(
+            entry,
+            artifact_dir=artifact_dir,
+        )
+        if reason is not None:
+            invalid_reasons.append(f"line {line_number}: {reason}")
+            continue
+        entries.append(entry)
+    metrics["evidence_manifest_entry_count"] = len(entries)
+    metrics["evidence_manifest_valid"] = bool(entries) and not invalid_reasons
+    if invalid_reasons:
+        metrics["evidence_manifest_invalid_reasons"] = invalid_reasons
+    return metrics
+
+
+def _invalid_evidence_manifest_entry_reason(
+    entry: Mapping[str, Any],
+    *,
+    artifact_dir: Path | None,
+) -> str | None:
+    for key in ("source_id", "artifact_path", "extraction_method"):
+        if not str(entry.get(key) or "").strip():
+            return f"missing {key}"
+    excerpt = str(entry.get("excerpt") or "").strip()
+    field_list = entry.get("field_list")
+    if not excerpt and not field_list:
+        return "missing excerpt or field_list"
+    artifact_path = Path(str(entry.get("artifact_path")))
+    if not artifact_path.is_absolute() and artifact_dir is not None:
+        artifact_path = artifact_dir / artifact_path
+    if not artifact_path.exists():
+        return "artifact_path does not exist"
+    if artifact_dir is not None:
+        try:
+            artifact_path.resolve().relative_to(artifact_dir.resolve())
+        except ValueError:
+            return "artifact_path is outside replay artifact directory"
+    return None
 
 
 def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | None:
     compacted = metrics.get("evidence_compacted") is True
     strategy_failed = metrics.get("evidence_strategy_passed") is False
-    if not compacted and not strategy_failed:
+    if not strategy_failed:
         return None
     signals = metrics.get("evidence_compaction_signals")
     if not isinstance(signals, list):
