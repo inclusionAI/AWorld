@@ -278,9 +278,6 @@ class SelfEvolveRunner:
             )
             if duplicate_gate is not None:
                 iteration_gate_results.append(duplicate_gate)
-            duplicate_blocked = (
-                duplicate_gate is not None and not duplicate_gate.passed
-            )
             iteration_gate_results.append(
                 BudgetGate().evaluate(
                     estimate_replay_cost(
@@ -294,29 +291,28 @@ class SelfEvolveRunner:
                     )
                 )
             )
-            if not duplicate_blocked:
-                (
-                    iteration_replay_result,
-                    iteration_replay_dataset,
-                    replay_gate,
-                ) = await self._replay_selected_candidate(
-                    run_id=run_id,
-                    target=target,
-                    dataset=dataset,
-                    selected_candidate=iteration_candidate,
-                    apply_policy=apply_policy,
-                )
-                if replay_gate is not None:
-                    iteration_gate_results.append(replay_gate)
-                replay_confidence_gate = _replay_confidence_gate(
-                    iteration_replay_result,
-                    apply_policy=apply_policy,
-                )
-                if replay_confidence_gate is not None:
-                    iteration_gate_results.append(replay_confidence_gate)
+            (
+                iteration_replay_result,
+                iteration_replay_dataset,
+                replay_gate,
+            ) = await self._replay_selected_candidate(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                selected_candidate=iteration_candidate,
+                apply_policy=apply_policy,
+            )
+            if replay_gate is not None:
+                iteration_gate_results.append(replay_gate)
+            replay_confidence_gate = _replay_confidence_gate(
+                iteration_replay_result,
+                apply_policy=apply_policy,
+            )
+            if replay_confidence_gate is not None:
+                iteration_gate_results.append(replay_confidence_gate)
 
             evaluation_dataset = iteration_replay_dataset or dataset
-            if self.evaluation_backend is not None and not duplicate_blocked:
+            if self.evaluation_backend is not None:
                 replay_blocked_verified_apply = (
                     apply_policy == "auto_verified"
                     and self.replay_enabled
@@ -427,7 +423,7 @@ class SelfEvolveRunner:
                                 },
                             )
                         )
-            elif apply_policy == "auto_verified" and not duplicate_blocked:
+            elif apply_policy == "auto_verified":
                 iteration_gate_results.append(
                     GateResult(
                         gate_name="auto_verified_evaluation",

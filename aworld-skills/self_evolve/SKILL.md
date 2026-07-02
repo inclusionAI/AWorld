@@ -34,6 +34,26 @@ needed.
 If a requested path is not Available, say so and downgrade to a proposal,
 diagnostic, or roadmap note instead of implying verified behavior.
 
+## Framework Boundaries
+
+Keep three layers separate:
+
+- This `self_evolve` skill describes how to operate the self-evolve workflow.
+  It is not the execution engine and must not replace framework gates,
+  replay, evaluation, overlay, draft, release, or apply logic.
+- `aworld.self_evolve` owns execution semantics: target inference, candidate
+  generation contracts, replay, evaluator integration, feedback normalization,
+  gates, apply journals, post-apply verification, and runtime-loader checks.
+- Target skills express task behavior only. A candidate or draft target skill
+  may improve how an agent performs the task, but must not encode
+  self-evolve framework control flow, gate bypasses, release decisions, or
+  evaluator policy.
+
+When a candidate is evaluated, the framework may inject replay-time execution
+constraints or overlays. Do not copy those framework controls into the target
+skill unless the final applied guidance is independently useful for the target
+task itself.
+
 ## Workflow
 
 1. Clarify the requested outcome: diagnostics, proposal-only improvement, or
