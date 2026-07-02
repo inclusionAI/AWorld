@@ -111,9 +111,9 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "If validation_feedback or prior_feedback mentions evidence_quality, "
         "evidence_compacted, or evidence_incomplete, add general evidence-preservation "
         "guidance that avoids large raw tool outputs and requires non-compacted, "
-        "verifiable evidence before final answers. For web content, prefer saving raw "
-        "pages to files and printing bounded JSON summaries instead of `curl | head`, "
-        "`curl | grep`, or raw HTML/JSON previews.\n"
+        "verifiable evidence before final answers. For large or unknown-size sources, "
+        "prefer saving raw content to files or artifacts and printing bounded structured "
+        "summaries instead of raw dumps or line-based previews.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
 
