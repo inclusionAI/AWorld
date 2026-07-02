@@ -30,6 +30,7 @@ from rich.text import Text
 from aworld.logs.util import logger
 from ._globals import console
 from .core.command_system import CommandRegistry, CommandContext
+from .core.session_restore import SessionRestoreError, restore_session_to_executor
 from .models import AgentInfo
 from .steering.observability import (
     log_applied_steering_event,
@@ -463,7 +464,7 @@ class AWorldCLI:
         builtin_cmds = [
             "/agents", "/skills", "/new", "/restore", "/latest",
             "/exit", "/switch", "/cost", "/cost -all", "/compact",
-            "/team",
+            "/team", "/sessions", "/sessions show",
             "/memory", "/memory view", "/memory reload", "/memory status",
         ]
         builtin_meta = {
@@ -472,6 +473,8 @@ class AWorldCLI:
             "/new": "Create a new session",
             "/restore": "Restore to a previous session",
             "/latest": "Restore to the latest session",
+            "/sessions": "List resumable sessions",
+            "/sessions show": "Show a resumable session",
             "/exit": "Exit chat",
             "/switch": "Switch to another agent",
             "/cost": "View query history (current session)",
@@ -517,6 +520,103 @@ class AWorldCLI:
         words.add("exit")
 
         return sorted(words), meta_dict
+
+    def _format_sessions_list(self, records: list[Any], current_cwd: str | None = None) -> str:
+        if not records:
+            return "No resumable sessions found."
+
+        normalized_cwd = str(Path(current_cwd or os.getcwd()).expanduser().resolve())
+        lines = ["Sessions:"]
+        for record in records:
+            cwd_marker = "current" if getattr(record, "cwd", None) == normalized_cwd else "other"
+            prompt = getattr(record, "last_prompt", None) or "(no prompt recorded)"
+            updated_at = getattr(record, "updated_at", "")
+            lines.append(
+                f"- {record.session_id} | {record.agent_name} | {record.mode} | "
+                f"{cwd_marker} | {updated_at} | {prompt}"
+            )
+        return "\n".join(lines)
+
+    def _format_session_show(self, record: Any) -> str:
+        lines = [
+            f"Session: {record.session_id}",
+            f"Agent: {record.agent_name}",
+            f"Mode: {record.mode}",
+            f"CWD: {record.cwd}",
+            f"Created: {record.created_at}",
+            f"Updated: {record.updated_at}",
+            f"Turns: {record.turn_count}",
+        ]
+        if getattr(record, "source_type", None):
+            lines.append(f"Source: {record.source_type}")
+        if getattr(record, "source_location", None):
+            lines.append(f"Source location: {record.source_location}")
+        if getattr(record, "last_task_id", None):
+            lines.append(f"Last task: {record.last_task_id}")
+        if getattr(record, "last_prompt", None):
+            lines.append(f"Last prompt: {record.last_prompt}")
+        return "\n".join(lines)
+
+    def _format_resume_command_hint(self, executor_instance: Any = None) -> str | None:
+        session_id = getattr(executor_instance, "session_id", None)
+        if not session_id:
+            return None
+        return f"Resume this session with: aworld-cli resume {session_id}"
+
+    def _print_resume_command_hint(self, executor_instance: Any = None) -> None:
+        hint = self._format_resume_command_hint(executor_instance)
+        if hint:
+            self.console.print(f"[dim]{hint}[/dim]")
+
+    def _consume_restored_transcript_text(self, executor_instance: Any = None) -> str | None:
+        replay = getattr(executor_instance, "_aworld_cli_restored_transcript", None)
+        if replay is None:
+            return None
+        try:
+            executor_instance._aworld_cli_restored_transcript = None
+        except Exception:
+            pass
+        rendered = getattr(replay, "rendered_text", None)
+        return str(rendered).strip() if rendered else None
+
+    def _print_restored_transcript(self, executor_instance: Any = None) -> None:
+        rendered = self._consume_restored_transcript_text(executor_instance)
+        if rendered:
+            self.console.print(rendered)
+            self.console.print()
+
+    def _restore_cli_session(
+        self,
+        session_id: str,
+        *,
+        executor_instance: Any,
+        current_agent_name: str,
+        session_store: Any,
+    ) -> str:
+        if executor_instance is None:
+            return "[yellow]No executor instance available.[/yellow]"
+
+        record = session_store.get(session_id)
+        if record is None:
+            return f"[red]Session not found: {session_id}[/red]"
+
+        try:
+            result = restore_session_to_executor(
+                record=record,
+                executor_instance=executor_instance,
+                current_agent_name=current_agent_name,
+                session_store=session_store,
+            )
+        except SessionRestoreError as exc:
+            return f"[yellow]{exc}[/yellow]"
+
+        message = f"[green]{result.message}[/green]"
+        if result.warning:
+            message = f"{message}\n[yellow]{result.warning}[/yellow]"
+        restored_transcript = self._consume_restored_transcript_text(executor_instance)
+        if restored_transcript:
+            message = f"{message}\n\n{restored_transcript}"
+        return message
 
     def _build_session_completer(
         self,
@@ -3360,7 +3460,7 @@ class AWorldCLI:
             current_agent = next((a for a in available_agents if a.name == agent_name), None)
             if current_agent and current_agent.metadata:
                 metadata = current_agent.metadata
-                
+
                 # Check PTC status - only show if enabled
                 ptc_tools = metadata.get("ptc_tools", [])
                 ptc_info = ""
@@ -3405,6 +3505,7 @@ class AWorldCLI:
         # Display welcome message with configuration details
         self.console.print(f"Starting chat with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}")
         self.console.print("[dim]Type /help for available commands.[/dim]\n")
+        self._print_restored_transcript(executor_instance)
 
         # Build help text with both built-in and registered commands
         help_lines = [
@@ -3537,6 +3638,7 @@ class AWorldCLI:
                                     user_args=cmd_args,
                                     sandbox=None,  # TODO: Pass actual sandbox if available
                                     agent_config=None,  # TODO: Pass agent config if needed
+                                    executor=executor_instance,
                                     runtime=runtime,
                                     session_id=getattr(executor_instance, "session_id", None),
                                 )
@@ -3562,6 +3664,7 @@ class AWorldCLI:
                                             user_args=cmd_args,
                                             sandbox=None,
                                             agent_config=None,
+                                            executor=executor_instance,
                                             runtime=runtime,
                                             session_id=new_session_id,
                                         )
@@ -3656,6 +3759,7 @@ class AWorldCLI:
                                 follow_up_prompt=follow_up_prompt,
                             )
                         continue
+                    self._print_resume_command_hint(executor_instance)
                     self.console.print("[dim]Bye[/dim]")
                     await self._stop_notification_poller()
                     return False
@@ -3677,13 +3781,35 @@ class AWorldCLI:
                     continue
                 
                 # Handle restore session command
-                if user_input.lower() in ("/restore", "restore", "/latest", "latest"):
-                    if executor_instance and hasattr(executor_instance, 'restore_session'):
-                        restored_id = executor_instance.restore_session()
-                        # Update session_id_info display
-                        self.console.print(f"[dim]Current session: {restored_id}[/dim]")
-                    else:
-                        self.console.print("[yellow]⚠️ Session restore not available for this executor.[/yellow]")
+                restore_input = user_input.strip()
+                restore_lower = restore_input.lower()
+                if (
+                    restore_lower in ("/restore", "restore", "/latest", "latest")
+                    or restore_lower.startswith("/restore ")
+                    or restore_lower.startswith("restore ")
+                ):
+                    try:
+                        from .core.session_store import CliSessionStore
+
+                        session_store = CliSessionStore()
+                        parts = restore_input.split(maxsplit=1)
+                        requested_id = parts[1].strip() if len(parts) > 1 and "latest" not in restore_lower else None
+                        if requested_id is None:
+                            record = session_store.latest(cwd=os.getcwd())
+                            requested_id = record.session_id if record else None
+                        if requested_id is None:
+                            self.console.print("[yellow]No resumable sessions found.[/yellow]")
+                        else:
+                            self.console.print(
+                                self._restore_cli_session(
+                                    requested_id,
+                                    executor_instance=executor_instance,
+                                    current_agent_name=agent_name,
+                                    session_store=session_store,
+                                )
+                            )
+                    except Exception as e:
+                        self.console.print(f"[red]Error restoring session: {e}[/red]")
                     continue
                 
                 # Handle switch command
@@ -3980,20 +4106,34 @@ class AWorldCLI:
                     continue
 
                 # Handle sessions command
-                if user_input.lower() in ("/sessions", "sessions"):
-                    if executor_instance:
-                        # Debug: Print session related attributes
-                        session_attrs = {k: v for k, v in executor_instance.__dict__.items() if 'session' in k.lower()}
-                        # Also check if context has session info
-                        if hasattr(executor_instance, 'context') and executor_instance.context:
-                            context_session_attrs = {k: v for k, v in executor_instance.context.__dict__.items() if
-                                                     'session' in k.lower()}
-                            session_attrs.update({f"context.{k}": v for k, v in context_session_attrs.items()})
+                if user_input.lower() in ("/sessions", "sessions", "/sessions list", "sessions list"):
+                    try:
+                        from .core.session_store import CliSessionStore
 
-                        if session_attrs:
-                            self.console.print(f"[dim]Session Info: {session_attrs}[/dim]")
-                    else:
-                        self.console.print("[yellow]No executor instance available.[/yellow]")
+                        session_store = CliSessionStore()
+                        self.console.print(
+                            self._format_sessions_list(
+                                session_store.list(cwd=os.getcwd()),
+                                current_cwd=os.getcwd(),
+                            )
+                        )
+                    except Exception as e:
+                        self.console.print(f"[red]Error listing sessions: {e}[/red]")
+                    continue
+
+                if user_input.lower().startswith(("/sessions show ", "sessions show ")):
+                    try:
+                        from .core.session_store import CliSessionStore
+
+                        session_id = user_input.split(maxsplit=2)[2].strip()
+                        session_store = CliSessionStore()
+                        record = session_store.get(session_id)
+                        if record is None:
+                            self.console.print(f"[red]Session not found: {session_id}[/red]")
+                        else:
+                            self.console.print(self._format_session_show(record))
+                    except Exception as e:
+                        self.console.print(f"[red]Error showing session: {e}[/red]")
                     continue
 
                 # Print agent name before response
@@ -4064,6 +4204,7 @@ class AWorldCLI:
                             )
                         continue
                     logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
+                    self._print_resume_command_hint(executor_instance)
                     self.console.print("[dim]Bye[/dim]")
                     await self._stop_notification_poller()
                     return False  # Exit CLI when buffer is empty

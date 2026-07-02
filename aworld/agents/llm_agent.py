@@ -78,7 +78,6 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}")
 
         if resp.tool_calls:
-            is_call_tool = True
             logger.info(f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)")
             for idx, tool_call in enumerate(resp.tool_calls):
                 full_name: str = tool_call.function.name
@@ -90,13 +89,19 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}")
 
                 try:
-                    params = json.loads(tool_call.function.arguments)
+                    raw_arguments = tool_call.function.arguments
+                    if not isinstance(raw_arguments, str) or not raw_arguments.strip():
+                        logger.warning(
+                            f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} for {full_name} has invalid arguments: {raw_arguments!r}, skipping.")
+                        continue
+
+                    params = json.loads(raw_arguments)
                     logger.debug(
                         f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)")
                 except Exception as e:
                     logger.warning(
                         f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}")
-                    params = {}
+                    continue
 
                 # format in framework
                 # agent_info = AgentFactory.agent_instance(agent_id)
@@ -129,6 +134,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                agent_name=agent_id,
                                                params=params,
                                                policy_info=content + param_info))
+                    is_call_tool = True
                     logger.debug(f"🤖 [Agent:{agent_id}] Added agent action: {full_name}")
                 else:
                     action_name = '__'.join(names[1:]) if len(names) > 1 else ''
@@ -138,8 +144,9 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                agent_name=agent_id,
                                                params=params,
                                                policy_info=content))
+                    is_call_tool = True
                     logger.info(f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}")
-        else:
+        if not is_call_tool:
             if not content and resp.reasoning_content:
                 logger.info(f"💬 [Agent:{agent_id}] No tool calls or content, added reasoning content to action")
                 content = resp.reasoning_content
@@ -960,7 +967,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             else:
                 _drop_incomplete_tool_call_turn("end of history reached")
 
-        return messages
+        return self._prepend_task_input_messages(messages, message.context)
+
+    @staticmethod
+    def _prepend_task_input_messages(messages: List[Dict[str, Any]], context: Context = None) -> List[Dict[str, Any]]:
+        task_input = getattr(context, "task_input_object", None) if context is not None else None
+        task_messages = getattr(task_input, "messages", None) or []
+        restored_messages = []
+        for item in task_messages:
+            if isinstance(item, dict):
+                message = dict(item)
+            elif hasattr(item, "model_dump"):
+                message = item.model_dump()
+            else:
+                continue
+            if message.get("role") in {"user", "assistant", "tool"}:
+                restored_messages.append(message)
+        if not restored_messages:
+            return messages
+
+        insert_at = 0
+        for index, item in enumerate(messages):
+            if not isinstance(item, dict) or item.get("role") != "system":
+                break
+            insert_at = index + 1
+        return messages[:insert_at] + restored_messages + messages[insert_at:]
 
     async def init_observation(self, observation: Observation) -> Observation:
         # default use origin observation
