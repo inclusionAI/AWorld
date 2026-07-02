@@ -516,22 +516,29 @@ def _aggregate_variant_results(
     if not results:
         raise ValueError("cannot aggregate empty replay results")
     if len(results) == 1:
+        result = results[0]
+        failures = [result.failure] if result.failure is not None else []
+        metrics = {
+            **dict(result.metrics),
+            "repetition_count": 1,
+            "successful_repetition_count": 1 if result.succeeded else 0,
+            "failed_repetition_count": 0 if result.succeeded else 1,
+        }
+        if failures:
+            metrics["repetition_failures"] = failures
         return ReplayVariantResult(
             variant_id=base_variant_id,
-            status=results[0].status,
-            trajectory=results[0].trajectory,
-            metrics={
-                **dict(results[0].metrics),
-                "repetition_count": 1,
-                "successful_repetition_count": 1 if results[0].succeeded else 0,
-            },
-            stdout_path=results[0].stdout_path,
-            stderr_path=results[0].stderr_path,
-            failure=results[0].failure,
+            status=result.status,
+            trajectory=result.trajectory,
+            metrics=metrics,
+            stdout_path=result.stdout_path,
+            stderr_path=result.stderr_path,
+            failure=result.failure,
         )
 
     successful = [result for result in results if result.succeeded]
-    status = "succeeded" if len(successful) == len(results) else "failed"
+    failed = [result for result in results if not result.succeeded]
+    status = "succeeded" if successful else "failed"
     numeric_metrics: dict[str, list[float]] = {}
     for result in results:
         for key, value in result.metrics.items():
@@ -540,7 +547,13 @@ def _aggregate_variant_results(
     metrics: dict[str, Any] = {
         "repetition_count": len(results),
         "successful_repetition_count": len(successful),
+        "failed_repetition_count": len(failed),
     }
+    repetition_failures = [
+        result.failure for result in failed if result.failure is not None
+    ]
+    if repetition_failures:
+        metrics["repetition_failures"] = repetition_failures
     for key, values in numeric_metrics.items():
         if values:
             metrics[key] = sum(values) / len(values)
