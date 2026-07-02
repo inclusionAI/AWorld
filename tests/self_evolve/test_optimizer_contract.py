@@ -130,7 +130,65 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
     assert "candidate-previous" in prompts[0]
     assert "evidence_quality" in prompts[0]
     assert "evidence-preservation" in prompts[0]
+    assert "tool-agnostic" in prompts[0]
+    assert "persist raw evidence to files or artifacts first" in prompts[0]
+    assert "bounded structured summaries" in prompts[0]
+    assert "compacted/truncated outputs as unusable evidence" in prompts[0]
+    assert "evidence ledger" in prompts[0]
+    assert "claim-by-claim" in prompts[0]
     assert "held-1" not in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nUse artifact-first evidence extraction.\n",
+            "rationale": "Compacted evidence feedback requires stronger preservation.",
+        }
+
+    long_tool_output = "raw-tool-output-" + ("x" * 8000)
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-compacted",
+                metrics={
+                    "score": 34.0,
+                    "failed_gates": ["evidence_quality", "score_improvement"],
+                    "evidence_compacted": True,
+                    "evidence_incomplete": True,
+                    "evidence_block_count": 3,
+                    "evidence_issues": [
+                        "tool output compacted for context reuse",
+                        long_tool_output,
+                    ],
+                    "raw_tool_output": long_tool_output,
+                    "messages": [{"role": "tool", "content": long_tool_output}],
+                },
+                dataset_split="validation",
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    await optimizer.propose(request)
+
+    assert "feedback_summary" in prompts[0]
+    assert "required_behaviors" in prompts[0]
+    assert "artifact_first" in prompts[0]
+    assert "bounded_structured_summary" in prompts[0]
+    assert "claim_evidence_ledger" in prompts[0]
+    assert "raw_tool_output" not in prompts[0]
+    assert long_tool_output not in prompts[0]
+    assert "x" * 1000 not in prompts[0]
 
 
 @pytest.mark.asyncio

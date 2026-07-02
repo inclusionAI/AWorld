@@ -5,6 +5,7 @@ import inspect
 import json
 from typing import Any, Callable, Mapping
 
+from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.types import CandidateVariant, OptimizerLineage
 
@@ -80,19 +81,11 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
             for pack in request.trace_packs
         ],
         "validation_feedback": [
-            {
-                "variant_id": feedback.variant_id,
-                "metrics": feedback.metrics,
-                "dataset_split": feedback.dataset_split,
-            }
+            {"feedback_summary": normalize_feedback_summary(feedback)}
             for feedback in request.validation_feedback
         ],
         "prior_feedback": [
-            {
-                "variant_id": feedback.variant_id,
-                "metrics": feedback.metrics,
-                "dataset_split": feedback.dataset_split,
-            }
+            {"feedback_summary": normalize_feedback_summary(feedback)}
             for feedback in request.prior_feedback
         ],
         "trainable_cases": [
@@ -109,11 +102,12 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "Propose one concise text-only self-evolve candidate. "
         "Use trace evidence and trainable cases only; do not assume held-out data. "
         "If validation_feedback or prior_feedback mentions evidence_quality, "
-        "evidence_compacted, or evidence_incomplete, add general evidence-preservation "
-        "guidance that avoids large raw tool outputs and requires non-compacted, "
-        "verifiable evidence before final answers. For large or unknown-size sources, "
-        "prefer saving raw content to files or artifacts and printing bounded structured "
-        "summaries instead of raw dumps or line-based previews.\n"
+        "evidence_compacted, or evidence_incomplete, the candidate must include general "
+        "evidence-preservation guidance. Make it actionable and tool-agnostic: avoid "
+        "large raw tool outputs, persist raw evidence to files or artifacts first, emit "
+        "only bounded structured summaries with source locations and short excerpts, "
+        "treat compacted/truncated outputs as unusable evidence, keep an evidence ledger, "
+        "and require a claim-by-claim non-compacted evidence check before final answers.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
 

@@ -1736,9 +1736,13 @@ def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_pres
     assert "Do not stream large raw pages" in candidate_content
     assert "large or unknown-size sources" in candidate_content
     assert "line-based previews" in candidate_content
-    assert "Save full raw evidence to a file" in candidate_content
-    assert "bounded JSON summary" in candidate_content
+    assert "Persist raw evidence to a file or artifact" in candidate_content
+    assert "bounded structured summary" in candidate_content
     assert "small, verifiable extracts" in candidate_content
+    assert "If a tool result is compacted" in candidate_content
+    assert "evidence ledger" in candidate_content
+    assert "claim-by-claim" in candidate_content
+    assert "curl" not in candidate_content.lower()
     assert "evidence_compacted=True" in candidate_content
 
 
