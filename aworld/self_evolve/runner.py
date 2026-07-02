@@ -1594,23 +1594,31 @@ def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
     for item in feedback_items[-3:]:
         if not isinstance(item, Mapping):
             continue
-        metrics = item.get("metrics")
+        summary = item.get("feedback_summary")
+        summary = summary if isinstance(summary, Mapping) else item
+        metrics = summary.get("metrics")
         metrics = metrics if isinstance(metrics, Mapping) else {}
+        evidence = summary.get("evidence")
+        evidence = evidence if isinstance(evidence, Mapping) else metrics
         parts = []
         score = metrics.get("score")
         if isinstance(score, (int, float)):
             parts.append(f"score={score}")
-        failed_gates = metrics.get("failed_gates")
+        failed_gates = summary.get("failed_gates")
+        if not isinstance(failed_gates, list):
+            failed_gates = metrics.get("failed_gates")
         if isinstance(failed_gates, list) and failed_gates:
             parts.append(
                 "failed_gates="
                 + ",".join(str(gate) for gate in failed_gates if gate)
             )
-        if isinstance(metrics.get("evidence_compacted"), bool):
-            parts.append(f"evidence_compacted={metrics['evidence_compacted']}")
-        if isinstance(metrics.get("evidence_incomplete"), bool):
-            parts.append(f"evidence_incomplete={metrics['evidence_incomplete']}")
-        evidence_issues = metrics.get("evidence_issues")
+        if isinstance(evidence.get("evidence_compacted"), bool):
+            parts.append(f"evidence_compacted={evidence['evidence_compacted']}")
+        if isinstance(evidence.get("evidence_incomplete"), bool):
+            parts.append(f"evidence_incomplete={evidence['evidence_incomplete']}")
+        evidence_issues = evidence.get("issues")
+        if not isinstance(evidence_issues, list):
+            evidence_issues = metrics.get("evidence_issues")
         if isinstance(evidence_issues, list) and evidence_issues:
             issue_text = "; ".join(
                 str(issue).strip()
@@ -1621,8 +1629,8 @@ def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
                 parts.append(f"evidence_issues={issue_text}")
         if not parts:
             continue
-        split = item.get("dataset_split") or "validation"
-        variant_id = item.get("variant_id") or "candidate"
+        split = summary.get("dataset_split") or item.get("dataset_split") or "validation"
+        variant_id = summary.get("variant_id") or item.get("variant_id") or "candidate"
         guidance.append(f"{variant_id} on {split}: {'; '.join(parts)}")
     return guidance
 
@@ -1649,17 +1657,23 @@ def _feedback_has_evidence_preservation_issue(prompt: str | None) -> bool:
     for item in feedback_items:
         if not isinstance(item, Mapping):
             continue
-        metrics = item.get("metrics")
+        summary = item.get("feedback_summary")
+        summary = summary if isinstance(summary, Mapping) else item
+        metrics = summary.get("metrics")
         if not isinstance(metrics, Mapping):
-            continue
-        failed_gates = metrics.get("failed_gates")
+            metrics = {}
+        evidence = summary.get("evidence")
+        evidence = evidence if isinstance(evidence, Mapping) else metrics
+        failed_gates = summary.get("failed_gates")
+        if not isinstance(failed_gates, list):
+            failed_gates = metrics.get("failed_gates")
         if isinstance(failed_gates, list) and "evidence_quality" in {
             str(gate) for gate in failed_gates
         }:
             return True
-        if metrics.get("evidence_compacted") is True:
+        if evidence.get("evidence_compacted") is True:
             return True
-        if metrics.get("evidence_incomplete") is True:
+        if evidence.get("evidence_incomplete") is True:
             return True
     return False
 
@@ -1701,16 +1715,27 @@ def _default_cli_skill_candidate(
                     "they can still emit huge single-line content and trigger compaction."
                 ),
                 (
-                    "Save full raw evidence to a file or artifact first, then return only "
+                    "Persist raw evidence to a file or artifact first, then return only "
                     "small, verifiable extracts with source fields and offsets."
                 ),
                 (
-                    "For web content, prefer `curl -L -o <file>` followed by a parser that "
-                    "prints a bounded JSON summary plus short source excerpts, not the raw page."
+                    "Emit a bounded structured summary instead of raw source material; include "
+                    "only source identifiers, byte or line ranges when available, and short excerpts "
+                    "needed to support the final answer."
+                ),
+                (
+                    "If a tool result is compacted, truncated, schema-invalid, or too large to "
+                    "inspect, treat that attempt as unusable evidence and switch to an artifact-first "
+                    "or narrower extraction strategy before answering."
+                ),
+                (
+                    "Maintain an evidence ledger mapping each important claim to a non-compacted "
+                    "extract, source location, or artifact reference."
                 ),
                 (
                     "Before finalizing, verify that every concrete claim is supported by "
-                    "non-compacted evidence captured in the trajectory."
+                    "non-compacted evidence captured in the trajectory; do a claim-by-claim check "
+                    "and omit claims that cannot be verified."
                 ),
             ]
         )
