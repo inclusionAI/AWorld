@@ -1606,12 +1606,62 @@ def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
                 "failed_gates="
                 + ",".join(str(gate) for gate in failed_gates if gate)
             )
+        if isinstance(metrics.get("evidence_compacted"), bool):
+            parts.append(f"evidence_compacted={metrics['evidence_compacted']}")
+        if isinstance(metrics.get("evidence_incomplete"), bool):
+            parts.append(f"evidence_incomplete={metrics['evidence_incomplete']}")
+        evidence_issues = metrics.get("evidence_issues")
+        if isinstance(evidence_issues, list) and evidence_issues:
+            issue_text = "; ".join(
+                str(issue).strip()
+                for issue in evidence_issues[:2]
+                if str(issue).strip()
+            )
+            if issue_text:
+                parts.append(f"evidence_issues={issue_text}")
         if not parts:
             continue
         split = item.get("dataset_split") or "validation"
         variant_id = item.get("variant_id") or "candidate"
         guidance.append(f"{variant_id} on {split}: {'; '.join(parts)}")
     return guidance
+
+
+def _feedback_has_evidence_preservation_issue(prompt: str | None) -> bool:
+    if not prompt:
+        return False
+    start = prompt.find("{")
+    if start < 0:
+        return False
+    try:
+        payload = json.loads(prompt[start:])
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, Mapping):
+        return False
+
+    feedback_items: list[object] = []
+    for key in ("prior_feedback", "validation_feedback"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            feedback_items.extend(value)
+
+    for item in feedback_items:
+        if not isinstance(item, Mapping):
+            continue
+        metrics = item.get("metrics")
+        if not isinstance(metrics, Mapping):
+            continue
+        failed_gates = metrics.get("failed_gates")
+        if isinstance(failed_gates, list) and "evidence_quality" in {
+            str(gate) for gate in failed_gates
+        }:
+            return True
+        if metrics.get("evidence_compacted") is True:
+            return True
+        if metrics.get("evidence_incomplete") is True:
+            return True
+    return False
 
 
 def _default_cli_skill_candidate(
@@ -1621,6 +1671,7 @@ def _default_cli_skill_candidate(
     mutation_prompt: str | None = None,
 ) -> str:
     feedback_guidance = _feedback_guidance_from_mutation_prompt(mutation_prompt)
+    evidence_preservation_issue = _feedback_has_evidence_preservation_issue(mutation_prompt)
     if not trace_packs and not feedback_guidance:
         return current_content
 
@@ -1637,6 +1688,24 @@ def _default_cli_skill_candidate(
             "switch to an alternate evidence source before finalizing."
         ),
     ]
+    if evidence_preservation_issue:
+        guidance.extend(
+            [
+                "Evidence preservation requirements:",
+                (
+                    "Do not stream large raw pages, full HTML, large JSON, or long tool outputs "
+                    "directly into the conversation."
+                ),
+                (
+                    "Save full raw evidence to a file or artifact first, then return only "
+                    "small, verifiable extracts with source fields and offsets."
+                ),
+                (
+                    "Before finalizing, verify that every concrete claim is supported by "
+                    "non-compacted evidence captured in the trajectory."
+                ),
+            ]
+        )
 
     section = [
         "## Self-Evolve Trace Guidance",
