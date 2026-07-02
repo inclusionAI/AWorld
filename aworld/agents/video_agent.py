@@ -168,6 +168,7 @@ class VideoAgent(LLMAgent):
             observation: Contains the video prompt in ``content`` and
                 optional overrides in ``info`` (image_url, image_tail,
                 resolution, duration, fps, poll, poll_interval, poll_timeout,
+                submitted_timeout,
                 plus any extra kwargs forwarded to the provider).
             info: Supplementary information dict (merged with
                 ``observation.info`` if both are non-empty).

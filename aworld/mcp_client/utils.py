@@ -1,10 +1,12 @@
 import asyncio
+from functools import lru_cache
 import json
 import os
 import threading
 import traceback
 from contextlib import AsyncExitStack
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import requests
@@ -17,6 +19,96 @@ from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio, MC
 from aworld.tools import get_function_tools
 
 MCP_SERVERS_CONFIG = {}
+
+_OBSERVATION_HINT_TOOL_NAMES = {"execute_command", "mcp_execute_command"}
+
+
+def _stringify_tool_argument(value: Any, *, max_length: int = 120) -> str:
+    text = str(value).replace("\n", "\\n")
+    if len(text) > max_length:
+        return text[: max_length - 3] + "..."
+    return text
+
+
+def _summarize_tool_arguments(arguments: Dict[str, Any] | None, *, max_items: int = 4) -> str:
+    if not isinstance(arguments, dict) or not arguments:
+        return ""
+    items = []
+    for idx, (key, value) in enumerate(arguments.items()):
+        if idx >= max_items:
+            items.append(f"+{len(arguments) - max_items} more")
+            break
+        items.append(f"{key}={_stringify_tool_argument(value)}")
+    return ", ".join(items)
+
+
+def _make_exception_result(
+    server_name: str,
+    tool_name: str,
+    error: BaseException,
+    arguments: Dict[str, Any] | None = None,
+) -> CallToolResult:
+    summary = _summarize_tool_arguments(arguments)
+    msg = f"Error calling tool {server_name}__{tool_name}: {type(error).__name__}: {error}"
+    if summary:
+        msg += f". Arguments: {summary}"
+    return CallToolResult(
+        content=[TextContent(type="text", text=msg)],
+        is_error=True,
+    )
+
+
+def _iter_obsidian_vault_candidates(search_roots: tuple[Path, ...], *, max_depth: int = 3) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for current_root, dirnames, _ in os.walk(root):
+            current_path = Path(current_root)
+            try:
+                depth = len(current_path.relative_to(root).parts)
+            except ValueError:
+                depth = 0
+            if ".obsidian" in dirnames:
+                vault_path = str(current_path)
+                if vault_path not in seen:
+                    seen.add(vault_path)
+                    candidates.append(vault_path)
+                dirnames.remove(".obsidian")
+            if depth >= max_depth:
+                dirnames[:] = []
+    return candidates
+
+
+@lru_cache(maxsize=1)
+def get_obsidian_vault_candidates() -> list[str]:
+    configured = os.environ.get("AWORLD_OBSIDIAN_VAULTS", "").strip()
+    if configured:
+        return [item.strip() for item in configured.split(os.pathsep) if item.strip()]
+
+    home = Path.home()
+    search_roots = (
+        home / "Documents",
+        home / "Desktop",
+        home / "Library" / "Mobile Documents",
+    )
+    return _iter_obsidian_vault_candidates(search_roots)
+
+
+def _augment_tool_description(server_name: str, tool_name: str, description: str) -> str:
+    if server_name != "terminal" or tool_name not in _OBSERVATION_HINT_TOOL_NAMES:
+        return description
+    vaults = get_obsidian_vault_candidates()
+    if not vaults:
+        return description
+    vault_list = ", ".join(f"`{vault}`" for vault in vaults[:3])
+    return (
+        f"{description}\n\n"
+        f"Environment hints:\n"
+        f"- Detected Obsidian vaults: {vault_list}\n"
+        f"- When asked to save notes to Obsidian, prefer these existing vaults before probing the filesystem."
+    )
 
 
 def _make_timeout_result(server_name: str, tool_name: str, timeout: float) -> CallToolResult:
@@ -123,7 +215,7 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
             openai_function_schema = {
                 # "name": f"mcp__{sever_name}__{tool.name}",
                 "name": f"{sever_name}__{tool.name}",
-                "description": tool.description,
+                "description": _augment_tool_description(sever_name, tool.name, tool.description),
                 "parameters": {
                     "type": "object",
                     "properties": properties,
@@ -251,7 +343,7 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
 
                 openai_function_schema = {
                     "name": f"{server.name}__{tool.name}",
-                    "description": tool.description,
+                    "description": _augment_tool_description(server.name, tool.name, tool.description),
                     "parameters": {
                         "type": "object",
                         "properties": properties,
@@ -1337,7 +1429,12 @@ async def call_mcp_tool_with_exit_stack(
                         f"tool_name: {tool_name}, attempt: {attempt + 1}"
                     )
                     if attempt == max_retry - 1:
-                        return None
+                        return _make_exception_result(
+                            server_name,
+                            tool_name,
+                            RuntimeError("Failed to create server instance"),
+                            parameter,
+                        )
                     continue
 
                 # Register cleanup callback since server is already connected
@@ -1393,6 +1490,11 @@ async def call_mcp_tool_with_exit_stack(
                     f"All {max_retry} attempts failed for {server_name}__{tool_name}"
                 )
 
+    if call_result_raw is None and last_exception is not None:
+        if isinstance(last_exception, asyncio.TimeoutError):
+            return _make_timeout_result(server_name, tool_name, timeout)
+        return _make_exception_result(server_name, tool_name, last_exception, parameter)
+
     return call_result_raw
 
 
@@ -1442,9 +1544,15 @@ async def call_mcp_tool_with_reuse(
 
     if not server:
         logger.warning(f"Failed to get server instance: {server_name}, tool_name: {tool_name}")
-        return None
+        return _make_exception_result(
+            server_name,
+            tool_name,
+            RuntimeError("Failed to get server instance"),
+            parameter,
+        )
 
     call_result_raw = None
+    last_exception: BaseException | None = None
 
     for attempt in range(max_retry):
         try:
@@ -1463,11 +1571,22 @@ async def call_mcp_tool_with_reuse(
             break
 
         except (asyncio.TimeoutError, BaseException) as e:
+            last_exception = e
             logger.warning(
                 f"Error calling tool {server_name}__{tool_name} "
                 f"(attempt {attempt + 1}/{max_retry}): {e}"
                 f"Traceback:\n{traceback.format_exc()}"
             )
+
+    if call_result_raw is None:
+        if isinstance(last_exception, asyncio.TimeoutError):
+            return _make_timeout_result(server_name, tool_name, timeout)
+        return _make_exception_result(
+            server_name,
+            tool_name,
+            last_exception or RuntimeError("Failed to call tool after all retry attempts"),
+            parameter,
+        )
 
     return call_result_raw
 

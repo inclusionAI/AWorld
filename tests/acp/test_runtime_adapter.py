@@ -1,0 +1,316 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from aworld.models.model_response import Function, ModelResponse, ToolCall
+from aworld.output.base import ChunkOutput, MessageOutput, StepOutput, ToolCallOutput, ToolResultOutput
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from aworld_cli.acp.runtime_adapter import adapt_output_to_runtime_events, normalize_tool_end
+
+
+def test_tool_result_without_prior_start_gets_synthetic_turn_scoped_id() -> None:
+    state: dict[str, object] = {}
+
+    event = normalize_tool_end(
+        state,
+        native_id=None,
+        tool_name="shell",
+        status="completed",
+        payload={"ok": True},
+    )
+
+    assert event["event_type"] == "tool_end"
+    assert event["tool_call_id"].startswith("acp_tool_")
+
+
+def test_tool_result_preserves_native_id_when_present() -> None:
+    state: dict[str, object] = {}
+
+    event = normalize_tool_end(
+        state,
+        native_id="native-tool-1",
+        tool_name="shell",
+        status="completed",
+        payload={"ok": True},
+    )
+
+    assert event["tool_call_id"] == "native-tool-1"
+    assert event["tool_name"] == "shell"
+
+
+def test_chunk_output_maps_to_text_delta_event() -> None:
+    state: dict[str, object] = {}
+    output = ChunkOutput(
+        data=ModelResponse(id="resp-1", model="demo", content="hello"),
+        metadata={},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [{"event_type": "text_delta", "seq": 1, "text": "hello"}]
+
+
+def test_chunk_output_reasoning_maps_to_thought_delta_before_text() -> None:
+    state: dict[str, object] = {}
+    output = ChunkOutput(
+        data=ModelResponse(
+            id="resp-1",
+            model="demo",
+            content="hello",
+            reasoning_content="need to search first",
+        ),
+        metadata={},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {"event_type": "thought_delta", "seq": 1, "text": "need to search first"},
+        {"event_type": "text_delta", "seq": 2, "text": "hello"},
+    ]
+
+
+def test_chunk_output_tool_calls_become_tool_start_events() -> None:
+    state: dict[str, object] = {}
+    output = ChunkOutput(
+        data=ModelResponse(
+            id="resp-1",
+            model="demo",
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    function=Function(name="shell", arguments='{"command":"pwd"}'),
+                )
+            ],
+        ),
+        metadata={},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {
+            "event_type": "tool_start",
+            "seq": 1,
+            "tool_call_id": "call-1",
+            "tool_name": "shell",
+            "raw_input": {"command": "pwd"},
+        }
+    ]
+
+
+def test_message_output_tool_calls_become_tool_start_events() -> None:
+    state: dict[str, object] = {}
+    output = MessageOutput(
+        source=ModelResponse(
+            id="resp-1",
+            model="demo",
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    function=Function(name="shell", arguments='{"command":"pwd"}'),
+                )
+            ],
+        )
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert len(events) == 1
+    assert events[0]["event_type"] == "tool_start"
+    assert events[0]["tool_call_id"] == "call-1"
+    assert events[0]["tool_name"] == "shell"
+    assert events[0]["raw_input"] == {"command": "pwd"}
+
+
+def test_standalone_tool_call_output_maps_to_tool_start_event() -> None:
+    state: dict[str, object] = {}
+    output = ToolCallOutput.from_tool_call(
+        ToolCall(
+            id="call-1",
+            function=Function(name="shell", arguments='{"command":"pwd"}'),
+        ),
+        task_id="task-1",
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {
+            "event_type": "tool_start",
+            "seq": 1,
+            "tool_call_id": "call-1",
+            "tool_name": "shell",
+            "raw_input": {"command": "pwd"},
+        }
+    ]
+
+
+def test_duplicate_native_tool_start_is_suppressed_across_chunk_and_message() -> None:
+    state: dict[str, object] = {}
+    model_response = ModelResponse(
+        id="resp-1",
+        model="demo",
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                function=Function(name="shell", arguments='{"command":"pwd"}'),
+            )
+        ],
+    )
+
+    chunk_events = adapt_output_to_runtime_events(
+        state,
+        ChunkOutput(data=model_response, metadata={}),
+    )
+    message_events = adapt_output_to_runtime_events(
+        state,
+        MessageOutput(source=model_response),
+    )
+
+    assert len(chunk_events) == 1
+    assert chunk_events[0]["event_type"] == "tool_start"
+    assert message_events == []
+
+
+def test_tool_result_output_maps_to_tool_end_event() -> None:
+    state: dict[str, object] = {}
+    output = ToolResultOutput(
+        tool_name="shell",
+        data={"cwd": "/tmp"},
+        origin_tool_call=ToolCall(
+            id="call-1",
+            function=Function(name="shell", arguments='{"command":"pwd"}'),
+        ),
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert len(events) == 1
+    assert events[0]["event_type"] == "tool_end"
+    assert events[0]["tool_call_id"] == "call-1"
+    assert events[0]["status"] == "completed"
+
+
+def test_message_output_final_text_is_suppressed_after_chunk_stream() -> None:
+    state: dict[str, object] = {"saw_text_delta": True}
+    output = MessageOutput(
+        source=ModelResponse(id="resp-1", model="demo", content="hello")
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == []
+
+
+def test_message_output_reasoning_maps_to_thought_delta() -> None:
+    state: dict[str, object] = {}
+    output = MessageOutput(
+        source=ModelResponse(
+            id="resp-1",
+            model="demo",
+            content="final answer",
+            reasoning_content="plan before answer",
+        ),
+        metadata={"sender": "Aworld", "is_finished": True},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {"event_type": "thought_delta", "seq": 1, "text": "plan before answer"},
+        {"event_type": "final_text", "seq": 2, "text": "final answer"},
+    ]
+
+
+def test_message_output_text_requires_completion_marker_for_routed_runtime_messages() -> None:
+    state: dict[str, object] = {}
+    output = MessageOutput(
+        source=ModelResponse(id="resp-1", model="demo", content="echoed prompt"),
+        metadata={"sender": "Aworld", "receiver": None},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == []
+
+
+def test_message_output_text_emits_when_routed_runtime_message_is_finished() -> None:
+    state: dict[str, object] = {}
+    output = MessageOutput(
+        source=ModelResponse(id="resp-1", model="demo", content="final answer"),
+        metadata={"sender": "Aworld", "receiver": None, "is_finished": True},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [{"event_type": "final_text", "seq": 1, "text": "final answer"}]
+
+
+def test_step_output_start_maps_to_step_start_event() -> None:
+    state: dict[str, object] = {}
+    output = StepOutput.build_start_output(
+        name="planner.agent",
+        alias_name="Planner",
+        step_num=0,
+        step_id="native-step-1",
+        parent_step_id="parent-step-0",
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {
+            "event_type": "step_start",
+            "seq": 1,
+            "step_id": "native-step-1",
+            "parent_step_id": "parent-step-0",
+            "name": "planner.agent",
+            "display_name": "Planner",
+            "step_num": 0,
+            "status": "START",
+            "payload": None,
+        }
+    ]
+
+
+def test_step_output_finish_reuses_matching_step_id() -> None:
+    state: dict[str, object] = {}
+    start = StepOutput.build_start_output(
+        name="planner.agent",
+        alias_name="Planner",
+        step_num=0,
+        step_id="native-step-1",
+    )
+    finish = StepOutput.build_finished_output(
+        name="planner.agent",
+        alias_name="Planner",
+        step_num=0,
+        data={"summary": "done"},
+        step_id="native-step-1",
+    )
+
+    start_events = adapt_output_to_runtime_events(state, start)
+    finish_events = adapt_output_to_runtime_events(state, finish)
+
+    assert start_events[0]["step_id"] == "native-step-1"
+    assert finish_events == [
+        {
+            "event_type": "step_end",
+            "seq": 2,
+            "step_id": "native-step-1",
+            "parent_step_id": None,
+            "name": "planner.agent",
+            "display_name": "Planner",
+            "step_num": 0,
+            "status": "FINISHED",
+            "payload": {"summary": "done"},
+        }
+    ]

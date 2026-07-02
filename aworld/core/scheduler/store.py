@@ -4,14 +4,22 @@
 Cron job storage with atomic writes and file locking.
 """
 import asyncio
+import os
 import fcntl
 import json
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Iterator
 from datetime import UTC, datetime
 
 from aworld.logs.util import logger
+from .normalization import normalize_tool_names
 from .types import CronJob, CronSchedule, CronPayload, CronJobState
+
+
+class CronStoreReadError(RuntimeError):
+    """Raised when the persisted cron store cannot be read safely."""
 
 
 def _utc_now_iso() -> str:
@@ -27,14 +35,7 @@ def _coerce_bool(value: Any) -> bool:
 
 
 def _coerce_tool_names(value: Any) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    if isinstance(value, str):
-        stripped = value.strip()
-        return [stripped] if stripped else []
-    return [str(value)]
+    return normalize_tool_names(value)
 
 
 def _coerce_optional_int(value: Any) -> Optional[int]:
@@ -89,60 +90,101 @@ class FileBasedCronStore:
             file_path: Path to cron jobs file (e.g., '.aworld/cron.json')
         """
         self.file_path = Path(file_path)
+        self.lock_file_path = self.file_path.with_name(f"{self.file_path.name}.lock")
         self._lock = asyncio.Lock()  # Process-local mutex for read-modify-write
         self._ensure_file_exists()
 
+    @contextmanager
+    def _file_lock(self, exclusive: bool) -> Iterator[None]:
+        """Coordinate cross-process access with a dedicated lock file."""
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(self.lock_file_path, "a+") as lock_file:
+            lock_type = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(lock_file.fileno(), lock_type)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
     def _ensure_file_exists(self):
         """Create file and parent directories if they don't exist."""
-        if not self.file_path.exists():
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_data({"version": 1, "jobs": []})
-            logger.info(f"Created cron store: {self.file_path}")
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.lock_file_path.touch(exist_ok=True)
 
-    def _read_data(self) -> Dict[str, Any]:
+        with self._file_lock(exclusive=True):
+            if not self.file_path.exists():
+                self._write_data({"version": 1, "jobs": []}, lock=False)
+                logger.info(f"Created cron store: {self.file_path}")
+
+    def _read_data_unlocked(self) -> Dict[str, Any]:
+        """Read cron data assuming the caller already coordinated file access."""
+        with open(self.file_path, "r") as f:
+            return json.load(f)
+
+    def _read_data(self, lock: bool = True) -> Dict[str, Any]:
         """
-        Read data from file with shared lock.
+        Read data from file.
 
         Returns:
             Dict with 'version' and 'jobs' keys
         """
         try:
-            with open(self.file_path, "r") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_SH)  # Shared lock
-                try:
-                    return json.load(f)
-                finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            if lock:
+                with self._file_lock(exclusive=False):
+                    return self._read_data_unlocked()
+            return self._read_data_unlocked()
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse cron store: {e}")
-            return {"version": 1, "jobs": []}
+            raise CronStoreReadError(
+                f"Cron store is corrupted and cannot be parsed: {self.file_path}"
+            ) from e
         except Exception as e:
             logger.error(f"Failed to read cron store: {e}")
-            return {"version": 1, "jobs": []}
+            raise CronStoreReadError(
+                f"Cron store could not be read safely: {self.file_path}"
+            ) from e
 
-    def _write_data(self, data: Dict[str, Any]):
+    def _write_data_unlocked(self, data: Dict[str, Any]):
+        """Write data atomically assuming the caller already coordinated file access."""
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        temp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=self.file_path.parent,
+                prefix=f"{self.file_path.name}.",
+                suffix=".tmp",
+                delete=False,
+                encoding="utf-8",
+            ) as temp_file:
+                json.dump(data, temp_file, indent=2, ensure_ascii=False)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+                temp_path = Path(temp_file.name)
+
+            temp_path.replace(self.file_path)
+        except Exception:
+            if temp_path and temp_path.exists():
+                temp_path.unlink()
+            raise
+
+    def _write_data(self, data: Dict[str, Any], lock: bool = True):
         """
-        Write data to file atomically with exclusive lock.
+        Write data to file atomically.
 
         Args:
             data: Dict with 'version' and 'jobs' keys
         """
-        temp_file = self.file_path.with_suffix('.tmp')
-
         try:
-            with open(temp_file, "w") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # Exclusive lock
-                try:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-            # Atomic replace
-            temp_file.replace(self.file_path)
+            if lock:
+                with self._file_lock(exclusive=True):
+                    self._write_data_unlocked(data)
+            else:
+                self._write_data_unlocked(data)
         except Exception as e:
             logger.error(f"Failed to write cron store: {e}")
-            if temp_file.exists():
-                temp_file.unlink()
             raise
 
     def _job_to_dict(self, job: CronJob) -> Dict[str, Any]:
@@ -228,9 +270,10 @@ class FileBasedCronStore:
             Added job
         """
         async with self._lock:
-            data = self._read_data()
-            data["jobs"].append(self._job_to_dict(job))
-            self._write_data(data)
+            with self._file_lock(exclusive=True):
+                data = self._read_data(lock=False)
+                data["jobs"].append(self._job_to_dict(job))
+                self._write_data(data, lock=False)
             logger.info(f"Added cron job: {job.id} ({job.name})")
             return job
 
@@ -246,22 +289,39 @@ class FileBasedCronStore:
             Updated job or None if not found
         """
         async with self._lock:
-            data = self._read_data()
+            with self._file_lock(exclusive=True):
+                data = self._read_data(lock=False)
 
-            for job_dict in data["jobs"]:
-                if job_dict["id"] == job_id:
-                    # Update fields
-                    for key, value in updates.items():
-                        if key == "state":
-                            # Merge state updates
-                            job_dict["state"].update(value)
-                        else:
-                            job_dict[key] = value
+                for job_dict in data["jobs"]:
+                    if job_dict["id"] == job_id:
+                        # Update fields
+                        for key, value in updates.items():
+                            if key == "state":
+                                # Merge state updates
+                                job_dict["state"].update(value)
+                            elif key == "schedule":
+                                job_dict["schedule"] = {
+                                    "kind": value.kind,
+                                    "at": value.at,
+                                    "every_seconds": value.every_seconds,
+                                    "cron_expr": value.cron_expr,
+                                    "timezone": value.timezone,
+                                }
+                            elif key == "payload":
+                                job_dict["payload"] = {
+                                    "message": value.message,
+                                    "agent_name": value.agent_name,
+                                    "tool_names": value.tool_names,
+                                    "timeout_seconds": value.timeout_seconds,
+                                    "max_runs": value.max_runs,
+                                }
+                            else:
+                                job_dict[key] = value
 
-                    job_dict["updated_at"] = _utc_now_iso()
-                    self._write_data(data)
-                    logger.debug(f"Updated cron job: {job_id}")
-                    return self._dict_to_job(job_dict)
+                        job_dict["updated_at"] = _utc_now_iso()
+                        self._write_data(data, lock=False)
+                        logger.debug(f"Updated cron job: {job_id}")
+                        return self._dict_to_job(job_dict)
 
             logger.warning(f"Job not found for update: {job_id}")
             return None
@@ -277,14 +337,15 @@ class FileBasedCronStore:
             True if removed, False if not found
         """
         async with self._lock:
-            data = self._read_data()
-            original_count = len(data["jobs"])
-            data["jobs"] = [j for j in data["jobs"] if j["id"] != job_id]
+            with self._file_lock(exclusive=True):
+                data = self._read_data(lock=False)
+                original_count = len(data["jobs"])
+                data["jobs"] = [j for j in data["jobs"] if j["id"] != job_id]
 
-            if len(data["jobs"]) < original_count:
-                self._write_data(data)
-                logger.info(f"Removed cron job: {job_id}")
-                return True
+                if len(data["jobs"]) < original_count:
+                    self._write_data(data, lock=False)
+                    logger.info(f"Removed cron job: {job_id}")
+                    return True
 
             logger.warning(f"Job not found for removal: {job_id}")
             return False
@@ -341,49 +402,50 @@ class FileBasedCronStore:
             Claimed job if successful, None if job cannot be claimed
         """
         async with self._lock:
-            data = self._read_data()
+            with self._file_lock(exclusive=True):
+                data = self._read_data(lock=False)
 
-            for job_dict in data["jobs"]:
-                if job_dict["id"] == job_id:
-                    # Check if job can be claimed
-                    if not job_dict.get("enabled", True):
-                        logger.debug(f"Cannot claim job {job_id}: disabled")
-                        return None
-
-                    if job_dict["state"].get("running", False):
-                        logger.debug(f"Cannot claim job {job_id}: already running")
-                        return None
-
-                    current_next_run = job_dict["state"].get("next_run_at")
-                    if not current_next_run:
-                        logger.debug(f"Cannot claim job {job_id}: no next_run_at")
-                        return None
-
-                    # Compare timestamps as datetime objects (handles timezone offsets correctly)
-                    # ISO 8601 strings with different timezone offsets cannot be compared lexicographically
-                    # Example: "09:00:00+08:00" > "02:00:00+00:00" (string) but UTC+8 09:00 < UTC 02:00 (datetime)
-                    try:
-                        current_next_run_dt = datetime.fromisoformat(current_next_run.replace('Z', '+00:00'))
-                        now_dt = datetime.fromisoformat(now_iso.replace('Z', '+00:00'))
-
-                        if current_next_run_dt > now_dt:
-                            logger.debug(f"Cannot claim job {job_id}: not due yet ({current_next_run} > {now_iso})")
+                for job_dict in data["jobs"]:
+                    if job_dict["id"] == job_id:
+                        # Check if job can be claimed
+                        if not job_dict.get("enabled", True):
+                            logger.debug(f"Cannot claim job {job_id}: disabled")
                             return None
-                    except (ValueError, AttributeError) as e:
-                        logger.warning(f"Invalid timestamp format for job {job_id}: {e}")
-                        return None
 
-                    # Atomically claim the job AND advance next_run_at
-                    job_dict["state"]["running"] = True
-                    job_dict["state"]["last_run_at"] = now_iso
-                    job_dict["state"]["next_run_at"] = next_run_at  # Advance to next schedule
-                    job_dict["updated_at"] = _utc_now_iso()
+                        if job_dict["state"].get("running", False):
+                            logger.debug(f"Cannot claim job {job_id}: already running")
+                            return None
 
-                    # Write atomically
-                    self._write_data(data)
+                        current_next_run = job_dict["state"].get("next_run_at")
+                        if not current_next_run:
+                            logger.debug(f"Cannot claim job {job_id}: no next_run_at")
+                            return None
 
-                    logger.info(f"Claimed job {job_id} for execution (next_run_at: {next_run_at})")
-                    return self._dict_to_job(job_dict)
+                        # Compare timestamps as datetime objects (handles timezone offsets correctly)
+                        # ISO 8601 strings with different timezone offsets cannot be compared lexicographically
+                        # Example: "09:00:00+08:00" > "02:00:00+00:00" (string) but UTC+8 09:00 < UTC 02:00 (datetime)
+                        try:
+                            current_next_run_dt = datetime.fromisoformat(current_next_run.replace('Z', '+00:00'))
+                            now_dt = datetime.fromisoformat(now_iso.replace('Z', '+00:00'))
+
+                            if current_next_run_dt > now_dt:
+                                logger.debug(f"Cannot claim job {job_id}: not due yet ({current_next_run} > {now_iso})")
+                                return None
+                        except (ValueError, AttributeError) as e:
+                            logger.warning(f"Invalid timestamp format for job {job_id}: {e}")
+                            return None
+
+                        # Atomically claim the job AND advance next_run_at
+                        job_dict["state"]["running"] = True
+                        job_dict["state"]["last_run_at"] = now_iso
+                        job_dict["state"]["next_run_at"] = next_run_at  # Advance to next schedule
+                        job_dict["updated_at"] = _utc_now_iso()
+
+                        # Write atomically
+                        self._write_data(data, lock=False)
+
+                        logger.info(f"Claimed job {job_id} for execution (next_run_at: {next_run_at})")
+                        return self._dict_to_job(job_dict)
 
             logger.warning(f"Job not found for claim: {job_id}")
             return None

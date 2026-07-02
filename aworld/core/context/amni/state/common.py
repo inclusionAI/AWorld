@@ -25,13 +25,27 @@ class OpenAIChatMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class SchedulerConfig(BaseModel):
+    """
+    Scheduler configuration for task result reporting
+
+    Attributes:
+        run_id (Optional[str]): Unique run identifier from scheduler
+        result_report_enabled (bool): Whether to report task results back to scheduler
+        report_task_result_url (Optional[str]): URL to report task results to
+    """
+    run_id: Optional[str] = None
+    result_report_enabled: bool = False
+    report_task_result_url: Optional[str] = None
+
+
 class OpenAIChatCompletionForm(BaseModel):
     """
     OpenAI chat completion request form
-    
+
     Base model for OpenAI chat completion API requests, including streaming,
     model selection, and message history.
-    
+
     Attributes:
         stream (bool): Whether to stream the response, defaults to True
         model (Optional[str]): Model identifier to use for completion
@@ -41,8 +55,9 @@ class OpenAIChatCompletionForm(BaseModel):
     model: Optional[str] = Field(default=None)
     messages: Optional[list[OpenAIChatMessage]] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
+    scheduler: Optional[SchedulerConfig] = Field(default=None, alias="_scheduler")
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
 class ContextUsage(BaseModel):

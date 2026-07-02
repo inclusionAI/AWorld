@@ -6,7 +6,7 @@ import json
 import os
 import traceback
 from datetime import datetime
-from typing import Optional, Tuple, Any
+from typing import Callable, Optional, Tuple, Any
 
 from aworld.config import SummaryPromptConfig
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
@@ -23,6 +23,7 @@ from aworld.models.llm import acall_llm_model
 from aworld.models.utils import num_tokens_from_messages
 
 MEMORY_HOLDER = {}
+_REGISTERED_MEMORY_PROVIDERS: dict[str, Callable[[MemoryConfig, MemoryStore], "MemoryBase"]] = {}
 
 
 def _default_file_memory_store() -> "MemoryStore":
@@ -182,20 +183,21 @@ class InMemoryMemoryStore(MemoryStore):
 def get_memory() -> "MemoryBase":
     return MemoryFactory.instance()
 
+
+def register_memory_provider(
+    name: str,
+    factory: Callable[[MemoryConfig, MemoryStore], "MemoryBase"],
+) -> None:
+    _REGISTERED_MEMORY_PROVIDERS[name] = factory
+
 class MemoryFactory:
 
     @classmethod
     def init(cls, custom_memory_store: MemoryStore = None, config: MemoryConfig = MemoryConfig(provider="aworld")):
-        if custom_memory_store:
-            MEMORY_HOLDER["instance"] = AworldMemory(
-                memory_store=custom_memory_store,
-                config=config
-            )
-        else:
-            MEMORY_HOLDER["instance"] = AworldMemory(
-                memory_store=_default_file_memory_store(),
-                config=config
-            )
+        MEMORY_HOLDER["instance"] = cls.from_config(
+            config=config,
+            memory_store=custom_memory_store or _default_file_memory_store(),
+        )
         logger.info(f"Memory init success")
 
     @classmethod
@@ -227,6 +229,10 @@ class MemoryFactory:
         Returns:
             MemoryBase: Memory instance.
         """
+        provider_factory = _REGISTERED_MEMORY_PROVIDERS.get(config.provider)
+        if provider_factory is not None:
+            return provider_factory(config, memory_store or _default_file_memory_store())
+
         if config.provider == "aworld":
             logger.info("🧠 [MEMORY]setup memory store: aworld")
             return AworldMemory(
@@ -241,7 +247,7 @@ class MemoryFactory:
                 config=config
             )
         else:
-            raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
+            raise ValueError(f"Invalid memory store type: {config.provider}")
 
 
 class Memory(MemoryBase):

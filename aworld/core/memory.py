@@ -447,7 +447,7 @@ class MemoryConfig(BaseModel):
     )
 
     # Memory Config
-    provider: Literal['aworld', 'mem0'] = 'aworld'
+    provider: Literal['aworld', 'mem0', 'hybrid'] = 'aworld'
 
     # LLM settings
     llm_config: Optional[ModelConfig] = Field(default=None, description="LLM config")

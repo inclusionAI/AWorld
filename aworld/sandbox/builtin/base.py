@@ -11,6 +11,7 @@ from functools import wraps
 FILESYSTEM_TOOL_MAPPING = {
     "read_file": "read_file",
     "write_file": "write_file",
+    "write_file_base64": "write_file_base64",
     "edit_file": "replace_in_file",
     "replace_in_file": "replace_in_file",
     "edit_file_range": "edit_file_range",
@@ -88,4 +89,3 @@ def builtin_tool(service: str, tool_name: str, fallback_to_builtin: bool = True)
         func._fallback = fallback_to_builtin
         return func
     return decorator
-

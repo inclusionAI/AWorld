@@ -1,0 +1,19 @@
+{
+  "id": "aworld-examples-cli",
+  "name": "aworld-examples-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "examples",
+        "name": "examples",
+        "target": "cli_commands/examples.py",
+        "scope": "workspace",
+        "visibility": "hidden",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

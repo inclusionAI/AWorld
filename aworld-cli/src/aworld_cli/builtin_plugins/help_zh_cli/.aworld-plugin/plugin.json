@@ -1,0 +1,19 @@
+{
+  "id": "aworld-help-zh-cli",
+  "name": "aworld-help-zh-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "help-zh",
+        "name": "help-zh",
+        "target": "cli_commands/help_zh.py",
+        "scope": "workspace",
+        "visibility": "hidden",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

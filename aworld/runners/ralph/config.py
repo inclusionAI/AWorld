@@ -1,9 +1,9 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from aworld.config import ModelConfig, TaskConfig
 from aworld.evaluations.base import EvalCriteria, Scorer
@@ -81,18 +81,50 @@ class StateConfig:
     enable_metrics: bool = True
 
 
+@dataclass
+class RalphVerifyConfig:
+    """Configuration for Ralph verification hooks."""
+
+    enabled: bool = False
+    commands: list[str] = field(default_factory=list)
+    run_on_each_iteration: bool = False
+    run_before_completion: bool = True
+    success_policy: Literal["all", "any"] = "all"
+    max_output_chars: int = 12000
+
+
 class RalphConfig(TaskConfig):
     """Unified configuration for Ralph Loop.
 
     This configuration class combines all component configurations and provides sensible defaults for different use cases.
     """
+    model_config = {
+        **getattr(TaskConfig, "model_config", {}),
+        "validate_assignment": True,
+    }
     stop_condition: StopConditionConfig = Field(default_factory=StopConditionConfig)
     state: StateConfig = Field(default_factory=StateConfig)
+    execution_mode: Literal["reuse_context", "fresh_context"] = Field(default="reuse_context")
+    verify: RalphVerifyConfig = Field(default_factory=RalphVerifyConfig)
     reuse_context: bool = Field(default=True)
 
     workspace: str = "."
     # Global settings
     llm_config: ModelConfig = Field(default_factory=ModelConfig)
+
+    @model_validator(mode="after")
+    def _normalize_execution_mode(self) -> "RalphConfig":
+        explicit_fields = getattr(self, "model_fields_set", set())
+        if "execution_mode" in explicit_fields:
+            execution_mode = self.execution_mode
+        else:
+            execution_mode = "reuse_context" if self.reuse_context else "fresh_context"
+
+        reuse_context = execution_mode == "reuse_context"
+
+        object.__setattr__(self, "execution_mode", execution_mode)
+        object.__setattr__(self, "reuse_context", reuse_context)
+        return self
 
     @classmethod
     def create(cls, model_config: Optional[ModelConfig] = None) -> 'RalphConfig':

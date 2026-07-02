@@ -29,7 +29,7 @@ class EvalStatus(Enum):
     NOT_EVALUATED = 3
 
 
-MetricValueType = Union[int, float, bool]
+MetricValueType = Union[int, float, bool, str]
 
 
 @dataclass
@@ -209,6 +209,8 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
                 score_dict['std'] = statistics.stdev(scores)
             else:
                 score_dict['std'] = 0.0
+        elif isinstance(score, str):
+            score_dict['value'] = score if all(item == score for item in scores) else "mixed"
         elif isinstance(score, dict):
             all_keys = list(
                 dict.fromkeys([k for score in scores if isinstance(score, dict) for k in score.keys()])

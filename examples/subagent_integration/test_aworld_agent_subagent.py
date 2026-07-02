@@ -29,7 +29,7 @@ def _run_aworld_agent_subagent():
     # Build Aworld agent
     logger.info("\n[Step 1] Building Aworld agent...")
     try:
-        from aworld_cli.inner_plugins.smllc.agents.aworld_agent import build_aworld_agent
+        from aworld_cli.builtin_agents.smllc.agents.aworld_agent import build_aworld_agent
         aworld_swarm = build_aworld_agent()
         logger.info("✓ Aworld agent built successfully")
     except Exception as e:

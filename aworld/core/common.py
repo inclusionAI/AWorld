@@ -17,12 +17,12 @@ class ActionResult(BaseModel):
     is_done: bool = False
     success: bool = False
     content: Any = None
-    error: str = None
+    error: Optional[str] = None
     keep: bool = False
-    action_name: str = None
-    tool_name: str = None
+    action_name: Optional[str] = None
+    tool_name: Optional[str] = None
     # llm tool call id
-    tool_call_id: str = None
+    tool_call_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = {}
     parameter: Optional[Dict[str, Any]] = {}
 

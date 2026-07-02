@@ -126,22 +126,19 @@ async def list_built_in_resources() -> List[tuple]:
 
     try:
         from pathlib import Path
-        from ..core.plugin_manager import PluginManager
+        from ..core.plugin_manager import (
+            PluginManager,
+            get_builtin_agent_bundle_roots,
+            get_builtin_plugin_roots,
+        )
         from ..core.agent_registry import LocalAgentRegistry
 
         # Get all plugin directories (built-in and installed)
         plugin_dirs = []
 
-        # Get built-in plugins (inner_plugins)
-        import pathlib
-        current_dir = pathlib.Path(__file__).parent.parent
-        inner_plugins_dir = current_dir / "inner_plugins"
-
-        if inner_plugins_dir.exists() and inner_plugins_dir.is_dir():
-            for plugin_dir in inner_plugins_dir.iterdir():
-                if plugin_dir.is_dir():
-                    plugin_dirs.append(plugin_dir)
-        logger.info(f"list_built_in_resources: inner_plugins_dir={inner_plugins_dir}, built-in plugin_dirs count={len(plugin_dirs)}")
+        plugin_dirs.extend(get_builtin_plugin_roots())
+        plugin_dirs.extend(get_builtin_agent_bundle_roots())
+        logger.info(f"list_built_in_resources: built-in resource roots count={len(plugin_dirs)}")
 
         # Get installed plugins
         try:
