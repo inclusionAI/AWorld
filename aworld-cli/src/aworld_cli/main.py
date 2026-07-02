@@ -755,7 +755,13 @@ async def _run_interactive_mode(
     requested_skill_names: Optional[list[str]] = None,
     remote_backends: Optional[list[str]] = None,
     local_dirs: Optional[list[str]] = None,
-    agent_files: Optional[list[str]] = None
+    agent_files: Optional[list[str]] = None,
+    session_id: Optional[str] = None,
+    resume_record=None,
+    session_store=None,
+    require_same_resume_agent: bool = True,
+    resume_cwd: str | None = None,
+    fail_on_missing_agent: bool = False,
 ):
     """
     Run interactive mode using CliRuntime directly.
@@ -775,7 +781,17 @@ async def _run_interactive_mode(
             except Exception as e:
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
-    runtime = CliRuntime(agent_name=agent_name, remote_backends=remote_backends, local_dirs=local_dirs)
+    runtime = CliRuntime(
+        agent_name=agent_name,
+        remote_backends=remote_backends,
+        local_dirs=local_dirs,
+        session_id=session_id,
+        resume_record=resume_record,
+        session_store=session_store,
+        require_same_resume_agent=require_same_resume_agent,
+        resume_cwd=resume_cwd,
+        fail_on_missing_agent=fail_on_missing_agent,
+    )
     runtime.cli._pending_skill_overrides = list(requested_skill_names or [])
     try:
         await runtime.start()
@@ -903,7 +919,16 @@ async def _run_direct_mode(
     session_id: Optional[str] = None,
     remote_backends: Optional[list[str]] = None,
     local_dirs: Optional[list[str]] = None,
-    agent_files: Optional[list[str]] = None
+    agent_files: Optional[list[str]] = None,
+    session_mode: str = "direct",
+    resume_record=None,
+    session_store=None,
+    require_same_resume_agent: bool = True,
+    resume_cwd: str | None = None,
+    fail_on_missing_agent: bool = False,
+    show_start_banner: bool = True,
+    show_iteration_header: bool = True,
+    echo_prompt_as_turn: bool = False,
 ) -> None:
     """
     Run agent in direct mode (non-interactive).
@@ -938,7 +963,12 @@ async def _run_direct_mode(
     runtime = CliRuntime(
         remote_backends=remote_backends, 
         local_dirs=local_dirs,
-        session_id=session_id
+        session_id=session_id,
+        resume_record=resume_record,
+        session_store=session_store,
+        require_same_resume_agent=require_same_resume_agent,
+        resume_cwd=resume_cwd,
+        fail_on_missing_agent=fail_on_missing_agent,
     )
     all_agents = await runtime._load_agents()
 
@@ -966,9 +996,22 @@ async def _run_direct_mode(
     # Match interactive mode so direct runs can access runtime-scoped features
     # such as steering checkpoints and HUD state.
     agent_executor._base_runtime = runtime
+    agent_executor._session_mode = session_mode
+    runtime._restore_executor_session(agent_executor, current_agent_name=selected_agent.name)
+    restored_replay = getattr(agent_executor, "_aworld_cli_restored_transcript", None)
+    restored_text = getattr(restored_replay, "rendered_text", None)
+    if restored_text:
+        try:
+            agent_executor._aworld_cli_restored_transcript = None
+        except Exception:
+            pass
+        console.print(str(restored_text).strip())
+        console.print()
     
-    # If session_id was provided, ensure it's properly restored (for session history management)
-    if session_id and hasattr(agent_executor, 'restore_session'):
+    # If session_id was provided, ensure it's properly restored for legacy direct runs.
+    # Resume mode already selected a known session from CliSessionStore; BaseAgentExecutor
+    # would create a fresh session when the ID is not present in its legacy local history.
+    if session_id and session_mode != "interactive" and hasattr(agent_executor, 'restore_session'):
         try:
             # Restore session to ensure it's added to history if needed
             agent_executor.restore_session(session_id)
@@ -1004,7 +1047,10 @@ async def _run_direct_mode(
         max_cost=max_cost,
         max_duration=max_duration,
         completion_signal=completion_signal,
-        completion_threshold=completion_threshold
+        completion_threshold=completion_threshold,
+        show_start_banner=show_start_banner,
+        show_iteration_header=show_iteration_header,
+        echo_prompt_as_turn=echo_prompt_as_turn,
     )
 
 

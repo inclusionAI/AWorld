@@ -62,6 +62,7 @@ class BaseCliRuntime:
         self._hud_snapshot_store = HudSnapshotStore()
         self._steering = SteeringCoordinator()
         self._current_root_agent_name: Optional[str] = None
+        self._fail_on_missing_agent = False
     
     async def start(self) -> None:
         """Start the CLI interaction loop."""
@@ -100,6 +101,7 @@ class BaseCliRuntime:
                 # Store runtime reference in executor for notification access
                 if executor:
                     executor._base_runtime = self
+                    self._restore_executor_session(executor, current_agent_name=selected_agent.name)
 
                 result = await self.cli.run_chat_session(
                     selected_agent.name,
@@ -136,6 +138,10 @@ class BaseCliRuntime:
 
         # Stop cron scheduler
         await self._stop_scheduler()
+
+    def _restore_executor_session(self, executor: AgentExecutor, current_agent_name: str | None = None) -> None:
+        """Hook for runtimes that need to restore a selected session after executor creation."""
+        return None
 
     def _initialize_plugin_framework(self) -> None:
         plugin_dirs = getattr(self, "plugin_dirs", None) or []
@@ -566,6 +572,12 @@ class BaseCliRuntime:
                     selected_agent = agent
                     break
             if not selected_agent:
+                if self._fail_on_missing_agent:
+                    self.cli.console.print(
+                        f"[red]Session was created with agent {self.agent_name}, but that agent is not available.[/red]"
+                    )
+                    self.cli.console.print("[yellow]Pass `--agent <name>` to resume with a different agent.[/yellow]")
+                    return None
                 self.cli.console.print(f"[red]❌ Agent '{self.agent_name}' not found.[/red]")
             # Clear it so next loop we select
             self.agent_name = None
