@@ -246,27 +246,42 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 headers=message.headers
             )
         observation = message.payload
+        step_info = message.context.open_step(
+            name=f"{self.id()}",
+            alias_name=self.name(),
+            step_num=message.context.get_agent_step(self.id()),
+            namespace=self.id(),
+        )
         sync_exec(
             send_message,
             Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_start_output(
-                    name=f"{self.id()}", alias_name=self.name(), step_num=0
+                    name=step_info["name"],
+                    alias_name=step_info["alias_name"],
+                    step_num=step_info["step_num"],
+                    step_id=step_info["step_id"],
+                    parent_step_id=step_info["parent_step_id"],
                 ),
                 sender=self.id(),
                 session_id=message.context.session_id,
                 headers={"context": message.context},
             ),
         )
-        self.pre_run()
-        result = self.policy(observation, message=message, **kwargs)
-        final_result = self.post_run(result, observation, message)
-        return final_result
+        try:
+            self.pre_run()
+            result = self.policy(observation, message=message, **kwargs)
+            final_result = self.post_run(result, observation, message)
+            return final_result
+        except Exception:
+            self._emit_failed_step_sync(message, step_info)
+            raise
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         # Store context in contextvars for task-safe access (prevents race conditions)
         # Capture token to ensure proper cleanup in finally block
         token = _agent_context.set(message.context)
+        step_info: dict[str, Any] | None = None
         try:
             message.context.update_agent_step(self.id())
             task = message.context.get_task()
@@ -290,11 +305,21 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 )
             observation = message.payload
             if eventbus is not None:
+                step_info = message.context.open_step(
+                    name=f"{self.id()}",
+                    alias_name=self.name(),
+                    step_num=message.context.get_agent_step(self.id()),
+                    namespace=self.id(),
+                )
                 await send_message(
                     Message(
                         category=Constants.OUTPUT,
                         payload=StepOutput.build_start_output(
-                            name=f"{self.id()}", alias_name=self.name(), step_num=0
+                            name=step_info["name"],
+                            alias_name=step_info["alias_name"],
+                            step_num=step_info["step_num"],
+                            step_id=step_info["step_id"],
+                            parent_step_id=step_info["parent_step_id"],
                         ),
                         sender=self.id(),
                         session_id=message.context.session_id,
@@ -308,6 +333,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 self._finished = False
             return final_result
         except Exception as e:
+            await self._emit_failed_step_async(message, step_info)
             from aworld.core.context.amni import AmniContext
             duration = None
             if isinstance(message.context, AmniContext):
@@ -323,6 +349,46 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         finally:
             # Reset context to prevent leakage in task reuse scenarios
             _agent_context.reset(token)
+
+    def _build_failed_step_message(
+        self,
+        message: Message,
+        step_info: dict[str, Any],
+        data: Any = None,
+    ) -> Message | None:
+        if not step_info:
+            return None
+        closed_step = message.context.close_step(
+            namespace=self.id(),
+            step_id=step_info["step_id"],
+        )
+        if closed_step is None:
+            closed_step = step_info
+        return Message(
+            category=Constants.OUTPUT,
+            payload=StepOutput.build_failed_output(
+                name=closed_step["name"],
+                alias_name=closed_step.get("alias_name"),
+                step_num=closed_step["step_num"],
+                data=data,
+                task_id=message.context.task_id,
+                step_id=closed_step["step_id"],
+                parent_step_id=closed_step.get("parent_step_id"),
+            ),
+            sender=self.id(),
+            session_id=message.context.session_id,
+            headers={"context": message.context},
+        )
+
+    def _emit_failed_step_sync(self, message: Message, step_info: dict[str, Any] | None) -> None:
+        failed_message = self._build_failed_step_message(message, step_info or {})
+        if failed_message is not None:
+            sync_exec(send_message, failed_message)
+
+    async def _emit_failed_step_async(self, message: Message, step_info: dict[str, Any] | None) -> None:
+        failed_message = self._build_failed_step_message(message, step_info or {})
+        if failed_message is not None:
+            await send_message(failed_message)
 
     def policy(
             self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
@@ -386,6 +452,31 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 agent_start_times[self.id()] = time.time()
                 message.context.put("agent_start_times", agent_start_times)
 
+        # Hooks V2: 触发 AGENT_STARTED hook
+        try:
+            from aworld.runners.hook.hooks import HookPoint
+            from aworld.runners.hook.utils import run_hooks
+
+            agent_started_payload = {
+                'event': 'agent_started',
+                'agent_id': self.id(),
+                'agent_name': self.name(),
+                'session_id': message.context.session_id,
+                'task_id': getattr(message.context, 'task_id', None),
+                'timestamp': time.time()
+            }
+
+            async for _ in run_hooks(
+                context=message.context,
+                hook_point=HookPoint.AGENT_STARTED,
+                hook_from=self.id(),
+                payload=agent_started_payload,
+                workspace_path=getattr(message.context, 'workspace_path', None)
+            ):
+                pass
+        except Exception as e:
+            logger.warning(f"AGENT_STARTED hook execution failed for agent {self.id()}: {e}")
+
     async def async_post_run(
             self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
@@ -406,6 +497,34 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             if duration is None:
                 duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
             digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success")
+
+            # Hooks V2: 触发 AGENT_STOPPED hook
+            try:
+                from aworld.runners.hook.hooks import HookPoint
+                from aworld.runners.hook.utils import run_hooks
+
+                agent_stopped_payload = {
+                    'event': 'agent_stopped',
+                    'agent_id': self.id(),
+                    'agent_name': self.name(),
+                    'session_id': message.context.session_id,
+                    'task_id': getattr(message.context, 'task_id', None),
+                    'duration': duration,
+                    'status': 'success',
+                    'timestamp': time.time()
+                }
+
+                async for _ in run_hooks(
+                    context=message.context,
+                    hook_point=HookPoint.AGENT_STOPPED,
+                    hook_from=self.id(),
+                    payload=agent_stopped_payload,
+                    workspace_path=getattr(message.context, 'workspace_path', None)
+                ):
+                    pass
+            except Exception as e:
+                logger.warning(f"AGENT_STOPPED hook execution failed for agent {self.id()}: {e}")
+
         return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
     def sync_should_terminate_loop(self, message: Message) -> bool:

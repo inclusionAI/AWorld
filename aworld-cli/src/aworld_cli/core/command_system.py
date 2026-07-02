@@ -31,13 +31,27 @@ class CommandContext:
     user_args: str
     sandbox: Optional[Any] = None
     agent_config: Optional[Any] = None
+    executor: Optional[Any] = None
     runtime: Optional[Any] = None
+    session_id: Optional[str] = None
 
     def __post_init__(self):
         """Validate context"""
         if not self.cwd:
             import os
             self.cwd = os.getcwd()
+
+    @property
+    def background_task_manager(self) -> Optional[Any]:
+        """
+        Get background task manager from executor.
+
+        Returns:
+            BackgroundTaskManager instance or None if executor not available
+        """
+        if self.executor and hasattr(self.executor, 'background_task_manager'):
+            return self.executor.background_task_manager
+        return None
 
 
 class Command(ABC):
@@ -95,6 +109,17 @@ class Command(ABC):
         - 'prompt': Agent-mediated execution (default)
         """
         return "prompt"  # Default to prompt commands
+
+    def resolve_command_type(self, context: CommandContext) -> str:
+        """Return the effective command type for this invocation."""
+        return self.command_type
+
+    def should_start_new_session(self, context: CommandContext) -> bool:
+        """
+        Return True when the command should rotate to a fresh executor session
+        before prompt generation and execution.
+        """
+        return False
 
     @property
     def allowed_tools(self) -> List[str]:
@@ -235,6 +260,11 @@ class CommandRegistry:
         return cls._commands.get(name)
 
     @classmethod
+    def unregister(cls, name: str) -> None:
+        """Remove a registered command if present."""
+        cls._commands.pop(name, None)
+
+    @classmethod
     def list_commands(cls) -> List[Command]:
         """
         Get all registered commands.
@@ -243,6 +273,16 @@ class CommandRegistry:
             List of all registered Command instances
         """
         return list(cls._commands.values())
+
+    @classmethod
+    def snapshot(cls) -> Dict[str, Command]:
+        """Return a shallow copy of the current registry (useful for tests)."""
+        return dict(cls._commands)
+
+    @classmethod
+    def restore(cls, snapshot: Dict[str, Command]) -> None:
+        """Replace registry contents with a previous snapshot."""
+        cls._commands = dict(snapshot)
 
     @classmethod
     def help_text(cls) -> str:

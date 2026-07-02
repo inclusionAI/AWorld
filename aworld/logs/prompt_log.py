@@ -20,6 +20,18 @@ BORDER_PADDING = 4  # Left padding width
 TOTAL_WIDTH = BORDER_WIDTH + BORDER_PADDING + 4  # Total width (including border characters)
 
 
+def _truncate_for_log(text: Any, max_length: int) -> str:
+    """Return a single log field clipped to the configured display width."""
+    text = str(text)
+    if max_length <= 3 or len(text) <= max_length:
+        return text
+    return text[:max_length - 3] + "..."
+
+
+def _should_log_message_content_at_info(role: str, message_index: int, total_messages: int) -> bool:
+    return role in ['user', 'assistant'] or (role == 'system' and total_messages <= 2) or message_index == total_messages
+
+
 def _generate_separator(style: str = "─") -> str:
     """Generate a separator line with the configured border width.
     
@@ -548,22 +560,22 @@ class PromptLogger:
                                         for line in text_lines:
                                             if line.strip():
                                                 # Ensure each line is the configured width, maintain border alignment
-                                                padded_line = line.ljust(BORDER_WIDTH - 8)
-                                                # Use info level for user input text to make it visible in regular logs
-                                                if role == 'user':
+                                                display_line = _truncate_for_log(line, BORDER_WIDTH - 8)
+                                                padded_line = display_line.ljust(BORDER_WIDTH - 8)
+                                                if _should_log_message_content_at_info(role, i, len(messages)):
                                                     prompt_logger.info(f"    {padded_line}")
                                                 else:
                                                     prompt_logger.debug(f"    {padded_line}")
                                             else:
                                                 # Also display empty lines to maintain consistent format
                                                 empty_line = " " * (BORDER_WIDTH - 8)
-                                                if role == 'user':
+                                                if _should_log_message_content_at_info(role, i, len(messages)):
                                                     prompt_logger.info(f"    {empty_line}")
                                                 else:
                                                     prompt_logger.debug(f"    {empty_line}")
                                     else:
                                         empty_text = "<empty text>".ljust(BORDER_WIDTH - 8)
-                                        if role == 'user':
+                                        if _should_log_message_content_at_info(role, i, len(messages)):
                                             prompt_logger.info(f"    {empty_text}")
                                         else:
                                             prompt_logger.debug(f"    {empty_text}")
@@ -616,16 +628,16 @@ class PromptLogger:
                         for line in content_lines:
                             if line.strip():  # Skip empty lines
                                 # Ensure each line is the configured width, maintain border alignment
-                                padded_line = line.ljust(BORDER_WIDTH)
-                                # Use info level for user input text to make it visible in regular logs
-                                if role in ['user'] or (role == 'system' and len(messages) <= 2) or i == len(messages):
+                                display_line = _truncate_for_log(line, BORDER_WIDTH)
+                                padded_line = display_line.ljust(BORDER_WIDTH)
+                                if _should_log_message_content_at_info(role, i, len(messages)):
                                     prompt_logger.info(f"{padded_line}")
                                 else:
                                     prompt_logger.debug(f"{padded_line}")
                             else:
                                 # Also display empty lines to maintain consistent format
                                 empty_line = " " * BORDER_WIDTH
-                                if role == 'user':
+                                if _should_log_message_content_at_info(role, i, len(messages)):
                                     prompt_logger.info(f"{empty_line}")
                                 else:
                                     prompt_logger.debug(f"{empty_line}")

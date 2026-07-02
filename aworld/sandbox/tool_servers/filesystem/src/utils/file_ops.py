@@ -64,6 +64,29 @@ def _write_file_sync(path: str, content: str) -> None:
         raise
 
 
+async def write_file_base64(path: str, content_base64: str) -> None:
+    """Atomically write base64-decoded bytes to a file."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _write_file_base64_sync, path, content_base64)
+
+
+def _write_file_base64_sync(path: str, content_base64: str) -> None:
+    """Synchronously decode base64 content and write raw bytes to a file."""
+    dir_path = Path(path).parent
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    data = base64.b64decode(content_base64, validate=True)
+    with tempfile.NamedTemporaryFile(mode="wb", dir=dir_path, delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    try:
+        Path(tmp_path).replace(path)
+    except Exception:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+
 async def head_file(path: str, num_lines: int) -> str:
     """Read the first N lines of a text file."""
     loop = asyncio.get_event_loop()
@@ -447,4 +470,3 @@ def _get_file_stats_sync(path: str) -> dict:
         "isFile": Path(path).is_file(),
         "permissions": oct(stat.st_mode)[-3:],
     }
-

@@ -30,6 +30,7 @@ from .file_parse_hook import FileParseHook  # noqa: F401
 
 # Import PreLlmCostHook to register with HookFactory (runner-level pre_llm_call hook)
 from .pre_llm_cost_hook import PreLlmCostHook  # noqa: F401
+from .steering_before_llm_hook import SteeringBeforeLlmHook  # noqa: F401
 
 __all__.extend([
     "LocalAgentExecutor", 
@@ -47,6 +48,6 @@ __all__.extend([
     "PostRunTaskHook",
     "OnTaskErrorHook",
     "FileParseHook",
-    "PreLlmCostHook"
+    "PreLlmCostHook",
+    "SteeringBeforeLlmHook",
 ])
-

@@ -1,11 +1,12 @@
 import abc
+from typing import Optional, Union
 
 from aworld.evaluations.base import EvalTarget, EvalDataCase
+from aworld.evaluations.execution import EvalExecutionMode, EvalExecutionSpec
+from aworld.evaluations.execution_adapters import resolve_execution_adapter
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
-from aworld.runner import Runners
-from typing import Optional
-from aworld.core.task import Task, TaskResponse
+from aworld.core.task import Task
 
 import os
 
@@ -69,10 +70,28 @@ class AworldAgentEvalTarget(EvalTarget[dict]):
 
         raise ValueError(f"Invalid agent_config type: {type(agent_config)}")
 
-    async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
+    async def predict(self, index: int, input: Union[EvalDataCase[dict], dict]) -> dict:
         query_column = self.eval_config.eval_dataset_query_column or self.query_column
-        response = await Runners.run(input.case_data[query_column], agent=self.agent)
-        return {"answer": response.answer}
+        case_data = input.case_data if isinstance(input, EvalDataCase) else input
+        case = type(
+            "AdapterCase",
+            (),
+            {
+                "case_id": getattr(input, "eval_case_id", str(index)),
+                "input": dict(case_data),
+            },
+        )()
+        spec = EvalExecutionSpec(
+            mode=EvalExecutionMode.AGENT,
+            target_config={"agent": self.agent},
+            query_column=query_column,
+        )
+        state = await resolve_execution_adapter(spec).execute(
+            case=case,
+            target=dict(case_data.get("_target", {})),
+            spec=spec,
+        )
+        return {"answer": state.answer, "state": state.to_dict()}
 
 
 class AworldTaskEvalTarget(EvalTarget[dict]):
@@ -93,10 +112,22 @@ class AworldTaskEvalTarget(EvalTarget[dict]):
 
     async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
         task = await self.build_task(index, input)
-        result = await Runners.run_task(task=task)
-        if isinstance(result, TaskResponse):
-            return {"answer": result.answer}
-        if isinstance(result, dict):
-            return {"answer": result[task.id].answer}
-        else:
-            return {"answer": result}
+        case_data = input.case_data if isinstance(input, EvalDataCase) else {}
+        spec = EvalExecutionSpec(
+            mode=EvalExecutionMode.TASK,
+            target_config={"task": task},
+        )
+        case = type(
+            "AdapterCase",
+            (),
+            {
+                "case_id": getattr(input, "eval_case_id", str(index)),
+                "input": dict(case_data),
+            },
+        )()
+        state = await resolve_execution_adapter(spec).execute(
+            case=case,
+            target=dict(case_data.get("_target", {})),
+            spec=spec,
+        )
+        return {"answer": state.answer, "state": state.to_dict()}

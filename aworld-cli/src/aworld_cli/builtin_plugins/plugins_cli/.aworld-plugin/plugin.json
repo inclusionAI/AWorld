@@ -1,0 +1,19 @@
+{
+  "id": "aworld-plugins-cli",
+  "name": "aworld-plugins-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "plugins",
+        "name": "plugins",
+        "target": "cli_commands/plugins.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command",
+          "aliases": ["plugin"]
+        }
+      }
+    ]
+  }
+}
