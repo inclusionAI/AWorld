@@ -698,9 +698,53 @@ def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
     assert extracted["final_answer"] == "final answer"
     assert extracted["evidence"][0]["content"] == "evidence"
     assert extracted["steps"][0]["tool_calls"] == [{"name": "search", "arguments": "{}"}]
+    runtime_context = prompt["runtime_context"]
+    assert runtime_context["trajectory_log_path"] == ""
+    assert runtime_context["task_id"] == "case-1"
+    assert runtime_context["TRAJECTORY_LOG"] == ""
+    assert runtime_context["TASK_ID"] == "case-1"
+    assert runtime_context["OUT_DIR"] == ""
+    assert "Do not ask the user for TRAJECTORY_LOG" in prompt["instruction"]
     assert "Return only one compact JSON object" in prompt["instruction"]
     assert "Do not include analysis" in prompt["instruction"]
     assert "Do not include markdown" in prompt["instruction"]
+
+
+def test_build_trajectory_prompt_includes_runtime_context_from_source_target() -> None:
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            case_input={"task_id": "task-1", "trajectory_log": "/tmp/trajectory.log"},
+            target={
+                "target_path": "/tmp/trajectory.log",
+                "source_out_dir": "/tmp/extracted",
+                "report_output_path": "/tmp/report.json",
+                "artifacts": {
+                    "outcome": {
+                        "extracted_path": None,
+                    }
+                },
+                "trajectory": [
+                    {
+                        "state": {"input": {"content": "question"}, "messages": []},
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {"content": "answer", "is_agent_finished": "True"},
+                    }
+                ],
+            },
+            suite=None,
+        )
+    )
+
+    runtime_context = prompt["runtime_context"]
+    assert runtime_context == {
+        "trajectory_log_path": "/tmp/trajectory.log",
+        "task_id": "task-1",
+        "out_dir": "/tmp/extracted",
+        "report_output_path": "/tmp/report.json",
+        "TRAJECTORY_LOG": "/tmp/trajectory.log",
+        "TASK_ID": "task-1",
+        "OUT_DIR": "/tmp/extracted",
+    }
 
 
 def test_run_evaluator_source_cli_passes_source_fields_to_hooks(

@@ -550,8 +550,14 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         case_value = case_input.get("input") or case_input.get("query") or case_input.get("prompt")
         if not extracted_payload.get("question") and case_value is not None:
             extracted_payload["question"] = str(case_value)
+    runtime_context = _trajectory_runtime_context(
+        case_input=case_input,
+        target=target,
+        extracted_payload=extracted_payload,
+    )
     payload = {
         "case": {key: value for key, value in case_input.items() if not str(key).startswith("_")},
+        "runtime_context": runtime_context,
         "extracted_trajectory": extracted_payload,
         "required_output_schema": {
             "score": "number, weighted score from 0 to 100",
@@ -579,7 +585,11 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         },
         "instruction": (
             "Apply the trajectory evaluator contract to the extracted trajectory. "
+            "Runtime_context contains framework-provided paths and compatibility aliases "
+            "for judge agents that expect TRAJECTORY_LOG, TASK_ID, or OUT_DIR. "
+            "Do not ask the user for TRAJECTORY_LOG, TASK_ID, OUT_DIR, report paths, or other parameters. "
             "Do not call tools and do not re-read the raw log; all required evidence is in extracted_trajectory. "
+            "If extracted_trajectory is insufficient, return a valid JSON failure assessment instead of requesting more input. "
             "Return only one compact JSON object matching required_output_schema. "
             "Do not include analysis, rationale prose, or tables. "
             "Do not include markdown, fenced code blocks, or extra JSON objects. "
@@ -587,6 +597,62 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         ),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _trajectory_runtime_context(
+    *,
+    case_input: Mapping[str, Any],
+    target: Mapping[str, Any],
+    extracted_payload: Mapping[str, Any],
+) -> dict[str, str]:
+    case_metadata = case_input.get("_case_metadata")
+    if not isinstance(case_metadata, Mapping):
+        case_metadata = {}
+    source_record = case_metadata.get("source_record")
+    if not isinstance(source_record, Mapping):
+        source_record = {}
+    source_input = source_record.get("input")
+    if not isinstance(source_input, Mapping):
+        source_input = {}
+    source_metadata = source_record.get("metadata")
+    if not isinstance(source_metadata, Mapping):
+        source_metadata = {}
+
+    trajectory_log_path = (
+        case_input.get("trajectory_log")
+        or source_input.get("trajectory_log")
+        or target.get("trajectory_log_path")
+        or (
+            target.get("target_path")
+            if str(target.get("source_kind") or "").strip().lower() == "trajectory"
+            else None
+        )
+        or ""
+    )
+    task_id = (
+        case_input.get("task_id")
+        or source_input.get("task_id")
+        or extracted_payload.get("task_id")
+        or target.get("task_id")
+        or target.get("case_id")
+        or ""
+    )
+    out_dir = (
+        target.get("source_out_dir")
+        or source_metadata.get("extraction_dir")
+        or target.get("out_dir")
+        or ""
+    )
+    report_output_path = target.get("report_output_path") or target.get("output_path") or ""
+    return {
+        "trajectory_log_path": str(trajectory_log_path),
+        "task_id": str(task_id),
+        "out_dir": str(out_dir),
+        "report_output_path": str(report_output_path),
+        "TRAJECTORY_LOG": str(trajectory_log_path),
+        "TASK_ID": str(task_id),
+        "OUT_DIR": str(out_dir),
+    }
 
 
 def _build_source_suite(
@@ -811,6 +877,8 @@ def run_evaluator_source_cli(
         "judge_backend_ref": judge_backend_ref,
         "agent": agent_name if executes_agent else agent,
         "judge_timeout_seconds": judge_timeout_seconds,
+        "source_out_dir": str(Path(out_dir).expanduser().resolve()) if out_dir else None,
+        "report_output_path": str(Path(output).expanduser().resolve()) if output else None,
     }
     for key, value in hook_state.items():
         if key not in {
