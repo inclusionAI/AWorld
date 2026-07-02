@@ -16,6 +16,7 @@ from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     _default_cli_skill_candidate,
     _default_post_apply_evaluator,
+    _iteration_validation_feedback,
     optimize_explicit_target,
     optimize_from_cli_request,
 )
@@ -23,7 +24,7 @@ from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
-from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
+from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult, SelfEvolveTargetRef
 
 
 def _write_trajectory_log(path: Path, records: list[dict]) -> None:
@@ -41,6 +42,46 @@ def _write_trajectory_log(path: Path, records: list[dict]) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def test_iteration_validation_feedback_includes_baseline_comparison_metrics() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-1",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="test",
+    )
+    baseline_summary = EvaluationSummary(
+        variant_id="baseline",
+        metrics={"score": 75.4, "B2_efficiency": 3.0},
+        dataset_split="validation",
+    )
+    candidate_summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={"score": 70.3, "B2_efficiency": 2.7},
+        dataset_split="validation",
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=baseline_summary,
+        candidate_summary=candidate_summary,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="score_improvement",
+                passed=False,
+                reason="score improvement below minimum delta",
+            )
+        ],
+    )
+
+    assert len(feedback) == 1
+    metrics = feedback[0].metrics
+    assert metrics["baseline_score"] == 75.4
+    assert metrics["candidate_score"] == 70.3
+    assert metrics["score_delta"] == pytest.approx(-5.1)
+    assert metrics["failed_gates"] == ["score_improvement"]
 
 
 @pytest.mark.asyncio
@@ -1382,6 +1423,132 @@ async def test_runner_auto_verified_rejects_compacted_evaluator_evidence(
         and gate["reason"] == "evaluation evidence is compacted or incomplete"
         for gate in report["gate_results"]
     )
+
+
+@pytest.mark.asyncio
+async def test_runner_evidence_quality_reuses_replay_artifact_manifest(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Ground web evidence."}},
+            "action": {"content": "Evidence was compacted."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="artifact-evidence",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="artifact-evidence",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+            "rationale": "Candidate with artifact-first evidence.",
+        }
+
+    async def post_apply(candidate):
+        pytest.fail("score regression should stop auto apply before post-apply")
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "old"}}],
+                    metrics={
+                        "repetition_count": 2,
+                        "successful_repetition_count": 2,
+                        "evidence_strategy_passed": True,
+                        "evidence_manifest_entry_count": 1,
+                    },
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "new"}}],
+                    metrics={
+                        "repetition_count": 3,
+                        "successful_repetition_count": 3,
+                        "evidence_strategy_passed": True,
+                        "evidence_manifest_entry_count": 2,
+                    },
+                ),
+            )
+
+    class CompactedButManifestedEvaluator:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.8 if request.candidate is None else 0.7,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": len(request.dataset.cases),
+                    "command_pass_count": len(request.dataset.cases),
+                    "global_regression_passed": True,
+                    "has_evidence": 1.0,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": True,
+                    "evidence_incomplete": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=CompactedButManifestedEvaluator(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=30,
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-artifact-evidence",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-artifact-evidence"
+            / "report.json"
+        ).read_text()
+    )
+    evidence_gates = [
+        gate for gate in report["gate_results"] if gate["gate_name"] == "evidence_quality"
+    ]
+    assert evidence_gates
+    assert all(gate["passed"] is True for gate in evidence_gates)
+    assert {gate["reason"] for gate in evidence_gates} == {
+        "evaluation evidence is present via artifact-first manifest"
+    }
+    assert "score_improvement" in report["iterations"][0]["failed_gates"]
+    assert "evidence_quality" not in report["iterations"][0]["failed_gates"]
 
 
 @pytest.mark.asyncio

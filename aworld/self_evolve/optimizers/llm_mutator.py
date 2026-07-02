@@ -101,13 +101,24 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
     return (
         "Propose one concise text-only self-evolve candidate. "
         "Use trace evidence and trainable cases only; do not assume held-out data. "
+        "Use trace-driven reflective optimization: identify why the prior run lost score, "
+        "then encode reusable procedural guidance that can improve task quality, tool economy, "
+        "latency, and completion reliability. "
         "If validation_feedback or prior_feedback mentions evidence_quality, "
         "evidence_compacted, or evidence_incomplete, the candidate must include general "
         "evidence-preservation guidance. Make it actionable and tool-agnostic: avoid "
         "large raw tool outputs, persist raw evidence to files or artifacts first, emit "
         "only bounded structured summaries with source locations and short excerpts, "
         "treat compacted/truncated outputs as unusable evidence, keep an evidence ledger, "
-        "and require a claim-by-claim non-compacted evidence check before final answers.\n"
+        "and require a claim-by-claim non-compacted evidence check before final answers. "
+        "If feedback mentions score_improvement, B2_efficiency, or required_behaviors such as "
+        "plan_before_tools, prefer_direct_structured_extraction, minimize_failed_attempts, "
+        "avoid_repeated_paths, or stop_after_sufficient_evidence, the candidate must include "
+        "general efficiency-improvement guidance: plan the shortest viable evidence path before "
+        "tool calls, prefer direct structured extraction over broad exploration, minimize failed "
+        "attempts, avoid repeated paths after one unsuccessful try, stop after sufficient evidence "
+        "is captured, and compare against the baseline on quality, tool economy, latency, and "
+        "completion reliability.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
 

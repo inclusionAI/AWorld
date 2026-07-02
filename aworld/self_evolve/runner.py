@@ -57,6 +57,7 @@ from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayBackend,
     CandidateReplayResult,
+    ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
 )
@@ -331,6 +332,15 @@ class SelfEvolveRunner:
                             dataset_split="validation",
                             artifact_namespace=run_id,
                         )
+                        if iteration_replay_result is not None:
+                            iteration_baseline_summary = _summary_with_replay_evidence_metrics(
+                                iteration_baseline_summary,
+                                iteration_replay_result.baseline,
+                            )
+                            iteration_candidate_summary = _summary_with_replay_evidence_metrics(
+                                iteration_candidate_summary,
+                                iteration_replay_result.candidate,
+                            )
                         score_gate = ScoreImprovementGate(
                             min_delta=self.min_score_delta
                         ).evaluate(
@@ -377,6 +387,11 @@ class SelfEvolveRunner:
                                         artifact_namespace=run_id,
                                     )
                                 )
+                                if iteration_replay_result is not None:
+                                    iteration_held_out_summary = _summary_with_replay_evidence_metrics(
+                                        iteration_held_out_summary,
+                                        iteration_replay_result.candidate,
+                                    )
                             confidence = determine_candidate_confidence(
                                 dataset=evaluation_dataset,
                                 validation_summary=iteration_candidate_summary,
@@ -492,6 +507,7 @@ class SelfEvolveRunner:
             )
             validation_feedback = _iteration_validation_feedback(
                 candidate=iteration_candidate,
+                baseline_summary=iteration_baseline_summary,
                 candidate_summary=iteration_candidate_summary,
                 held_out_summary=iteration_held_out_summary,
                 failed_gates=failed_gates,
@@ -1397,6 +1413,27 @@ def _evidence_quality_gate(summary: EvaluationSummary) -> GateResult | None:
     return EvidenceQualityGate().evaluate(summary)
 
 
+def _summary_with_replay_evidence_metrics(
+    summary: EvaluationSummary,
+    replay_variant: ReplayVariantResult,
+) -> EvaluationSummary:
+    replay_metrics = replay_variant.metrics or {}
+    evidence_metric_names = (
+        "evidence_strategy_passed",
+        "evidence_manifest_entry_count",
+        "evidence_manifest_invalid_entry_count",
+        "evidence_manifest_present",
+        "evidence_manifest_valid",
+        "evidence_compaction_signals",
+    )
+    merged_metrics = dict(summary.metrics)
+    for metric_name in evidence_metric_names:
+        if metric_name in replay_metrics:
+            merged_metrics[metric_name] = replay_metrics[metric_name]
+            merged_metrics[f"replay_{metric_name}"] = replay_metrics[metric_name]
+    return replace(summary, metrics=merged_metrics)
+
+
 def _can_reuse_single_case_replay_validation(dataset: SelfEvolveDataset) -> bool:
     return (
         bool(dataset.recipe.source.get("paired_replay"))
@@ -1503,17 +1540,23 @@ def _metric_number(metrics: Mapping[str, Any], key: str) -> float | None:
 def _iteration_validation_feedback(
     *,
     candidate: CandidateVariant,
+    baseline_summary: EvaluationSummary | None,
     candidate_summary: EvaluationSummary | None,
     held_out_summary: EvaluationSummary | None,
     failed_gates: list[GateResult],
 ) -> tuple[EvaluationSummary, ...]:
     feedback: list[EvaluationSummary] = []
+    comparison_metrics = _baseline_comparison_feedback_metrics(
+        baseline_summary=baseline_summary,
+        candidate_summary=candidate_summary,
+    )
     if candidate_summary is not None:
         feedback.append(
             EvaluationSummary(
                 variant_id=candidate_summary.variant_id,
                 metrics={
                     **dict(candidate_summary.metrics),
+                    **comparison_metrics,
                     "failed_gates": [gate.gate_name for gate in failed_gates],
                 },
                 dataset_split=candidate_summary.dataset_split,
@@ -1525,6 +1568,7 @@ def _iteration_validation_feedback(
                 variant_id=held_out_summary.variant_id,
                 metrics={
                     **dict(held_out_summary.metrics),
+                    **comparison_metrics,
                     "failed_gates": [gate.gate_name for gate in failed_gates],
                 },
                 dataset_split=held_out_summary.dataset_split,
@@ -1536,12 +1580,31 @@ def _iteration_validation_feedback(
         EvaluationSummary(
             variant_id=candidate.candidate_id,
             metrics={
+                **comparison_metrics,
                 "failed_gates": [gate.gate_name for gate in failed_gates],
                 "candidate_status": "rejected" if failed_gates else "accepted",
             },
             dataset_split="validation",
         ),
     )
+
+
+def _baseline_comparison_feedback_metrics(
+    *,
+    baseline_summary: EvaluationSummary | None,
+    candidate_summary: EvaluationSummary | None,
+) -> dict[str, float]:
+    if baseline_summary is None or candidate_summary is None:
+        return {}
+    baseline_score = _metric_number(baseline_summary.metrics, "score")
+    candidate_score = _metric_number(candidate_summary.metrics, "score")
+    if baseline_score is None or candidate_score is None:
+        return {}
+    return {
+        "baseline_score": baseline_score,
+        "candidate_score": candidate_score,
+        "score_delta": candidate_score - baseline_score,
+    }
 
 
 def _select_iteration_state(

@@ -206,6 +206,27 @@ def test_evidence_quality_gate_rejects_incomplete_or_truncated_evidence() -> Non
     assert truncated.reason == "evaluation evidence is compacted or incomplete"
 
 
+def test_evidence_quality_gate_accepts_artifact_first_evidence_strategy() -> None:
+    summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={
+            "has_evidence": 1.0,
+            "evidence_block_count": 1,
+            "evidence_compacted": True,
+            "evidence_incomplete": True,
+            "evidence_strategy_passed": True,
+            "evidence_manifest_entry_count": 2,
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(summary)
+
+    assert result.passed is True
+    assert result.reason == "evaluation evidence is present via artifact-first manifest"
+    assert result.details["evidence_strategy_passed"] is True
+    assert result.details["evidence_manifest_entry_count"] == 2
+
+
 def test_protected_path_gate_blocks_product_and_app_evaluator_paths() -> None:
     gate = ProtectedPathGate(workspace_root="/repo")
 

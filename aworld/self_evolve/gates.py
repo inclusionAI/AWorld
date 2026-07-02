@@ -320,7 +320,18 @@ class EvidenceQualityGate:
 
     def evaluate(self, summary: EvaluationSummary) -> GateResult:
         evidence_block_count = int(_number_metric(summary.metrics, "evidence_block_count") or 0)
-        has_evidence = summary.metrics.get("has_evidence") == 1.0 or evidence_block_count > 0
+        evidence_manifest_entry_count = int(
+            _number_metric(summary.metrics, "evidence_manifest_entry_count") or 0
+        )
+        artifact_first_evidence = (
+            _bool_metric(summary.metrics, "evidence_strategy_passed") is True
+            and evidence_manifest_entry_count > 0
+        )
+        has_evidence = (
+            summary.metrics.get("has_evidence") == 1.0
+            or evidence_block_count > 0
+            or artifact_first_evidence
+        )
         compacted = _bool_metric(summary.metrics, "evidence_compacted")
         if compacted is None:
             compacted = _contains_compacted_evidence_marker(summary.metrics)
@@ -332,12 +343,21 @@ class EvidenceQualityGate:
             "evidence_block_count": evidence_block_count,
             "evidence_compacted": compacted,
             "evidence_incomplete": incomplete,
+            "evidence_strategy_passed": artifact_first_evidence,
+            "evidence_manifest_entry_count": evidence_manifest_entry_count,
         }
         if not has_evidence:
             return GateResult(
                 gate_name="evidence_quality",
                 passed=False,
                 reason="verified apply requires replay tool evidence",
+                details=details,
+            )
+        if artifact_first_evidence:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=True,
+                reason="evaluation evidence is present via artifact-first manifest",
                 details=details,
             )
         if compacted or incomplete:
