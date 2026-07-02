@@ -1575,23 +1575,37 @@ def _build_app_evaluator_judge_prompt(
     return prompt
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
+def _extract_json_objects(text: str) -> list[dict[str, Any]]:
     stripped = text.strip()
     try:
         loaded = json.loads(stripped)
         if isinstance(loaded, dict):
-            return loaded
+            return [loaded]
     except json.JSONDecodeError:
         pass
 
-    matches = re.findall(r"\{.*\}", stripped, re.DOTALL)
-    for candidate in matches:
+    decoder = json.JSONDecoder()
+    objects: list[dict[str, Any]] = []
+    for match in re.finditer(r"\{", stripped):
         try:
-            loaded = json.loads(candidate)
-            if isinstance(loaded, dict):
-                return loaded
+            loaded, _ = decoder.raw_decode(stripped[match.start():])
         except json.JSONDecodeError:
             continue
+        if isinstance(loaded, dict):
+            objects.append(loaded)
+    return objects
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    candidates = _extract_json_objects(text)
+    for candidate in candidates:
+        if "results" in candidate:
+            return candidate
+    for candidate in candidates:
+        if "score" in candidate or "verdict" in candidate:
+            return candidate
+    if candidates:
+        return candidates[0]
     raise ValueError("judge response does not contain a valid JSON object")
 
 

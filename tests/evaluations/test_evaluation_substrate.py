@@ -1286,6 +1286,74 @@ async def test_agent_judge_backend_parses_app_evaluator_json_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_judge_backend_parses_fenced_json_payload() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+I checked the trajectory evidence.
+
+```json
+{
+  "score": 72.5,
+  "verdict": "Pass",
+  "veto_triggered": false
+}
+```
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(72.5)
+    assert payload["verdict"] == "Pass"
+    assert payload["veto_triggered"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_parses_json_payload_with_explanatory_text() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+Here is the evaluation. I found one unrelated example first: {"ignored": true}
+
+{
+  "score": 23.4,
+  "verdict": "Fail",
+  "veto_triggered": true,
+  "has_evidence": true
+}
+
+The candidate should not pass.
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(23.4)
+    assert payload["verdict"] == "Fail"
+    assert payload["veto_triggered"] is True
+    assert payload["has_evidence"] is True
+
+
+@pytest.mark.asyncio
 async def test_builtin_app_evaluator_can_use_injected_judge_backend() -> None:
     class StubBackend:
         backend_id = "stub-agent"
