@@ -828,10 +828,21 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
         (artifact_dir / "evidence_manifest.jsonl").write_text(
             json.dumps(
                 {
+                    "source_id": "episode_raw",
+                    "artifact_path": "episode_extract.txt",
+                    "extraction_method": "raw_download",
+                    "size_bytes": evidence_path.stat().st_size,
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
                     "source_id": "episode",
-                    "artifact_path": str(evidence_path),
+                    "artifact_path": "episode_extract.txt",
                     "extraction_method": "bounded_extract",
-                    "excerpt": "bounded non-compacted evidence excerpt",
+                    "bounded_excerpts": {
+                        "summary": "bounded non-compacted evidence excerpt",
+                    },
                 }
             )
             + "\n",
@@ -871,6 +882,7 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
     assert result.metrics["evidence_strategy_passed"] is True
     assert result.metrics["evidence_manifest_present"] is True
     assert result.metrics["evidence_manifest_entry_count"] == 1
+    assert result.metrics["evidence_manifest_invalid_entry_count"] == 1
 
 
 @pytest.mark.asyncio

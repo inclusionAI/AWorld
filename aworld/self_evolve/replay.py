@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
@@ -683,7 +684,9 @@ def _evidence_manifest_metrics(
             continue
         entries.append(entry)
     metrics["evidence_manifest_entry_count"] = len(entries)
-    metrics["evidence_manifest_valid"] = bool(entries) and not invalid_reasons
+    metrics["evidence_manifest_valid"] = bool(entries)
+    if invalid_reasons:
+        metrics["evidence_manifest_invalid_entry_count"] = len(invalid_reasons)
     if invalid_reasons:
         metrics["evidence_manifest_invalid_reasons"] = invalid_reasons
     return metrics
@@ -697,10 +700,8 @@ def _invalid_evidence_manifest_entry_reason(
     for key in ("source_id", "artifact_path", "extraction_method"):
         if not str(entry.get(key) or "").strip():
             return f"missing {key}"
-    excerpt = str(entry.get("excerpt") or "").strip()
-    field_list = entry.get("field_list")
-    if not excerpt and not field_list:
-        return "missing excerpt or field_list"
+    if not _has_manifest_evidence_payload(entry):
+        return "missing bounded evidence payload"
     artifact_path = Path(str(entry.get("artifact_path")))
     if not artifact_path.is_absolute() and artifact_dir is not None:
         artifact_path = artifact_dir / artifact_path
@@ -712,6 +713,35 @@ def _invalid_evidence_manifest_entry_reason(
         except ValueError:
             return "artifact_path is outside replay artifact directory"
     return None
+
+
+_MANIFEST_EVIDENCE_PAYLOAD_KEYS = (
+    "excerpt",
+    "excerpts",
+    "bounded_excerpt",
+    "bounded_excerpts",
+    "field_list",
+    "fields",
+    "fields_extracted",
+    "key_fields",
+    "selected_fields",
+    "claims_supported",
+    "claims_supported_by",
+    "summary",
+    "structured_summary",
+)
+
+
+def _has_manifest_evidence_payload(entry: Mapping[str, Any]) -> bool:
+    for key in _MANIFEST_EVIDENCE_PAYLOAD_KEYS:
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, Mapping) and value:
+            return True
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and value:
+            return True
+    return False
 
 
 def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | None:
