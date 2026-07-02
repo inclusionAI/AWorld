@@ -1,0 +1,18 @@
+{
+  "id": "aworld-acp-cli",
+  "name": "aworld-acp-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "acp",
+        "name": "acp",
+        "target": "cli_commands/acp.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

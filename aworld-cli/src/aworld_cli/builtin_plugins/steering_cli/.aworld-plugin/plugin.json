@@ -1,0 +1,27 @@
+{
+  "id": "steering-cli",
+  "name": "steering-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "commands": [
+      {
+        "id": "interrupt",
+        "name": "interrupt",
+        "description": "Interrupt the active steerable task",
+        "target": "commands/interrupt.py",
+        "scope": "session"
+      }
+    ],
+    "hud": [
+      {
+        "id": "steering-status",
+        "name": "steering-status",
+        "target": "hud/status.py",
+        "scope": "session",
+        "metadata": {
+          "surface": "bottom_toolbar"
+        }
+      }
+    ]
+  }
+}

@@ -8,7 +8,7 @@ from aworld.config import ConfigDict
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage, MemoryEventMessage, MemoryEventType
-from aworld.core.tool.base import AsyncTool, Tool, ToolFactory
+from aworld.core.tool.base import AsyncTool, Tool, ToolFactory, maybe_await
 from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -80,10 +80,11 @@ class DefaultToolHandler(ToolHandler):
                 try:
                     tool = ToolFactory(act.tool_name, conf=conf, asyn=conf.use_async if conf else False)
                     tool.event_driven = True
+                    tool.context = message.context
                     if isinstance(tool, Tool):
                         tool.reset()
                     elif isinstance(tool, AsyncTool):
-                        await tool.reset()
+                        await maybe_await(tool.reset())
                     tool_mapping[act.tool_name] = []
                     self.tools[act.tool_name] = tool
                     new_tools[act.tool_name] = tool
@@ -137,6 +138,10 @@ class DefaultToolHandler(ToolHandler):
                 sender=self.name(),
                 session_id=message.session_id,
                 topic=TopicType.SUBSCRIBE_TOOL,
+                # Dynamic registration must run before the first real tool invocation,
+                # otherwise the tool message can be consumed first and recurse back
+                # into DefaultToolHandler before the receiver is subscribed.
+                priority=message.priority - 1,
                 headers=headers
             )
 
@@ -144,6 +149,7 @@ class DefaultToolHandler(ToolHandler):
             if not (isinstance(self.tools[tool_name], Tool) or isinstance(self.tools[tool_name], AsyncTool)):
                 logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
                 continue
+            self.tools[tool_name].context = message.context
 
             # send to the tool
             yield Message(
@@ -152,6 +158,7 @@ class DefaultToolHandler(ToolHandler):
                 sender=actions[0].agent_name if actions else '',
                 session_id=message.session_id,
                 receiver=tool_name,
+                priority=message.priority,
                 headers=message.headers
             )
 
@@ -162,7 +169,7 @@ class DefaultToolHandler(ToolHandler):
         return True
 
     async def post_handle(self, input:Message, output: Message) -> Message:
-        new_context = output.context.deep_copy()
+        new_context = output.context.deep_copy(preserve_merge_baseline=True)
         new_context._task = output.context.get_task()
         output.context = new_context
         return output

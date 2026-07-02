@@ -581,12 +581,22 @@ class DefaultGroupHandler(GroupHandler):
         )
 
     async def _send_failed_message(self, message, data, result_msg):
+        step_namespace = f"{message.caller or self.name()}"
+        closed_step = message.context.close_step(
+            namespace=step_namespace or None,
+            expected_name=step_namespace or None,
+        )
         yield Message(
             category=Constants.OUTPUT,
-            payload=StepOutput.build_failed_output(name=f"{message.caller or self.name()}",
-                                                   step_num=0,
-                                                   data=result_msg,
-                                                   task_id=self.task_id),
+            payload=StepOutput.build_failed_output(
+                name=closed_step["name"] if closed_step else step_namespace,
+                step_num=closed_step["step_num"] if closed_step else 0,
+                alias_name=closed_step["alias_name"] if closed_step else None,
+                data=result_msg,
+                task_id=self.task_id,
+                step_id=closed_step["step_id"] if closed_step else None,
+                parent_step_id=closed_step["parent_step_id"] if closed_step else None,
+            ),
             sender=self.name(),
             session_id=self.context.session_id,
             headers=message.headers

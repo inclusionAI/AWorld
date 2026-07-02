@@ -33,6 +33,18 @@ body {
   --aw-surface-strong: #e2e8f0;
   --aw-border: #cbd5e1;
   --aw-border-light: #e2e8f0;
+  --aw-code-inline-bg: #f3f4f6;
+  --aw-code-inline-fg: #6b21a8;
+  --aw-code-inline-border: #e5e7eb;
+  --aw-code-block-bg: #f8fafc;
+  --aw-code-block-fg: #1f2937;
+  --aw-code-block-border: #e5e7eb;
+  --aw-code-block-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.08);
+  --aw-code-block-radius: 10px;
+  --aw-code-block-padding-y: 1rem;
+  --aw-code-block-padding-x: 1.125rem;
+  --aw-code-block-font-size: 0.875rem;
+  --aw-code-block-line-height: 1.65;
 
   /* Text Colors */
   --aw-text-primary: #0f172a;
@@ -101,6 +113,13 @@ body {
   --aw-text-secondary: #cbd5e1;
   --aw-text-tertiary: #94a3b8;
   --aw-text-muted: #64748b;
+  --aw-code-inline-bg: rgba(139, 92, 246, 0.15);
+  --aw-code-inline-fg: #e9d5ff;
+  --aw-code-inline-border: rgba(139, 92, 246, 0.25);
+  --aw-code-block-bg: #0f172a;
+  --aw-code-block-fg: #e2e8f0;
+  --aw-code-block-border: #334155;
+  --aw-code-block-shadow: 0 1px 3px 0 rgba(2, 6, 23, 0.35);
 
   --md-default-bg-color: var(--aw-background);
   --md-default-fg-color: var(--aw-text-primary);
@@ -746,55 +765,123 @@ body {
    ============================================ */
 /* Inline code */
 .md-typeset code {
-  background: #f3f4f6;
-  color: #6b21a8;
+  background: var(--aw-code-inline-bg);
+  color: var(--aw-code-inline-fg);
   font-family: var(--md-code-font);
   font-size: 0.875em;
   padding: 0.2em 0.4em;
   border-radius: 4px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--aw-code-inline-border);
   font-weight: 500;
 }
 
-/* Code block container - Clean Light Style (responsive, no layout break) */
-.md-typeset pre {
+/* Code block container - normalize MkDocs + codehilite output */
+.md-typeset .codehilite {
   position: relative;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
-  padding: 0;
-  overflow: hidden;
+  background: var(--aw-code-block-bg);
+  border: 1px solid var(--aw-code-block-border);
+  border-radius: var(--aw-code-block-radius);
+  box-shadow: var(--aw-code-block-shadow);
   margin: 1.5rem 0;
-  min-width: 0; /* allow shrink in flex/grid */
+  min-width: 0;
   max-width: 100%;
-}
-
-.md-typeset pre code {
-  background: transparent;
-  border: none;
-  padding: clamp(0.75rem, 2vw, 1.25rem);
-  color: #1f2937;
-  font-weight: 400;
-  display: block;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  font-size: clamp(0.8125em, 1.5vw, 0.875em);
-  line-height: 1.6;
-  min-width: 0;
-  max-width: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
 }
 
-.md-typeset pre > code {
+.md-typeset pre,
+.md-typeset .codehilite pre {
+  position: relative;
+  background: var(--aw-code-block-bg);
+  color: var(--aw-code-block-fg);
+  border: 1px solid var(--aw-code-block-border);
+  border-radius: var(--aw-code-block-radius);
+  box-shadow: var(--aw-code-block-shadow);
+  padding: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 1.5rem 0;
+  min-width: 0;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+.md-typeset .codehilite pre {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  background: transparent;
+}
+
+.md-typeset pre code,
+.md-typeset .codehilite code {
+  background: transparent;
+  border: none;
+  padding: var(--aw-code-block-padding-y) var(--aw-code-block-padding-x);
+  color: inherit;
+  font-weight: 400;
   display: block;
+  font-size: var(--aw-code-block-font-size);
+  line-height: var(--aw-code-block-line-height);
+  min-width: max-content;
+  width: max-content;
+  max-width: none;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  tab-size: 2;
+  font-variant-ligatures: none;
+}
+
+.md-typeset pre > code,
+.md-typeset .codehilite pre > code {
+  display: block;
+}
+
+.md-typeset li > .codehilite,
+.md-typeset li > pre {
+  margin-top: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.md-typeset .codehilite + p,
+.md-typeset pre + p {
+  margin-top: 1rem;
+}
+
+.md-typeset .codehilite::-webkit-scrollbar,
+.md-typeset pre::-webkit-scrollbar,
+.md-typeset .codehilite pre::-webkit-scrollbar {
+  height: 0.5rem;
+}
+
+.md-typeset .codehilite::-webkit-scrollbar-thumb,
+.md-typeset pre::-webkit-scrollbar-thumb,
+.md-typeset .codehilite pre::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.35);
+  border-radius: 999px;
+}
+
+.md-typeset .codehilite::-webkit-scrollbar-track,
+.md-typeset pre::-webkit-scrollbar-track,
+.md-typeset .codehilite pre::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* Python syntax highlighting - Letta Style (Pygments) */
 /* Keywords: from, import, def, class, etc. */
 .md-typeset pre code .k,
 .md-typeset pre code .kn,
-.md-typeset pre code .kd {
+.md-typeset pre code .kd,
+.md-typeset .codehilite code .k,
+.md-typeset .codehilite code .kn,
+.md-typeset .codehilite code .kd {
   color: #d73a49;
   font-weight: 500;
 }
@@ -802,50 +889,108 @@ body {
 /* Strings */
 .md-typeset pre code .s,
 .md-typeset pre code .s1,
-.md-typeset pre code .s2 {
+.md-typeset pre code .s2,
+.md-typeset pre code .sa,
+.md-typeset pre code .sb,
+.md-typeset pre code .sc,
+.md-typeset pre code .sd,
+.md-typeset pre code .se,
+.md-typeset pre code .sh,
+.md-typeset pre code .si,
+.md-typeset pre code .sr,
+.md-typeset pre code .ss,
+.md-typeset pre code .sx,
+.md-typeset .codehilite code .s,
+.md-typeset .codehilite code .s1,
+.md-typeset .codehilite code .s2,
+.md-typeset .codehilite code .sa,
+.md-typeset .codehilite code .sb,
+.md-typeset .codehilite code .sc,
+.md-typeset .codehilite code .sd,
+.md-typeset .codehilite code .se,
+.md-typeset .codehilite code .sh,
+.md-typeset .codehilite code .si,
+.md-typeset .codehilite code .sr,
+.md-typeset .codehilite code .ss,
+.md-typeset .codehilite code .sx {
   color: #0366d6;
 }
 
 /* Numbers */
 .md-typeset pre code .m,
 .md-typeset pre code .mi,
-.md-typeset pre code .mf {
+.md-typeset pre code .mf,
+.md-typeset pre code .l,
+.md-typeset .codehilite code .m,
+.md-typeset .codehilite code .mi,
+.md-typeset .codehilite code .mf,
+.md-typeset .codehilite code .l {
   color: #005cc5;
 }
 
 /* Comments */
 .md-typeset pre code .c,
 .md-typeset pre code .c1,
-.md-typeset pre code .cm {
+.md-typeset pre code .cm,
+.md-typeset .codehilite code .c,
+.md-typeset .codehilite code .c1,
+.md-typeset .codehilite code .cm {
   color: #6a737d;
   font-style: normal;
 }
 
 /* Function names */
 .md-typeset pre code .nf,
-.md-typeset pre code .fm {
+.md-typeset pre code .fm,
+.md-typeset pre code .nt,
+.md-typeset .codehilite code .nf,
+.md-typeset .codehilite code .fm,
+.md-typeset .codehilite code .nt {
   color: #6f42c1;
 }
 
 /* Parameters and variables */
 .md-typeset pre code .n,
 .md-typeset pre code .na,
-.md-typeset pre code .nb {
+.md-typeset pre code .nb,
+.md-typeset pre code .nv,
+.md-typeset pre code .vc,
+.md-typeset pre code .vg,
+.md-typeset pre code .vi,
+.md-typeset .codehilite code .n,
+.md-typeset .codehilite code .na,
+.md-typeset .codehilite code .nb,
+.md-typeset .codehilite code .nv,
+.md-typeset .codehilite code .vc,
+.md-typeset .codehilite code .vg,
+.md-typeset .codehilite code .vi {
   color: #e36209;
 }
 
+/* Constants / booleans */
+.md-typeset pre code .kc,
+.md-typeset pre code .kr,
+.md-typeset .codehilite code .kc,
+.md-typeset .codehilite code .kr {
+  color: #d73a49;
+  font-weight: 500;
+}
+
 /* Class names */
-.md-typeset pre code .nc {
+.md-typeset pre code .nc,
+.md-typeset .codehilite code .nc {
   color: #6f42c1;
 }
 
 /* Built-in names */
-.md-typeset pre code .nn {
+.md-typeset pre code .nn,
+.md-typeset .codehilite code .nn {
   color: #24292e;
 }
 
 /* Operators */
-.md-typeset pre code .o {
+.md-typeset pre code .o,
+.md-typeset .codehilite code .o {
   color: #d73a49;
 }
 
@@ -942,7 +1087,8 @@ body {
 }
 
 /* Code block with title */
-.md-typeset .highlight {
+.md-typeset .highlight,
+.md-typeset .codehilite {
   margin: 1.5rem 0;
   position: relative;
 }
@@ -1370,13 +1516,119 @@ body {
   background-clip: text;
 }
 
+[data-md-color-scheme="slate"] .md-typeset .codehilite,
 [data-md-color-scheme="slate"] .md-typeset pre {
-  background: #1e293b;
-  border-color: #374151;
+  background: var(--aw-code-block-bg);
+  border-color: var(--aw-code-block-border);
 }
 
+[data-md-color-scheme="slate"] .md-typeset .codehilite code,
 [data-md-color-scheme="slate"] .md-typeset pre code {
-  color: #e2e8f0;
+  color: var(--aw-code-block-fg);
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .k,
+[data-md-color-scheme="slate"] .md-typeset pre code .kn,
+[data-md-color-scheme="slate"] .md-typeset pre code .kd,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .k,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .kn,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .kd {
+  color: #ff7b72;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .s,
+[data-md-color-scheme="slate"] .md-typeset pre code .s1,
+[data-md-color-scheme="slate"] .md-typeset pre code .s2,
+[data-md-color-scheme="slate"] .md-typeset pre code .sa,
+[data-md-color-scheme="slate"] .md-typeset pre code .sb,
+[data-md-color-scheme="slate"] .md-typeset pre code .sc,
+[data-md-color-scheme="slate"] .md-typeset pre code .sd,
+[data-md-color-scheme="slate"] .md-typeset pre code .se,
+[data-md-color-scheme="slate"] .md-typeset pre code .sh,
+[data-md-color-scheme="slate"] .md-typeset pre code .si,
+[data-md-color-scheme="slate"] .md-typeset pre code .sr,
+[data-md-color-scheme="slate"] .md-typeset pre code .ss,
+[data-md-color-scheme="slate"] .md-typeset pre code .sx,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .s,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .s1,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .s2,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .sa,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .sb,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .sc,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .sd,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .se,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .sh,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .si,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .sr,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .ss,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .sx {
+  color: #a5d6ff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .m,
+[data-md-color-scheme="slate"] .md-typeset pre code .mi,
+[data-md-color-scheme="slate"] .md-typeset pre code .mf,
+[data-md-color-scheme="slate"] .md-typeset pre code .l,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .m,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .mi,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .mf,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .l {
+  color: #79c0ff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .c,
+[data-md-color-scheme="slate"] .md-typeset pre code .c1,
+[data-md-color-scheme="slate"] .md-typeset pre code .cm,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .c,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .c1,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .cm {
+  color: #8b949e;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .nf,
+[data-md-color-scheme="slate"] .md-typeset pre code .fm,
+[data-md-color-scheme="slate"] .md-typeset pre code .nt,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .nf,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .fm,
+[data-md-color-scheme="slate"] .md-typeset pre code .nc,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .nc,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .nt {
+  color: #d2a8ff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .n,
+[data-md-color-scheme="slate"] .md-typeset pre code .na,
+[data-md-color-scheme="slate"] .md-typeset pre code .nb,
+[data-md-color-scheme="slate"] .md-typeset pre code .nv,
+[data-md-color-scheme="slate"] .md-typeset pre code .vc,
+[data-md-color-scheme="slate"] .md-typeset pre code .vg,
+[data-md-color-scheme="slate"] .md-typeset pre code .vi,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .n,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .na,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .nb,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .nv,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .vc,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .vg,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .vi {
+  color: #ffa657;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .kc,
+[data-md-color-scheme="slate"] .md-typeset pre code .kr,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .kc,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .kr {
+  color: #ff7b72;
+  font-weight: 500;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .nn,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .nn {
+  color: #e6edf3;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .o,
+[data-md-color-scheme="slate"] .md-typeset .codehilite code .o {
+  color: #ff7b72;
 }
 
 /* Dark mode syntax highlighting */
@@ -1431,8 +1683,8 @@ body {
 }
 
 [data-md-color-scheme="slate"] .md-typeset code {
-  background: rgba(139, 92, 246, 0.15);
-  border-color: rgba(139, 92, 246, 0.25);
+  background: var(--aw-code-inline-bg);
+  border-color: var(--aw-code-inline-border);
 }
 
 [data-md-color-scheme="slate"] .aw-hero {
@@ -1479,4 +1731,3 @@ body {
     text-decoration: underline;
   }
 }
-

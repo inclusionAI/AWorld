@@ -45,6 +45,22 @@ class TaskHandler(DefaultHandler):
 
 @HandlerFactory.register(name=f'__{Constants.TASK}__')
 class DefaultTaskHandler(TaskHandler):
+    @staticmethod
+    def _build_user_safe_error_answer(raw_msg: str | None) -> str:
+        if not raw_msg:
+            return "Task fail, cause: internal runtime error."
+
+        message = str(raw_msg)
+        lowered = message.lower()
+
+        if "tool_calls mismatch" in lowered:
+            return "Task fail, cause: internal tool-call reconciliation error."
+
+        if "traceback" in lowered or "messages:" in lowered or len(message) > 1000:
+            return "Task fail, cause: internal runtime error."
+
+        return f"Task fail, cause: {message}"
+
     def is_valid_message(self, message: Message):
         if message.category != Constants.TASK:
             return False
@@ -82,7 +98,7 @@ class DefaultTaskHandler(TaskHandler):
 
             logger.warning(f"{task_flag} task {self.runner.task.id} stop, cause: {task_item.msg}")
             self.runner._task_response = TaskResponse(msg=task_item.msg,
-                                                      answer=f'Task fail, cause: {task_item.msg}',
+                                                      answer=self._build_user_safe_error_answer(task_item.msg),
                                                       context=message.context,
                                                       success=False,
                                                       id=self.runner.task.id,

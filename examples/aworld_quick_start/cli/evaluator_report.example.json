@@ -1,0 +1,93 @@
+{
+  "report_version": 1,
+  "report_format": {
+    "id": "aworld.evaluator.report",
+    "version": 1
+  },
+  "generated_at": "2026-06-02T04:00:00Z",
+  "suite_id": "app-evaluator",
+  "target": {
+    "target_path": "/tmp/artifact.txt",
+    "target_kind": "file"
+  },
+  "summary": {
+    "app-evaluator": {
+      "score": {
+        "mean": 0.91,
+        "min": 0.91,
+        "max": 0.91,
+        "std": 0.0,
+        "eval_status": "PASSED"
+      }
+    }
+  },
+  "metrics": {
+    "score": {
+      "mean": 0.91,
+      "min": 0.91,
+      "max": 0.91,
+      "std": 0.0,
+      "eval_status": "PASSED"
+    }
+  },
+  "results": [
+    {
+      "case_id": "artifact.txt",
+      "input": {
+        "target_path": "/tmp/artifact.txt",
+        "target_kind": "file"
+      },
+      "metrics": {
+        "score": {
+          "value": 0.91,
+          "status": "PASSED"
+        }
+      },
+      "judge": {
+        "score": 0.91,
+        "rank": "Exemplary",
+        "criticism": "Minor polish remains.",
+        "praise": "Strong overall structure.",
+        "improvement_advice": "Keep the visual hierarchy consistent."
+      },
+      "judge_backend": {
+        "backend_id": "app-evaluator-agent"
+      }
+    }
+  ],
+  "result_counts": {
+    "cases_total": 1,
+    "cases_with_metrics": 1,
+    "cases_with_judge": 1
+  },
+  "gate": {
+    "status": "pass",
+    "metric_name": "score",
+    "value": 0.91
+  },
+  "approval": {
+    "required": false,
+    "resolved": false,
+    "approved": null
+  },
+  "judge_backend": {
+    "backend_id": "app-evaluator-agent"
+  },
+  "suite_selection": {
+    "requested": null,
+    "resolved": "app-evaluator",
+    "mode": "auto"
+  },
+  "automation": {
+    "gate_status": "pass",
+    "metric_name": "score",
+    "metric_value": 0.91,
+    "approval_required": false,
+    "approval_resolved": false,
+    "approved": null,
+    "suggested_exit_code": 0,
+    "case_count": 1,
+    "judge_backend": "app-evaluator-agent"
+  },
+  "report_path": "/tmp/report.json"
+}

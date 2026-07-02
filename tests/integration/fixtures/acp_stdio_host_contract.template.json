@@ -1,0 +1,13 @@
+{
+  "command": "python -m aworld_cli.main --no-banner acp",
+  "cwd": "${AWORLD_WORKSPACE}",
+  "profile": "self-test",
+  "sessionParams": {
+    "cwd": "${AWORLD_WORKSPACE}",
+    "mcpServers": []
+  },
+  "env": {
+    "PYTHONPATH": "${AWORLD_WORKSPACE}/aworld-cli/src:${AWORLD_WORKSPACE}",
+    "AWORLD_ACP_SELF_TEST_BRIDGE": "1"
+  }
+}

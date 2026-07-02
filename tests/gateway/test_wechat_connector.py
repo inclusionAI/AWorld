@@ -1,0 +1,2161 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from aworld_gateway.config import WechatChannelConfig
+from aworld_gateway.types import OutboundEnvelope
+
+
+@pytest.fixture(autouse=True)
+def _enable_gateway_log_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.logging import configure_gateway_logging
+
+    monkeypatch.setenv("AWORLD_GATEWAY_CONSOLE_LOG", "true")
+    configure_gateway_logging(log_path=tmp_path / "gateway.log")
+
+
+class _FakeRouter:
+    def __init__(self, *, response_text: str | None = None) -> None:
+        self.calls: list[tuple[object, str | None, object | None]] = []
+        self.response_text = response_text
+
+    async def handle_inbound(self, inbound, *, channel_default_agent_id, on_output=None):
+        self.calls.append((inbound, channel_default_agent_id, on_output))
+        return OutboundEnvelope(
+            channel="wechat",
+            account_id=inbound.account_id,
+            conversation_id=inbound.conversation_id,
+            reply_to_message_id=inbound.message_id,
+            text=self.response_text if self.response_text is not None else f"echo:{inbound.text}",
+        )
+
+
+class _FakeCommandBridge:
+    def __init__(self, *, handled: bool = True, text: str = "bridge:ok") -> None:
+        self.handled = handled
+        self.text = text
+        self.calls: list[dict[str, object]] = []
+
+    async def execute(
+        self,
+        *,
+        text: str,
+        cwd: str,
+        session_id: str,
+        runtime=None,
+        prompt_executor=None,
+        on_output=None,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "cwd": cwd,
+                "session_id": session_id,
+                "runtime": runtime,
+            }
+        )
+        return SimpleNamespace(
+            handled=self.handled,
+            command_name="memory",
+            status="completed" if self.handled else "unknown",
+            text=self.text,
+        )
+
+
+class _BlockingWechatRouter:
+    def __init__(self) -> None:
+        self.started_texts: list[str] = []
+        self.first_started = asyncio.Event()
+        self.second_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def handle_inbound(self, inbound, *, channel_default_agent_id, on_output=None):
+        del channel_default_agent_id, on_output
+        self.started_texts.append(inbound.text)
+        if len(self.started_texts) == 1:
+            self.first_started.set()
+            await self.release_first.wait()
+        elif len(self.started_texts) == 2:
+            self.second_started.set()
+        return OutboundEnvelope(
+            channel="wechat",
+            account_id=inbound.account_id,
+            conversation_id=inbound.conversation_id,
+            reply_to_message_id=inbound.message_id,
+            text=f"echo:{inbound.text}",
+        )
+
+
+def test_connector_build_session_enables_env_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat import connector as wechat_connector
+
+    seen: dict[str, object] = {}
+
+    class _FakeClientSession:
+        def __init__(self, *, trust_env: bool) -> None:
+            seen["trust_env"] = trust_env
+
+    monkeypatch.setattr(
+        wechat_connector,
+        "aiohttp",
+        SimpleNamespace(ClientSession=_FakeClientSession),
+    )
+
+    connector = wechat_connector.WechatConnector(
+        config=WechatChannelConfig(default_agent_id="aworld"),
+        router=None,
+        storage_root=tmp_path,
+    )
+
+    session = connector._build_session()
+
+    assert isinstance(session, _FakeClientSession)
+    assert seen["trust_env"] is True
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_caches_context_token_and_routes_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+        }
+    )
+
+    inbound, channel_default_agent_id, on_output = router.calls[0]
+    assert inbound.text == "ping"
+    assert inbound.conversation_id == "user-1"
+    assert channel_default_agent_id == "aworld"
+    assert callable(on_output)
+    assert connector._token_store.get("wx-account", "user-1") == "ctx-1"
+    assert sent == [("user-1", "echo:ping", {})]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_routes_slash_command_through_router(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter(response_text="Memory instruction status")
+    bridge = _FakeCommandBridge(text="Memory instruction status")
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        command_bridge=bridge,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-cmd-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "/memory status"}}],
+        }
+    )
+
+    assert len(router.calls) == 1
+    inbound, channel_default_agent_id, on_output = router.calls[0]
+    assert inbound.text == "/memory status"
+    assert inbound.conversation_id == "user-1"
+    assert channel_default_agent_id == "aworld"
+    assert callable(on_output)
+    assert bridge.calls == []
+    assert sent == [("user-1", "Memory instruction status", {})]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_reset_command_rotates_session_and_sends_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    connector._token_store.set("wx-account", "user-1", "ctx-old")
+
+    await connector._process_message(
+        {
+            "message_id": "m-new-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-new",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+    )
+    first_session_binding = connector._session_binding_conversation_ids["dm:user-1"]
+
+    await connector._process_message(
+        {
+            "message_id": "m-new-2",
+            "from_user_id": "user-1",
+            "context_token": "ctx-newer",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+    )
+    second_session_binding = connector._session_binding_conversation_ids["dm:user-1"]
+
+    await connector._process_message(
+        {
+            "message_id": "m-after-new",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "hello again"}}],
+        }
+    )
+
+    inbound, channel_default_agent_id, on_output = router.calls[0]
+    assert sent == [
+        ("user-1", "✨ 已开启新会话，之前的上下文已清空。", None),
+        ("user-1", "✨ 已开启新会话，之前的上下文已清空。", None),
+        ("user-1", "echo:hello again", {}),
+    ]
+    assert first_session_binding != second_session_binding
+    assert connector._token_store.get("wx-account", "user-1") is None
+    assert len(router.calls) == 1
+    assert inbound.text == "hello again"
+    assert inbound.metadata["session_binding_conversation_id"] == second_session_binding
+    assert channel_default_agent_id == "aworld"
+    assert callable(on_output)
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_does_not_serialize_dm_messages_when_auto_steer_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _BlockingWechatRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "first"}}],
+        }
+    )
+    connector._schedule_message(
+        {
+            "message_id": "m-2",
+            "from_user_id": "user-1",
+            "context_token": "ctx-2",
+            "item_list": [{"type": 1, "text_item": {"text": "second"}}],
+        }
+    )
+
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+    await asyncio.wait_for(router.second_started.wait(), timeout=1.0)
+
+    router.release_first.set()
+    await connector.stop()
+
+    assert router.started_texts == ["first", "second"]
+    assert len(sent) == 2
+    assert all(chat_id == "user-1" and metadata == {} for chat_id, _text, metadata in sent)
+    assert sorted(text for _chat_id, text, _metadata in sent) == ["echo:first", "echo:second"]
+
+
+@pytest.mark.asyncio
+async def test_connector_serializes_dm_messages_when_auto_steer_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _BlockingWechatRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=False)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(config=cfg, router=router, storage_root=tmp_path)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "first"}}],
+        }
+    )
+    connector._schedule_message(
+        {
+            "message_id": "m-2",
+            "from_user_id": "user-1",
+            "context_token": "ctx-2",
+            "item_list": [{"type": 1, "text_item": {"text": "second"}}],
+        }
+    )
+
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+    assert router.second_started.is_set() is False
+
+    router.release_first.set()
+    await asyncio.wait_for(router.second_started.wait(), timeout=1.0)
+    await connector.stop()
+
+    assert sent == [
+        ("user-1", "echo:first", {}),
+        ("user-1", "echo:second", {}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connector_keeps_group_messages_serialized_when_auto_steer_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _BlockingWechatRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(config=cfg, router=router, storage_root=tmp_path)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "roomid": "group-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "first"}}],
+        }
+    )
+    connector._schedule_message(
+        {
+            "message_id": "m-2",
+            "from_user_id": "user-1",
+            "roomid": "group-1",
+            "context_token": "ctx-2",
+            "item_list": [{"type": 1, "text_item": {"text": "second"}}],
+        }
+    )
+
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+    assert router.second_started.is_set() is False
+
+    router.release_first.set()
+    await asyncio.wait_for(router.second_started.wait(), timeout=1.0)
+    await connector.stop()
+
+    assert sent == [
+        ("user-1", "echo:first", {}),
+        ("user-1", "echo:second", {}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connector_suppresses_steering_ack_for_dm_auto_steer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_cli.steering import STEERING_CAPTURED_ACK
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter(response_text=STEERING_CAPTURED_ACK)
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(config=cfg, router=router, storage_root=tmp_path)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-ack-1",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "follow-up"}}],
+        }
+    )
+
+    assert len(router.calls) == 1
+    assert sent == []
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_reset_command_bypasses_auto_steer_while_running(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _BlockingWechatRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", auto_steer_while_running=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(config=cfg, router=router, storage_root=tmp_path)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+
+    connector._schedule_message(
+        {
+            "message_id": "m-running",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "first"}}],
+        }
+    )
+    await asyncio.wait_for(router.first_started.wait(), timeout=1.0)
+
+    await connector._process_message(
+        {
+            "message_id": "m-reset",
+            "from_user_id": "user-1",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+    )
+
+    router.release_first.set()
+    await connector.stop()
+
+    assert len(router.started_texts) == 1
+    assert sent[0] == ("user-1", "✨ 已开启新会话，之前的上下文已清空。", None)
+
+
+@pytest.mark.asyncio
+async def test_connector_send_text_reuses_latest_context_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    seen: dict[str, object] = {}
+
+    async def fake_send_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        text: str,
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        seen.update(
+            {
+                "session": session,
+                "base_url": base_url,
+                "token": token,
+                "to": to,
+                "text": text,
+                "context_token": context_token,
+                "client_id": client_id,
+            }
+        )
+        return {"ret": 0, "client_id": client_id}
+
+    cfg = WechatChannelConfig()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+    connector = WechatConnector(
+        config=cfg,
+        router=None,
+        storage_root=tmp_path,
+        send_message_func=fake_send_message,
+    )
+    await connector.start()
+    connector._token_store.set("wx-account", "user-1", "ctx-9")
+
+    result = await connector.send_text(chat_id="user-1", text="pong")
+
+    assert seen["base_url"] == "https://ilink.example.test"
+    assert seen["token"] == "wx-token"
+    assert seen["to"] == "user-1"
+    assert seen["text"] == "pong"
+    assert seen["context_token"] == "ctx-9"
+    assert isinstance(seen["client_id"], str)
+    assert result["client_id"] == seen["client_id"]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_send_text_requires_started_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    cfg = WechatChannelConfig()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(config=cfg, router=None, storage_root=tmp_path)
+
+    with pytest.raises(RuntimeError, match="not started"):
+        await connector.send_text(chat_id="user-1", text="pong")
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_inbound_and_outbound_message_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+
+    async def fake_send_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        text: str,
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        return {"ret": 0, "client_id": client_id}
+
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        send_message_func=fake_send_message,
+    )
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+        }
+    )
+    await connector.stop()
+
+    assert "WeChat connector started account=wx-account" in caplog.text
+    assert "WeChat inbound message conversation=user-1 sender=user-1 message_id=m-1" in caplog.text
+    assert "WeChat outbound text chunk sent chat_id=user-1" in caplog.text
+    assert "WeChat connector stopped account=wx-account" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_outbound_text_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    async def fake_send_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        text: str,
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        raise RuntimeError("send failed")
+
+    cfg = WechatChannelConfig()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=None,
+        storage_root=tmp_path,
+        send_message_func=fake_send_message,
+    )
+    await connector.start()
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        await connector.send_text(chat_id="user-1", text="pong")
+
+    await connector.stop()
+
+    assert "WeChat outbound text chunk failed chat_id=user-1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_outbound_media_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    attachment = tmp_path / "demo.txt"
+    attachment.write_text("hello", encoding="utf-8")
+
+    async def fake_get_upload_url(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to_user_id: str,
+        media_type: int,
+        filekey: str,
+        rawsize: int,
+        rawfilemd5: str,
+        filesize: int,
+        aeskey_hex: str,
+    ) -> dict[str, object]:
+        raise RuntimeError("upload url failed")
+
+    cfg = WechatChannelConfig()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=None,
+        storage_root=tmp_path,
+        get_upload_url_func=fake_get_upload_url,
+    )
+    await connector.start()
+
+    with pytest.raises(RuntimeError, match="upload url failed"):
+        await connector.send_text(
+            chat_id="user-1",
+            text="",
+            metadata={"outbound_attachments": [{"path": str(attachment), "type": "file"}]},
+        )
+
+    await connector.stop()
+
+    assert "WeChat outbound media failed chat_id=user-1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_inbound_media_download_failure_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_download_media(
+        *,
+        session,
+        cdn_base_url: str,
+        encrypted_query_param: str | None,
+        aes_key_b64: str | None,
+        full_url: str | None,
+        timeout_seconds: float,
+    ) -> bytes:
+        raise RuntimeError("download failed")
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        download_media_func=fake_download_media,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "item_list": [
+                    {"type": 1, "text_item": {"text": "ping"}},
+                    {
+                        "type": 2,
+                        "image_item": {
+                            "media": {"full_url": "mock-image-resource"}
+                        },
+                    },
+                ],
+            }
+    )
+    await connector.stop()
+
+    assert "WeChat inbound media download failed message_id=m-1 index=1" in caplog.text
+    assert (
+        router.calls[0][0].text
+        == "ping\n\nAttachment issues:\n- image: unavailable (download failed)"
+    )
+    assert router.calls[0][0].metadata["attachment_failures"] == [
+        {
+            "type": "image",
+            "file_name": "image.jpg",
+            "mime_type": "image/jpeg",
+            "item_index": 1,
+            "reason": "download failed",
+        }
+    ]
+    assert sent == [
+        (
+            "user-1",
+            "echo:ping\n\nAttachment issues:\n- image: unavailable (download failed)",
+            {},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_routes_media_download_failure_without_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_download_media(
+        *,
+        session,
+        cdn_base_url: str,
+        encrypted_query_param: str | None,
+        aes_key_b64: str | None,
+        full_url: str | None,
+        timeout_seconds: float,
+    ) -> bytes:
+        raise RuntimeError("download failed")
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        download_media_func=fake_download_media,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-image-fail",
+            "from_user_id": "user-1",
+            "item_list": [
+                {
+                    "type": 2,
+                    "image_item": {
+                        "media": {"full_url": "mock-image-resource"}
+                    },
+                }
+            ],
+        }
+    )
+    await connector.stop()
+
+    assert len(router.calls) == 1
+    inbound, _channel_default_agent_id, _on_output = router.calls[0]
+    assert inbound.text == "Attachment issues:\n- image: unavailable (download failed)"
+    assert inbound.metadata["attachment_failures"] == [
+        {
+            "type": "image",
+            "file_name": "image.jpg",
+            "mime_type": "image/jpeg",
+            "item_index": 0,
+            "reason": "download failed",
+        }
+    ]
+    assert sent == [
+        (
+            "user-1",
+            "echo:Attachment issues:\n- image: unavailable (download failed)",
+            {},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_download_bytes_retries_transient_network_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import _download_bytes
+
+    attempts: list[str] = []
+    sleep_delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    class FailingResponse:
+        async def __aenter__(self):
+            raise OSError("dns temporarily unavailable")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class SuccessfulResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def read(self) -> bytes:
+            return b"image-bytes"
+
+    class FakeSession:
+        def get(self, url: str, *, timeout):
+            del timeout
+            attempts.append(url)
+            if len(attempts) < 3:
+                return FailingResponse()
+            return SuccessfulResponse()
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    caplog.set_level(logging.WARNING, logger="aworld.gateway.wechat.connector")
+
+    payload = await _download_bytes(
+        session=FakeSession(),
+        url="https://file.ilinkai.weixin.qq.com/download?encrypted_query_param=secret",
+        timeout_seconds=30.0,
+    )
+
+    assert payload == b"image-bytes"
+    assert len(attempts) == 3
+    assert sleep_delays == [0.5, 1.0]
+    assert caplog.text.count("WeChat media download retrying") == 2
+    assert "target=file.ilinkai.weixin.qq.com" in caplog.text
+    assert "encrypted_query_param=secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_skips_group_message_when_group_policy_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld", group_policy="disabled")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+    )
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-group",
+            "from_user_id": "user-1",
+            "room_id": "group-1",
+            "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+        }
+    )
+
+    assert router.calls == []
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_split_multiline_messages_sends_multiple_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    calls: list[tuple[str, str | None]] = []
+
+    async def fake_send_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        text: str,
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        calls.append((text, context_token))
+        return {"ret": 0, "client_id": client_id}
+
+    cfg = WechatChannelConfig(split_multiline_messages=True)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=None,
+        storage_root=tmp_path,
+        send_message_func=fake_send_message,
+    )
+    await connector.start()
+    connector._token_store.set("wx-account", "user-1", "ctx-1")
+
+    await connector.send_text(chat_id="user-1", text="line1\nline2\n\nline3")
+
+    assert calls == [("line1", "ctx-1"), ("line2", "ctx-1"), ("line3", "ctx-1")]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_start_launches_poll_loop_and_processes_updates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    updates_called = 0
+    processed: list[str] = []
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        nonlocal updates_called
+        updates_called += 1
+        if updates_called == 1:
+            return {
+                "ret": 0,
+                "get_updates_buf": "buf-1",
+                "msgs": [
+                    {
+                        "message_id": "m-1",
+                        "from_user_id": "user-1",
+                        "item_list": [{"type": 1, "text_item": {"text": "poll"}}],
+                    }
+                ],
+            }
+        await asyncio.sleep(0.01)
+        return {"ret": 0, "get_updates_buf": "buf-1", "msgs": []}
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+
+    async def fake_process_message(message: dict[str, object]) -> None:
+        processed.append(str(message["message_id"]))
+        connector.started = False
+
+    connector._process_message = fake_process_message  # type: ignore[method-assign]
+    await connector.start()
+    await asyncio.sleep(0.05)
+    await connector.stop()
+
+    assert updates_called >= 1
+    assert processed == ["m-1"]
+
+
+@pytest.mark.asyncio
+async def test_connector_poll_loop_continues_after_process_message_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    responses = [
+        {
+            "ret": 0,
+            "get_updates_buf": "buf-1",
+            "msgs": [
+                {"message_id": "m-1", "from_user_id": "user-1", "item_list": []},
+                {"message_id": "m-2", "from_user_id": "user-2", "item_list": []},
+            ],
+        },
+        {"ret": 0, "get_updates_buf": "buf-2", "msgs": []},
+    ]
+    processed: list[str] = []
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        del session, base_url, token, sync_buf, timeout_ms
+        response = responses.pop(0)
+        if not responses:
+            connector.started = False
+        return response
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+    connector.started = True
+    connector._poll_session = object()
+    connector._account_id = "wx-account"
+    connector._token = "wx-token"
+
+    async def fake_process_message(message: dict[str, object]) -> None:
+        processed.append(str(message["message_id"]))
+        if message["message_id"] == "m-1":
+            raise RuntimeError("boom")
+
+    connector._process_message = fake_process_message  # type: ignore[method-assign]
+
+    result = await asyncio.gather(connector._poll_loop(), return_exceptions=True)
+
+    assert result == [None]
+    assert processed == ["m-1", "m-2"]
+
+
+@pytest.mark.asyncio
+async def test_connector_poll_loop_logs_connection_failure_and_establishes_link(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    responses: list[object] = [
+        RuntimeError("poll failed"),
+        {"ret": 0, "get_updates_buf": "buf-1", "msgs": []},
+    ]
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        del session, base_url, token, sync_buf, timeout_ms
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        connector.started = False
+        return response
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+    connector.started = True
+    connector._poll_session = object()
+    connector._account_id = "wx-account"
+    connector._token = "wx-token"
+    connector._base_url = "https://ilink.example.test"
+    connector._poll_retry_delay_seconds = lambda: 0.0  # type: ignore[method-assign]
+
+    result = await asyncio.gather(connector._poll_loop(), return_exceptions=True)
+
+    assert result == [None]
+    assert "WeChat poll request failed account=wx-account" in caplog.text
+    assert "WeChat poll connection established account=wx-account base_url=https://ilink.example.test" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_deduplicates_repeated_message_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(default_agent_id="aworld"),
+        router=router,
+        storage_root=tmp_path,
+    )
+    connector.send_text = lambda **kwargs: asyncio.sleep(0, result=kwargs)  # type: ignore[method-assign]
+    await connector.start()
+
+    message = {
+        "message_id": "m-dup",
+        "from_user_id": "user-1",
+        "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+    }
+
+    await connector._process_message(message)
+    await connector._process_message(message)
+
+    assert len(router.calls) == 1
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_bounds_seen_message_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import DEDUP_MAX_SIZE, WechatConnector
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+    )
+    connector._account_id = "wx-account"
+
+    for index in range(DEDUP_MAX_SIZE + 25):
+        await connector._process_message(
+            {
+                "message_id": f"m-{index}",
+                "from_user_id": "user-1",
+                "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+            }
+        )
+
+    assert len(connector._seen_message_ids) == DEDUP_MAX_SIZE
+    assert "m-0" not in connector._seen_message_ids
+    assert f"m-{DEDUP_MAX_SIZE + 24}" in connector._seen_message_ids
+
+
+@pytest.mark.asyncio
+async def test_connector_start_restores_persisted_token_and_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.account_store import save_account
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    save_account(
+        tmp_path,
+        account_id="wx-account",
+        token="persisted-token",
+        base_url="https://persisted.example.test",
+        user_id="user-1",
+    )
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.delenv("AWORLD_WECHAT_TOKEN", raising=False)
+    monkeypatch.delenv("AWORLD_WECHAT_BASE_URL", raising=False)
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+    )
+    await connector.start()
+
+    assert connector._account_id == "wx-account"
+    assert connector._token == "persisted-token"
+    assert connector._base_url == "https://persisted.example.test"
+
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_start_prepares_cron_runtime_and_stops_owned_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    class _FakeCronExecutor:
+        def __init__(self) -> None:
+            self.swarm_resolver = None
+            self.default_agent_name = None
+
+        def set_swarm_resolver(self, resolver) -> None:
+            self.swarm_resolver = resolver
+
+        def set_default_agent_name(self, agent_name: str | None) -> None:
+            self.default_agent_name = agent_name
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.executor = _FakeCronExecutor()
+            self.notification_sink = None
+            self.running = False
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        async def start(self) -> None:
+            self.start_calls += 1
+            self.running = True
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+            self.running = False
+
+    class _FakeAgent:
+        async def get_swarm(self, _context):
+            return "fake-swarm"
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+    monkeypatch.setattr(
+        "aworld_cli.core.agent_registry.LocalAgentRegistry.get_agent",
+        lambda agent_id: _FakeAgent() if agent_id == "agent-1" else None,
+    )
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        del session, base_url, token, sync_buf, timeout_ms
+        await asyncio.sleep(0.01)
+        return {"ret": 0, "get_updates_buf": "buf-1", "msgs": []}
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(default_agent_id="agent-1"),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+
+    await connector.start()
+
+    assert scheduler.start_calls == 1
+    assert scheduler.running is True
+    assert scheduler.notification_sink is not None
+    assert scheduler.executor.default_agent_name == "agent-1"
+    assert scheduler.executor.swarm_resolver is not None
+    assert await scheduler.executor.swarm_resolver("agent-1") == "fake-swarm"
+
+    await connector.stop()
+
+    assert scheduler.stop_calls == 1
+    assert scheduler.running is False
+
+
+@pytest.mark.asyncio
+async def test_connector_start_reuses_running_scheduler_without_stopping_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    class _FakeCronExecutor:
+        def __init__(self) -> None:
+            self.swarm_resolver = None
+            self.default_agent_name = None
+
+        def set_swarm_resolver(self, resolver) -> None:
+            self.swarm_resolver = resolver
+
+        def set_default_agent_name(self, agent_name: str | None) -> None:
+            self.default_agent_name = agent_name
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.executor = _FakeCronExecutor()
+            self.notification_sink = None
+            self.running = True
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        async def start(self) -> None:
+            self.start_calls += 1
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        del session, base_url, token, sync_buf, timeout_ms
+        await asyncio.sleep(0.01)
+        return {"ret": 0, "get_updates_buf": "buf-1", "msgs": []}
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+
+    await connector.start()
+
+    assert scheduler.start_calls == 0
+    assert scheduler.notification_sink is not None
+    assert scheduler.executor.default_agent_name is None
+
+    await connector.stop()
+
+    assert scheduler.stop_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_default_send_message_posts_ilink_payload_with_context_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import _default_send_message
+
+    calls: dict[str, object] = {}
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    class _FakeResponse:
+        ok = True
+        status = 200
+
+        async def text(self) -> str:
+            return '{"ret":0,"msg":"ok"}'
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSession:
+        def post(self, url: str, *, data: str, headers: dict[str, str], timeout):
+            calls["url"] = url
+            calls["data"] = data
+            calls["headers"] = headers
+            calls["timeout"] = timeout
+            return _FakeResponse()
+
+    result = await _default_send_message(
+        session=_FakeSession(),
+        base_url="https://ilink.example.test",
+        token="wx-token",
+        to="user-1",
+        text="pong",
+        context_token="ctx-1",
+        client_id="client-1",
+    )
+
+    assert calls["url"] == "https://ilink.example.test/ilink/bot/sendmessage"
+    assert '"context_token":"ctx-1"' in str(calls["data"])
+    assert '"to_user_id":"user-1"' in str(calls["data"])
+    assert calls["headers"]["Authorization"] == "Bearer wx-token"
+    assert result["ret"] == 0
+    assert "WeChat API request endpoint=ilink/bot/sendmessage" in caplog.text
+    assert "WeChat API response endpoint=ilink/bot/sendmessage http_status=200 ret=0" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_default_send_message_logs_http_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import _default_send_message
+
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    class _FakeResponse:
+        ok = False
+        status = 500
+
+        async def text(self) -> str:
+            return "server error"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSession:
+        def post(self, url: str, *, data: str, headers: dict[str, str], timeout):
+            del url, data, headers, timeout
+            return _FakeResponse()
+
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        await _default_send_message(
+            session=_FakeSession(),
+            base_url="https://ilink.example.test",
+            token="wx-token",
+            to="user-1",
+            text="pong",
+            context_token=None,
+            client_id="client-1",
+        )
+
+    assert "WeChat API request endpoint=ilink/bot/sendmessage" in caplog.text
+    assert "WeChat API request failed endpoint=ilink/bot/sendmessage http_status=500" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_default_get_updates_returns_empty_payload_on_timeout() -> None:
+    from aworld_gateway.channels.wechat.connector import _default_get_updates
+
+    class _TimeoutSession:
+        def post(self, *args, **kwargs):
+            raise asyncio.TimeoutError
+
+    result = await _default_get_updates(
+        session=_TimeoutSession(),
+        base_url="https://ilink.example.test",
+        token="wx-token",
+        sync_buf="buf-1",
+        timeout_ms=1234,
+    )
+
+    assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-1"}
+
+
+@pytest.mark.asyncio
+async def test_default_get_updates_success_logs_at_debug(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import _default_get_updates
+    from aworld_gateway.logging import configure_gateway_logging
+
+    monkeypatch.setenv("AWORLD_GATEWAY_CONSOLE_LOG", "true")
+    configure_gateway_logging(log_path=tmp_path / "gateway.log")
+
+    class _FakeResponse:
+        ok = True
+        status = 200
+
+        async def text(self) -> str:
+            return '{"ret":0,"msgs":[],"get_updates_buf":"buf-2"}'
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSession:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    result = await _default_get_updates(
+        session=_FakeSession(),
+        base_url="ilink.example.test",
+        token="wx-token",
+        sync_buf="buf-1",
+        timeout_ms=1234,
+    )
+
+    assert result["get_updates_buf"] == "buf-2"
+    assert "WeChat API request endpoint=ilink/bot/getupdates" not in caplog.text
+    assert "WeChat API response endpoint=ilink/bot/getupdates" not in caplog.text
+
+    caplog.clear()
+    caplog.set_level(logging.DEBUG, logger="aworld.gateway")
+
+    await _default_get_updates(
+        session=_FakeSession(),
+        base_url="ilink.example.test",
+        token="wx-token",
+        sync_buf="buf-1",
+        timeout_ms=1234,
+    )
+
+    assert "WeChat API request endpoint=ilink/bot/getupdates" in caplog.text
+    assert "WeChat API response endpoint=ilink/bot/getupdates" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_downloads_image_attachment_and_routes_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    async def fake_download_media(
+        *,
+        session,
+        cdn_base_url: str,
+        encrypted_query_param: str | None,
+        aes_key_b64: str | None,
+        full_url: str | None,
+        timeout_seconds: float,
+    ) -> bytes:
+        del session, cdn_base_url, encrypted_query_param, aes_key_b64, full_url, timeout_seconds
+        return b"image-bytes"
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        download_media_func=fake_download_media,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-image",
+            "from_user_id": "user-1",
+            "item_list": [
+                {
+                    "type": 2,
+                    "image_item": {
+                        "media": {
+                            "encrypt_query_param": "eqp-1",
+                            "aes_key": base64.b64encode(b"0123456789abcdef").decode("ascii"),
+                        }
+                    },
+                }
+            ],
+        }
+    )
+
+    inbound, _channel_default_agent_id, _on_output = router.calls[0]
+    assert inbound.text.startswith("Attachments:")
+    assert len(inbound.metadata["attachments"]) == 1
+    attachment = inbound.metadata["attachments"][0]
+    assert attachment["type"] == "image"
+    attachment_path = Path(attachment["path"])
+    assert attachment_path.exists() is True
+    assert attachment_path.read_bytes() == b"image-bytes"
+    assert inbound.metadata["wechat_media"] == [
+        {
+            "kind": "image",
+            "local_path": str(attachment_path),
+            "file_name": "image.jpg",
+            "mime_type": "image/jpeg",
+            "size_bytes": len(b"image-bytes"),
+            "item_index": 0,
+        }
+    ]
+    assert len(inbound.metadata["multimodal_parts"]) == 1
+    assert inbound.metadata["multimodal_parts"][0]["type"] == "image_url"
+    assert str(inbound.metadata["multimodal_parts"][0]["image_url"]["url"]).startswith(
+        "data:image/jpeg;base64,"
+    )
+    assert sent == [("user-1", inbound.text.replace("Attachments:", "echo:Attachments:", 1), {})]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_builds_structured_file_metadata_without_multimodal_parts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    async def fake_download_media(
+        *,
+        session,
+        cdn_base_url: str,
+        encrypted_query_param: str | None,
+        aes_key_b64: str | None,
+        full_url: str | None,
+        timeout_seconds: float,
+    ) -> bytes:
+        del session, cdn_base_url, encrypted_query_param, aes_key_b64, full_url, timeout_seconds
+        return b"file-bytes"
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(default_agent_id="aworld"),
+        router=router,
+        storage_root=tmp_path,
+        download_media_func=fake_download_media,
+    )
+    connector.send_text = lambda **kwargs: asyncio.sleep(0, result=kwargs)  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-file",
+            "from_user_id": "user-1",
+            "item_list": [
+                {
+                    "type": 4,
+                    "file_item": {
+                        "file_name": "report.txt",
+                        "media": {
+                            "encrypt_query_param": "eqp-1",
+                            "aes_key": base64.b64encode(b"0123456789abcdef").decode("ascii"),
+                        },
+                    },
+                }
+            ],
+        }
+    )
+
+    inbound, _channel_default_agent_id, _on_output = router.calls[0]
+    assert inbound.metadata["attachments"][0]["type"] == "file"
+    assert inbound.metadata["wechat_media"] == [
+        {
+            "kind": "file",
+            "local_path": inbound.metadata["attachments"][0]["path"],
+            "file_name": "report.txt",
+            "mime_type": "text/plain",
+            "size_bytes": len(b"file-bytes"),
+            "item_index": 0,
+        }
+    ]
+    assert inbound.metadata.get("multimodal_parts") == []
+    await connector.stop()
+
+
+def test_assert_wechat_cdn_url_rejects_untrusted_host() -> None:
+    from aworld_gateway.channels.wechat.media import assert_wechat_cdn_url
+
+    with pytest.raises(ValueError, match="allowlist"):
+        assert_wechat_cdn_url("https://evil.example.test/file.bin")
+
+
+def test_assert_wechat_cdn_url_accepts_ilink_file_host() -> None:
+    from aworld_gateway.channels.wechat.media import assert_wechat_cdn_url
+
+    assert_wechat_cdn_url(
+        "https://file.ilinkai.weixin.qq.com/download?encrypted_query_param=x"
+    )
+
+
+@pytest.mark.asyncio
+async def test_connector_send_text_uploads_markdown_local_image_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    image_path = tmp_path / "chart.png"
+    image_path.write_bytes(b"png-bytes")
+
+    text_messages: list[str] = []
+    media_messages: list[dict[str, object]] = []
+    upload_calls: list[dict[str, object]] = []
+    get_upload_calls: list[dict[str, object]] = []
+
+    async def fake_send_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        text: str,
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to, context_token
+        text_messages.append(text)
+        return {"ret": 0, "client_id": client_id}
+
+    async def fake_get_upload_url(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to_user_id: str,
+        media_type: int,
+        filekey: str,
+        rawsize: int,
+        rawfilemd5: str,
+        filesize: int,
+        aeskey_hex: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to_user_id, rawfilemd5, aeskey_hex
+        get_upload_calls.append(
+            {
+                "media_type": media_type,
+                "filekey": filekey,
+                "rawsize": rawsize,
+                "filesize": filesize,
+            }
+        )
+        return {"upload_param": "upload-token"}
+
+    async def fake_upload_ciphertext(
+        *,
+        session,
+        ciphertext: bytes,
+        upload_url: str,
+    ) -> str:
+        del session
+        upload_calls.append({"ciphertext": ciphertext, "upload_url": upload_url})
+        return "encrypted-param-1"
+
+    async def fake_send_media_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        item: dict[str, object],
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to, context_token
+        media_messages.append({"item": item, "client_id": client_id})
+        return {"ret": 0, "client_id": client_id}
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_CDN_BASE_URL", "https://cdn.example.test/c2c")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        send_message_func=fake_send_message,
+        get_upload_url_func=fake_get_upload_url,
+        upload_ciphertext_func=fake_upload_ciphertext,
+        send_media_message_func=fake_send_media_message,
+    )
+    await connector.start()
+    connector._token_store.set("wx-account", "user-1", "ctx-1")
+
+    result = await connector.send_text(
+        chat_id="user-1",
+        text=f"share ![chart](file://{image_path})",
+    )
+
+    assert text_messages == ["share"]
+    assert get_upload_calls[0]["media_type"] == 1
+    assert get_upload_calls[0]["rawsize"] == len(b"png-bytes")
+    assert upload_calls[0]["upload_url"] == "https://cdn.example.test/c2c/upload?encrypted_query_param=upload-token&filekey=" + str(get_upload_calls[0]["filekey"])
+    assert media_messages[0]["item"]["type"] == 2
+    assert media_messages[0]["item"]["image_item"]["media"]["encrypt_query_param"] == "encrypted-param-1"
+    assert result["client_id"] == media_messages[0]["client_id"]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_send_text_honors_force_file_attachment_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    image_path = tmp_path / "chart.png"
+    image_path.write_bytes(b"png-bytes")
+
+    text_messages: list[str] = []
+    media_messages: list[dict[str, object]] = []
+
+    async def fake_send_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        text: str,
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to, context_token
+        text_messages.append(text)
+        return {"ret": 0, "client_id": client_id}
+
+    async def fake_get_upload_url(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to_user_id: str,
+        media_type: int,
+        filekey: str,
+        rawsize: int,
+        rawfilemd5: str,
+        filesize: int,
+        aeskey_hex: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to_user_id, media_type, filekey, rawsize, rawfilemd5, filesize, aeskey_hex
+        return {"upload_param": "upload-token"}
+
+    async def fake_upload_ciphertext(
+        *,
+        session,
+        ciphertext: bytes,
+        upload_url: str,
+    ) -> str:
+        del session, ciphertext, upload_url
+        return "encrypted-param-1"
+
+    async def fake_send_media_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        item: dict[str, object],
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to, context_token
+        media_messages.append({"item": item, "client_id": client_id})
+        return {"ret": 0, "client_id": client_id}
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        send_message_func=fake_send_message,
+        get_upload_url_func=fake_get_upload_url,
+        upload_ciphertext_func=fake_upload_ciphertext,
+        send_media_message_func=fake_send_media_message,
+    )
+    await connector.start()
+
+    result = await connector.send_text(
+        chat_id="user-1",
+        text="",
+        metadata={
+            "outbound_attachments": [
+                {"path": f"file://{image_path}", "type": "file"},
+            ]
+        },
+    )
+
+    assert text_messages == []
+    assert media_messages[0]["item"]["type"] == 4
+    assert media_messages[0]["item"]["file_item"]["file_name"] == "chart.png"
+    assert result["client_id"] == media_messages[0]["client_id"]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_send_text_honors_explicit_video_attachment_type(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    video_like_path = tmp_path / "movie.bin"
+    video_like_path.write_bytes(b"video-bytes")
+
+    media_messages: list[dict[str, object]] = []
+
+    async def fake_get_upload_url(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to_user_id: str,
+        media_type: int,
+        filekey: str,
+        rawsize: int,
+        rawfilemd5: str,
+        filesize: int,
+        aeskey_hex: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to_user_id, filekey, rawsize, rawfilemd5, filesize, aeskey_hex
+        assert media_type == 2
+        return {"upload_param": "upload-token"}
+
+    async def fake_upload_ciphertext(
+        *,
+        session,
+        ciphertext: bytes,
+        upload_url: str,
+    ) -> str:
+        del session, ciphertext, upload_url
+        return "encrypted-param-1"
+
+    async def fake_send_media_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        item: dict[str, object],
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to, context_token
+        media_messages.append({"item": item, "client_id": client_id})
+        return {"ret": 0, "client_id": client_id}
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_upload_url_func=fake_get_upload_url,
+        upload_ciphertext_func=fake_upload_ciphertext,
+        send_media_message_func=fake_send_media_message,
+    )
+    await connector.start()
+
+    result = await connector.send_text(
+        chat_id="user-1",
+        text="",
+        metadata={
+            "outbound_attachments": [
+                {"path": f"file://{video_like_path}", "type": "video"},
+            ]
+        },
+    )
+
+    assert media_messages[0]["item"]["type"] == 5
+    assert media_messages[0]["item"]["video_item"]["media"]["encrypt_query_param"] == "encrypted-param-1"
+    assert result["client_id"] == media_messages[0]["client_id"]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_send_text_honors_explicit_voice_attachment_type(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    voice_like_path = tmp_path / "audio.bin"
+    voice_like_path.write_bytes(b"voice-bytes")
+
+    media_messages: list[dict[str, object]] = []
+
+    async def fake_get_upload_url(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to_user_id: str,
+        media_type: int,
+        filekey: str,
+        rawsize: int,
+        rawfilemd5: str,
+        filesize: int,
+        aeskey_hex: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to_user_id, filekey, rawsize, rawfilemd5, filesize, aeskey_hex
+        assert media_type == 4
+        return {"upload_param": "upload-token"}
+
+    async def fake_upload_ciphertext(
+        *,
+        session,
+        ciphertext: bytes,
+        upload_url: str,
+    ) -> str:
+        del session, ciphertext, upload_url
+        return "encrypted-param-1"
+
+    async def fake_send_media_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        item: dict[str, object],
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        del session, base_url, token, to, context_token
+        media_messages.append({"item": item, "client_id": client_id})
+        return {"ret": 0, "client_id": client_id}
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_upload_url_func=fake_get_upload_url,
+        upload_ciphertext_func=fake_upload_ciphertext,
+        send_media_message_func=fake_send_media_message,
+    )
+    await connector.start()
+
+    result = await connector.send_text(
+        chat_id="user-1",
+        text="",
+        metadata={
+            "outbound_attachments": [
+                {"path": f"file://{voice_like_path}", "type": "voice"},
+            ]
+        },
+    )
+
+    assert media_messages[0]["item"]["type"] == 3
+    assert media_messages[0]["item"]["voice_item"]["media"]["encrypt_query_param"] == "encrypted-param-1"
+    assert result["client_id"] == media_messages[0]["client_id"]
+    await connector.stop()

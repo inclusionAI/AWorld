@@ -5,6 +5,7 @@ import time
 import asyncio
 import json
 import os
+import re
 import traceback
 import uuid
 from collections import OrderedDict
@@ -15,7 +16,8 @@ import aworld.trace as trace
 from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
-from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
+from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem, TaskStatusValue
+from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
@@ -29,18 +31,28 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color, digest_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools, filter_mcp_tools_by_servers
 from aworld.memory.main import MemoryFactory
+from aworld.memory.tool_call_compaction import collect_replay_message_metrics
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template, \
     ModelResponseParser
 from aworld.models.model_response import ModelResponse
+from aworld.models.prompt_cache import (
+    resolve_provider_prompt_cache_key,
+    supports_provider_native_prompt_cache,
+    should_request_provider_native_cache,
+)
+from aworld.models.usage import normalize_usage
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process, ModelUtils
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
+from aworld.runners.post_tool_progress import mark_post_tool_progress_llm_started
 from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
+from aworld.utils.task_grounding import anchor_matches_text, extract_required_anchors, extract_path_candidates
+from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
 
 
@@ -66,7 +78,6 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}")
 
         if resp.tool_calls:
-            is_call_tool = True
             logger.info(f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)")
             for idx, tool_call in enumerate(resp.tool_calls):
                 full_name: str = tool_call.function.name
@@ -78,13 +89,19 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}")
 
                 try:
-                    params = json.loads(tool_call.function.arguments)
+                    raw_arguments = tool_call.function.arguments
+                    if not isinstance(raw_arguments, str) or not raw_arguments.strip():
+                        logger.warning(
+                            f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} for {full_name} has invalid arguments: {raw_arguments!r}, skipping.")
+                        continue
+
+                    params = json.loads(raw_arguments)
                     logger.debug(
                         f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)")
                 except Exception as e:
                     logger.warning(
                         f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}")
-                    params = {}
+                    continue
 
                 # format in framework
                 # agent_info = AgentFactory.agent_instance(agent_id)
@@ -117,6 +134,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                agent_name=agent_id,
                                                params=params,
                                                policy_info=content + param_info))
+                    is_call_tool = True
                     logger.debug(f"🤖 [Agent:{agent_id}] Added agent action: {full_name}")
                 else:
                     action_name = '__'.join(names[1:]) if len(names) > 1 else ''
@@ -126,8 +144,9 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                agent_name=agent_id,
                                                params=params,
                                                policy_info=content))
+                    is_call_tool = True
                     logger.info(f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}")
-        else:
+        if not is_call_tool:
             if not content and resp.reasoning_content:
                 logger.info(f"💬 [Agent:{agent_id}] No tool calls or content, added reasoning content to action")
                 content = resp.reasoning_content
@@ -322,6 +341,281 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Disable subagent on initialization failure
             self.enable_subagent = False
             self.subagent_manager = None
+
+    def _record_llm_call_request(
+        self,
+        message: Message,
+        messages: List[Dict[str, Any]],
+        *,
+        started_at: str | None = None,
+    ) -> str:
+        """Persist one request snapshot without overwriting prior LLM call state."""
+        started_at = started_at or datetime.now().isoformat()
+        call_id = uuid.uuid4().hex
+        serializable_messages = to_serializable(messages)
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        llm_calls.append(
+            {
+                "call_id": call_id,
+                "step_id": message.context.current_step_id() if message.context else None,
+                "agent_id": self.id(),
+                "started_at": started_at,
+                "request": {
+                    "messages": serializable_messages,
+                },
+                "request_metrics": collect_replay_message_metrics(serializable_messages),
+            }
+        )
+        context_info["llm_calls"] = llm_calls
+        # Backward-compatible aliases for current readers.
+        context_info["llm_input"] = serializable_messages
+        context_info["llm_call_start_time"] = started_at
+        return call_id
+
+    def _record_llm_call_response(
+        self,
+        message: Message,
+        call_id: str,
+        llm_response: ModelResponse | None,
+    ) -> None:
+        """Attach response/usage to the matching call record and preserve legacy aliases."""
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        serialized_response = None
+        serialized_usage = None
+        if llm_response is not None:
+            serialized_response = (
+                llm_response.to_dict()
+                if hasattr(llm_response, "to_dict")
+                else to_serializable(llm_response)
+            )
+            serialized_usage = to_serializable(getattr(llm_response, "usage", None))
+
+        for index in range(len(llm_calls) - 1, -1, -1):
+            record = llm_calls[index]
+            if isinstance(record, dict) and record.get("call_id") == call_id:
+                updated_record = dict(record)
+                if serialized_response is not None:
+                    updated_record["response"] = serialized_response
+                if serialized_usage is not None:
+                    updated_record["usage"] = serialized_usage
+                metadata = updated_record.get("assembly_observability")
+                if isinstance(metadata, dict) and self._usage_has_cache_tokens(serialized_usage):
+                    metadata = dict(metadata)
+                    metadata["provider_native_cache"] = True
+                    updated_record["assembly_observability"] = metadata
+                llm_calls[index] = updated_record
+                context_info["llm_calls"] = llm_calls
+                break
+
+        context_info["llm_output"] = llm_response
+
+    def _update_llm_call_observability(
+        self,
+        message: Message,
+        call_id: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Attach prompt-assembly metadata to the matching call record."""
+        if not isinstance(metadata, dict):
+            return
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        for index in range(len(llm_calls) - 1, -1, -1):
+            record = llm_calls[index]
+            if isinstance(record, dict) and record.get("call_id") == call_id:
+                updated_record = dict(record)
+                updated_record["assembly_observability"] = dict(metadata)
+                llm_calls[index] = updated_record
+                context_info["llm_calls"] = llm_calls
+                break
+
+    def _current_provider_name(self) -> str:
+        provider_name = getattr(getattr(self, "_llm", None), "provider_name", None)
+        if provider_name:
+            return provider_name
+        llm_config = getattr(self.conf, "llm_config", None)
+        if llm_config and getattr(llm_config, "llm_provider", None):
+            return llm_config.llm_provider
+        if getattr(self.conf, "llm_provider", None):
+            return self.conf.llm_provider
+        return "openai"
+
+    def _get_agent_context_cache_config(self, context: Any):
+        if context is None or not hasattr(context, "get_agent_context_config"):
+            return None
+        namespaces = [self.id(), self.name(), "default"]
+        for namespace in namespaces:
+            try:
+                config = context.get_agent_context_config(namespace)
+            except Exception:
+                continue
+            if config is not None and hasattr(config, "context_cache"):
+                return config.context_cache
+        return None
+
+    def _get_model_context_cache_config(self):
+        llm_config = getattr(self.conf, "llm_config", None)
+        if llm_config is not None and hasattr(llm_config, "context_cache"):
+            return llm_config.context_cache
+        return None
+
+    def _is_context_cache_enabled(self, context: Any) -> bool:
+        agent_config = self._get_agent_context_cache_config(context)
+        model_config = self._get_model_context_cache_config()
+        agent_enabled = True if agent_config is None else bool(getattr(agent_config, "enabled", True))
+        model_enabled = True if model_config is None else bool(getattr(model_config, "enabled", True))
+        return agent_enabled and model_enabled
+
+    def _allow_provider_native_cache(self, context: Any) -> bool:
+        if not self._is_context_cache_enabled(context):
+            return False
+        agent_config = self._get_agent_context_cache_config(context)
+        model_config = self._get_model_context_cache_config()
+        agent_enabled = True if agent_config is None else bool(
+            getattr(agent_config, "allow_provider_native_cache", True)
+        )
+        model_enabled = True if model_config is None else bool(
+            getattr(model_config, "allow_provider_native_cache", True)
+        )
+        return agent_enabled and model_enabled
+
+    def _usage_has_cache_tokens(self, usage: Dict[str, Any] | None) -> bool:
+        if not isinstance(usage, dict):
+            return False
+        normalized_usage = normalize_usage(usage)
+        return (
+            (normalized_usage.get("cache_hit_tokens", 0) or 0) > 0
+            or (normalized_usage.get("cache_write_tokens", 0) or 0) > 0
+        )
+
+    def _provider_native_cache_requested(
+        self,
+        context: Any,
+        provider_name: str,
+        request_kwargs: Dict[str, Any] | None,
+        *,
+        stable_prefix_hash: str | None = None,
+    ) -> bool:
+        if not self._allow_provider_native_cache(context):
+            return False
+        if not supports_provider_native_prompt_cache(provider_name):
+            return False
+        return should_request_provider_native_cache(
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_prefix_hash,
+        )
+
+    def _build_prompt_assembly_state(
+        self,
+        *,
+        context: Any = None,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ):
+        metadata = self._build_prompt_assembly_metadata(context=context, request_kwargs=request_kwargs)
+        provider = self._get_prompt_assembly_provider(context)
+        plan = provider.build_plan(messages=messages, tools=tools, metadata=metadata)
+        provider_name = metadata.get("provider_name") or self._current_provider_name()
+        stable_hash = getattr(plan, "stable_hash", None)
+        provider_native_cache = self._provider_native_cache_requested(
+            context,
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_hash,
+        )
+        metadata["provider_native_cache"] = provider_native_cache
+        prompt_cache_key = resolve_provider_prompt_cache_key(
+            provider_name,
+            request_kwargs,
+            stable_prefix_hash=stable_hash,
+        )
+        if prompt_cache_key:
+            metadata["prompt_cache_key"] = prompt_cache_key
+
+        assembled_messages = (
+            plan.to_model_messages()
+            if hasattr(plan, "to_model_messages")
+            else to_serializable(getattr(plan, "messages", messages))
+        )
+        observability = dict(metadata)
+        plan_observability = getattr(plan, "observability", None)
+        if isinstance(plan_observability, dict):
+            observability.update(plan_observability)
+        observability["provider_native_cache"] = provider_native_cache
+        if prompt_cache_key:
+            observability["prompt_cache_key"] = prompt_cache_key
+        observability.setdefault("assembly_provider", provider.__class__.__name__)
+        if stable_hash:
+            observability.setdefault("stable_prefix_hash", stable_hash)
+        return plan, to_serializable(assembled_messages), observability
+
+    def _get_prompt_assembly_provider(self, context: Any = None):
+        provider = None
+        if context is not None:
+            provider_getter = getattr(context, "get_prompt_assembly_provider", None)
+            if callable(provider_getter):
+                try:
+                    provider = provider_getter(agent=self)
+                except TypeError:
+                    provider = provider_getter()
+            if provider is None:
+                provider = getattr(context, "prompt_assembly_provider", None)
+        if provider is None:
+            provider = getattr(self, "prompt_assembly_provider", None)
+        if provider is None:
+            provider = DefaultPromptAssemblyProvider()
+            self.prompt_assembly_provider = provider
+        return provider
+
+    def _build_prompt_assembly_metadata(
+        self,
+        *,
+        context: Any = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        provider_name = self._current_provider_name()
+        return {
+            "provider_name": provider_name,
+            "cache_aware_assembly": False,
+            "provider_native_cache": self._provider_native_cache_requested(context, provider_name, request_kwargs),
+        }
+
+    def _build_prompt_assembly(
+        self,
+        *,
+        context: Any = None,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        _, assembled_messages, observability = self._build_prompt_assembly_state(
+            context=context,
+            messages=messages,
+            tools=tools,
+            request_kwargs=request_kwargs,
+        )
+        return assembled_messages, observability
+
+    def _build_prompt_assembly_observability(
+        self,
+        *,
+        context: Any = None,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Build request-side prompt assembly metadata from the active prompt assembly provider."""
+        _, observability = self._build_prompt_assembly(
+            context=context,
+            messages=messages,
+            tools=tools,
+            request_kwargs=request_kwargs,
+        )
+        return observability
 
     @property
     def llm(self):
@@ -577,25 +871,61 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if histories:
             tool_calls_map = {}
             last_tool_calls = []
+            matched_tool_call_ids = set()
+
+            def _is_tool_history(history) -> bool:
+                if isinstance(history, MemoryMessage):
+                    return isinstance(history, MemoryToolMessage)
+                return history.metadata.get('role') == 'tool'
+
+            def _drop_incomplete_tool_call_turn(reason: str):
+                nonlocal tool_calls_map, last_tool_calls
+                if not last_tool_calls:
+                    return
+                dropped_message = None
+                if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls"):
+                    dropped_message = messages.pop()
+                logger.warning(
+                    "Skip incomplete tool-call turn in memory replay: "
+                    f"reason={reason}, missing_tool_call_ids={last_tool_calls}, "
+                    f"matched_tool_result_ids={list(tool_calls_map.keys())}, "
+                    f"dropped_assistant_message={bool(dropped_message)}, agent={self.id()}"
+                )
+                tool_calls_map = {}
+                last_tool_calls = []
+
+            def _append_complete_tool_results():
+                nonlocal tool_calls_map, last_tool_calls
+                for tool_call_id in last_tool_calls:
+                    if tool_call_id not in tool_calls_map:
+                        _drop_incomplete_tool_call_turn(f"missing tool result for {tool_call_id}")
+                        return
+                    messages.append(tool_calls_map.get(tool_call_id))
+                    matched_tool_call_ids.add(tool_call_id)
+                tool_calls_map = {}
+                last_tool_calls = []
+
             for history in histories:
                 if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
                     # Maintain the order of tool calls
-                    for tool_call_id in last_tool_calls:
-                        if tool_call_id not in tool_calls_map:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                        messages.append(tool_calls_map.get(tool_call_id))
-                    tool_calls_map = {}
-                    last_tool_calls = []
+                    _append_complete_tool_results()
+                elif last_tool_calls and not _is_tool_history(history):
+                    _drop_incomplete_tool_call_turn("next non-tool message encountered")
 
                 if isinstance(history, MemoryMessage):
                     if isinstance(history, MemoryToolMessage):
                         if last_tool_calls and history.tool_call_id in last_tool_calls:
                             tool_calls_map[history.tool_call_id] = history.to_openai_message()
+                        elif history.tool_call_id in matched_tool_call_ids:
+                            logger.warning(
+                                f"Skip duplicate tool result in memory replay: "
+                                f"tool_call_id={history.tool_call_id}, agent={self.id()}"
+                            )
                         else:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {history.tool_call_id} not found in {last_tool_calls}, "
-                                f"messages: {messages}, histories: {histories}")
+                            logger.warning(
+                                "Skip orphan tool result in memory replay: "
+                                f"tool_call_id={history.tool_call_id}, agent={self.id()}"
+                            )
                     else:
                         messages.append(history.to_openai_message())
                         if isinstance(history, MemoryAIMessage) and history.tool_calls:
@@ -608,10 +938,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             msg = {'role': history.metadata['role'], 'content': history.content,
                                    'tool_call_id': tool_call_id}
                             tool_calls_map[tool_call_id] = msg
+                        elif tool_call_id in matched_tool_call_ids:
+                            logger.warning(
+                                f"Skip duplicate tool result in memory replay: "
+                                f"tool_call_id={tool_call_id}, agent={self.id()}"
+                            )
                         else:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {last_tool_calls}, "
-                                f"messages: {messages}, histories: {histories}")
+                            logger.warning(
+                                "Skip orphan tool result in memory replay: "
+                                f"tool_call_id={tool_call_id}, agent={self.id()}"
+                            )
                     else:
                         if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
                             messages.append({'role': history.metadata['role'], 'content': history.content,
@@ -623,31 +959,39 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                              "tool_call_id": history.metadata.get("tool_call_id")})
                 if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
                     # Maintain the order of tool calls
-                    for tool_call_id in last_tool_calls:
-                        if tool_call_id not in tool_calls_map:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                        messages.append(tool_calls_map.get(tool_call_id))
-                    tool_calls_map = {}
-                    last_tool_calls = []
+                    _append_complete_tool_results()
                 elif len(tool_calls_map) > len(last_tool_calls):
-                    raise AWorldRuntimeException(
-                        f"tool_calls mismatch! {len(tool_calls_map)} tool messages > {len(last_tool_calls)} tool calls: "
-                        f"tool_calls_map={tool_calls_map}, last_tool_calls={last_tool_calls}, messages={messages}, histories={histories}")
-            if len(tool_calls_map) == len(last_tool_calls):
-                for tool_call_id in last_tool_calls:
-                    if tool_call_id not in tool_calls_map:
-                        raise AWorldRuntimeException(
-                            f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                    messages.append(tool_calls_map.get(tool_call_id))
-                tool_calls_map = {}
-                last_tool_calls = []
+                    _drop_incomplete_tool_call_turn("more tool results than tool calls")
+            if last_tool_calls and len(tool_calls_map) == len(last_tool_calls):
+                _append_complete_tool_results()
             else:
-                raise AWorldRuntimeException(
-                    f"tool_calls mismatch! {len(tool_calls_map)} tool messages != {len(last_tool_calls)} tool calls: "
-                    f"tool_calls_map={tool_calls_map}, last_tool_calls={last_tool_calls}, messages={messages}, histories={histories}")
+                _drop_incomplete_tool_call_turn("end of history reached")
 
-        return messages
+        return self._prepend_task_input_messages(messages, message.context)
+
+    @staticmethod
+    def _prepend_task_input_messages(messages: List[Dict[str, Any]], context: Context = None) -> List[Dict[str, Any]]:
+        task_input = getattr(context, "task_input_object", None) if context is not None else None
+        task_messages = getattr(task_input, "messages", None) or []
+        restored_messages = []
+        for item in task_messages:
+            if isinstance(item, dict):
+                message = dict(item)
+            elif hasattr(item, "model_dump"):
+                message = item.model_dump()
+            else:
+                continue
+            if message.get("role") in {"user", "assistant", "tool"}:
+                restored_messages.append(message)
+        if not restored_messages:
+            return messages
+
+        insert_at = 0
+        for index, item in enumerate(messages):
+            if not isinstance(item, dict) or item.get("role") != "system":
+                break
+            insert_at = index + 1
+        return messages[:insert_at] + restored_messages + messages[insert_at:]
 
     async def init_observation(self, observation: Observation) -> Observation:
         # default use origin observation
@@ -776,6 +1120,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         return sync_exec(self.async_policy, observation, info, message, **kwargs)
 
+    @staticmethod
+    async def _current_task_status(context: Optional[Context]) -> Optional[str]:
+        if context is None or not hasattr(context, "get_task_status"):
+            return None
+        try:
+            return await context.get_task_status()
+        except Exception as exc:
+            logger.debug(f"Failed to inspect task status for interruption handling: {exc}")
+            return None
+
+    async def _raise_if_task_interrupted(
+        self,
+        context: Optional[Context],
+        *,
+        reason: str,
+        source_exception: Exception | None = None,
+    ) -> None:
+        current_task = asyncio.current_task()
+        if current_task and current_task.cancelling():
+            logger.info(f"{self.id()} treating LLM flow as cancelled: {reason}")
+            if source_exception is None:
+                raise asyncio.CancelledError(reason)
+            raise asyncio.CancelledError(reason) from source_exception
+
+        task_status = await self._current_task_status(context)
+        if task_status in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}:
+            cancel_reason = f"{reason} ({task_status})"
+            logger.info(f"{self.id()} treating LLM flow as task interruption: {cancel_reason}")
+            if source_exception is None:
+                raise asyncio.CancelledError(cancel_reason)
+            raise asyncio.CancelledError(cancel_reason) from source_exception
+
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
                            **kwargs) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
@@ -797,17 +1173,32 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
-        messages = await self.build_llm_input(observation, info, message=message, **kwargs)
+        raw_messages = await self.build_llm_input(observation, info, message=message, **kwargs)
+        tools = await self._filter_tools(message.context)
+        if not tools:
+            tools = None
+        prompt_assembly_plan, messages, prompt_assembly_observability = self._build_prompt_assembly_state(
+            context=message.context,
+            messages=raw_messages,
+            tools=tools,
+            request_kwargs=kwargs,
+        )
 
         serializable_messages = to_serializable(messages)
-        message.context.context_info["llm_input"] = serializable_messages
         llm_response = None
         agent_result = None
+        validation_feedback = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+        mark_post_tool_progress_llm_started(message.context, agent_id=self.id())
         # Record LLM call start time (used to set MemoryMessage's start_time)
         llm_call_start_time = datetime.now().isoformat()
-        message.context.context_info["llm_call_start_time"] = llm_call_start_time
+        llm_call_id = self._record_llm_call_request(
+            message,
+            serializable_messages,
+            started_at=llm_call_start_time,
+        )
+        self._update_llm_call_observability(message, llm_call_id, prompt_assembly_observability)
 
         try:
             events = []
@@ -823,11 +1214,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "agent_id": self.id()
             }
             kwargs["response_parse_args"] = response_parse_args
+            kwargs["prepared_tools"] = tools
+            provider_name = prompt_assembly_observability.get("provider_name") or self._current_provider_name()
+            if supports_provider_native_prompt_cache(provider_name):
+                kwargs["prompt_assembly_plan"] = prompt_assembly_plan
+                kwargs["provider_native_prompt_cache"] = bool(
+                    prompt_assembly_observability.get("provider_native_cache")
+                )
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
+        except asyncio.CancelledError:
+            logger.info(f"{self.id()} LLM flow interrupted during invoke_model")
+            raise
         except Exception as e:
+            await self._raise_if_task_interrupted(
+                message.context if message else None,
+                reason=f"{self.id()} interrupted while waiting for LLM response",
+                source_exception=e,
+            )
             logger.warn(f"{self.id()} result error: {e}")
             raise AWorldRuntimeException(str(e))
         finally:
+            self._record_llm_call_response(message, llm_call_id, llm_response)
             if llm_response:
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
@@ -857,11 +1264,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                                                          agent_id=self.id(),
                                                                          agent=self,
                                                                          use_tools_in_prompt=self.use_tools_in_prompt)
+                    candidate_finished = not agent_result.is_call_tool
+                    if candidate_finished:
+                        validation_feedback = self._build_result_validation_feedback_from_context(
+                            context=message.context,
+                            final_response_text=llm_response.content or "",
+                        )
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
                                                       message_type=MemoryType.AI,
                                                       context=message.context,
-                                                      skip_summary=self.is_agent_finished(llm_response, agent_result))
+                                                      skip_summary=candidate_finished and not validation_feedback)
 
                     try:
                         events = []
@@ -873,10 +1286,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             f"{self.id()} failed to run POST_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
                         raise AWorldRuntimeException(str(e))
             else:
+                await self._raise_if_task_interrupted(
+                    message.context if message else None,
+                    reason=f"{self.id()} interrupted before receiving a usable LLM response",
+                )
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise AWorldRuntimeException(f"{self.id()} failed to get LLM response")
 
         logger.info(f"agent_result: {agent_result}")
+
+        if validation_feedback:
+            logger.warning(
+                "Result validation asked agent %s to continue before finishing: %s",
+                self.id(),
+                validation_feedback,
+            )
+            return await self._retry_for_result_validation(
+                validation_feedback=validation_feedback,
+                observation=observation,
+                info=info,
+                message=message,
+                kwargs=kwargs,
+            )
+
+        message.context.context_info.pop(self._result_validation_retry_key(self.id()), None)
 
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
@@ -892,6 +1325,382 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 policy_result = await self.execution_tools(agent_result.actions, message)
         await self.send_agent_response_output(self, llm_response, message.context, kwargs.get("outputs"))
         return policy_result
+
+    def _authoritative_request_from_context(self, context: Context) -> str:
+        return str(getattr(context, "origin_user_input", None) or getattr(context, "task_input", None) or "").strip()
+
+    @staticmethod
+    def _stringify_result_validation_content(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (dict, list)):
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except Exception:
+                return str(content)
+        return str(content)
+
+    def _extract_tool_observation_text(self, content: Any) -> str:
+        text = self._stringify_result_validation_content(content).strip()
+        if not text:
+            return ""
+
+        try:
+            parsed = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            message = parsed.get("message")
+            if isinstance(message, str):
+                output_match = re.search(r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", message, re.DOTALL)
+                if output_match:
+                    return output_match.group(1).strip()
+                return message.strip()
+            if "output" in parsed:
+                return self._stringify_result_validation_content(parsed.get("output")).strip()
+
+        output_match = re.search(r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", text, re.DOTALL)
+        if output_match:
+            return output_match.group(1).strip()
+        return text
+
+    def _classify_result_validation_observation(self, observation_text: str) -> str:
+        stripped = observation_text.strip()
+        if not stripped:
+            return "ignore"
+
+        if len(stripped) < 80 and "http://" not in stripped and "https://" not in stripped and "\n" not in stripped:
+            return "ignore"
+
+        local_paths = [
+            path for path in extract_path_candidates(stripped, max_paths=8)
+            if self._is_validation_local_path(path)
+        ]
+        preview_markers = (
+            "--- 文件前",
+            "--- File Preview",
+            "title:",
+            "source:",
+            "# ",
+            "## ",
+        )
+        if local_paths and any(marker in stripped for marker in preview_markers):
+            return "artifact"
+
+        return "source"
+
+    @staticmethod
+    def _is_validation_local_path(path: str) -> bool:
+        if not path or path.startswith(("http://", "https://")):
+            return False
+        if path.startswith(("~/", "./", "../")):
+            return True
+        if not path.startswith("/"):
+            return False
+
+        normalized = os.path.normpath(path)
+        common_roots = ("/Users/", "/tmp/", "/var/", "/private/", "/home/")
+        if normalized.startswith(common_roots):
+            return True
+
+        basename = os.path.basename(normalized)
+        return "." in basename
+
+    def _extract_validation_candidate_paths(self, value: Any) -> list[str]:
+        if hasattr(value, "to_dict") and callable(getattr(value, "to_dict")):
+            try:
+                value = value.to_dict()
+            except Exception:
+                pass
+        elif hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+            try:
+                value = value.model_dump()
+            except Exception:
+                pass
+        return [
+            path for path in extract_path_candidates(value, max_paths=24)
+            if self._is_validation_local_path(path)
+        ]
+
+    def _collect_validation_artifact_previews(
+        self,
+        *,
+        context: Context,
+        candidate_paths: list[str],
+        preview_chars: int = 1600,
+    ) -> list[str]:
+        task_start_time = getattr(context, "start_time", None)
+        text_file_exts = {
+            ".md", ".txt", ".json", ".yaml", ".yml", ".html", ".xml", ".csv",
+            ".py", ".js", ".ts", ".tsx", ".jsx", ".sh",
+        }
+        previews: list[str] = []
+        seen: set[str] = set()
+
+        for raw_path in candidate_paths:
+            expanded = os.path.expanduser(str(raw_path))
+            normalized = os.path.abspath(expanded)
+            if normalized in seen or not os.path.isfile(normalized):
+                continue
+            seen.add(normalized)
+
+            _, ext = os.path.splitext(normalized)
+            if ext.lower() not in text_file_exts:
+                continue
+
+            try:
+                stat = os.stat(normalized)
+            except OSError:
+                continue
+
+            if stat.st_size <= 0 or stat.st_size > 256 * 1024:
+                continue
+            if task_start_time and stat.st_mtime + 2 < float(task_start_time):
+                continue
+
+            try:
+                with open(normalized, "r", encoding="utf-8") as handle:
+                    content = handle.read(preview_chars).strip()
+            except Exception:
+                continue
+
+            if not content:
+                continue
+            previews.append(f"[artifact:{normalized}]\n{content}")
+
+        return previews
+
+    def _collect_result_validation_evidence(self, context: Context, *, limit: int = 8) -> dict[str, str]:
+        try:
+            memory = MemoryFactory.instance()
+            agent_memory_config = context.get_agent_memory_config(self.id())
+            filters = self._build_memory_filters(context, additional_filters={"memory_type": "message"})
+            histories = memory.get_last_n(limit, filters=filters, agent_memory_config=agent_memory_config)
+        except Exception:
+            logger.debug("failed to collect result validation evidence: %s", traceback.format_exc())
+            return {"source": "", "artifact": ""}
+
+        source_parts: list[str] = []
+        artifact_parts: list[str] = []
+        artifact_candidate_paths: list[str] = []
+        tool_call_map: dict[str, Any] = {}
+        for history in histories or []:
+            if isinstance(history, MemoryAIMessage):
+                for tool_call in history.tool_calls or []:
+                    tool_call_map[tool_call.id] = tool_call
+                continue
+            if not isinstance(history, MemoryToolMessage):
+                continue
+
+            observation_text = self._extract_tool_observation_text(getattr(history, "content", None))
+            tool_call = tool_call_map.get(history.tool_call_id)
+            tool_name = str(getattr(getattr(tool_call, "function", None), "name", "") or "").lower()
+            if "spawn_subagent" in tool_name:
+                continue
+            evidence_kind = self._classify_result_validation_observation(observation_text)
+            if evidence_kind == "source":
+                source_parts.append(observation_text)
+            elif evidence_kind == "artifact":
+                artifact_parts.append(observation_text)
+                artifact_candidate_paths.extend(self._extract_validation_candidate_paths(getattr(history, "content", None)))
+                artifact_candidate_paths.extend(self._extract_validation_candidate_paths(tool_call))
+
+        artifact_parts.extend(
+            self._collect_validation_artifact_previews(context=context, candidate_paths=artifact_candidate_paths)
+        )
+
+        return {
+            "source": "\n".join(source_parts[-limit:]),
+            "artifact": "\n".join(artifact_parts[-limit:]),
+        }
+
+    def _build_result_validation_feedback(
+        self,
+        *,
+        authoritative_request: str,
+        final_response_text: str,
+        source_evidence_text: str,
+        artifact_evidence_text: str = "",
+    ) -> str | None:
+        anchors = extract_required_anchors(authoritative_request)
+        if not anchors:
+            return None
+
+        source_text = (source_evidence_text or "").strip()
+        if not source_text:
+            return None
+
+        missing_in_source = [anchor for anchor in anchors if not anchor_matches_text(anchor, source_text)]
+        if missing_in_source:
+            logger.debug(
+                "result validation skipped soft missing anchors: %s",
+                ", ".join(missing_in_source[:4]),
+            )
+            return None
+
+        artifact_text = (artifact_evidence_text or "").strip()
+        if artifact_text:
+            missing_in_artifact = [anchor for anchor in anchors if not anchor_matches_text(anchor, artifact_text)]
+            if missing_in_artifact:
+                logger.debug(
+                    "result validation skipped soft artifact missing anchors: %s",
+                    ", ".join(missing_in_artifact[:4]),
+                )
+                return None
+
+        return None
+
+    def _build_result_validation_feedback_from_context(
+        self,
+        *,
+        context: Context,
+        final_response_text: str,
+    ) -> str | None:
+        if self.name() != "Aworld":
+            return None
+        authoritative_request = self._authoritative_request_from_context(context)
+        if not authoritative_request:
+            return None
+        evidence = self._collect_result_validation_evidence(context)
+        return self._build_result_validation_feedback(
+            authoritative_request=authoritative_request,
+            final_response_text=final_response_text,
+            source_evidence_text=evidence.get("source", ""),
+            artifact_evidence_text=evidence.get("artifact", ""),
+        )
+
+    @staticmethod
+    def _truncate_result_validation_text(value: str, *, limit: int = 1200) -> str:
+        text = (value or "").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit].rstrip()} ...(truncated)"
+
+    def _build_result_validation_recovery_brief(
+        self,
+        *,
+        authoritative_request: str,
+        validation_feedback: str,
+        source_evidence_text: str = "",
+        artifact_evidence_text: str = "",
+    ) -> str:
+        anchors = extract_required_anchors(authoritative_request)
+        anchor_lines = "\n".join(f"- {anchor}" for anchor in anchors[:6]) or "- (none extracted)"
+        source_excerpt = self._truncate_result_validation_text(source_evidence_text, limit=1600) or "(none)"
+        artifact_excerpt = self._truncate_result_validation_text(artifact_evidence_text, limit=1200) or "(none)"
+        return (
+            "Result validation detected a likely goal conflict. Treat this as unfinished.\n\n"
+            f"Original request:\n{authoritative_request}\n\n"
+            f"Validation feedback:\n{validation_feedback}\n\n"
+            f"High-confidence target anchors:\n{anchor_lines}\n\n"
+            f"Source evidence from this run:\n{source_excerpt}\n\n"
+            f"Generated artifact evidence from this run:\n{artifact_excerpt}\n\n"
+            "Recovery requirements:\n"
+            "1. Re-identify the requested goal and expected automation outcome from the original request.\n"
+            "2. If current evidence clearly points to a different target or scope, discard it and search again.\n"
+            "3. Do not require every anchor string to appear verbatim; use anchors only to orient the target.\n"
+            "4. Only continue blocking when the requested outcome was not produced or evidence conflicts with the goal.\n"
+            "5. If you still cannot verify the outcome, explain the practical mismatch and the next evidence needed.\n"
+        )
+
+    @staticmethod
+    def _result_validation_retry_key(agent_id: str) -> str:
+        return f"result_validation_retry_count:{agent_id}"
+
+    @staticmethod
+    def _should_degrade_result_validation_retry_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "empty or invalid response" in message
+            or "failed to get llm response" in message
+        )
+
+    async def _retry_for_result_validation(
+        self,
+        *,
+        validation_feedback: str,
+        observation: Observation,
+        info: Dict[str, Any],
+        message: Message,
+        kwargs: Dict[str, Any],
+    ) -> List[ActionModel]:
+        retry_key = self._result_validation_retry_key(self.id())
+        retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
+        recovery_brief = validation_feedback
+        authoritative_request = self._authoritative_request_from_context(message.context)
+        if authoritative_request:
+            evidence = self._collect_result_validation_evidence(message.context)
+            recovery_brief = self._build_result_validation_recovery_brief(
+                authoritative_request=authoritative_request,
+                validation_feedback=validation_feedback,
+                source_evidence_text=evidence.get("source", ""),
+                artifact_evidence_text=evidence.get("artifact", ""),
+            )
+
+        if retry_count >= 1:
+            self._finished = True
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info=(
+                        f"{validation_feedback}\n"
+                        "I cannot confirm the task is complete with the current evidence, so I am not claiming success."
+                    ),
+                )
+            ]
+
+        message.context.context_info[retry_key] = retry_count + 1
+        followup_observation = Observation(
+            observer=self.id(),
+            from_agent_name=observation.from_agent_name or self.id(),
+            to_agent_name=self.id(),
+            content=recovery_brief,
+            action_result=[
+                ActionResult(
+                    content=recovery_brief,
+                    success=False,
+                    tool_name="result_validation",
+                    action_name="recovery",
+                )
+            ],
+        )
+        recursive_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in {"response_parse_args", "prepared_tools", "prompt_assembly_plan", "provider_native_prompt_cache"}
+        }
+        try:
+            return await self.async_policy(
+                followup_observation,
+                info=info,
+                message=message,
+                **recursive_kwargs,
+            )
+        except Exception as exc:
+            if not self._should_degrade_result_validation_retry_error(exc):
+                raise
+
+            logger.warning(
+                "Result validation follow-up degraded for agent %s after LLM retry failure: %s",
+                self.id(),
+                exc,
+            )
+            message.context.context_info.pop(retry_key, None)
+            self._finished = True
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info=(
+                        f"{validation_feedback}\n"
+                        "The follow-up validation round failed because the model returned an empty or invalid "
+                        "response. I cannot confirm the task is complete with the current evidence, so I am not "
+                        "claiming success."
+                    ),
+                )
+            ]
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
         """Tool execution operations.
@@ -957,9 +1766,52 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         content = ""
         for res in tool_results:
-            content += f"{res.content}\n"
+            content += f"{self._format_tool_result_for_followup(res)}\n"
         params = {"is_tool_result": True}
         return [ActionModel(agent_name=self.id(), policy_info=content, params=params)]
+
+    def _format_tool_result_for_followup(self, result: ActionResult) -> str:
+        """Format tool results for the next LLM turn.
+
+        Most tools can be forwarded as-is. For cron scheduling, add an explicit
+        source-of-truth note so the model uses the runtime-confirmed schedule
+        instead of reusing an earlier guessed timestamp.
+        """
+        content = result.content
+        if result.tool_name != "cron" or not isinstance(content, dict):
+            compaction = compact_tool_result_for_memory(
+                content,
+                tool_name=result.tool_name,
+                action_name=result.action_name,
+                summary_content=(result.metadata or {}).get("tool_use_summary") if isinstance(result.metadata, dict) else None,
+                enabled=True,
+                preview_chars=2000,
+                force=bool(isinstance(result.metadata, dict) and result.metadata.get("offload") is True),
+            )
+            return str(compaction.content if compaction.applied else content)
+
+        serialized = json.dumps(content, ensure_ascii=False)
+        if not content.get("success"):
+            return (
+                f"{serialized}\n"
+                "Cron returned an error. Do not claim the reminder or scheduled task was created."
+            )
+
+        next_run = content.get("next_run")
+        job_id = content.get("job_id")
+        next_run_display = content.get("next_run_display")
+        if next_run:
+            return (
+                f"{serialized}\n"
+                f"Confirmed cron schedule: next_run={next_run}; job_id={job_id}. "
+                f"{'Use next_run_display=' + next_run_display + ' for any user-facing date or weekday wording. ' if next_run_display else ''}"
+                "Use this cron result as the source of truth and do not reuse any earlier guessed schedule_value or infer the weekday yourself."
+            )
+
+        return (
+            f"{serialized}\n"
+            "Cron did not return a confirmed next_run. Do not say the reminder time is confirmed."
+        )
 
     async def build_llm_input(self,
                               observation: Observation,
@@ -1006,10 +1858,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             LLM response
         """
         llm_response = None
+        context = message.context if message else None
+        failure_output_sent = False
 
         # Prepare parameters once before retry loop
         try:
-            tools = await self._filter_tools(message.context)
+            tools = kwargs.pop("prepared_tools", None)
+            if tools is None:
+                tools = await self._filter_tools(message.context)
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
@@ -1121,8 +1977,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 await task.outputs.add_output(ChunkOutput(data=chunk, metadata=meta))
 
                     else:
-                        # Remove 'stream' from kwargs to avoid conflict
-                        non_stream_kwargs = {k: v for k, v in kwargs.items() if k != 'stream'}
+                        # Remove stream-only kwargs to avoid leaking stale stream options into fallback calls.
+                        non_stream_kwargs = {
+                            k: v for k, v in kwargs.items() if k not in {"stream", "stream_options"}
+                        }
                         logger.info(f"🔀 Using non-stream mode (no timeout limit, relies on httpx client timeout)")
 
                         llm_response = await acall_llm_model(
@@ -1143,6 +2001,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             usage_process(llm_response.usage, message.context)
                         return llm_response
                     else:
+                        await self._raise_if_task_interrupted(
+                            context,
+                            reason="LLM stream interrupted before any final response was assembled",
+                        )
                         # Invalid response, treat as failure
                         error_msg = f"LLM returned empty or invalid response: {llm_response}"
                         logger.warning(f"⚠️[attempt {attempt}/{self.llm_max_attempts}] {error_msg}")
@@ -1154,6 +2016,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             raise AWorldRuntimeException(error_msg)
 
                 except Exception as e:
+                    await self._raise_if_task_interrupted(
+                        context,
+                        reason="LLM call interrupted during provider execution",
+                        source_exception=e,
+                    )
                     last_exception = e
                     logger.warn(f"❌[attempt {attempt}/{self.llm_max_attempts}] LLM call failed : {str(e)}")
 
@@ -1215,6 +2082,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             session_id=message.context.session_id if message.context else "",
                             headers={"context": message.context}
                         ))
+                        failure_output_sent = True
                         raise e
 
             # This should not be reached, but just in case
@@ -1223,16 +2091,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return llm_response
 
         except Exception as e:
+            await self._raise_if_task_interrupted(
+                context,
+                reason="LLM call interrupted while bubbling provider failure",
+                source_exception=e,
+            )
             logger.warn(f"Failed to call llm model: {e}")
-            await send_message(Message(
-                category=Constants.OUTPUT,
-                payload=Output(
-                    data=f"Failed to call llm model: {e}"
-                ),
-                sender=self.id(),
-                session_id=message.context.session_id if message.context else "",
-                headers={"context": message.context}
-            ))
+            if not failure_output_sent:
+                await send_message(Message(
+                    category=Constants.OUTPUT,
+                    payload=Output(
+                        data=f"Failed to call llm model: {e}"
+                    ),
+                    sender=self.id(),
+                    session_id=message.context.session_id if message.context else "",
+                    headers={"context": message.context}
+                ))
+                failure_output_sent = True
 
             if "Please reduce the length of the messages" in str(e):
                 # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.
@@ -1247,8 +2122,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 ))
                 return ModelResponse(id=uuid.uuid4().hex, model=self.model_name, content=to_serializable(messages))
             raise e
-        finally:
-            message.context.context_info["llm_output"] = llm_response
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
@@ -1386,8 +2259,63 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # get current active skills
         skills = await context.get_active_skills(namespace=self.id())
 
+        forced_skill_names = self._requested_skill_names_from_context(context)
+        if forced_skill_names and self._should_disable_tools_for_forced_skills(
+                forced_skill_names=forced_skill_names,
+                active_skills=skills,
+        ):
+            logger.info(
+                "Forced instruction-only skills active for agent %s; disabling runtime tool access",
+                self.id(),
+            )
+            return []
+
         return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools,
                                            tool_mapping=self.tool_mapping)
+
+    @staticmethod
+    def _requested_skill_names_from_context(context: Context) -> List[str]:
+        task_input = getattr(context, "task_input_object", None)
+        metadata = getattr(task_input, "metadata", None)
+        if not isinstance(metadata, dict):
+            return []
+        requested = metadata.get("requested_skill_names")
+        if not isinstance(requested, list):
+            return []
+        return [str(item).strip() for item in requested if str(item).strip()]
+
+    @staticmethod
+    def _is_instruction_only_skill(skill_config: Dict[str, Any]) -> bool:
+        if not isinstance(skill_config, dict):
+            return False
+        if skill_config.get("type") == "agent":
+            return False
+        return not bool(skill_config.get("tool_list"))
+
+    def _should_disable_tools_for_forced_skills(
+            self,
+            *,
+            forced_skill_names: List[str],
+            active_skills: List[str],
+    ) -> bool:
+        if not forced_skill_names:
+            return False
+
+        active_skill_set = set(active_skills or [])
+        forced_active_configs: list[Dict[str, Any]] = []
+
+        for skill_name in forced_skill_names:
+            if skill_name not in active_skill_set:
+                continue
+            skill_config = self.skill_configs.get(skill_name)
+            if not isinstance(skill_config, dict):
+                continue
+            forced_active_configs.append(skill_config)
+
+        if not forced_active_configs:
+            return False
+
+        return all(self._is_instruction_only_skill(skill) for skill in forced_active_configs)
 
     async def _add_tool_result_token_ids_to_context(self, context: Context):
         """Add tool result token ids to context"""

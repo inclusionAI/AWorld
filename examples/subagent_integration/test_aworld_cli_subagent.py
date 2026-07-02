@@ -52,7 +52,7 @@ async def test_aworld_cli_subagent():
     # Build Aworld agent (as aworld-cli would do)
     logger.info("\n[Step 1] Building Aworld agent...")
     try:
-        from aworld_cli.inner_plugins.smllc.agents.aworld_agent import build_aworld_agent
+        from aworld_cli.builtin_agents.smllc.agents.aworld_agent import build_aworld_agent
         aworld_swarm = build_aworld_agent()
         logger.info("✓ Aworld agent built successfully")
     except Exception as e:
@@ -152,7 +152,7 @@ async def test_aworld_cli_subagent_explicit():
 
     # Build Aworld agent
     logger.info("\n[Step 1] Building Aworld agent...")
-    from aworld_cli.inner_plugins.smllc.agents.aworld_agent import build_aworld_agent
+    from aworld_cli.builtin_agents.smllc.agents.aworld_agent import build_aworld_agent
     aworld_swarm = build_aworld_agent()
     logger.info("✓ Aworld agent built")
 
