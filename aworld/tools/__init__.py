@@ -1,6 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
+from pathlib import Path
+
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.core.tool.action import ExecutableAction
 from aworld.utils.common import scan_packages
@@ -39,3 +41,22 @@ def parse_local_tool_entries(value: str) -> list[tuple[str, str]]:
         entries.append((action_file, tool_file))
 
     return entries
+
+
+def prune_missing_local_tool_entries(value: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split local tool entries into loadable and stale path pairs."""
+    kept: list[tuple[str, str]] = []
+    missing: list[tuple[str, str]] = []
+    for action_file, tool_file in parse_local_tool_entries(value):
+        if Path(action_file).exists() and Path(tool_file).exists():
+            kept.append((action_file, tool_file))
+        else:
+            missing.append((action_file, tool_file))
+    return kept, missing
+
+
+def encode_local_tool_entries(entries: list[tuple[str, str]]) -> str:
+    return LOCAL_TOOL_ENTRY_SEPARATOR.join(
+        encode_local_tool_entry(action_file, tool_file)
+        for action_file, tool_file in entries
+    )

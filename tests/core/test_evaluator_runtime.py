@@ -704,6 +704,11 @@ def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
     assert runtime_context["TRAJECTORY_LOG"] == ""
     assert runtime_context["TASK_ID"] == "case-1"
     assert runtime_context["OUT_DIR"] == ""
+    contract = prompt["evaluation_runtime_contract"]
+    assert contract["inputs_are_complete"] is True
+    assert contract["primary_evaluation_input"] == "extracted_trajectory"
+    assert contract["do_not_request_missing_parameters"] is True
+    assert contract["output_format"] == "single_json_object"
     assert "Do not ask the user for TRAJECTORY_LOG" in prompt["instruction"]
     assert "Return only one compact JSON object" in prompt["instruction"]
     assert "Do not include analysis" in prompt["instruction"]
@@ -745,6 +750,47 @@ def test_build_trajectory_prompt_includes_runtime_context_from_source_target() -
         "TASK_ID": "task-1",
         "OUT_DIR": "/tmp/extracted",
     }
+
+
+def test_trajectory_prompt_compacts_noisy_evidence_without_losing_quality_signals() -> None:
+    noisy_content = "alpha " * 2000
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "trajectory": [
+                    {
+                        "state": {
+                            "input": {"content": "question"},
+                            "messages": [
+                                {
+                                    "role": "tool",
+                                    "content": noisy_content,
+                                }
+                            ],
+                        },
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {"content": "answer", "is_agent_finished": "True"},
+                    }
+                ],
+            },
+            suite=None,
+        )
+    )
+
+    evidence = prompt["extracted_trajectory"]["evidence"][0]
+    evidence_summary = prompt["evidence_summary"]
+    assert len(evidence["content"]) < len(noisy_content)
+    assert evidence["prompt_compacted"] is True
+    assert evidence["original_length"] == len(noisy_content)
+    assert evidence["content"].startswith("alpha")
+    assert "omitted" in evidence["content"]
+    assert evidence_summary["evidence_block_count"] == 1
+    assert evidence_summary["prompt_compacted_count"] == 1
+    assert evidence_summary["total_original_chars"] == len(noisy_content)
+    assert evidence_summary["sources"] == ["state.messages"]
 
 
 def test_run_evaluator_source_cli_passes_source_fields_to_hooks(
