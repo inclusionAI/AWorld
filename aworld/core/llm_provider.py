@@ -1,5 +1,4 @@
 import abc
-from collections import Counter
 from typing import (
     Any,
     List,
@@ -10,6 +9,7 @@ from typing import (
 
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
+from aworld.utils.common import nest_dict_counter
 
 
 class LLMProviderBase(abc.ABC):
@@ -215,7 +215,7 @@ class LLMProviderBase(abc.ABC):
         if not chunk_usage:
             return
 
-        usage.update(dict(Counter(usage) + Counter(chunk_usage)))
+        usage.update(nest_dict_counter(usage, chunk_usage))
 
     def speech_to_text(self, audio_file, language, prompt, **kwargs) -> ModelResponse:
         pass

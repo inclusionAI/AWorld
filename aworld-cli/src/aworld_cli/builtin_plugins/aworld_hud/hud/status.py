@@ -1,0 +1,83 @@
+from aworld_cli.plugin_capabilities.hud_helpers import (
+    format_hud_context_bar,
+    format_hud_elapsed,
+    format_hud_tokens,
+)
+
+def _merge_bucket(context, plugin_state, bucket):
+    merged = {}
+    context_bucket = context.get(bucket, {})
+    if isinstance(context_bucket, dict):
+        merged.update(context_bucket)
+    state_bucket = plugin_state.get(bucket, {})
+    if isinstance(state_bucket, dict):
+        # Hook-driven plugin_state is allowed to override host snapshot fields so
+        # third-party HUD providers can own their dynamic task/session/usage view.
+        merged.update(state_bucket)
+    return merged
+
+
+def _identity_segments(context, plugin_state):
+    session = _merge_bucket(context, plugin_state, "session")
+    workspace = context.get("workspace", {})
+    vcs = context.get("vcs", {})
+    notifications = context.get("notifications", {})
+    agent = session.get("agent", "Aworld")
+    model = session.get("model")
+    cron = notifications.get("cron_unread", 0)
+
+    segments = [f"Agent: {agent}"]
+    if model:
+        segments.append(f"Model: {model}")
+    segments.append(f"Workspace: {workspace.get('name', 'workspace')}")
+    segments.append(f"Branch: {vcs.get('branch', 'n/a')}")
+
+    if cron < 0:
+        cron_segment = "Cron: offline"
+    elif cron > 0:
+        cron_segment = f"Cron: {cron} unread"
+    else:
+        cron_segment = "Cron: clear"
+
+    segments.append(cron_segment)
+    return segments
+
+
+def _activity_segments(context, plugin_state):
+    task = _merge_bucket(context, plugin_state, "task")
+    session = _merge_bucket(context, plugin_state, "session")
+    usage = _merge_bucket(context, plugin_state, "usage")
+    task_status = task.get("status", "idle")
+
+    segments = []
+    if task_status == "idle":
+        segments.append("Status: idle")
+
+    current_task_id = task.get("current_task_id")
+    if task_status != "idle" and current_task_id:
+        segments.append(f"Task: {current_task_id} ({task_status})")
+
+    if usage.get("input_tokens") is not None or usage.get("output_tokens") is not None:
+        input_tokens = usage.get("input_tokens") or 0
+        output_tokens = usage.get("output_tokens") or 0
+        segments.append(f"Tokens: in {format_hud_tokens(input_tokens)} out {format_hud_tokens(output_tokens)}")
+
+    context_used = usage.get("context_used")
+    context_max = usage.get("context_max")
+    if context_used is not None and context_max:
+        segments.append(format_hud_context_bar(context_used, context_max, bar_width=10))
+    elif usage.get("context_percent") is not None:
+        segments.append(f"Ctx: {usage['context_percent']}%")
+
+    elapsed = session.get("elapsed_seconds")
+    if elapsed is not None:
+        segments.append(f"Elapsed: {format_hud_elapsed(elapsed)}")
+
+    return segments or ["Status: idle"]
+
+
+def render_lines(context, plugin_state):
+    return [
+        {"section": "identity", "priority": 10, "segments": _identity_segments(context, plugin_state)},
+        {"section": "activity", "priority": 20, "segments": _activity_segments(context, plugin_state)},
+    ]

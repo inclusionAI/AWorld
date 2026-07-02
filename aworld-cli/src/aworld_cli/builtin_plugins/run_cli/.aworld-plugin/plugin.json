@@ -1,0 +1,19 @@
+{
+  "id": "aworld-run-cli",
+  "name": "aworld-run-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "run",
+        "name": "run",
+        "target": "cli_commands/run.py",
+        "scope": "workspace",
+        "visibility": "hidden",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

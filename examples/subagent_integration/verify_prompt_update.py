@@ -10,7 +10,7 @@ the new spawn_subagent tool description.
 def verify_prompt_update():
     """Verify that prompt.txt contains the optimized spawn_subagent description."""
 
-    prompt_path = "/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/prompt.txt"
+    prompt_path = "/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/prompt.txt"
 
     print("\n" + "="*80)
     print("Prompt Update Verification")

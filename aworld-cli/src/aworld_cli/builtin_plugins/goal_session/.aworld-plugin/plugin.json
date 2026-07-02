@@ -1,0 +1,58 @@
+{
+  "id": "goal-session",
+  "name": "goal-session",
+  "version": "1.0.0",
+  "entrypoints": {
+    "commands": [
+      {
+        "id": "goal",
+        "name": "goal",
+        "description": "Start, inspect, or control the session goal state",
+        "target": "hooks/stop.py",
+        "scope": "session"
+      }
+    ],
+    "hooks": [
+      {
+        "id": "goal-task-completed",
+        "target": "hooks/task_completed.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_completed"
+        }
+      },
+      {
+        "id": "goal-task-error",
+        "target": "hooks/task_error.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_error"
+        }
+      },
+      {
+        "id": "goal-task-interrupted",
+        "target": "hooks/task_interrupted.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_interrupted"
+        }
+      },
+      {
+        "id": "goal-stop",
+        "target": "hooks/stop.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "stop",
+          "priority": 20
+        }
+      }
+    ],
+    "hud": [
+      {
+        "id": "goal-status",
+        "target": "hud/status.py",
+        "scope": "session"
+      }
+    ]
+  }
+}

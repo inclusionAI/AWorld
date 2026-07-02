@@ -9,6 +9,7 @@ from aworld.core.task import Runner
 from aworld.evaluations.base import (
     EvalDataCase, EvalDataset, Scorer, EvalCriteria, EvalTarget, EvalTask, Evaluator
 )
+from aworld.evaluations.types import MetricNames
 from aworld.evaluations.recoder.base import EvalRecorder
 from aworld.evaluations.recoder.eval_recorder import EvalResultRecorder, EvalDatasetRecorder, EvalTaskRecorder
 from aworld.dataset.dataset import Dataset
@@ -125,6 +126,8 @@ class EvaluateRunner(Runner):
         Returns:
             EvalDataset
         """
+        if getattr(eval_config, "eval_dataset", None) is not None:
+            return eval_config.eval_dataset
         if self._is_file_path(eval_config.eval_dataset_id_or_file_path):
             dataset = Dataset[Dict[str, Any]](name="my_dataset", data=[])
             preload_transform = None

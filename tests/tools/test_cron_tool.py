@@ -163,6 +163,30 @@ class TestParseScheduleValidation:
         assert parsed["delete_after_run"] is False
         assert parsed["max_runs"] == 3
 
+    def test_parse_natural_language_next_weekday_reminder_in_chinese(self):
+        """Test next-week weekday reminders resolve to the correct calendar date."""
+        now = datetime(2026, 4, 15, 16, 33, 0, tzinfo=timezone(timedelta(hours=8)))
+
+        parsed = self._parse_natural_language_add_request("下周三中午12点提醒我开会", now=now)
+
+        assert parsed["name"] == "提醒：开会"
+        assert parsed["message"] == "提醒我开会"
+        assert parsed["schedule_type"] == "at"
+        assert parsed["schedule_value"] == "2026-04-22T12:00:00+08:00"
+        assert parsed["delete_after_run"] is True
+
+    def test_parse_natural_language_next_weekday_suffix_reminder_in_chinese(self):
+        """Test trailing '...的提醒' phrasing also resolves correctly."""
+        now = datetime(2026, 4, 15, 16, 33, 0, tzinfo=timezone(timedelta(hours=8)))
+
+        parsed = self._parse_natural_language_add_request("下周三，中午12点开会的提醒", now=now)
+
+        assert parsed["name"] == "提醒：开会"
+        assert parsed["message"] == "提醒我开会"
+        assert parsed["schedule_type"] == "at"
+        assert parsed["schedule_value"] == "2026-04-22T12:00:00+08:00"
+        assert parsed["delete_after_run"] is True
+
     def test_parse_natural_language_rejects_unsupported_request(self):
         """Test unsupported natural-language requests fail clearly."""
         now = datetime(2026, 4, 11, 23, 21, 0, tzinfo=timezone(timedelta(hours=8)))
@@ -171,6 +195,7 @@ class TestParseScheduleValidation:
             self._parse_natural_language_add_request("有空的时候提醒我喝水", now=now)
 
         assert "Unsupported natural-language schedule request" in str(exc_info.value)
+
 
 
 @pytest.mark.asyncio
@@ -210,6 +235,8 @@ async def test_cron_tool_add_accepts_raw_natural_language_request(monkeypatch):
     assert fake_scheduler.last_job.name == "提醒：喝水"
     assert fake_scheduler.last_job.payload.message == "提醒我喝水"
     assert fake_scheduler.last_job.schedule.kind == "at"
+
+
 
 
 @pytest.mark.asyncio
@@ -261,6 +288,95 @@ async def test_cron_tool_add_prefers_request_derived_schedule_over_llm_supplied_
 
 
 @pytest.mark.asyncio
+async def test_cron_tool_add_creates_default_advance_reminder_for_future_calendar_reminder(monkeypatch):
+    """Future point-in-time reminders should get an extra default pre-reminder."""
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.jobs = []
+
+        async def add_job(self, job):
+            self.jobs.append(job)
+            job.state = CronJobState(next_run_at=job.schedule.at)
+            return job
+
+    fake_scheduler = FakeScheduler()
+
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+    monkeypatch.setattr(
+        cron_tool_module,
+        "_resolve_schedule_now",
+        lambda now=None: now or datetime(2026, 4, 15, 10, 0, 0, tzinfo=timezone(timedelta(hours=8))),
+    )
+    monkeypatch.setattr(
+        cron_tool_module,
+        "_parse_natural_language_add_request",
+        lambda request, now=None: {
+            "name": "提醒：开会",
+            "message": "提醒我开会",
+            "schedule_type": "at",
+            "schedule_value": "2026-04-22T12:00:00+08:00",
+            "delete_after_run": True,
+        },
+    )
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        request="下周三中午12点提醒我开会",
+    )
+
+    assert result["success"] is True
+    assert len(fake_scheduler.jobs) == 2
+    assert fake_scheduler.jobs[0].schedule.at == "2026-04-22T12:00:00+08:00"
+    assert fake_scheduler.jobs[1].name == "提醒：开会（提前10分钟）"
+    assert fake_scheduler.jobs[1].payload.message == "提醒我开会，还有10分钟"
+    assert fake_scheduler.jobs[1].schedule.at == "2026-04-22T11:50:00+08:00"
+    assert result["next_run_display"] == "2026年4月22日（星期三）12:00"
+    assert result["advance_reminder"]["display"] == "2026年4月22日（星期三）11:50"
+    assert result["advance_reminder"]["next_run"] == "2026-04-22T11:50:00+08:00"
+    assert result["advance_reminder"]["lead_minutes"] == 10
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_creates_default_advance_reminder_for_daily_reminder(monkeypatch):
+    """Daily fixed-time reminders should also get a shifted pre-reminder cron."""
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.jobs = []
+
+        async def add_job(self, job):
+            self.jobs.append(job)
+            next_run = job.schedule.at
+            if job.schedule.kind == "cron":
+                next_run = job.schedule.cron_expr
+            job.state = CronJobState(next_run_at=next_run)
+            return job
+
+    fake_scheduler = FakeScheduler()
+
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        request="每天早上9点提醒我运行测试",
+    )
+
+    assert result["success"] is True
+    assert len(fake_scheduler.jobs) == 2
+    assert fake_scheduler.jobs[0].schedule.cron_expr == "0 9 * * *"
+    assert fake_scheduler.jobs[1].name == "提醒：运行测试（提前10分钟）"
+    assert fake_scheduler.jobs[1].payload.message == "提醒我运行测试，还有10分钟"
+    assert fake_scheduler.jobs[1].schedule.cron_expr == "50 8 * * *"
+    assert result["advance_reminder"]["next_run"] == "50 8 * * *"
+    assert result["advance_reminder"]["lead_minutes"] == 10
+
+
+@pytest.mark.asyncio
 async def test_cron_tool_normalizes_string_max_runs_and_aworld_agent_name(monkeypatch):
     """String max_runs and lowercase aworld agent name should be normalized before persistence."""
     from aworld.core.scheduler.types import CronJobState
@@ -294,6 +410,245 @@ async def test_cron_tool_normalizes_string_max_runs_and_aworld_agent_name(monkey
     assert fake_scheduler.last_job is not None
     assert fake_scheduler.last_job.payload.max_runs == 3
     assert fake_scheduler.last_job.payload.agent_name == "Aworld"
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_updates_existing_same_name_recurring_job(monkeypatch):
+    """Repeated same-name recurring adds should update instead of appending another active job."""
+    import aworld.tools.cron_tool as cron_tool_module
+    from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+    existing_job = CronJob(
+        id="job-existing",
+        name="每日 X AI 资讯摘要",
+        schedule=CronSchedule(kind="cron", cron_expr="0 8 * * *"),
+        payload=CronPayload(message="old message"),
+        state=CronJobState(next_run_at="2026-06-02T08:00:00+00:00", last_status="error"),
+        created_at="2026-05-20T00:00:00+00:00",
+    )
+
+    class FakeScheduler:
+        def __init__(self):
+            self.add_called = False
+            self.updated = []
+
+        async def list_jobs(self, enabled_only=False):
+            assert enabled_only is False
+            return [existing_job]
+
+        async def add_job(self, job):
+            self.add_called = True
+            return job
+
+        async def update_job(self, job_id, **updates):
+            self.updated.append((job_id, updates))
+            existing_job.name = updates.get("name", existing_job.name)
+            existing_job.schedule = updates.get("schedule", existing_job.schedule)
+            existing_job.payload = updates.get("payload", existing_job.payload)
+            existing_job.enabled = updates.get("enabled", existing_job.enabled)
+            existing_job.state.next_run_at = "2026-06-03T01:00:00+00:00"
+            existing_job.state.last_status = updates["state"]["last_status"]
+            return existing_job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="每日 X AI 资讯摘要",
+        message="new message",
+        schedule_type="cron",
+        schedule_value="0 1 * * *",
+    )
+
+    assert result["success"] is True
+    assert result["updated_existing"] is True
+    assert result["job_id"] == "job-existing"
+    assert result["next_run"] == "2026-06-03T01:00:00+00:00"
+    assert fake_scheduler.add_called is False
+    assert len(fake_scheduler.updated) == 1
+    update_id, updates = fake_scheduler.updated[0]
+    assert update_id == "job-existing"
+    assert updates["schedule"].cron_expr == "0 1 * * *"
+    assert updates["payload"].message == "new message"
+    assert updates["state"]["last_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_disables_older_same_name_recurring_duplicates(monkeypatch):
+    """If duplicates already exist, adding one same-name recurring job leaves one active copy."""
+    import aworld.tools.cron_tool as cron_tool_module
+    from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+    older_job = CronJob(
+        id="job-older",
+        name="每日 X AI 资讯摘要",
+        enabled=True,
+        schedule=CronSchedule(kind="cron", cron_expr="0 8 * * *"),
+        payload=CronPayload(message="old"),
+        state=CronJobState(next_run_at="2026-06-02T08:00:00+00:00"),
+        created_at="2026-05-20T00:00:00+00:00",
+    )
+    newer_job = CronJob(
+        id="job-newer",
+        name="每日X AI资讯摘要",
+        enabled=True,
+        schedule=CronSchedule(kind="cron", cron_expr="0 9 * * *"),
+        payload=CronPayload(message="newer"),
+        state=CronJobState(next_run_at="2026-06-02T09:00:00+00:00"),
+        created_at="2026-05-21T00:00:00+00:00",
+    )
+
+    class FakeScheduler:
+        def __init__(self):
+            self.updated = []
+
+        async def list_jobs(self, enabled_only=False):
+            return [older_job, newer_job]
+
+        async def add_job(self, job):
+            raise AssertionError("same-name recurring add should not append")
+
+        async def update_job(self, job_id, **updates):
+            self.updated.append((job_id, updates))
+            job = newer_job if job_id == "job-newer" else older_job
+            if "enabled" in updates:
+                job.enabled = updates["enabled"]
+            if "schedule" in updates:
+                job.schedule = updates["schedule"]
+            if job_id == "job-newer":
+                job.state.next_run_at = "2026-06-03T01:00:00+00:00"
+            return job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="每日 X AI 资讯摘要",
+        message="canonical task",
+        schedule_type="cron",
+        schedule_value="0 1 * * *",
+    )
+
+    assert result["success"] is True
+    assert result["updated_existing"] is True
+    assert result["job_id"] == "job-newer"
+    assert result["disabled_duplicate_job_ids"] == ["job-older"]
+    assert [item[0] for item in fake_scheduler.updated] == ["job-newer", "job-older"]
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_binds_job_to_runtime_default_agent(monkeypatch):
+    """Cron add should bind the persisted job to the CLI-selected root agent."""
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeExecutor:
+        def get_default_agent_name(self):
+            return "Aworld"
+
+    class FakeScheduler:
+        def __init__(self):
+            self.last_job = None
+            self.executor = FakeExecutor()
+
+        async def add_job(self, job):
+            self.last_job = job
+            job.state = CronJobState(next_run_at="2026-04-16T10:32:00+00:00")
+            return job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+    future_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="爬取X最新10条内容",
+        message="参考当前目录下twitter_scraper_skill.md skill爬取x上面的内容，存到当前目录。注意爬取最新的10条就行",
+        schedule_type="at",
+        schedule_value=future_at,
+        agent_name="default",
+        tools=["bash", "CAST_SEARCH"],
+        delete_after_run=True,
+    )
+
+    assert result["success"] is True
+    assert fake_scheduler.last_job is not None
+    assert fake_scheduler.last_job.payload.agent_name == "Aworld"
+    assert fake_scheduler.last_job.payload.tool_names == []
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_ignores_non_string_runtime_default_agent(monkeypatch):
+    """Cron add should fall back to the explicit/default agent when executor returns a mock object."""
+    from unittest.mock import AsyncMock
+
+    from aworld.core.scheduler.executor import CronExecutor
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.last_job = None
+            self.executor = AsyncMock(spec=CronExecutor)
+
+        async def add_job(self, job):
+            self.last_job = job
+            job.state = CronJobState(next_run_at="2026-04-16T10:32:00+00:00")
+            return job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+    future_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="喝水提醒",
+        message="提醒我喝水",
+        schedule_type="at",
+        schedule_value=future_at,
+        delete_after_run=True,
+    )
+
+    assert result["success"] is True
+    assert fake_scheduler.last_job is not None
+    assert fake_scheduler.last_job.payload.agent_name == "Aworld"
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_splits_comma_delimited_tools_for_non_aworld_agent(monkeypatch):
+    """Non-Aworld cron jobs should still normalize comma-delimited tool strings."""
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.last_job = None
+
+        async def add_job(self, job):
+            self.last_job = job
+            job.state = CronJobState(next_run_at="2026-04-16T10:32:00+00:00")
+            return job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+    future_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="special-agent-task",
+        message="run with specific tools",
+        schedule_type="at",
+        schedule_value=future_at,
+        agent_name="SpecialAgent",
+        tools="CAST_SEARCH,bash,SKILL",
+        delete_after_run=True,
+    )
+
+    assert result["success"] is True
+    assert fake_scheduler.last_job is not None
+    assert fake_scheduler.last_job.payload.tool_names == ["CAST_SEARCH", "bash", "SKILL"]
 
 
 @pytest.mark.asyncio
@@ -427,7 +782,7 @@ async def test_cron_tool_enable_all_skips_expired_one_time_history(monkeypatch):
     from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
 
     updated_ids = []
-    future_at = "2026-04-14T10:00:00+00:00"
+    future_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
     past_at = "2026-04-10T10:00:00+00:00"
 
     class FakeScheduler:
@@ -528,15 +883,15 @@ async def test_cron_tool_show_includes_last_result_summary(monkeypatch):
             assert job_id == "job-123"
             return CronJob(
                 id="job-123",
-                name="BTC价格监控",
+                name="状态检查任务",
                 enabled=True,
                 schedule=CronSchedule(kind="every", every_seconds=60),
-                payload=CronPayload(message="检查 BTC 当前价格"),
+                payload=CronPayload(message="检查当前状态"),
                 state=CronJobState(
                     next_run_at="2026-04-13T06:23:26.376502+00:00",
                     last_run_at="2026-04-13T06:22:26.376502+00:00",
                     last_status="ok",
-                    last_result_summary="BTC 当前价格 68000 USDT，较上一分钟上涨 0.2%",
+                    last_result_summary="当前状态 68000 units，较上一周期上涨 0.2%",
                     run_count=3,
                 ),
             )
@@ -547,7 +902,7 @@ async def test_cron_tool_show_includes_last_result_summary(monkeypatch):
 
     assert result["success"] is True
     assert result["job"]["id"] == "job-123"
-    assert result["job"]["last_result_summary"] == "BTC 当前价格 68000 USDT，较上一分钟上涨 0.2%"
+    assert result["job"]["last_result_summary"] == "当前状态 68000 units，较上一周期上涨 0.2%"
 
 
 @pytest.mark.asyncio

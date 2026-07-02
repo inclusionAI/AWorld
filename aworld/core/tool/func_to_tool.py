@@ -9,7 +9,6 @@ import tempfile
 import uuid
 import getpass
 from pathlib import Path
-
 from typing import Callable, Any, get_type_hints, get_origin, get_args
 
 from pydantic import create_model, Field, BaseModel
@@ -22,7 +21,7 @@ from aworld.core.tool.action_template import ACTION_TEMPLATE
 from aworld.core.tool.base import ToolFactory
 from aworld.core.tool.tool_template import TOOL_TEMPLATE
 from aworld.logs.util import logger
-from aworld.tools import LOCAL_TOOLS_ENV_VAR
+from aworld.tools import LOCAL_TOOLS_ENV_VAR, encode_local_tool_entry
 
 
 GENERATED_TOOL_DIR_ENV_VAR = "AWORLD_TOOL_TMP_DIR"
@@ -55,8 +54,8 @@ def _load_module_from_path(module_name: str, file_path: str):
     """Load a module from an absolute or resolved file path.
 
     Plain importlib.import_module() only searches sys.path; @be_tool writes
-    generated files to the process cwd, which is not always on sys.path when
-    the CLI is launched from another directory (sys.path[0] is the entry script dir).
+    generated files outside the repo workspace, so direct path loading is
+    required even when cwd is not on sys.path.
     """
     path = os.path.abspath(file_path)
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -199,6 +198,7 @@ def function_to_tool(
     tool_py_path = str((output_dir / f"{tool_name}{postfix}.py").resolve())
     expected_action_cls = f"{tool_name}Action"
     existing_module = sys.modules.get(module_name)
+    tool_module_name = f"{tool_name}{postfix}"
     if existing_module is None or not hasattr(existing_module, expected_action_cls):
         params = {}
         if parameters:
@@ -229,7 +229,6 @@ def function_to_tool(
                                    async_underline='async_' if is_async else '',
                                    await_flag='await ' if is_async else '')
 
-        tool_module_name = f"{tool_name}{postfix}"
         with open(tool_py_path, 'a+') as write:
             write.writelines(con)
         _load_module_from_path(tool_module_name, tool_py_path)
@@ -238,7 +237,10 @@ def function_to_tool(
         val = os.environ.get(LOCAL_TOOLS_ENV_VAR, "")
         if val:
             val = val + ";"
-        os.environ[LOCAL_TOOLS_ENV_VAR] = val + sys.modules[action_module_name].__file__
+        os.environ[LOCAL_TOOLS_ENV_VAR] = val + encode_local_tool_entry(
+            sys.modules[action_module_name].__file__,
+            sys.modules[tool_module_name].__file__,
+        )
         logger.debug(f'add {sys.modules[action_module_name].__file__}')
 
 

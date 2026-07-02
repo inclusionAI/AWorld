@@ -1,0 +1,24 @@
+{
+  "id": "hud-stateful-like",
+  "name": "hud-stateful-like",
+  "version": "1.0.0",
+  "entrypoints": {
+    "hooks": [
+      {
+        "id": "task-started",
+        "target": "hooks/task_started.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_started"
+        }
+      }
+    ],
+    "hud": [
+      {
+        "id": "status",
+        "target": "hud/status.py",
+        "scope": "session"
+      }
+    ]
+  }
+}

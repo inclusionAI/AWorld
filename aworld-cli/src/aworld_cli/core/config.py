@@ -266,10 +266,10 @@ def _get_aworld_skills_path() -> str:
     env_val = (os.environ.get('AWORLD_SKILLS') or '').strip()
     if env_val:
         return env_val
-    # From aworld-cli/src/aworld_cli/core/config.py -> AWorld/aworld-skills
-    _aworld_skills = Path(__file__).resolve().parents[4] / "aworld-skills"
-    # print(f"_get_aworld_skills_path: {_aworld_skills}")
-    return str(_aworld_skills) if _aworld_skills.exists() else ""
+    from aworld_cli.core.skill_registry import resolve_repo_aworld_skills_path
+
+    aworld_skills = resolve_repo_aworld_skills_path()
+    return str(aworld_skills) if aworld_skills is not None else ""
 
 
 def _apply_skills_path_env(skills_cfg: Optional[Dict[str, Any]] = None) -> None:
@@ -367,7 +367,7 @@ def _apply_diffusion_models_config(models_config: Dict[str, Any]) -> None:
     if not provider:
         provider = (os.environ.get('DIFFUSION_PROVIDER') or '').strip()
     if not provider:
-        provider = 'video'
+        provider = 'ant_video'
     if temperature is None:
         env_temp = (os.environ.get('DIFFUSION_TEMPERATURE') or '').strip()
         if env_temp:
@@ -388,14 +388,23 @@ def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
     """
     Apply models.audio config to AUDIO_* env vars for audio agent.
     Priority: models.audio config > existing AUDIO_* env vars > LLM_*.
+
+    Optional keys:
+    - appid: Volcengine app id for ``volcano_openspeech_tts`` (sets AUDIO_APPID / VOLCANO_TTS_APPID).
+    - params: Extra ModelConfig.params (merged into AUDIO_MODEL_PARAMS_JSON for the audio agent).
     """
     audio_cfg = models_config.get('audio')
     audio_cfg = audio_cfg if isinstance(audio_cfg, dict) else {}
+    # Avoid stale merged params from a previous process env when config omits ``params``.
+    os.environ.pop("AUDIO_MODEL_PARAMS_JSON", None)
+
     api_key = (audio_cfg.get('api_key') or '').strip()
     model_name = (audio_cfg.get('model') or '').strip()
     base_url = (audio_cfg.get('base_url') or '').strip()
     provider = (audio_cfg.get('provider') or '').strip()
     temperature = audio_cfg.get('temperature')
+    appid = (audio_cfg.get('appid') or '').strip()
+    extra_params = audio_cfg.get("params")
 
     if not api_key:
         api_key = (os.environ.get('AUDIO_API_KEY') or '').strip()
@@ -445,6 +454,63 @@ def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
     os.environ['AUDIO_PROVIDER'] = provider
     if temperature is not None:
         os.environ['AUDIO_TEMPERATURE'] = str(float(temperature))
+
+    if appid:
+        os.environ['AUDIO_APPID'] = appid
+        os.environ['VOLCANO_TTS_APPID'] = appid
+    if isinstance(extra_params, dict) and extra_params:
+        os.environ['AUDIO_MODEL_PARAMS_JSON'] = json.dumps(
+            extra_params, ensure_ascii=False
+        )
+
+
+def _apply_avatar_models_config(models_config: Dict[str, Any]) -> None:
+    """
+    Apply models.avatar config to AVATAR_* env vars for avatar agent.
+    Priority: models.avatar config > existing AVATAR_* env vars.
+    """
+    avatar_cfg = models_config.get('avatar')
+    avatar_cfg = avatar_cfg if isinstance(avatar_cfg, dict) else {}
+    api_key = (avatar_cfg.get('api_key') or '').strip()
+    model_name = (avatar_cfg.get('model') or '').strip()
+    base_url = (avatar_cfg.get('base_url') or '').strip()
+    provider = (avatar_cfg.get('provider') or '').strip()
+    submit_endpoint = (avatar_cfg.get('submit_endpoint') or '').strip()
+    status_endpoint = (avatar_cfg.get('status_endpoint') or '').strip()
+    temperature = avatar_cfg.get('temperature')
+
+    if not api_key:
+        api_key = (os.environ.get('AVATAR_API_KEY') or '').strip()
+    if not model_name:
+        model_name = (os.environ.get('AVATAR_MODEL_NAME') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('AVATAR_BASE_URL') or '').strip()
+    if not provider:
+        provider = (os.environ.get('AVATAR_PROVIDER') or '').strip()
+    if not submit_endpoint:
+        submit_endpoint = (os.environ.get('KLING_AVATAR_SUBMIT_ENDPOINT') or '').strip()
+    if not status_endpoint:
+        status_endpoint = (os.environ.get('KLING_AVATAR_STATUS_ENDPOINT') or '').strip()
+    if not provider:
+        provider = 'kling_avatar'
+    if temperature is None:
+        env_temp = (os.environ.get('AVATAR_TEMPERATURE') or '').strip()
+        if env_temp:
+            temperature = float(env_temp)
+
+    if api_key:
+        os.environ['AVATAR_API_KEY'] = api_key
+    if model_name:
+        os.environ['AVATAR_MODEL_NAME'] = model_name
+    if base_url:
+        os.environ['AVATAR_BASE_URL'] = base_url
+    os.environ['AVATAR_PROVIDER'] = provider
+    if submit_endpoint:
+        os.environ['KLING_AVATAR_SUBMIT_ENDPOINT'] = submit_endpoint
+    if status_endpoint:
+        os.environ['KLING_AVATAR_STATUS_ENDPOINT'] = status_endpoint
+    if temperature is not None:
+        os.environ['AVATAR_TEMPERATURE'] = str(float(temperature))
 
 
 def _resolve_image_model_cfg(models_config: Dict[str, Any], key: str, legacy_key: Optional[str] = None) -> Dict[str, Any]:
@@ -570,7 +636,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
     """
     Apply models config (api_key, model, base_url) to os.environ.
     Supports: models.default (flat) and legacy models.default.{openai|anthropic|gemini}.
-    Also applies models.diffusion to DIFFUSION_*.
+    Also applies models.diffusion to DIFFUSION_* and models.avatar to AVATAR_*.
     """
     if not models_config:
         return
@@ -602,6 +668,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
         if base_url:
             os.environ['LLM_BASE_URL'] = base_url
         _apply_diffusion_models_config(models_config)
+        _apply_avatar_models_config(models_config)
         _apply_audio_models_config(models_config)
         _apply_image_models_config(models_config)
         return
@@ -645,6 +712,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
                 os.environ['LLM_BASE_URL'] = base_url
 
     _apply_diffusion_models_config(models_config)
+    _apply_avatar_models_config(models_config)
     _apply_audio_models_config(models_config)
     _apply_image_models_config(models_config)
 
@@ -664,6 +732,7 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
     })
     # Apply DIFFUSION_* and image model envs from LLM_* when not set in .env
     _apply_diffusion_models_config({})
+    _apply_avatar_models_config({})
     _apply_audio_models_config({})
     _apply_image_models_config({})
     # Removed debug print statement that was leaking to stdout
@@ -717,6 +786,7 @@ def has_model_config(config_dict: Dict[str, Any]) -> bool:
         "TEXT_TO_IMAGE_API_KEY",
         "IMAGE_TO_IMAGE_API_KEY",
         "IMAGE_API_KEY",
+        "AVATAR_API_KEY",
     )
     for key in env_keys:
         if os.environ.get(key, "").strip():

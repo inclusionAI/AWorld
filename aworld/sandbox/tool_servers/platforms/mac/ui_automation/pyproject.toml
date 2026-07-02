@@ -1,0 +1,11 @@
+[project]
+name = "aworld-macos-ui-automation-server"
+version = "0.1.0"
+description = "AWorld host-local macOS UI automation MCP server backed by Peekaboo CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp",
+    "pydantic>=2.11.7",
+    "fastmcp~=2.11.3",
+]

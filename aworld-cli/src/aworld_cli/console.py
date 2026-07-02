@@ -1,14 +1,24 @@
 import asyncio
+from dataclasses import dataclass, field
+import inspect
 import os
+import re
+import shutil
 import subprocess
 import sys
+import termios
+import time
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.input.typeahead import clear_typeahead
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style as PromptToolkitStyle
 from rich import box
 from rich.color import Color
 from rich.panel import Panel
@@ -19,9 +29,13 @@ from rich.text import Text
 
 from aworld.logs.util import logger
 from ._globals import console
-from .core.skill_registry import get_skill_registry, get_user_skills_paths
 from .core.command_system import CommandRegistry, CommandContext
+from .core.session_restore import SessionRestoreError, restore_session_to_executor
 from .models import AgentInfo
+from .steering.observability import (
+    log_applied_steering_event,
+    log_queued_steering_event,
+)
 from .user_input import UserInputHandler
 
 
@@ -29,6 +43,15 @@ from .user_input import UserInputHandler
 
 # Notification polling configuration
 NOTIFICATION_POLL_INTERVAL = 2.0  # Seconds (1-3s latency target)
+_ESC_INTERRUPT_SENTINEL = "__aworld_cli_interrupt__"
+
+
+@dataclass
+class ActiveSteeringView:
+    history: list[dict[str, str]] = field(default_factory=list)
+    status_text: str = ""
+    last_rendered_kind: str | None = None
+    started_at: float | None = None
 
 
 class CronAwareCompleter(Completer):
@@ -168,8 +191,17 @@ class AWorldCLI:
         self._notification_poll_task = None
         self._notification_stop_event = None
         self._notification_drain_lock = asyncio.Lock()
+        self._notification_center_listener = self._handle_notification_center_change
+        self._subscribed_notification_center = None
+        self._active_prompt_session = None
+        self._active_steering_render_task = None
+        self._current_executor_task = None
         self._toolbar_workspace_name = self._detect_workspace_name()
         self._toolbar_git_branch = self._detect_git_branch()
+        self._pending_skill_overrides: list[str] = []
+        self._active_steering_view: ActiveSteeringView | None = None
+        self._active_steering_handoff_from_escape = False
+        self._active_steering_ignore_escape_until_progress = False
 
     def _detect_workspace_name(self) -> str:
         """Detect the current workspace name for status-bar display."""
@@ -201,59 +233,226 @@ class AWorldCLI:
         runtime,
         agent_name: str = "Aworld",
         mode: str = "Chat",
+        max_width: int | None = 160,
     ) -> str:
         """
         Build plain-text status-bar content.
 
         The bar is intentionally always present to avoid layout jumps.
         """
-        notification_center = getattr(runtime, "_notification_center", None)
-        if not notification_center:
-            cron_status = "Cron: offline"
-        else:
-            unread_count = notification_center.get_unread_count()
-            cron_status = f"Cron: {unread_count} unread" if unread_count > 0 else "Cron: clear"
+        if not self._should_render_status_bar(runtime):
+            return ""
 
-        return " | ".join([
-            f"Agent: {agent_name}",
-            f"Mode: {mode}",
+        if runtime and hasattr(runtime, "build_hud_context"):
+            hud_context = runtime.build_hud_context(
+                agent_name=agent_name,
+                mode=mode,
+                workspace_name=self._toolbar_workspace_name,
+                git_branch=self._toolbar_git_branch,
+            )
+        else:
+            notification_center = getattr(runtime, "_notification_center", None)
+            if not notification_center:
+                unread_count = -1
+            else:
+                unread_count = notification_center.get_unread_count()
+            hud_context = {
+                "workspace": {"name": self._toolbar_workspace_name},
+                "session": {"agent": agent_name, "mode": mode},
+                "notifications": {"cron_unread": unread_count},
+                "vcs": {"branch": self._toolbar_git_branch},
+            }
+
+        try:
+            plugin_lines = runtime.get_hud_lines(hud_context) if runtime and hasattr(runtime, "get_hud_lines") else []
+        except Exception as exc:
+            logger.warning(f"Failed to render HUD plugin lines: {exc}")
+            plugin_lines = []
+
+        if not plugin_lines:
+            fallback_segments = self._fallback_status_segments(hud_context, agent_name, mode)
+            return self._render_status_line(fallback_segments, max_width)
+
+        plugin_lines = self._select_status_bar_lines(plugin_lines, max_lines=2)
+        rendered_lines = []
+        for line in plugin_lines:
+            segments = list(getattr(line, "segments", ()) or ())
+            if not segments:
+                text = getattr(line, "text", "")
+                if text:
+                    segments = [str(text)]
+            if not segments:
+                continue
+            section = getattr(line, "section", "")
+            rendered_lines.append(self._render_status_line(segments, max_width, section=section))
+
+        if not rendered_lines:
+            fallback_segments = self._fallback_status_segments(hud_context, agent_name, mode)
+            return self._render_status_line(fallback_segments, max_width)
+
+        return "\n".join(rendered_lines)
+
+    def _select_status_bar_lines(self, plugin_lines: list[Any], max_lines: int = 2) -> list[Any]:
+        if len(plugin_lines) <= max_lines:
+            return list(plugin_lines)
+
+        preferred_sections = ("identity", "activity", "context", "session", "tasks", "custom")
+        selected: list[Any] = []
+        used_indexes: set[int] = set()
+
+        for section in preferred_sections:
+            for index, line in enumerate(plugin_lines):
+                if index in used_indexes:
+                    continue
+                if getattr(line, "section", "") != section:
+                    continue
+                selected.append(line)
+                used_indexes.add(index)
+                break
+            if len(selected) >= max_lines:
+                return selected
+
+        for index, line in enumerate(plugin_lines):
+            if index in used_indexes:
+                continue
+            selected.append(line)
+            if len(selected) >= max_lines:
+                break
+
+        return selected
+
+    def _should_render_status_bar(self, runtime) -> bool:
+        if runtime is None:
+            return False
+
+        if hasattr(runtime, "active_plugin_capabilities"):
+            try:
+                return "hud" in tuple(runtime.active_plugin_capabilities())
+            except Exception:
+                return True
+
+        return True
+
+    def _fallback_status_segments(self, hud_context: dict[str, Any], agent_name: str, mode: str) -> list[str]:
+        unread_count = hud_context.get("notifications", {}).get("cron_unread", -1)
+        if unread_count < 0:
+            cron_status = "Cron: offline"
+        elif unread_count > 0:
+            cron_status = f"Cron: {unread_count} unread"
+        else:
+            cron_status = "Cron: clear"
+
+        return [
+            f"Agent: {hud_context.get('session', {}).get('agent', agent_name)}",
+            f"Mode: {hud_context.get('session', {}).get('mode', mode)}",
             cron_status,
-            f"Workspace: {self._toolbar_workspace_name}",
-            f"Branch: {self._toolbar_git_branch}",
-            "Hint: /cron inbox",
-        ])
+            f"Workspace: {hud_context.get('workspace', {}).get('name', self._toolbar_workspace_name)}",
+            f"Branch: {hud_context.get('vcs', {}).get('branch', self._toolbar_git_branch)}",
+        ]
+
+    def _reduce_segments(
+        self,
+        segments: list[str],
+        max_width: int | None,
+        priority_labels: set[str] | None = None,
+    ) -> list[str]:
+        if max_width is None:
+            return list(segments)
+        kept = list(segments)
+        priority_labels = priority_labels or set()
+        while len(kept) > 1 and len(" | ".join(kept)) > max_width:
+            if len(kept) <= 2:
+                kept.pop()
+                continue
+            removable_index = None
+            for index in range(len(kept) - 1, -1, -1):
+                segment = kept[index]
+                label = segment.split(":", 1)[0].strip().lower()
+                if label not in priority_labels:
+                    removable_index = index
+                    break
+            if removable_index is None:
+                removable_index = len(kept) - 1
+            kept.pop(removable_index)
+        return kept
+
+    def _render_status_line(self, segments: list[str], max_width: int | None, section: str | None = None) -> str:
+        priority_labels = None
+        if section == "activity":
+            priority_labels = {"task", "ctx"}
+        reduced = self._reduce_segments(segments, max_width, priority_labels=priority_labels)
+        text = " | ".join(reduced)
+        if max_width is not None and max_width > 3 and len(text) > max_width:
+            return text[: max_width - 3].rstrip() + "..."
+        return text
 
     def _build_status_bar(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> HTML:
         """Build a styled prompt-toolkit status bar inspired by segmented system prompts."""
-        text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode)
-        segments = [segment.strip() for segment in text.split("|")]
+        columns = shutil.get_terminal_size(fallback=(160, 0)).columns
+        max_width = columns if columns > 0 else None
+        text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode, max_width=max_width)
+        lines = text.splitlines() or [text]
+        divider_style = "#4f5877"
 
-        segment_styles = [
-            ("#181b2d", "#84c7c6"),
-            ("#181b2d", "#d8def5"),
-            ("#181b2d", "#f2c14e" if "unread" in segments[2] else "#8ed081"),
-            ("#181b2d", "#b8c0da"),
-            ("#181b2d", "#a88bd8"),
-            ("#181b2d", "#8ea0c4"),
-        ]
-        divider_style = ("#181b2d", "#4f5877")
+        def _render_line(line_text: str) -> str:
+            segments = [segment.strip() for segment in line_text.split("|")]
+            has_unread = any("unread" in segment for segment in segments)
+            segment_styles = [
+                "#84c7c6",
+                "#d8def5",
+                "#f2c14e" if has_unread else "#8ed081",
+                "#b8c0da",
+                "#a88bd8",
+                "#8ea0c4",
+            ]
 
-        parts = []
-        for index, segment in enumerate(segments):
-            bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
-            escaped = (
-                segment.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
+            parts = []
+            for index, segment in enumerate(segments):
+                fg = segment_styles[index] if index < len(segment_styles) else "#d8def5"
+                escaped = (
+                    segment.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                parts.append(f"<style fg='{fg}'> {escaped} </style>")
+                if index < len(segments) - 1:
+                    parts.append(f"<style fg='{divider_style}'> | </style>")
+            if max_width is not None:
+                rendered_width = sum(len(segment) + 2 for segment in segments) + max(0, len(segments) - 1) * 3
+                pad_width = max(0, max_width - rendered_width)
+                if pad_width:
+                    parts.append(" " * pad_width)
+            return "".join(parts)
+
+        rendered_lines = []
+        if max_width is not None:
+            rendered_lines.append(f"<style fg='{divider_style}'>{'─' * max_width}</style>")
+        rendered_lines.extend(_render_line(line) for line in lines if line)
+        return HTML("\n".join(rendered_lines))
+
+    def _build_prompt_kwargs(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> dict[str, Any]:
+        prompt_kwargs: dict[str, Any] = {"bottom_toolbar": None}
+        if runtime and self._should_render_status_bar(runtime):
+            prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
+                runtime,
+                agent_name=agent_name,
+                mode=mode,
             )
-            parts.append(f"<style bg='{bg}' fg='{fg}'> {escaped} </style>")
-            if index < len(segments) - 1:
-                div_bg, div_fg = divider_style
-                parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
+            prompt_kwargs["style"] = PromptToolkitStyle.from_dict(
+                {
+                    "bottom-toolbar": "fg:#d8def5 bg:default noreverse",
+                }
+            )
+            prompt_kwargs["refresh_interval"] = 0.1
+        return prompt_kwargs
 
-        return HTML("".join(parts))
-
-    def _build_completion_entries(self, agent_names: Optional[List[str]] = None) -> tuple[list[str], dict[str, str]]:
+    def _build_completion_entries(
+        self,
+        agent_names: Optional[List[str]] = None,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> tuple[list[str], dict[str, str]]:
         """
         Build slash-command completion phrases and descriptions for prompt_toolkit.
 
@@ -265,7 +464,7 @@ class AWorldCLI:
         builtin_cmds = [
             "/agents", "/skills", "/new", "/restore", "/latest",
             "/exit", "/switch", "/cost", "/cost -all", "/compact",
-            "/team",
+            "/team", "/sessions", "/sessions show",
             "/memory", "/memory view", "/memory reload", "/memory status",
         ]
         builtin_meta = {
@@ -274,6 +473,8 @@ class AWorldCLI:
             "/new": "Create a new session",
             "/restore": "Restore to a previous session",
             "/latest": "Restore to the latest session",
+            "/sessions": "List resumable sessions",
+            "/sessions show": "Show a resumable session",
             "/exit": "Exit chat",
             "/switch": "Switch to another agent",
             "/cost": "View query history (current session)",
@@ -289,6 +490,12 @@ class AWorldCLI:
 
         words = set(builtin_cmds)
         meta_dict = builtin_meta.copy()
+        for phrase, description in self._skill_command_completion_entries(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ).items():
+            words.add(phrase)
+            meta_dict[phrase] = description
 
         for cmd in CommandRegistry.list_commands():
             base_phrase = f"/{cmd.name}"
@@ -297,6 +504,13 @@ class AWorldCLI:
             for phrase, description in cmd.completion_items.items():
                 words.add(phrase)
                 meta_dict[phrase] = description
+
+        for phrase, skill_name in self._generated_skill_alias_map(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ).items():
+            words.add(phrase)
+            meta_dict[phrase] = f"Force skill on next task: {skill_name}"
 
         for agent_name in agent_names:
             phrase = f"/switch {agent_name}"
@@ -307,20 +521,203 @@ class AWorldCLI:
 
         return sorted(words), meta_dict
 
+    def _format_sessions_list(self, records: list[Any], current_cwd: str | None = None) -> str:
+        if not records:
+            return "No resumable sessions found."
+
+        normalized_cwd = str(Path(current_cwd or os.getcwd()).expanduser().resolve())
+        lines = ["Sessions:"]
+        for record in records:
+            cwd_marker = "current" if getattr(record, "cwd", None) == normalized_cwd else "other"
+            prompt = getattr(record, "last_prompt", None) or "(no prompt recorded)"
+            updated_at = getattr(record, "updated_at", "")
+            lines.append(
+                f"- {record.session_id} | {record.agent_name} | {record.mode} | "
+                f"{cwd_marker} | {updated_at} | {prompt}"
+            )
+        return "\n".join(lines)
+
+    def _format_session_show(self, record: Any) -> str:
+        lines = [
+            f"Session: {record.session_id}",
+            f"Agent: {record.agent_name}",
+            f"Mode: {record.mode}",
+            f"CWD: {record.cwd}",
+            f"Created: {record.created_at}",
+            f"Updated: {record.updated_at}",
+            f"Turns: {record.turn_count}",
+        ]
+        if getattr(record, "source_type", None):
+            lines.append(f"Source: {record.source_type}")
+        if getattr(record, "source_location", None):
+            lines.append(f"Source location: {record.source_location}")
+        if getattr(record, "last_task_id", None):
+            lines.append(f"Last task: {record.last_task_id}")
+        if getattr(record, "last_prompt", None):
+            lines.append(f"Last prompt: {record.last_prompt}")
+        return "\n".join(lines)
+
+    def _format_resume_command_hint(self, executor_instance: Any = None) -> str | None:
+        session_id = getattr(executor_instance, "session_id", None)
+        if not session_id:
+            return None
+        return f"Resume this session with: aworld-cli resume {session_id}"
+
+    def _print_resume_command_hint(self, executor_instance: Any = None) -> None:
+        hint = self._format_resume_command_hint(executor_instance)
+        if hint:
+            self.console.print(f"[dim]{hint}[/dim]")
+
+    def _consume_restored_transcript_text(self, executor_instance: Any = None) -> str | None:
+        replay = getattr(executor_instance, "_aworld_cli_restored_transcript", None)
+        if replay is None:
+            return None
+        try:
+            executor_instance._aworld_cli_restored_transcript = None
+        except Exception:
+            pass
+        rendered = getattr(replay, "rendered_text", None)
+        return str(rendered).strip() if rendered else None
+
+    def _print_restored_transcript(self, executor_instance: Any = None) -> None:
+        rendered = self._consume_restored_transcript_text(executor_instance)
+        if rendered:
+            self.console.print(rendered)
+            self.console.print()
+
+    def _restore_cli_session(
+        self,
+        session_id: str,
+        *,
+        executor_instance: Any,
+        current_agent_name: str,
+        session_store: Any,
+    ) -> str:
+        if executor_instance is None:
+            return "[yellow]No executor instance available.[/yellow]"
+
+        record = session_store.get(session_id)
+        if record is None:
+            return f"[red]Session not found: {session_id}[/red]"
+
+        try:
+            result = restore_session_to_executor(
+                record=record,
+                executor_instance=executor_instance,
+                current_agent_name=current_agent_name,
+                session_store=session_store,
+            )
+        except SessionRestoreError as exc:
+            return f"[yellow]{exc}[/yellow]"
+
+        message = f"[green]{result.message}[/green]"
+        if result.warning:
+            message = f"{message}\n[yellow]{result.warning}[/yellow]"
+        restored_transcript = self._consume_restored_transcript_text(executor_instance)
+        if restored_transcript:
+            message = f"{message}\n\n{restored_transcript}"
+        return message
+
     def _build_session_completer(
         self,
         agent_names: Optional[List[str]] = None,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
         runtime: Any = None,
         event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> Completer:
         """Build the prompt completer with static slash entries plus dynamic cron job IDs."""
-        all_words, meta_dict = self._build_completion_entries(agent_names=agent_names)
+        all_words, meta_dict = self._build_completion_entries(
+            agent_names=agent_names,
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
         return CronAwareCompleter(
             all_words,
             meta_dict,
             runtime=runtime,
             event_loop=event_loop,
         )
+
+    def _create_prompt_session(
+        self,
+        completer: Completer,
+        *,
+        on_escape: Callable[[], Any] | None = None,
+    ) -> PromptSession:
+        history_path = Path.home() / ".aworld" / "cli_history"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        key_bindings = None
+        if on_escape is not None:
+            key_bindings = KeyBindings()
+
+            @key_bindings.add("escape", eager=True)
+            def _interrupt(event) -> None:
+                try:
+                    on_escape()
+                finally:
+                    event.app.exit(result=_ESC_INTERRUPT_SENTINEL)
+
+        session = PromptSession(
+            completer=completer,
+            complete_while_typing=True,
+            history=FileHistory(str(history_path)),
+            key_bindings=key_bindings,
+        )
+        if on_escape is not None:
+            try:
+                session.app.ttimeoutlen = 0
+            except Exception:
+                pass
+        self._active_prompt_session = session
+        return session
+
+    def _ensure_prompt_session(self, session: PromptSession | None, completer: Completer) -> PromptSession:
+        if session is not None and session is self._active_prompt_session:
+            return session
+        return self._create_prompt_session(completer)
+
+    def _clear_prompt_session_reference(self, session: PromptSession | None = None) -> None:
+        if session is None or self._active_prompt_session is session:
+            self._active_prompt_session = None
+
+    def _discard_prompt_session_typeahead(self, session: PromptSession | None) -> None:
+        if session is None:
+            return
+
+        input_obj = getattr(getattr(session, "app", None), "input", None) or getattr(session, "input", None)
+        if input_obj is None:
+            return
+
+        try:
+            flush_keys = getattr(input_obj, "flush_keys", None)
+            if callable(flush_keys):
+                flush_keys()
+        except Exception:
+            pass
+
+        try:
+            clear_typeahead(input_obj)
+        except Exception:
+            pass
+
+        try:
+            if sys.stdin.isatty():
+                termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except Exception:
+            pass
+
+    def _handle_runtime_plugin_capability_refresh(self, previous_capabilities: tuple[str, ...], runtime) -> None:
+        had_hud = "hud" in tuple(previous_capabilities or ())
+        has_hud = False
+        if runtime is not None and hasattr(runtime, "active_plugin_capabilities"):
+            try:
+                has_hud = "hud" in tuple(runtime.active_plugin_capabilities())
+            except Exception:
+                has_hud = had_hud
+
+        if had_hud != has_hud:
+            self._active_prompt_session = None
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -520,6 +917,72 @@ class AWorldCLI:
 
         if not diff_cfg:
             current_config['models'].pop('diffusion', None)
+
+        # Avatar (models.avatar -> AVATAR_* for avatar agent)
+        self.console.print("\n[bold]Avatar configuration[/bold] [dim](optional, for avatar agent)[/dim]")
+        self.console.print("  [dim]Leave empty to inherit from Diffusion/Media/default config above[/dim]\n")
+        if 'avatar' not in current_config['models']:
+            current_config['models']['avatar'] = {}
+        avatar_cfg = current_config['models']['avatar']
+
+        current_avatar_api_key = avatar_cfg.get('api_key', '')
+        if current_avatar_api_key:
+            masked = current_avatar_api_key[:8] + "..." if len(current_avatar_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current AVATAR_API_KEY: {masked}[/dim]")
+        avatar_api_key = Prompt.ask("  AVATAR_API_KEY", default=current_avatar_api_key, password=True)
+        if avatar_api_key:
+            avatar_cfg['api_key'] = avatar_api_key
+        else:
+            avatar_cfg.pop('api_key', None)
+
+        current_avatar_model = avatar_cfg.get('model', '')
+        self.console.print("  [dim]e.g. kling-avatar-v1 · Enter to inherit from Diffusion/default[/dim]")
+        avatar_model = Prompt.ask("  AVATAR_MODEL_NAME", default=current_avatar_model)
+        if avatar_model:
+            avatar_cfg['model'] = avatar_model
+        else:
+            avatar_cfg.pop('model', None)
+
+        current_avatar_base_url = avatar_cfg.get('base_url', '')
+        avatar_base_url = Prompt.ask("  AVATAR_BASE_URL", default=current_avatar_base_url)
+        if avatar_base_url:
+            avatar_cfg['base_url'] = avatar_base_url
+        else:
+            avatar_cfg.pop('base_url', None)
+
+        current_avatar_provider = avatar_cfg.get('provider', 'kling_avatar')
+        avatar_provider = Prompt.ask("  AVATAR_PROVIDER", default=current_avatar_provider)
+        if avatar_provider:
+            avatar_cfg['provider'] = avatar_provider
+        else:
+            avatar_cfg.pop('provider', None)
+
+        current_avatar_submit_ep = avatar_cfg.get('submit_endpoint', '')
+        avatar_submit_ep = Prompt.ask("  AVATAR_SUBMIT_ENDPOINT", default=current_avatar_submit_ep)
+        if avatar_submit_ep:
+            avatar_cfg['submit_endpoint'] = avatar_submit_ep
+        else:
+            avatar_cfg.pop('submit_endpoint', None)
+
+        current_avatar_status_ep = avatar_cfg.get('status_endpoint', '')
+        avatar_status_ep = Prompt.ask("  AVATAR_STATUS_ENDPOINT", default=current_avatar_status_ep)
+        if avatar_status_ep:
+            avatar_cfg['status_endpoint'] = avatar_status_ep
+        else:
+            avatar_cfg.pop('status_endpoint', None)
+
+        current_avatar_temp = avatar_cfg.get('temperature', 0.1)
+        avatar_temp = Prompt.ask("  AVATAR_TEMPERATURE", default=str(current_avatar_temp))
+        if avatar_temp:
+            try:
+                avatar_cfg['temperature'] = float(avatar_temp)
+            except ValueError:
+                avatar_cfg.pop('temperature', None)
+        else:
+            avatar_cfg.pop('temperature', None)
+
+        if not avatar_cfg:
+            current_config['models'].pop('avatar', None)
 
         # Audio (models.audio -> AUDIO_* for audio agent)
         self.console.print("\n[bold]Audio configuration[/bold] [dim](optional, for audio agent)[/dim]")
@@ -1191,10 +1654,11 @@ class AWorldCLI:
 
         # 3. Skills
         try:
-            from .core.skill_registry import get_skill_registry
-            registry = get_skill_registry()
+            from .core.runtime_skill_registry import build_runtime_skill_registry_view
+
+            registry = build_runtime_skill_registry_view()
             skills_count = len(registry.get_all_skills())
-            skills_loc = f"[dim]{[str(p) for p in get_user_skills_paths()]}[/dim]"
+            skills_loc = f"[dim]{list(registry.source_paths)}[/dim]"
             skills_status = f"[bold bright_green]{skills_count} LOADED[/bold bright_green]"
         except Exception as e:
             skills_status = "[bold red]ERROR[/bold red]"
@@ -1284,6 +1748,97 @@ class AWorldCLI:
             except Exception:
                 return []
 
+    def _invalidate_active_prompt(self) -> None:
+        session = self._active_prompt_session
+        if session is None:
+            return
+        app = getattr(session, "app", None)
+        if app is None or not hasattr(app, "invalidate"):
+            return
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    def _handle_notification_center_change(self) -> None:
+        self._invalidate_active_prompt()
+
+    def _bind_notification_center_listener(self, notification_center) -> None:
+        if notification_center is self._subscribed_notification_center:
+            return
+        self._unbind_notification_center_listener()
+        if notification_center is None or not hasattr(notification_center, "add_change_listener"):
+            return
+        try:
+            notification_center.add_change_listener(self._notification_center_listener)
+            self._subscribed_notification_center = notification_center
+        except Exception:
+            self._subscribed_notification_center = None
+
+    def _unbind_notification_center_listener(self) -> None:
+        notification_center = self._subscribed_notification_center
+        if notification_center is None or not hasattr(notification_center, "remove_change_listener"):
+            self._subscribed_notification_center = None
+            return
+        try:
+            notification_center.remove_change_listener(self._notification_center_listener)
+        except Exception:
+            pass
+        finally:
+            self._subscribed_notification_center = None
+    async def _render_cron_notifications_safe(self, notifications: List[Any]) -> None:
+        if not notifications:
+            return
+
+        def _render() -> None:
+            self.console.print()
+            self.render_cron_notifications(notifications)
+
+        if self._active_prompt_session is not None:
+            await run_in_terminal(_render)
+            return
+
+        _render()
+
+    async def _ensure_notification_poller(self, runtime) -> None:
+        notification_center = getattr(runtime, "_notification_center", None) if runtime is not None else None
+        if runtime is None or notification_center is None:
+            return
+        self._bind_notification_center_listener(notification_center)
+        if self._notification_poll_task and not self._notification_poll_task.done():
+            return
+        self._notification_stop_event = asyncio.Event()
+        self._notification_poll_task = asyncio.create_task(
+            self._notification_poller(runtime, stop_event=self._notification_stop_event)
+        )
+
+    async def _stop_notification_poller(self) -> None:
+        if not self._notification_poll_task:
+            self._unbind_notification_center_listener()
+            return
+        if self._notification_stop_event:
+            self._notification_stop_event.set()
+        try:
+            await asyncio.wait_for(self._notification_poll_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            self._notification_poll_task.cancel()
+            try:
+                await self._notification_poll_task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            self._notification_poll_task = None
+            self._notification_stop_event = None
+            self._unbind_notification_center_listener()
+
+    def _hud_owns_notification_state(self, runtime) -> bool:
+        if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
+            return False
+        try:
+            return "hud" in tuple(runtime.active_plugin_capabilities())
+        except Exception:
+            return False
+
     async def _notification_poller(
         self,
         runtime,
@@ -1301,11 +1856,15 @@ class AWorldCLI:
             try:
                 # Only poll when idle (not executing agent)
                 if not self._is_agent_executing:
+                    # When HUD is active, keep notifications unread so the toolbar/HUD
+                    # can surface the live inbox count until the user explicitly opens it.
+                    if self._hud_owns_notification_state(runtime):
+                        self._invalidate_active_prompt()
+                        await asyncio.sleep(poll_interval)
+                        continue
                     notifications = await self._drain_notifications_safe(runtime)
                     if notifications:
-                        # Print above current prompt line
-                        self.console.print()  # Add newline before notifications
-                        self.render_cron_notifications(notifications)
+                        await self._render_cron_notifications_safe(notifications)
 
                 await asyncio.sleep(poll_interval)
 
@@ -1367,19 +1926,1528 @@ class AWorldCLI:
             # If prompt_toolkit is not available or error occurs, fail silently
             pass
 
+    async def _interactive_permission_prompt(self, reason: str, context: Optional[dict] = None) -> str:
+        """Interactive permission prompt for 'ask' mode
+
+        Called by permission handler when a hook returns 'ask' decision.
+        Presents the user with context and asks for allow/deny.
+
+        Args:
+            reason: Reason for permission request
+            context: Optional context (tool_name, args, etc.)
+
+        Returns:
+            'allow' or 'deny'
+        """
+        try:
+            # Build permission request message
+            self.console.print("\n[bold yellow]⚠️  Permission Required[/bold yellow]")
+            self.console.print(f"[yellow]Reason:[/yellow] {reason}")
+
+            if context:
+                tool_name = context.get('tool_name', 'unknown')
+                self.console.print(f"[yellow]Tool:[/yellow] {tool_name}")
+
+                # Show action details if available
+                actions = context.get('action', [])
+                if actions and len(actions) > 0:
+                    first_action = actions[0]
+                    if isinstance(first_action, dict):
+                        action_name = first_action.get('action_name', 'unknown')
+                        params = first_action.get('params', {})
+                        self.console.print(f"[yellow]Action:[/yellow] {action_name}")
+                        if params:
+                            self.console.print(f"[yellow]Parameters:[/yellow] {params}")
+
+            # Prompt for decision
+            self.console.print("\n[bold]Allow this action?[/bold]")
+            self.console.print("  [green]y/yes[/green] - Allow this action")
+            self.console.print("  [red]n/no[/red]  - Deny this action")
+
+            # Use prompt_toolkit if available, otherwise fallback to input()
+            if sys.stdin.isatty():
+                user_response = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: Prompt.ask("\nYour choice", choices=["y", "yes", "n", "no"], default="n")
+                )
+            else:
+                # Fallback for non-interactive environments
+                logger.warning("Non-interactive environment detected during permission prompt")
+                return 'deny'
+
+            # Parse response
+            if user_response.lower() in ['y', 'yes']:
+                self.console.print("[green]✓ Permission granted[/green]\n")
+                return 'allow'
+            else:
+                self.console.print("[red]✗ Permission denied[/red]\n")
+                return 'deny'
+
+        except Exception as e:
+            logger.error(f"Interactive permission prompt failed: {e}")
+            self.console.print(f"[red]Error during permission prompt: {e}[/red]")
+            return 'deny'
+
+    def _resolve_hook_text(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            content = value.get('content')
+            if isinstance(content, str):
+                return content
+        return str(value)
+
+    def _get_plugin_runtime(self, executor_instance: Any = None) -> Any:
+        if executor_instance and hasattr(executor_instance, '_base_runtime'):
+            return executor_instance._base_runtime
+        return None
+
+    async def _run_plugin_hooks(
+        self,
+        hook_point: str,
+        event: dict[str, Any],
+        executor_instance: Any = None,
+    ) -> list[tuple[Any, Any]]:
+        runtime = self._get_plugin_runtime(executor_instance)
+        if runtime is None or not hasattr(runtime, 'get_plugin_hooks'):
+            return []
+
+        if hasattr(runtime, "run_plugin_hooks"):
+            result = runtime.run_plugin_hooks(
+                hook_point,
+                event=dict(event),
+                executor_instance=executor_instance,
+            )
+            if inspect.isawaitable(result):
+                return await result
+            return result or []
+
+        results = []
+        for hook in runtime.get_plugin_hooks(hook_point):
+            try:
+                state = {}
+                if hasattr(runtime, 'build_plugin_hook_state'):
+                    state = runtime.build_plugin_hook_state(hook.plugin_id, hook.scope, executor_instance)
+                results.append((hook, await hook.run(event=dict(event), state=state)))
+            except Exception as e:
+                logger.warning(
+                    f"Plugin hook '{getattr(hook, 'entrypoint_id', 'unknown')}' failed "
+                    f"at '{hook_point}': {e}"
+                )
+        return results
+
+    def _normalize_skill_names(
+        self, skill_names: Optional[list[str] | tuple[str, ...]]
+    ) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for skill_name in skill_names or []:
+            value = str(skill_name).strip()
+            if not value or value in seen:
+                continue
+            normalized.append(value)
+            seen.add(value)
+        return normalized
+
+    def _agent_name_for_resolution(self, agent: Any) -> str | None:
+        name_attr = getattr(agent, "name", None)
+        if callable(name_attr):
+            try:
+                resolved = name_attr()
+                return str(resolved) if resolved else None
+            except Exception:
+                return None
+        if isinstance(name_attr, str) and name_attr:
+            return name_attr
+        return None
+
+    def _resolve_swarm_agent(self, executor_instance: Any, agent_name: str | None) -> Any | None:
+        iter_agents = getattr(executor_instance, "_iter_swarm_agents", None)
+        if callable(iter_agents):
+            for agent in iter_agents():
+                resolved_name = self._agent_name_for_resolution(agent)
+                if agent_name is None or resolved_name == agent_name:
+                    return agent
+        return None
+
+    def _skill_package_roots_for_agent(self, plugin_manager: Any, agent_name: str | None) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        normalized_agent = (agent_name or "").strip().lower()
+
+        for package in plugin_manager.list_skill_packages(include_disabled=False):
+            metadata = package.get("metadata", {})
+            scope = str(
+                metadata.get("scope")
+                if isinstance(metadata, dict) and metadata.get("scope") is not None
+                else package.get("activation_scope", "global")
+            )
+            if scope == "global":
+                pass
+            elif (
+                scope.startswith("agent:")
+                and normalized_agent
+                and scope.lower() == f"agent:{normalized_agent}"
+            ):
+                pass
+            else:
+                continue
+
+            plugin_path = Path(str(package["path"])).resolve()
+            if plugin_path.exists() and plugin_path.is_dir():
+                roots.append(plugin_path)
+
+        return tuple(roots)
+
+    def _skill_resolution_environment(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> tuple[Any, tuple[Path, ...], dict[str, Any]]:
+        from .core.plugin_manager import PluginManager
+
+        plugin_manager = PluginManager()
+        runtime_plugin_roots = tuple(
+            Path(item).resolve()
+            for item in plugin_manager.get_runtime_plugin_roots()
+        )
+        skill_package_roots = self._skill_package_roots_for_agent(plugin_manager, agent_name)
+
+        resolver_inputs: dict[str, Any] = {}
+        selected_agent = None
+        if executor_instance is not None:
+            selected_agent = self._resolve_swarm_agent(executor_instance, agent_name)
+        if selected_agent is not None:
+            agent_conf = getattr(selected_agent, "conf", None)
+            if agent_conf is not None and isinstance(getattr(agent_conf, "ext", None), dict):
+                resolver_inputs = dict(agent_conf.ext.get("skill_resolver_inputs", {}))
+
+        plugin_roots = runtime_plugin_roots + skill_package_roots + tuple(
+            Path(item).resolve()
+            for item in resolver_inputs.get("plugin_roots", [])
+        )
+        return plugin_manager, plugin_roots, resolver_inputs
+
+    def _generated_skill_alias_map(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> dict[str, str]:
+        reserved = {
+            "exit",
+            "quit",
+            "help",
+            "new",
+            "restore",
+            "latest",
+            "switch",
+            "skills",
+            "agents",
+            "cost",
+            "compact",
+            "team",
+            "memory",
+            "sessions",
+            "visualize_trajectory",
+        }
+        reserved.update(command.name.lower() for command in CommandRegistry.list_commands())
+
+        try:
+            resolved = self._resolve_visible_skills(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+            )
+        except Exception:
+            return {}
+
+        aliases: dict[str, str] = {}
+        for skill_name in sorted(resolved.skill_configs):
+            normalized = str(skill_name).strip()
+            if not normalized:
+                continue
+            if normalized.lower() in reserved:
+                continue
+            aliases[f"/{normalized}"] = normalized
+        return aliases
+
+    def _match_generated_skill_alias(
+        self,
+        user_input: str,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> str | None:
+        normalized_input = str(user_input or "").strip()
+        if not normalized_input.startswith("/"):
+            return None
+
+        alias_token = normalized_input.split(maxsplit=1)[0].lower()
+        for alias, skill_name in self._generated_skill_alias_map(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ).items():
+            if alias.lower() == alias_token:
+                return skill_name
+        return None
+
+    def _match_disabled_skill_alias(
+        self,
+        user_input: str,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> str | None:
+        from .core.skill_state_manager import SkillStateManager
+        from .core.runtime_skill_registry import build_runtime_skill_registry_view
+
+        normalized_input = str(user_input or "").strip()
+        if not normalized_input.startswith("/"):
+            return None
+
+        alias_token = normalized_input.split(maxsplit=1)[0].lower()
+        disabled = set(SkillStateManager().disabled_skill_names())
+        if not disabled:
+            return None
+
+        try:
+            resolved = self._resolve_visible_skills(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+                apply_disabled_filter=False,
+            )
+            skill_names = list(getattr(resolved, "skill_configs", {}))
+        except Exception:
+            skill_names = []
+
+        if not skill_names:
+            try:
+                runtime_view = build_runtime_skill_registry_view()
+                skill_names = list(runtime_view.get_all_skills())
+            except Exception:
+                return None
+
+        for skill_name in skill_names:
+            normalized_skill = str(skill_name).strip()
+            if not normalized_skill or normalized_skill.lower() not in disabled:
+                continue
+            if f"/{normalized_skill}".lower() == alias_token:
+                return normalized_skill
+        return None
+
+    def _rewrite_generated_skill_alias_input(
+        self,
+        user_input: str,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> tuple[bool, str]:
+        skill_name = self._match_generated_skill_alias(
+            user_input,
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+        if skill_name is None:
+            return False, user_input
+
+        parts = str(user_input or "").strip().split(maxsplit=1)
+        self._pending_skill_overrides = [skill_name]
+        if len(parts) == 1:
+            self.console.print(
+                f"[green]Will force skill on next task:[/green] {skill_name}"
+            )
+            return True, ""
+        return True, parts[1].strip()
+
+    def _load_skill_commands(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> list[Any]:
+        from aworld.plugins.discovery import discover_plugins
+        from .plugin_capabilities.skill_commands import load_plugin_skill_commands
+
+        _, plugin_roots, _ = self._skill_resolution_environment(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+        return load_plugin_skill_commands(discover_plugins(plugin_roots))
+
+    def _skill_command_completion_entries(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> dict[str, str]:
+        entries: dict[str, str] = {}
+        for command in self._load_skill_commands(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ):
+            names = [command.name, *(getattr(command, "aliases", tuple()) or tuple())]
+            for name in names:
+                normalized = str(name).strip()
+                if normalized:
+                    entries[f"/skills {normalized}"] = command.description
+        return entries
+
+    def _skill_command_usage_text(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> str:
+        usages = ["/skills"]
+        for command in self._load_skill_commands(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ):
+            usage = str(getattr(command, "usage", "") or "").strip()
+            usages.append(usage or f"/skills {command.name}")
+        return " | ".join(dict.fromkeys(usages))
+
+    def _build_skill_help_lines(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> list[str]:
+        lines = ["Type '/skills' to list available skills."]
+        for command in self._load_skill_commands(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ):
+            usage = str(getattr(command, "usage", "") or "").strip()
+            lines.append(
+                f"Type '{usage or f'/skills {command.name}'}' to {command.description}."
+            )
+        lines.append("Type '/<skill-name>' to force that visible skill on the next task.")
+        return lines
+
+    def _provider_commands_by_skill(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> dict[str, list[str]]:
+        from aworld.plugins.discovery import discover_plugins
+        from .plugin_capabilities.commands import commands_for_plugin
+
+        _, plugin_roots, _ = self._skill_resolution_environment(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+
+        commands_by_skill: dict[str, list[str]] = {}
+        for plugin in discover_plugins(plugin_roots):
+            visible_commands = commands_for_plugin(plugin)
+            if not visible_commands:
+                continue
+            for entrypoint in plugin.manifest.entrypoints.get("skills", ()):
+                commands_by_skill.setdefault(
+                    entrypoint.entrypoint_id,
+                    list(visible_commands),
+                )
+        return commands_by_skill
+
+    def _resolve_visible_skills(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+        requested_skill_names: Optional[list[str] | tuple[str, ...]] = None,
+        apply_disabled_filter: bool = True,
+    ):
+        from .core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
+        from .core.skill_state_manager import SkillStateManager
+
+        _, plugin_roots, resolver_inputs = self._skill_resolution_environment(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+
+        request = SkillResolverRequest(
+            plugin_roots=plugin_roots,
+            runtime_scope="session",
+            agent_name=agent_name,
+            requested_skill_names=tuple(self._normalize_skill_names(requested_skill_names)),
+            disabled_skill_names=(
+                SkillStateManager().disabled_skill_names()
+                if apply_disabled_filter
+                else tuple()
+            ),
+            compatibility_sources=tuple(
+                str(item)
+                for item in resolver_inputs.get("compatibility_sources", [])
+            ),
+            compatibility_skill_patterns=tuple(
+                str(item)
+                for item in resolver_inputs.get("compatibility_skill_patterns", [])
+            ),
+        )
+        return SkillActivationResolver().resolve(request)
+
+    def _supports_requested_skill_names(self, executor_instance: Any, executor: Callable[[str], Any]) -> bool:
+        candidates = []
+        if executor_instance is not None and hasattr(executor_instance, "chat"):
+            candidates.append(executor_instance.chat)
+        candidates.append(executor)
+
+        for candidate in candidates:
+            try:
+                if "requested_skill_names" in inspect.signature(candidate).parameters:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    async def _run_executor_prompt(
+        self,
+        prompt: str,
+        executor: Callable[[str], Any],
+        *,
+        executor_instance: Any = None,
+    ) -> Any:
+        requested_skill_names = self._normalize_skill_names(self._pending_skill_overrides)
+        if requested_skill_names and self._supports_requested_skill_names(executor_instance, executor):
+            self._pending_skill_overrides = []
+            chat_callable = executor_instance.chat if executor_instance is not None and hasattr(executor_instance, "chat") else executor
+            return await chat_callable(prompt, requested_skill_names=requested_skill_names)
+        return await executor(prompt)
+
+    async def _handle_active_task_input(
+        self,
+        user_input: str,
+        *,
+        runtime: Any,
+        session_id: str | None,
+        executor_task: asyncio.Task,
+        workspace_path: str | None = None,
+        task_id: str | None = None,
+    ) -> bool:
+        normalized = (user_input or "").strip()
+        if not normalized:
+            return True
+
+        steering = getattr(runtime, "_steering", None) if runtime is not None else None
+        pending_count = 0
+        if steering is not None and session_id:
+            snapshot = steering.snapshot(session_id)
+            pending_count = int(snapshot.get("pending_count", 0) or 0)
+
+        if normalized in {_ESC_INTERRUPT_SENTINEL, "/interrupt"}:
+            if (
+                normalized == _ESC_INTERRUPT_SENTINEL
+                and pending_count <= 0
+                and self._active_steering_ignore_escape_until_progress
+            ):
+                return True
+            interrupt_requested = normalized == _ESC_INTERRUPT_SENTINEL
+            esc_submits_queued_steering_immediately = (
+                normalized == _ESC_INTERRUPT_SENTINEL and pending_count > 0
+            )
+            if (
+                not interrupt_requested
+                and runtime is not None
+                and hasattr(runtime, "request_session_interrupt")
+            ):
+                interrupt_requested = bool(runtime.request_session_interrupt(session_id))
+            elif (
+                interrupt_requested
+                and not esc_submits_queued_steering_immediately
+                and runtime is not None
+                and hasattr(runtime, "request_session_interrupt")
+            ):
+                interrupt_requested = bool(runtime.request_session_interrupt(session_id))
+            if not executor_task.done():
+                executor_task.cancel()
+            if esc_submits_queued_steering_immediately:
+                self._active_steering_handoff_from_escape = True
+                self._append_active_steering_history(
+                    "system_notice",
+                    "Interrupting current run to submit queued steering immediately.",
+                )
+            elif interrupt_requested:
+                notice = "Interrupt requested."
+                self._append_active_steering_history("system_notice", notice)
+            else:
+                self._append_active_steering_history(
+                    "system_notice",
+                    "No active steerable task to interrupt.",
+                )
+            return True
+
+        if normalized.startswith("/") and await self._handle_active_task_goal_command(
+            normalized,
+            runtime=runtime,
+            session_id=session_id,
+            executor_task=executor_task,
+            workspace_path=workspace_path,
+        ):
+            return True
+
+        if steering is None or not session_id:
+            return False
+
+        item = steering.enqueue_text(session_id, normalized)
+        snapshot = steering.snapshot(session_id)
+        log_queued_steering_event(
+            workspace_path=workspace_path,
+            session_id=session_id,
+            task_id=task_id or snapshot.get("task_id"),
+            steering_item=item,
+            pending_count=int(snapshot.get("pending_count", 0) or 0),
+        )
+        self._append_active_steering_history(
+            "queued_steering",
+            normalized,
+        )
+        return True
+
+    async def _handle_active_task_goal_command(
+        self,
+        user_input: str,
+        *,
+        runtime: Any,
+        session_id: str | None,
+        executor_task: asyncio.Task,
+        workspace_path: str | None = None,
+    ) -> bool:
+        normalized = (user_input or "").strip()
+        if not normalized.startswith("/"):
+            return False
+
+        parts = normalized[1:].split(maxsplit=1)
+        cmd_name = (parts[0] if parts else "").strip().lower()
+        if cmd_name != "goal":
+            return False
+
+        command = CommandRegistry.get(cmd_name)
+        if command is None:
+            return False
+
+        cmd_args = parts[1] if len(parts) > 1 else ""
+        context = CommandContext(
+            cwd=workspace_path or os.getcwd(),
+            user_args=cmd_args,
+            sandbox=None,
+            agent_config=None,
+            runtime=runtime,
+            session_id=session_id,
+        )
+        if command.resolve_command_type(context) != "tool":
+            return False
+
+        try:
+            error = await command.pre_execute(context)
+            if error:
+                self._append_active_steering_history("system_notice", f"Error: {error}")
+                return True
+
+            result = await command.execute(context)
+        except Exception as exc:
+            self._append_active_steering_history(
+                "error",
+                f"Error executing /goal: {exc}",
+            )
+            return True
+
+        if result:
+            self._append_active_steering_history("system_notice", str(result))
+
+        action = cmd_args.strip().lower()
+        if action in {"pause", "clear"}:
+            if runtime is not None and hasattr(runtime, "request_session_interrupt"):
+                try:
+                    runtime.request_session_interrupt(session_id)
+                except Exception:
+                    pass
+            if not executor_task.done():
+                executor_task.cancel()
+        return True
+
+    async def _prompt_active_task_input(
+        self,
+        *,
+        session: PromptSession,
+        runtime: Any,
+        agent_name: str,
+        wait_started_at: float | None = None,
+    ) -> str:
+        prompt_kwargs = self._build_prompt_kwargs(
+            runtime,
+            agent_name=agent_name,
+            mode="Steering",
+        )
+        prompt_message = self._build_active_task_prompt_message(wait_started_at)
+        prompt_kwargs["reserve_space_for_menu"] = 0
+        prompt_kwargs["refresh_interval"] = 0.1
+        return await session.prompt_async(prompt_message, **prompt_kwargs)
+
+    def _build_active_task_status_parts(
+        self,
+        wait_started_at: float | None = None,
+    ) -> tuple[float, str, str | None]:
+        elapsed = max(0.0, time.monotonic() - wait_started_at) if wait_started_at is not None else 0.0
+        suffix = "." * (int(elapsed * 2) % 4)
+        working = f"Working{suffix}"
+        detail = None
+        if self._active_steering_view is not None and self._active_steering_view.status_text:
+            raw_detail = self._active_steering_view.status_text.strip()
+            if raw_detail.rstrip(".").strip().lower() != "working":
+                detail = f"{raw_detail}{suffix}"
+        return elapsed, working, detail
+
+    def _build_active_task_wait_text(self, wait_started_at: float | None = None) -> str:
+        elapsed, action, detail = self._build_active_task_status_parts(wait_started_at)
+        if detail:
+            action = f"{action} • {detail}"
+        return (
+            f"{action} ({self._format_active_task_wait_elapsed(elapsed)} "
+            "• type to steer • Esc to interrupt)"
+        )
+
+    def _build_active_task_prompt_message(self, wait_started_at: float | None = None) -> Callable[[], HTML]:
+        return lambda: self._build_active_task_prompt_markup(wait_started_at)
+
+    def _build_active_task_prompt_markup(self, wait_started_at: float | None = None) -> HTML:
+        elapsed, working, detail = self._build_active_task_status_parts(wait_started_at)
+        elapsed_text = self._format_active_task_wait_elapsed(elapsed)
+        detail_prefix = ""
+        detail_markup = ""
+        if detail:
+            detail_prefix = "<style fg='#6a7596'> • </style>"
+            escaped_detail = (
+                detail.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            detail_markup = f"<style fg='#c8d0e6'>{escaped_detail}</style>"
+        meta_text = f"({elapsed_text} • type to steer • Esc to interrupt)"
+        escaped_meta = (
+            meta_text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        return HTML(
+            "".join(
+                [
+                    self._render_active_task_working_gradient(working),
+                    detail_prefix,
+                    detail_markup,
+                    " ",
+                    f"<style fg='#8e98b3'>{escaped_meta}</style>",
+                    "\n",
+                    "<style fg='#d8def5'>› </style>",
+                ]
+            )
+        )
+
+    def _render_active_task_working_gradient(self, text: str) -> str:
+        palette = [
+            "#5f6883",
+            "#7380a2",
+            "#8f9bc1",
+            "#b8c3e3",
+            "#eef3ff",
+            "#b8c3e3",
+            "#8f9bc1",
+            "#7380a2",
+        ]
+        phase = int(time.monotonic() * 12) % len(palette)
+        parts: list[str] = []
+        for index, char in enumerate(text):
+            color = palette[(phase + index) % len(palette)]
+            escaped_char = (
+                char.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            parts.append(f"<style fg='{color}'>{escaped_char}</style>")
+        return "".join(parts)
+
+    def _format_active_task_wait_elapsed(self, elapsed_seconds: float) -> str:
+        total_seconds = max(0, int(elapsed_seconds))
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        if minutes > 0:
+            return f"{minutes}m {seconds}s"
+        return f"{seconds}s"
+
+    async def _await_active_executor_result(self, executor_task: asyncio.Task) -> Any:
+        try:
+            return await executor_task
+        except asyncio.CancelledError:
+            return None
+
+    async def _cancel_active_executor_task(self, executor_task: asyncio.Task) -> None:
+        if executor_task.done():
+            await self._await_active_executor_result(executor_task)
+            return
+
+        executor_task.cancel()
+        try:
+            await executor_task
+        except (asyncio.CancelledError, Exception):
+            return
+
+    async def _run_terminal_fallback_continuation(
+        self,
+        *,
+        runtime: Any,
+        session_id: str | None,
+        executor: Callable[[str], Any],
+        completer: Completer | None,
+        agent_name: str,
+        executor_instance: Any = None,
+        is_terminal: bool = False,
+    ) -> tuple[bool, Any]:
+        steering = getattr(runtime, "_steering", None) if runtime is not None else None
+        if steering is None or not session_id or not is_terminal:
+            return False, None
+
+        snapshot = steering.snapshot(session_id)
+        if int(snapshot.get("pending_count", 0) or 0) <= 0:
+            return False, None
+
+        follow_up_prompt, drained_items, interrupt_requested = steering.consume_terminal_fallback(session_id)
+        if not follow_up_prompt:
+            return False, None
+
+        self._clear_prompt_session_reference()
+        self._active_steering_ignore_escape_until_progress = self._active_steering_handoff_from_escape
+        self._active_steering_handoff_from_escape = False
+        if drained_items:
+            context = getattr(executor_instance, "context", None) if executor_instance is not None else None
+            log_applied_steering_event(
+                workspace_path=getattr(context, "workspace_path", None),
+                session_id=session_id,
+                task_id=getattr(context, "task_id", None),
+                steering_items=drained_items,
+                checkpoint="terminal_fallback",
+            )
+            applied_lines = [item.text for item in drained_items]
+            if interrupt_requested:
+                applied_lines.insert(0, "Interrupt requested by operator.")
+            self._append_active_steering_history(
+                "applied_steering",
+                "\n".join(applied_lines),
+            )
+        else:
+            self._append_active_steering_history(
+                "system_notice",
+                "Applying queued steering in a follow-up turn.",
+            )
+        result = await self._run_executor_with_active_steering(
+            prompt=follow_up_prompt,
+            executor=executor,
+            completer=completer,
+            runtime=runtime,
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+            is_terminal=is_terminal,
+        )
+        return True, result
+
+    async def _run_executor_with_active_steering(
+        self,
+        *,
+        prompt: str,
+        executor: Callable[[str], Any],
+        completer: Completer | None,
+        runtime: Any,
+        agent_name: str,
+        executor_instance: Any = None,
+        is_terminal: bool = False,
+    ) -> Any:
+        session_id = getattr(executor_instance, "session_id", None)
+        wait_started_at = time.monotonic()
+        previous_loading_suppressed = None
+        previous_stream_suppressed = None
+        previous_event_sink = None
+        previous_status_sink = None
+        if executor_instance is not None and is_terminal:
+            previous_loading_suppressed = getattr(
+                executor_instance,
+                "_suppress_interactive_loading_status",
+                False,
+            )
+            previous_stream_suppressed = getattr(
+                executor_instance,
+                "_suppress_interactive_stream_output",
+                False,
+            )
+            previous_event_sink = getattr(
+                executor_instance,
+                "_active_steering_event_sink",
+                None,
+            )
+            context = getattr(executor_instance, "context", None)
+            if context is not None:
+                previous_status_sink = getattr(context, "_aworld_cli_status_sink", None)
+            executor_instance._suppress_interactive_loading_status = True
+            executor_instance._suppress_interactive_stream_output = True
+            executor_instance._active_steering_event_sink = self._handle_active_steering_event
+            if context is not None:
+                context._aworld_cli_status_sink = self._set_active_steering_status
+            self._active_steering_view = self._create_active_steering_view()
+        executor_task = asyncio.create_task(
+            self._run_executor_prompt(
+                prompt,
+                executor,
+                executor_instance=executor_instance,
+            )
+        )
+        self._current_executor_task = executor_task
+
+        if runtime is not None and session_id and hasattr(runtime, "_steering"):
+            try:
+                task_id = getattr(getattr(executor_instance, "context", None), "task_id", None)
+                runtime._steering.begin_task(
+                    session_id,
+                    task_id or f"interactive-{id(executor_task)}",
+                )
+            except Exception:
+                pass
+
+        try:
+            if not is_terminal or completer is None or runtime is None or not session_id:
+                return await self._await_active_executor_result(executor_task)
+
+            while True:
+                if executor_task.done():
+                    result = await self._await_active_executor_result(executor_task)
+                    continued, follow_up_result = await self._run_terminal_fallback_continuation(
+                        runtime=runtime,
+                        session_id=session_id,
+                        executor=executor,
+                        completer=completer,
+                        agent_name=agent_name,
+                        executor_instance=executor_instance,
+                        is_terminal=is_terminal,
+                    )
+                    return follow_up_result if continued else result
+
+                steering_session = self._create_prompt_session(
+                    completer,
+                    on_escape=lambda: None,
+                )
+                prompt_task = asyncio.create_task(
+                    self._prompt_active_task_input(
+                        session=steering_session,
+                        runtime=runtime,
+                        agent_name=agent_name,
+                        wait_started_at=wait_started_at,
+                    )
+                )
+
+                done, pending = await asyncio.wait(
+                    {executor_task, prompt_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if executor_task in done:
+                    prompt_task.cancel()
+                    try:
+                        await prompt_task
+                    except BaseException:
+                        pass
+                    self._clear_prompt_session_reference(steering_session)
+                    result = await self._await_active_executor_result(executor_task)
+                    continued, follow_up_result = await self._run_terminal_fallback_continuation(
+                        runtime=runtime,
+                        session_id=session_id,
+                        executor=executor,
+                        completer=completer,
+                        agent_name=agent_name,
+                        executor_instance=executor_instance,
+                        is_terminal=is_terminal,
+                    )
+                    return follow_up_result if continued else result
+
+                try:
+                    user_input = await prompt_task
+                except BaseException:
+                    self._clear_prompt_session_reference(steering_session)
+                    await self._cancel_active_executor_task(executor_task)
+                    raise
+                if user_input == _ESC_INTERRUPT_SENTINEL:
+                    self._discard_prompt_session_typeahead(steering_session)
+                self._clear_prompt_session_reference(steering_session)
+
+                await self._handle_active_task_input(
+                    user_input,
+                    runtime=runtime,
+                    session_id=session_id,
+                    executor_task=executor_task,
+                    workspace_path=getattr(getattr(executor_instance, "context", None), "workspace_path", None),
+                    task_id=getattr(getattr(executor_instance, "context", None), "task_id", None),
+                )
+                if executor_task.done() or executor_task.cancelling():
+                    result = await self._await_active_executor_result(executor_task)
+                    continued, follow_up_result = await self._run_terminal_fallback_continuation(
+                        runtime=runtime,
+                        session_id=session_id,
+                        executor=executor,
+                        completer=completer,
+                        agent_name=agent_name,
+                        executor_instance=executor_instance,
+                        is_terminal=is_terminal,
+                    )
+                    return follow_up_result if continued else result
+        finally:
+            if self._active_steering_view is not None:
+                self._handle_active_steering_event({"kind": "task_finished"})
+            steering = getattr(runtime, "_steering", None) if runtime is not None else None
+            if steering is not None and session_id:
+                try:
+                    steering.end_task(session_id, clear_pending=True)
+                except Exception:
+                    pass
+            self._active_steering_handoff_from_escape = False
+            self._active_steering_ignore_escape_until_progress = False
+            if executor_instance is not None and previous_loading_suppressed is not None:
+                executor_instance._suppress_interactive_loading_status = previous_loading_suppressed
+            if executor_instance is not None and previous_stream_suppressed is not None:
+                executor_instance._suppress_interactive_stream_output = previous_stream_suppressed
+            if executor_instance is not None and is_terminal:
+                executor_instance._active_steering_event_sink = previous_event_sink
+                context = getattr(executor_instance, "context", None)
+                if context is not None:
+                    context._aworld_cli_status_sink = previous_status_sink
+            self._active_steering_view = None
+            self._current_executor_task = None
+
+    def _create_active_steering_view(self) -> ActiveSteeringView:
+        return ActiveSteeringView(started_at=time.monotonic())
+
+    def _build_active_steering_completion_marker(
+        self,
+        text: str,
+        *,
+        max_width: int | None = None,
+    ) -> str:
+        label = str(text or "").strip() or "Worked"
+        base = f" {label} "
+        target_width = max_width
+        if target_width is None:
+            console_width = int(getattr(self.console, "width", 0) or 0)
+            try:
+                terminal_width = int(
+                    shutil.get_terminal_size(fallback=(console_width or 96, 24)).columns
+                )
+            except Exception:
+                terminal_width = console_width or 96
+            target_width = terminal_width or console_width or 96
+        target_width = max(target_width, len(base))
+        if len(base) >= target_width:
+            return base[:target_width]
+        remaining = target_width - len(base)
+        left = remaining // 2
+        right = remaining - left
+        return f"{'─' * left}{base}{'─' * right}"
+
+    def _append_active_steering_history(
+        self,
+        kind: str,
+        text: str,
+        *,
+        agent_name: str | None = None,
+    ) -> None:
+        normalized = self._sanitize_active_steering_text(text)
+        if not normalized:
+            return
+
+        if self._active_steering_view is not None:
+            self._active_steering_view.history.append({"kind": kind, "text": normalized})
+            previous_kind = self._active_steering_view.last_rendered_kind
+            self._active_steering_view.last_rendered_kind = kind
+        else:
+            previous_kind = None
+
+        def _render() -> None:
+            if previous_kind is not None and kind != "system_notice":
+                self.console.print()
+
+            if kind == "assistant_message":
+                self.console.print(f"🤖 [bold cyan]{agent_name or 'Aworld'}[/bold cyan]")
+                for line in normalized.splitlines():
+                    self.console.print(f"   {line}")
+                self.console.print()
+                return
+            if kind == "tool_calls":
+                self.console.print("🔧 [bold]Tool calls[/bold]")
+                for line in normalized.splitlines():
+                    self.console.print(f"   {line}")
+                self.console.print()
+                return
+            if kind == "tool_result":
+                self.console.print("[dim]Tool result[/dim]")
+                for line in normalized.splitlines():
+                    self.console.print(f"   {line}")
+                self.console.print()
+                return
+            if kind == "error":
+                self.console.print(f"[bold red]Error[/bold red]")
+                for line in normalized.splitlines():
+                    self.console.print(f"[red]   {line}[/red]")
+                self.console.print()
+                return
+            if kind == "queued_steering":
+                self.console.print("[bold]Messages to be submitted after next checkpoint[/bold]")
+                self.console.print("[dim](press Esc to interrupt and send immediately)[/dim]")
+                lines = normalized.splitlines()
+                if lines:
+                    self.console.print(f"   ↳ {lines[0]}")
+                    for line in lines[1:]:
+                        self.console.print(f"     {line}")
+                self.console.print()
+                return
+            if kind == "applied_steering":
+                lines = normalized.splitlines()
+                if lines:
+                    self.console.print(f"[bold]Messages submitted at this checkpoint[/bold]")
+                    self.console.print("[dim](task is now continuing with the updated direction)[/dim]")
+                    self.console.print(f"› {lines[0]}")
+                    for line in lines[1:]:
+                        self.console.print(f"  {line}")
+                self.console.print()
+                return
+            if kind == "task_complete":
+                marker = self._build_active_steering_completion_marker(normalized)
+                self.console.print(f"[dim]{marker}[/dim]")
+                return
+            self.console.print(f"[dim]• {normalized}[/dim]")
+
+        self._render_active_steering_history_entry(_render)
+
+    def _render_active_steering_history_entry(self, render: Callable[[], None]) -> None:
+        if self._active_prompt_session is None:
+            render()
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            render()
+            return
+
+        previous_task = self._active_steering_render_task
+
+        async def _run_render() -> None:
+            if previous_task is not None:
+                try:
+                    await previous_task
+                except Exception:
+                    pass
+            await run_in_terminal(render)
+
+        task = loop.create_task(_run_render())
+        self._active_steering_render_task = task
+
+        def _clear(_task: asyncio.Task[Any]) -> None:
+            if self._active_steering_render_task is _task:
+                self._active_steering_render_task = None
+
+        task.add_done_callback(_clear)
+
+    def _sanitize_active_steering_text(self, text: str) -> str:
+        normalized = str(text or "")
+        normalized = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", normalized)
+        normalized = re.sub(r"\?\[[0-9;?]*[A-Za-z]", "", normalized)
+        lines = [line.rstrip() for line in normalized.splitlines()]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines).strip()
+
+    def _set_active_steering_status(self, text: str) -> None:
+        if self._active_steering_view is None:
+            return
+        self._active_steering_view.status_text = str(text or "").strip()
+
+    def _handle_active_steering_event(self, event: dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+
+        kind = str(event.get("kind") or "").strip()
+        text = str(event.get("text") or "").strip()
+        if not kind:
+            return
+
+        if self._active_steering_ignore_escape_until_progress:
+            self._active_steering_ignore_escape_until_progress = False
+
+        if kind == "status_changed":
+            self._set_active_steering_status(text)
+            return
+
+        if kind == "tool_call_started":
+            self._set_active_steering_status(text or "Calling tool")
+            return
+
+        if kind == "task_finished":
+            view = self._active_steering_view
+            if view is not None and view.started_at is not None:
+                elapsed = max(0.0, time.monotonic() - view.started_at)
+                self._append_active_steering_history(
+                    "task_complete",
+                    f"Worked for {self._format_active_task_wait_elapsed(elapsed)}",
+                )
+            self._set_active_steering_status("")
+            return
+
+        if kind in {"message_delta", "tool_result_delta"}:
+            return
+
+        mapping = {
+            "message_committed": "assistant_message",
+            "tool_calls_committed": "tool_calls",
+            "tool_result_committed": "tool_result",
+            "system_notice": "system_notice",
+            "error": "error",
+        }
+        history_kind = mapping.get(kind)
+        if history_kind is None:
+            return
+
+        self._append_active_steering_history(
+            history_kind,
+            text,
+            agent_name=str(event.get("agent_name") or "").strip() or None,
+        )
+
+    async def _render_skills_table(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> None:
+        from .core.skill_state_manager import SkillStateManager
+
+        try:
+            manageable = self._resolve_visible_skills(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+                apply_disabled_filter=False,
+            )
+            resolved = self._resolve_visible_skills(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+                requested_skill_names=self._pending_skill_overrides,
+            )
+        except Exception as exc:
+            self.console.print(f"[red]Error loading skills: {exc}[/red]")
+            return
+
+        if not manageable.skill_configs:
+            self.console.print("[yellow]No skills available.[/yellow]")
+            return
+
+        rows = sorted(manageable.skill_configs.items(), key=lambda item: item[0])
+        pending = set(self._normalize_skill_names(self._pending_skill_overrides))
+        disabled = set(SkillStateManager().disabled_skill_names())
+        active = set(getattr(resolved, "active_skill_names", ()) or ())
+        alias_map = self._generated_skill_alias_map(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+        commands_by_skill = self._provider_commands_by_skill(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+        table = Table(title="Skills", box=box.ROUNDED)
+        table.add_column("Name", style="magenta")
+        table.add_column("Description", style="green")
+        table.add_column("Status", style="cyan")
+        table.add_column("Alias", style="yellow")
+        table.add_column("Commands", style="yellow", no_wrap=False, max_width=28)
+        table.add_column("Address", style="dim", no_wrap=False, max_width=48)
+
+        for skill_name, skill_data in rows:
+            desc = skill_data.get("description") or skill_data.get("desc") or "No description"
+            address = skill_data.get("skill_path", "") or "—"
+            if skill_name in pending:
+                status = "pending"
+            elif skill_name.lower() in disabled:
+                status = "disabled"
+            elif skill_name in active:
+                status = "active"
+            else:
+                status = "available"
+            if address == "—":
+                addr_cell = Text("—", style="dim")
+            else:
+                path = Path(address)
+                link_target = path.parent if path.suffix else path
+                link_url = link_target.resolve().as_uri()
+                display = address if len(address) <= 48 else address[:45] + "..."
+                addr_cell = Text(display, style=Style(dim=True, link=link_url))
+            if status == "disabled":
+                generated_alias = "—"
+            else:
+                generated_alias = alias_map.get(f"/{skill_name}", f"/{skill_name}")
+            commands = ", ".join(commands_by_skill.get(skill_name, ())) or "—"
+            table.add_row(skill_name, str(desc), status, generated_alias, commands, addr_cell)
+
+        self.console.print(table)
+        if pending:
+            self.console.print(f"[dim]Pending explicit selection: {', '.join(sorted(pending))}[/dim]")
+        self.console.print(f"[dim]Total: {len(rows)} skill(s)[/dim]")
+
+    async def _handle_skills_command(
+        self,
+        user_input: str,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> bool:
+        normalized = " ".join(user_input.strip().lower().split())
+        if normalized in ("/skills", "skills"):
+            await self._render_skills_table(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+            )
+            return True
+
+        if normalized.startswith("/skills"):
+            remainder = user_input.strip()[len("/skills"):].strip()
+            if remainder:
+                command_name, _, args_text = remainder.partition(" ")
+                lookup = command_name.strip().lower()
+                for command in self._load_skill_commands(
+                    agent_name=agent_name,
+                    executor_instance=executor_instance,
+                ):
+                    aliases = tuple(getattr(command, "aliases", tuple()) or tuple())
+                    names = [command.name, *aliases]
+                    if lookup not in {
+                        str(name).strip().lower()
+                        for name in names
+                        if str(name).strip()
+                    }:
+                        continue
+                    result = command.run(
+                        self,
+                        args_text.strip(),
+                        agent_name=agent_name,
+                        executor_instance=executor_instance,
+                    )
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return True if result is None else bool(result)
+            self.console.print(
+                f"[yellow]Usage: {self._skill_command_usage_text(agent_name=agent_name, executor_instance=executor_instance)}[/yellow]"
+            )
+            return True
+
+        if normalized.startswith("/"):
+            alias_skill_name = self._match_generated_skill_alias(
+                user_input,
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+            )
+            if alias_skill_name:
+                self._pending_skill_overrides = [alias_skill_name]
+                self.console.print(
+                    f"[green]Will force skill on next task:[/green] {alias_skill_name}"
+                )
+                return True
+
+        return False
+
+    async def _execute_follow_up_prompt(
+        self,
+        agent_name: str,
+        executor: Callable[[str], Any],
+        follow_up_prompt: str,
+    ) -> None:
+        self.console.print(f"[bold green]{agent_name}[/bold green]:")
+        self._is_agent_executing = True
+        try:
+            await executor(follow_up_prompt)
+        finally:
+            self._is_agent_executing = False
+
+    async def _apply_stop_hooks(
+        self,
+        executor_instance: Any = None,
+        *,
+        force: bool = False,
+    ) -> tuple[bool, Optional[str]]:
+        from .core.context import get_default_history_path
+
+        if force:
+            return True, None
+
+        context = None
+        if executor_instance and hasattr(executor_instance, 'context'):
+            context = executor_instance.context
+
+        workspace_path = getattr(context, 'workspace_path', None) or os.getcwd()
+        event = {
+            'transcript_path': str(get_default_history_path()),
+            'workspace_path': workspace_path,
+            'session_id': getattr(executor_instance, 'session_id', None),
+            'task_id': getattr(context, 'task_id', None) if context else None,
+        }
+
+        for _, result in await self._run_plugin_hooks(
+            hook_point='stop',
+            event=event,
+            executor_instance=executor_instance,
+        ):
+            if result.system_message:
+                self.console.print(f"[dim]{result.system_message}[/dim]")
+
+            if result.action == 'allow':
+                continue
+
+            if result.action == 'deny':
+                reason = result.reason or 'Session termination blocked by plugin hook'
+                self.console.print(f"[yellow]⚠️ {reason}[/yellow]")
+                return False, None
+
+            if result.action == 'block_and_continue':
+                follow_up_prompt = self._resolve_hook_text(result.follow_up_prompt or result.updated_input)
+                if not follow_up_prompt:
+                    reason = result.reason or 'Session termination blocked by plugin hook'
+                    self.console.print(f"[yellow]⚠️ {reason}[/yellow]")
+                    return False, None
+                return False, follow_up_prompt
+
+        return True, None
+
+    async def _apply_user_input_hooks(self, user_input: str, executor_instance: Any = None) -> tuple[bool, str]:
+        """Run CLI user_input hooks and return whether execution should continue."""
+        from aworld.core.event.base import Message
+        from aworld.runners.hook.hooks import HookPoint
+        from aworld.runners.hook.utils import run_hooks
+        from aworld.runners.hook.v2.permission import get_permission_handler
+
+        context = None
+        if executor_instance and hasattr(executor_instance, 'context'):
+            context = executor_instance.context
+
+        user_input_msg = Message(
+            category='user_input',
+            payload=user_input,
+            session_id=getattr(context, 'session_id', 'unknown') if context else 'unknown',
+            sender='cli_user',
+            headers={'context': context} if context else {}
+        )
+        if context:
+            user_input_msg.context = context
+
+        workspace_path = getattr(context, 'workspace_path', None) or os.getcwd()
+        should_execute = True
+
+        handler = get_permission_handler()
+        handler.set_interactive_prompt(self._interactive_permission_prompt)
+
+        async for hook_result in run_hooks(
+            context=context,
+            hook_point=HookPoint.USER_INPUT_RECEIVED,
+            hook_from='cli',
+            message=user_input_msg,
+            workspace_path=workspace_path
+        ):
+            if not hook_result or not hasattr(hook_result, 'headers'):
+                continue
+
+            permission_decision = hook_result.headers.get('permission_decision')
+            if permission_decision in ('deny', 'ask'):
+                decision_reason = hook_result.headers.get(
+                    'permission_decision_reason',
+                    'User input blocked by hook'
+                )
+
+                if permission_decision == 'ask':
+                    try:
+                        context_dict = {
+                            'user_input': user_input,
+                            'hook_point': 'USER_INPUT_RECEIVED'
+                        }
+                        final_decision, resolution_reason = await handler.resolve_permission(
+                            permission_decision, decision_reason, context_dict
+                        )
+                        if final_decision == 'deny':
+                            self.console.print(f"[red]🚫 {resolution_reason}[/red]")
+                            should_execute = False
+                            break
+                    except Exception as e:
+                        self.console.print(f"[red]🚫 Permission resolution failed: {e}[/red]")
+                        should_execute = False
+                        break
+                else:
+                    self.console.print(f"[red]🚫 {decision_reason}[/red]")
+                    should_execute = False
+                    break
+
+            updated_input = hook_result.headers.get('updated_input')
+            if updated_input:
+                resolved_input = self._resolve_hook_text(updated_input)
+                if resolved_input:
+                    user_input = resolved_input
+
+            if hook_result.headers.get('prevent_continuation'):
+                stop_reason = hook_result.headers.get('stop_reason', 'Hook stopped execution')
+                self.console.print(f"[yellow]⚠️ {stop_reason}[/yellow]")
+                should_execute = False
+                break
+
+        if should_execute:
+            plugin_event = {
+                'user_input': user_input,
+                'workspace_path': workspace_path,
+                'session_id': getattr(user_input_msg, 'session_id', None),
+                'task_id': getattr(context, 'task_id', None) if context else None,
+            }
+            for _, result in await self._run_plugin_hooks(
+                hook_point='user_input_received',
+                event=plugin_event,
+                executor_instance=executor_instance,
+            ):
+                if result.system_message:
+                    self.console.print(f"[dim]{result.system_message}[/dim]")
+
+                resolved_input = self._resolve_hook_text(result.updated_input)
+                if resolved_input:
+                    user_input = resolved_input
+                    plugin_event['user_input'] = user_input
+
+                if result.action == 'deny':
+                    decision_reason = result.reason or 'User input blocked by plugin hook'
+                    self.console.print(f"[red]🚫 {decision_reason}[/red]")
+                    should_execute = False
+                    break
+
+        return should_execute, user_input
+
     async def run_chat_session(self, agent_name: str, executor: Callable[[str], Any], available_agents: List[AgentInfo] = None, executor_instance: Any = None) -> Union[bool, str]:
         """
         Run an interactive chat session with an agent.
-        
+
         Args:
             agent_name: Name of the agent to chat with
             executor: Async function that executes chat messages
             available_agents: List of available agents for switching
             executor_instance: Optional executor instance (for session management)
-            
+
         Returns:
             False if user wants to exit, True if wants to switch (show list), or agent name string to switch to
         """
+        # Setup permission handler callback for interactive prompting
+        from aworld.runners.hook.v2.permission import get_permission_handler
+        handler = get_permission_handler()
+        handler.set_interactive_prompt(self._interactive_permission_prompt)
+
         # Get current session_id if available
         session_id_info = ""
         if executor_instance and hasattr(executor_instance, 'session_id'):
@@ -1392,7 +3460,7 @@ class AWorldCLI:
             current_agent = next((a for a in available_agents if a.name == agent_name), None)
             if current_agent and current_agent.metadata:
                 metadata = current_agent.metadata
-                
+
                 # Check PTC status - only show if enabled
                 ptc_tools = metadata.get("ptc_tools", [])
                 ptc_info = ""
@@ -1437,21 +3505,27 @@ class AWorldCLI:
         # Display welcome message with configuration details
         self.console.print(f"Starting chat with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}")
         self.console.print("[dim]Type /help for available commands.[/dim]\n")
+        self._print_restored_transcript(executor_instance)
 
         # Build help text with both built-in and registered commands
         help_lines = [
             f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}\n",
-            "Type 'exit' to quit.",
+            "Type 'exit' to quit. Use 'exit!' to force quit without stop hooks.",
             "Type '/switch [agent_name]' to switch agent.",
             "Type '/new' to create a new session.",
             "Type '/restore' or '/latest' to restore to the latest session.",
-            "Type '/skills' to list all available skills.",
             "Type '/agents' to list all available agents.",
             "Type '/cost' for current session, '/cost -all' for global history.",
             "Type '/compact' to run context compression.",
             "Type '/team' for agent team management.",
             "Type '/memory' to edit project context, '/memory view' to view, '/memory status' for status.",
         ]
+        help_lines.extend(
+            self._build_skill_help_lines(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+            )
+        )
 
         # Add registered commands from CommandRegistry
         registered_commands = CommandRegistry.list_commands()
@@ -1474,38 +3548,35 @@ class AWorldCLI:
         # Setup completer and session only if in terminal
         agent_names = [a.name for a in available_agents] if available_agents else []
         session = None
+        completer = None
 
         if is_terminal:
             completer = self._build_session_completer(
                 agent_names=agent_names,
+                agent_name=agent_name,
+                executor_instance=executor_instance,
                 runtime=runtime,
                 event_loop=asyncio.get_running_loop(),
             )
-            # 历史记录文件：上/下方向键可浏览并加载已执行过的指令
-            from pathlib import Path
-            history_path = Path.home() / ".aworld" / "cli_history"
-            history_path.parent.mkdir(parents=True, exist_ok=True)
-            session = PromptSession(
-                completer=completer,
-                complete_while_typing=True,  # 输入时即显示补全列表（带描述）
-                history=FileHistory(str(history_path)),
-            )
+            session = self._create_prompt_session(completer)
+            await self._ensure_notification_poller(runtime)
+        else:
+            self._active_prompt_session = None
 
         while True:
             try:
                 # Use prompt_toolkit in terminal, plain input() in non-terminal (e.g., IDE debugger)
-                if is_terminal and session:
+                if is_terminal and completer:
+                    session = self._ensure_prompt_session(session, completer)
+                    await self._ensure_notification_poller(runtime)
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
                     prompt_text = "<b><cyan>You</cyan></b>: "
-                    prompt_kwargs = {}
-                    if runtime:
-                        prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
-                            runtime,
-                            agent_name=agent_name,
-                            mode="Chat",
-                        )
-                        prompt_kwargs["refresh_interval"] = 0.1
+                    prompt_kwargs = self._build_prompt_kwargs(
+                        runtime,
+                        agent_name=agent_name,
+                        mode="Chat",
+                    )
                     user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text), **prompt_kwargs)
                 else:
                     # Fallback to plain input() for non-terminal environments
@@ -1520,91 +3591,177 @@ class AWorldCLI:
 
                 # Handle slash commands (custom command system)
                 if user_input.startswith("/"):
-                    parts = user_input[1:].split(maxsplit=1)
-                    cmd_name = parts[0]
-                    cmd_args = parts[1] if len(parts) > 1 else ""
-
-                    # Skip built-in commands (let them fall through)
-                    builtin_commands = {
-                        "exit", "quit", "help", "new", "restore", "latest",
-                        "switch", "skills", "agents", "cost", "compact",
-                        "team", "memory", "sessions", "visualize_trajectory"
-                    }
-                    if cmd_name.lower() not in builtin_commands:
-                        command = CommandRegistry.get(cmd_name)
-                        if command is None:
-                            # Command not found in registry
-                            self.console.print(f"[yellow]Unknown command: /{cmd_name}[/yellow]")
-                            self.console.print("[dim]Type /help to see available commands[/dim]")
+                    generated_alias_handled, rewritten_user_input = (
+                        self._rewrite_generated_skill_alias_input(
+                            user_input,
+                            agent_name=agent_name,
+                            executor_instance=executor_instance,
+                        )
+                    )
+                    if generated_alias_handled:
+                        user_input = rewritten_user_input.strip()
+                        if not user_input:
                             continue
-                        if command:
-                            # Create command context
-                            cmd_context = CommandContext(
-                                cwd=os.getcwd(),
-                                user_args=cmd_args,
-                                sandbox=None,  # TODO: Pass actual sandbox if available
-                                agent_config=None,  # TODO: Pass agent config if needed
-                                runtime=runtime,
-                            )
 
-                            try:
-                                # Pre-execute validation
-                                error = await command.pre_execute(cmd_context)
-                                if error:
-                                    self.console.print(f"[red]Error: {error}[/red]")
+                    if user_input.startswith("/"):
+                        parts = user_input[1:].split(maxsplit=1)
+                        cmd_name = parts[0]
+                        cmd_args = parts[1] if len(parts) > 1 else ""
+
+                        # Skip built-in commands (let them fall through)
+                        builtin_commands = {
+                            "exit", "quit", "help", "new", "restore", "latest",
+                            "switch", "skills", "agents", "cost", "compact",
+                            "team", "sessions", "visualize_trajectory"
+                        }
+                        if cmd_name.lower() not in builtin_commands:
+                            command = CommandRegistry.get(cmd_name)
+                            if command is None:
+                                disabled_skill_name = self._match_disabled_skill_alias(
+                                    user_input,
+                                    agent_name=agent_name,
+                                    executor_instance=executor_instance,
+                                )
+                                if disabled_skill_name is not None:
+                                    self.console.print(
+                                        f"[yellow]Skill '{disabled_skill_name}' is disabled.[/yellow]"
+                                    )
+                                    self.console.print(
+                                        f"[dim]Use /skills enable {disabled_skill_name} to enable it[/dim]"
+                                    )
                                     continue
+                                # Unmatched slash-prefixed input falls back to a normal user query.
+                            if command:
+                                # Create command context
+                                cmd_context = CommandContext(
+                                    cwd=os.getcwd(),
+                                    user_args=cmd_args,
+                                    sandbox=None,  # TODO: Pass actual sandbox if available
+                                    agent_config=None,  # TODO: Pass agent config if needed
+                                    executor=executor_instance,
+                                    runtime=runtime,
+                                    session_id=getattr(executor_instance, "session_id", None),
+                                )
 
-                                # Route by command type
-                                if command.command_type == "tool":
-                                    # Tool command: Direct execution
-                                    result = await command.execute(cmd_context)
-                                    self.console.print(result)
-                                    continue
-                                else:
-                                    # Prompt command: Generate prompt for agent, then execute with tool filtering
-                                    prompt = await command.get_prompt(cmd_context)
-
-                                    # Apply tool filtering if executor_instance has a swarm
-                                    if executor_instance and hasattr(executor_instance, 'swarm'):
-                                        from .core.tool_filter import temporary_tool_filter
-
-                                        # Get allowed tools from command
-                                        allowed_tools = command.allowed_tools if command.allowed_tools else None
-
-                                        if allowed_tools:
-                                            logger.info(f"Command /{cmd_name} restricting tools to: {allowed_tools}")
-
-                                        # Execute with tool filtering
-                                        with temporary_tool_filter(executor_instance.swarm, allowed_tools):
-                                            # Print agent name before response
-                                            self.console.print(f"[bold green]{agent_name}[/bold green]:")
-
-                                            # Execute the prompt
-                                            try:
-                                                response = await executor(prompt)
-                                                # Response is returned for potential future use
-                                            except Exception as exec_error:
-                                                import traceback
-                                                logger.error(f"Error executing command /{cmd_name}: {exec_error}\n{traceback.format_exc()}")
-                                                self.console.print(f"[bold red]Error executing command: {exec_error}[/bold red]")
-
-                                        # Command executed, continue to next input
+                                try:
+                                    command_type = command.resolve_command_type(cmd_context)
+                                    # Pre-execute validation on the current session first so
+                                    # invalid prompt commands do not rotate the session.
+                                    error = await command.pre_execute(cmd_context)
+                                    if error:
+                                        self.console.print(f"[red]Error: {error}[/red]")
                                         continue
-                                    else:
-                                        # No tool filtering available, execute normally
-                                        logger.warning(f"Tool filtering not available for command /{cmd_name} (no swarm found)")
-                                        user_input = prompt  # Replace input with generated prompt
-                                        # Fall through to normal execution
 
-                            except Exception as e:
-                                import traceback
-                                logger.error(f"Error executing command /{cmd_name}: {e}\n{traceback.format_exc()}")
-                                self.console.print(f"[red]Error executing command: {e}[/red]")
-                                continue
+                                    if command_type == "prompt" and command.should_start_new_session(cmd_context):
+                                        if executor_instance is None or not hasattr(executor_instance, "new_session"):
+                                            self.console.print(
+                                                f"[red]Error: /{cmd_name} requires session management support.[/red]"
+                                            )
+                                            continue
+                                        new_session_id = executor_instance.new_session()
+                                        cmd_context = CommandContext(
+                                            cwd=os.getcwd(),
+                                            user_args=cmd_args,
+                                            sandbox=None,
+                                            agent_config=None,
+                                            executor=executor_instance,
+                                            runtime=runtime,
+                                            session_id=new_session_id,
+                                        )
+
+                                    # Route by command type
+                                    if command_type == "tool":
+                                        # Tool command: Direct execution
+                                        result = await command.execute(cmd_context)
+                                        self.console.print(result)
+                                        continue
+                                    elif command_type == "prompt":
+                                        # Prompt command: Generate prompt for agent, then execute with tool filtering
+                                        prompt = await command.get_prompt(cmd_context)
+
+                                        # Apply tool filtering if executor_instance has a swarm
+                                        if executor_instance and hasattr(executor_instance, 'swarm'):
+                                            from .core.tool_filter import temporary_tool_filter
+
+                                            # Get allowed tools from command
+                                            allowed_tools = command.allowed_tools if command.allowed_tools else None
+
+                                            if allowed_tools:
+                                                logger.info(f"Command /{cmd_name} restricting tools to: {allowed_tools}")
+
+                                            # Execute with tool filtering
+                                            with temporary_tool_filter(executor_instance.swarm, allowed_tools):
+                                                # Print agent name before response
+                                                self.console.print(f"[bold green]{agent_name}[/bold green]:")
+
+                                                # Execute the prompt
+                                                try:
+                                                    if is_terminal:
+                                                        response = await self._run_executor_with_active_steering(
+                                                            prompt=prompt,
+                                                            executor=executor,
+                                                            completer=completer,
+                                                            runtime=runtime,
+                                                            agent_name=agent_name,
+                                                            executor_instance=executor_instance,
+                                                            is_terminal=True,
+                                                        )
+                                                    else:
+                                                        response = await self._run_executor_prompt(
+                                                            prompt,
+                                                            executor,
+                                                            executor_instance=executor_instance,
+                                                        )
+                                                    # Response is returned for potential future use
+                                                except Exception as exec_error:
+                                                    import traceback
+                                                    logger.error(f"Error executing command /{cmd_name}: {exec_error}\n{traceback.format_exc()}")
+                                                    self.console.print(f"[bold red]Error executing command: {exec_error}[/bold red]")
+
+                                            # Command executed, continue to next input
+                                            continue
+                                        else:
+                                            # No tool filtering available, execute normally
+                                            logger.warning(f"Tool filtering not available for command /{cmd_name} (no swarm found)")
+                                            user_input = prompt  # Replace input with generated prompt
+                                            # Fall through to normal execution
+
+                                    else:
+                                        self.console.print(
+                                            f"[red]Error: Unsupported command type '{command_type}' for /{cmd_name}[/red]"
+                                        )
+                                        continue
+
+                                except Exception as e:
+                                    import traceback
+                                    logger.error(f"Error executing command /{cmd_name}: {e}\n{traceback.format_exc()}")
+                                    self.console.print(f"[red]Error executing command: {e}[/red]")
+                                    continue
 
                 # Handle explicit exit commands
-                if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+                normalized_input = user_input.lower()
+                force_exit = normalized_input in ("exit!", "quit!", "/exit!", "/quit!")
+                if normalized_input in ("exit", "quit", "/exit", "/quit") or force_exit:
+                    try:
+                        should_exit, follow_up_prompt = await self._apply_stop_hooks(
+                            executor_instance=executor_instance,
+                            force=force_exit,
+                        )
+                    except Exception as e:
+                        logger.warning(f"STOP hook execution failed: {e}")
+                        should_exit, follow_up_prompt = True, None
+
+                    if not should_exit:
+                        if follow_up_prompt:
+                            await self._execute_follow_up_prompt(
+                                agent_name=agent_name,
+                                executor=executor,
+                                follow_up_prompt=follow_up_prompt,
+                            )
+                        continue
+                    self._print_resume_command_hint(executor_instance)
                     self.console.print("[dim]Bye[/dim]")
+                    await self._stop_notification_poller()
                     return False
 
                 # Handle help command - show system information
@@ -1624,13 +3781,35 @@ class AWorldCLI:
                     continue
                 
                 # Handle restore session command
-                if user_input.lower() in ("/restore", "restore", "/latest", "latest"):
-                    if executor_instance and hasattr(executor_instance, 'restore_session'):
-                        restored_id = executor_instance.restore_session()
-                        # Update session_id_info display
-                        self.console.print(f"[dim]Current session: {restored_id}[/dim]")
-                    else:
-                        self.console.print("[yellow]⚠️ Session restore not available for this executor.[/yellow]")
+                restore_input = user_input.strip()
+                restore_lower = restore_input.lower()
+                if (
+                    restore_lower in ("/restore", "restore", "/latest", "latest")
+                    or restore_lower.startswith("/restore ")
+                    or restore_lower.startswith("restore ")
+                ):
+                    try:
+                        from .core.session_store import CliSessionStore
+
+                        session_store = CliSessionStore()
+                        parts = restore_input.split(maxsplit=1)
+                        requested_id = parts[1].strip() if len(parts) > 1 and "latest" not in restore_lower else None
+                        if requested_id is None:
+                            record = session_store.latest(cwd=os.getcwd())
+                            requested_id = record.session_id if record else None
+                        if requested_id is None:
+                            self.console.print("[yellow]No resumable sessions found.[/yellow]")
+                        else:
+                            self.console.print(
+                                self._restore_cli_session(
+                                    requested_id,
+                                    executor_instance=executor_instance,
+                                    current_agent_name=agent_name,
+                                    session_store=session_store,
+                                )
+                            )
+                    except Exception as e:
+                        self.console.print(f"[red]Error restoring session: {e}[/red]")
                     continue
                 
                 # Handle switch command
@@ -1640,77 +3819,29 @@ class AWorldCLI:
                          target_agent = parts[1]
                          # Validate agent existence
                          if target_agent in agent_names:
+                             await self._stop_notification_poller()
                              return target_agent
                          else:
                              self.console.print(f"[red]Agent '{target_agent}' not found.[/red]")
                              continue
                     else:
+                        await self._stop_notification_poller()
                         return True # Return True to switch agent (show list)
                 
                 # Handle skills command
-                if user_input.lower() in ("/skills", "skills"):
-                    try:
-                        # First, load skills from plugin directories
-                        from .runtime.cli import CliRuntime
-                        from pathlib import Path
-
-                        runtime = CliRuntime()
-                        runtime.cli = self  # Set cli reference for console output
-                        loaded_skills = await runtime._load_skills()
-                        
-                        # Display loading results from plugins
-                        if loaded_skills:
-                            total_loaded = sum(loaded_skills.values())
-                            if total_loaded > 0:
-                                logger.info(f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
-                            else:
-                                logger.info("[dim]No new skills loaded from plugins.[/dim]")
-                        
-                        # Get all skills from registry (including newly loaded ones)
-                        registry = get_skill_registry()
-                        all_skills = registry.get_all_skills()
-                        
-                        if not all_skills:
-                            logger.info("[yellow]No skills available.[/yellow]")
-                            continue
-                        
-                        # Build rows
-                        rows = [(skill_name, skill_data) for skill_name, skill_data in all_skills.items()]
-                        rows.sort(key=lambda x: x[0])  # sort by name
-                        
-                        # Single table with Name, Description, Address
-                        table = Table(title="Skills", box=box.ROUNDED)
-                        table.add_column("Name", style="magenta")
-                        table.add_column("Description", style="green")
-                        # Address column: truncate when long; full path shown on hover via link (OSC 8)
-                        _addr_max = 48
-                        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
-                        
-                        for skill_name, skill_data in rows:
-                            desc = skill_data.get("description") or skill_data.get("desc") or "No description"
-                            # if len(desc) > 60:
-                            #     desc = desc[:57] + "..."
-                            address = skill_data.get("skill_path", "") or "—"
-                            if address == "—":
-                                addr_cell = Text("—", style="dim")
-                            else:
-                                # Link to parent folder so click opens file manager, not default app for file
-                                p = Path(address)
-                                link_target = p.parent if p.suffix else p
-                                link_url = link_target.resolve().as_uri()
-                                if len(address) > _addr_max:
-                                    addr_display = address[: _addr_max - 3] + "..."
-                                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
-                                else:
-                                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
-                            table.add_row(skill_name, desc, addr_cell)
-                        
-                        self.console.print(table)
-                        self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
-                    except Exception as e:
-                        self.console.print(f"[red]Error loading skills: {e}[/red]")
-                    continue
-
+                if (
+                    user_input.lower().startswith("/skills")
+                    or user_input.lower() == "skills"
+                    or (user_input.startswith("/") and " " not in user_input.strip())
+                ):
+                    handled = await self._handle_skills_command(
+                        user_input,
+                        agent_name=agent_name,
+                        executor_instance=executor_instance,
+                    )
+                    if handled:
+                        continue
+                
                 # Handle cost command (query history + token usage)
                 cost_input = user_input.strip().lower()
                 if cost_input in ("/cost", "cost") or cost_input in ("/cost -all", "cost -all"):
@@ -1879,141 +4010,6 @@ class AWorldCLI:
                         logger.error(f"Compression error: {e}\n{traceback.format_exc()}")
                     continue
 
-                # Handle memory command
-                memory_input = user_input.strip().lower()
-                if memory_input.startswith(("/memory", "memory")):
-                    try:
-                        parts = user_input.split(maxsplit=1)
-                        subcommand = parts[1] if len(parts) > 1 else ""
-
-                        # Import required modules
-                        from pathlib import Path
-                        import subprocess
-
-                        # Find AWORLD.md file
-                        def find_aworld_file():
-                            """Find AWORLD.md in standard locations"""
-                            working_dir = Path.cwd()
-                            search_paths = [
-                                Path.home() / '.aworld' / 'AWORLD.md',
-                                working_dir / '.aworld' / 'AWORLD.md',
-                                working_dir / 'AWORLD.md',
-                            ]
-                            for path in search_paths:
-                                if path.exists():
-                                    return path
-                            return None
-
-                        def get_editor():
-                            """Get editor from environment variables"""
-                            return os.environ.get('VISUAL') or os.environ.get('EDITOR') or 'nano'
-
-                        if subcommand == "view":
-                            # View current memory content
-                            aworld_file = find_aworld_file()
-                            if not aworld_file:
-                                self.console.print("[yellow]No AWORLD.md file found.[/yellow]")
-                                self.console.print("[dim]Create one with: /memory[/dim]")
-                            else:
-                                self.console.print(f"[dim]Reading from: {aworld_file}[/dim]\n")
-                                content = aworld_file.read_text(encoding='utf-8')
-                                # Display in a panel
-                                from rich.panel import Panel
-                                from rich.syntax import Syntax
-                                syntax = Syntax(content, "markdown", theme="monokai", line_numbers=False)
-                                self.console.print(Panel(syntax, title="AWORLD.md", border_style="cyan"))
-
-                        elif subcommand == "reload":
-                            # Reload memory from file
-                            self.console.print("[dim]Memory reload functionality requires agent restart.[/dim]")
-                            self.console.print("[dim]The AWORLD.md file will be automatically loaded on next agent start.[/dim]")
-
-                        elif subcommand == "status":
-                            # Show memory system status
-                            aworld_file = find_aworld_file()
-                            # Use global Table import (line 16) instead of local import
-                            table = Table(title="Memory System Status", box=box.ROUNDED)
-                            table.add_column("Property", style="cyan")
-                            table.add_column("Value", style="green")
-
-                            if aworld_file:
-                                table.add_row("AWORLD.md Location", str(aworld_file))
-                                table.add_row("File Size", f"{aworld_file.stat().st_size} bytes")
-                                from datetime import datetime
-                                mtime = datetime.fromtimestamp(aworld_file.stat().st_mtime)
-                                table.add_row("Last Modified", mtime.strftime("%Y-%m-%d %H:%M:%S"))
-                                table.add_row("Status", "✅ Active")
-                            else:
-                                table.add_row("AWORLD.md Location", "Not found")
-                                table.add_row("Status", "❌ Not configured")
-
-                            table.add_row("Feature", "AWORLDFileNeuron")
-                            table.add_row("Auto-load", "Enabled")
-                            self.console.print(table)
-
-                        else:
-                            # Edit AWORLD.md (default action)
-                            aworld_file = find_aworld_file()
-
-                            if not aworld_file:
-                                # Create new file in user directory (DEFAULT)
-                                default_location = Path.home() / '.aworld' / 'AWORLD.md'
-                                self.console.print(f"[yellow]No AWORLD.md found. Creating new file at:[/yellow]")
-                                self.console.print(f"[cyan]{default_location}[/cyan]")
-                                self.console.print(f"[dim](Default: ~/.aworld/AWORLD.md)[/dim]\n")
-
-                                # Create directory if needed
-                                default_location.parent.mkdir(parents=True, exist_ok=True)
-
-                                # Create template
-                                template = """# Project Context
-
-## Project Overview
-Describe your project here.
-
-## Important Guidelines
-- Add your project-specific guidelines
-- Include coding standards
-- Document important conventions
-
-## Technical Details
-- List key technologies
-- Document architecture decisions
-- Note important file locations
-
-## Custom Instructions
-Add any custom instructions for AI agents working on this project.
-
----
-*This file is automatically loaded by AWorld agents.*
-"""
-                                default_location.write_text(template, encoding='utf-8')
-                                aworld_file = default_location
-
-                            # Open in editor
-                            editor = get_editor()
-                            self.console.print(f"[dim]Opening {aworld_file} in {editor}...[/dim]")
-
-                            try:
-                                # Open editor and wait for it to close
-                                result = subprocess.run([editor, str(aworld_file)])
-                                if result.returncode == 0:
-                                    self.console.print("[green]✅ AWORLD.md saved successfully.[/green]")
-                                    self.console.print("[dim]Changes will take effect on next agent start.[/dim]")
-                                else:
-                                    self.console.print(f"[yellow]Editor exited with code {result.returncode}[/yellow]")
-                            except FileNotFoundError:
-                                self.console.print(f"[red]Editor '{editor}' not found.[/red]")
-                                self.console.print("[dim]Set EDITOR or VISUAL environment variable to your preferred editor.[/dim]")
-                            except Exception as e:
-                                self.console.print(f"[red]Error opening editor: {e}[/red]")
-
-                    except Exception as e:
-                        self.console.print(f"[red]Error handling memory command: {e}[/red]")
-                        import traceback
-                        traceback.print_exc()
-                    continue
-
                 # Handle team command
                 if user_input.lower().startswith("/team"):
                     # await self.team_handler.handle_command(user_input)
@@ -2036,7 +4032,8 @@ Add any custom instructions for AI agents working on this project.
                         try:
                             # Get built-in plugin directories
                             runtime = CliRuntime()
-                            plugin_dirs = runtime.plugin_dirs
+                            plugin_dirs = list(runtime.plugin_dirs)
+                            plugin_dirs.extend(getattr(runtime, "builtin_agent_dirs", []))
 
                             # Load agents from each plugin using PluginLoader
                             for plugin_dir in plugin_dirs:
@@ -2109,36 +4106,68 @@ Add any custom instructions for AI agents working on this project.
                     continue
 
                 # Handle sessions command
-                if user_input.lower() in ("/sessions", "sessions"):
-                    if executor_instance:
-                        # Debug: Print session related attributes
-                        session_attrs = {k: v for k, v in executor_instance.__dict__.items() if 'session' in k.lower()}
-                        # Also check if context has session info
-                        if hasattr(executor_instance, 'context') and executor_instance.context:
-                            context_session_attrs = {k: v for k, v in executor_instance.context.__dict__.items() if
-                                                     'session' in k.lower()}
-                            session_attrs.update({f"context.{k}": v for k, v in context_session_attrs.items()})
+                if user_input.lower() in ("/sessions", "sessions", "/sessions list", "sessions list"):
+                    try:
+                        from .core.session_store import CliSessionStore
 
-                        if session_attrs:
-                            self.console.print(f"[dim]Session Info: {session_attrs}[/dim]")
-                    else:
-                        self.console.print("[yellow]No executor instance available.[/yellow]")
+                        session_store = CliSessionStore()
+                        self.console.print(
+                            self._format_sessions_list(
+                                session_store.list(cwd=os.getcwd()),
+                                current_cwd=os.getcwd(),
+                            )
+                        )
+                    except Exception as e:
+                        self.console.print(f"[red]Error listing sessions: {e}[/red]")
+                    continue
+
+                if user_input.lower().startswith(("/sessions show ", "sessions show ")):
+                    try:
+                        from .core.session_store import CliSessionStore
+
+                        session_id = user_input.split(maxsplit=2)[2].strip()
+                        session_store = CliSessionStore()
+                        record = session_store.get(session_id)
+                        if record is None:
+                            self.console.print(f"[red]Session not found: {session_id}[/red]")
+                        else:
+                            self.console.print(self._format_session_show(record))
+                    except Exception as e:
+                        self.console.print(f"[red]Error showing session: {e}[/red]")
                     continue
 
                 # Print agent name before response
                 self.console.print(f"[bold green]{agent_name}[/bold green]:")
-                
+
                 try:
-                    # File parsing is now handled by FileParseHook automatically
-                    # Just pass the user input as-is, the hook will process @filename references
-                    # Execute the task/chat (FileParseHook will handle file parsing)
+                    # Hooks V2: allow hooks to rewrite or deny user input before executor runs.
+                    try:
+                        should_execute, user_input = await self._apply_user_input_hooks(
+                            user_input,
+                            executor_instance=executor_instance
+                        )
+                    except Exception as e:
+                        logger.warning(f"USER_INPUT_RECEIVED hook execution failed: {e}")
+                        should_execute = True
+
+                    if not should_execute:
+                        continue
+
+                    # File parsing is now handled by FileParseHook automatically.
                     self._is_agent_executing = True
                     try:
-                        response = await executor(user_input)
+                        response = await self._run_executor_with_active_steering(
+                            prompt=user_input,
+                            executor=executor,
+                            completer=completer,
+                            runtime=runtime,
+                            agent_name=agent_name,
+                            executor_instance=executor_instance,
+                            is_terminal=is_terminal,
+                        )
                         # Response is returned for potential future use, but content is already printed by executor
                     finally:
                         self._is_agent_executing = False
-
                 except Exception as e:
                     import traceback
                     logger.error(f"Error executing task: {e} {traceback.format_exc()}")
@@ -2158,8 +4187,26 @@ Add any custom instructions for AI agents working on this project.
                     logger.info(f"\n[yellow]Interrupted. Input buffer: {buf_content!r}[/yellow]")
                     continue  # Stay in chat loop, show prompt again
                 else:
+                    try:
+                        should_exit, follow_up_prompt = await self._apply_stop_hooks(
+                            executor_instance=executor_instance
+                        )
+                    except Exception as e:
+                        logger.warning(f"STOP hook execution failed: {e}")
+                        should_exit, follow_up_prompt = True, None
+
+                    if not should_exit:
+                        if follow_up_prompt:
+                            await self._execute_follow_up_prompt(
+                                agent_name=agent_name,
+                                executor=executor,
+                                follow_up_prompt=follow_up_prompt,
+                            )
+                        continue
                     logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
+                    self._print_resume_command_hint(executor_instance)
                     self.console.print("[dim]Bye[/dim]")
+                    await self._stop_notification_poller()
                     return False  # Exit CLI when buffer is empty
             except Exception as e:
                 import traceback
@@ -2167,19 +4214,5 @@ Add any custom instructions for AI agents working on this project.
                 self.console.print(f"[red]An unexpected error occurred: {e}[/red]")
                 continue  # Add continue to prevent fall-through
 
-        # Cleanup: Stop background notification poller
-        if self._notification_poll_task:
-            self._notification_stop_event.set()
-            try:
-                await asyncio.wait_for(self._notification_poll_task, timeout=1.0)
-            except asyncio.TimeoutError:
-                # Force cancel if graceful shutdown times out
-                self._notification_poll_task.cancel()
-                try:
-                    await self._notification_poll_task
-                except asyncio.CancelledError:
-                    pass
-            finally:
-                self._notification_poll_task = None
-                self._notification_stop_event = None
+        await self._stop_notification_poller()
         return False

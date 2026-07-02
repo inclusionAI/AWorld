@@ -161,10 +161,9 @@ class TaskRunner(Runner):
         try:
             value = os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')
             if value:
-                for val in value.split(";"):
-                    load_module_by_path(os.path.basename(val).replace("_action", ""),
-                                        val.replace("_action.py", ".py"))
-                    load_module_by_path(os.path.basename(val), val)
+                for action_path, tool_path in aworld.tools.parse_local_tool_entries(value):
+                    load_module_by_path(os.path.basename(tool_path).replace(".py", ""), tool_path)
+                    load_module_by_path(os.path.basename(action_path).replace(".py", ""), action_path)
         except:
             logger.warning(f"{os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')} tools load fail, can't use them!!")
 

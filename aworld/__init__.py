@@ -50,18 +50,17 @@ def configure(logger_level: str = "INFO", use_trace: bool = None, debug: bool = 
 
 
 def cleanup():
-    import re
-
     try:
-        value = os.environ.get("LOCAL_TOOLS_ENV_VAR", '')
+        from aworld.tools import LOCAL_TOOLS_ENV_VAR, parse_local_tool_entries
+
+        value = os.environ.get(LOCAL_TOOLS_ENV_VAR, '')
         if value:
-            for action_file in value.split(";"):
-                v = re.split(r"\w{6}__tmp", action_file)[0]
-                if v == action_file:
-                    continue
-                tool_file = action_file.replace("_action.py", ".py")
+            for action_file, tool_file in parse_local_tool_entries(value):
                 try:
                     os.remove(action_file)
+                except:
+                    pass
+                try:
                     os.remove(tool_file)
                 except:
                     pass

@@ -1,0 +1,33 @@
+{
+  "id": "memory-cli",
+  "name": "memory-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "commands": [
+      {
+        "id": "memory",
+        "name": "memory",
+        "description": "Manage workspace AWORLD memory instructions",
+        "target": "commands/memory.py",
+        "scope": "workspace"
+      },
+      {
+        "id": "remember",
+        "name": "remember",
+        "description": "Persist explicit workspace memory immediately",
+        "target": "commands/remember.py",
+        "scope": "workspace"
+      }
+    ],
+    "hooks": [
+      {
+        "id": "memory-task-completed",
+        "target": "hooks/task_completed.py",
+        "scope": "workspace",
+        "metadata": {
+          "hook_point": "task_completed"
+        }
+      }
+    ]
+  }
+}

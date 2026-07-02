@@ -51,6 +51,7 @@ from aworld.core.event.base import Message, Constants
 from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.models.image_provider import ImageProvider
+from aworld.models.kling_image_provider import KlingImageProvider
 from aworld.models.model_response import ModelResponse
 from aworld.output.base import Output
 
@@ -82,17 +83,16 @@ class ImageAgent(LLMAgent):
     
     @staticmethod
     def _ensure_image_config(conf):
-        """Ensure the config uses image provider.
+        """Ensure the config uses a supported image backend.
         
-        This method forcibly sets the llm_provider to 'image' because
-        ImageAgent only works with ImageProvider. If the user provided
-        a different provider, it will be overridden with a warning.
+        ``llm_provider`` is set to ``image`` or ``kling_image``. Any other
+        value is replaced with ``image`` and a warning is logged.
         
         Args:
             conf: Input configuration (AgentConfig, dict, or ConfigDict)
             
         Returns:
-            A new config object with llm_provider set to 'image'
+            A new config object with ``llm_provider`` set to ``image`` or ``kling_image``
             
         Raises:
             ValueError: If conf is None
@@ -114,19 +114,22 @@ class ImageAgent(LLMAgent):
         elif isinstance(conf, dict):
             original_provider = conf.get('llm_provider')
         
-        # Log warning if overriding
-        if original_provider and original_provider != "image":
+        allowed = ("image", "kling_image")
+        target_provider = "image"
+        if original_provider in allowed:
+            target_provider = original_provider
+        elif original_provider:
             logger.warning(
                 f"ImageAgent: Overriding llm_provider from '{original_provider}' "
-                f"to 'image'. ImageAgent only works with ImageProvider."
+                f"to 'image'. Use 'image' or 'kling_image' for image backends."
             )
-        
-        # Create a new AgentConfig with image provider
+
+        # Create a new AgentConfig with resolved image provider
         if isinstance(conf, AgentConfig):
             # For AgentConfig, we need to modify llm_config
             # Get the llm_config dict
             llm_config_dict = conf.llm_config.model_dump(exclude_none=True)
-            llm_config_dict['llm_provider'] = "image"
+            llm_config_dict['llm_provider'] = target_provider
             
             # Create new ModelConfig
             new_llm_config = ModelConfig(**llm_config_dict)
@@ -138,7 +141,7 @@ class ImageAgent(LLMAgent):
             return AgentConfig(**conf_dict)
         elif isinstance(conf, dict):
             # Modify dict directly
-            conf['llm_provider'] = "image"
+            conf['llm_provider'] = target_provider
             return conf
         else:
             # For other types (ConfigDict, etc.), try to handle gracefully
@@ -170,8 +173,8 @@ class ImageAgent(LLMAgent):
         Args:
             name: Agent name
             conf: AgentConfig specifying the image provider, API key, and base URL.
-                Must not be None. The llm_provider will be forcibly set to
-                'image' regardless of the input value.
+                Must not be None. ``llm_provider`` is normalized to ``image`` or
+                ``kling_image`` (other values become ``image`` with a warning).
             desc: Agent description exposed as tool description
             agent_id: Explicit agent ID; auto-generated if None
             default_size: Default image size (e.g., "1024x1024", "1024x768", "768x1024")
@@ -200,16 +203,14 @@ class ImageAgent(LLMAgent):
             **kwargs,
         )
         
-        # Verify that the provider is ImageProvider
+        # Verify that the provider is a supported image backend
         if self.llm and self.llm.provider:
-            if not isinstance(self.llm.provider, ImageProvider):
+            if not isinstance(self.llm.provider, (ImageProvider, KlingImageProvider)):
                 error_msg = (
-                    f"[ImageAgent:{self.id()}] Expected ImageProvider, "
+                    f"[ImageAgent:{self.id()}] Expected ImageProvider or KlingImageProvider, "
                     f"but got {type(self.llm.provider).__name__}. "
-                    f"ImageAgent only works with ImageProvider. "
-                    f"Config llm_provider was set to 'image', but provider "
-                    f"initialization failed. Please check your provider registry and "
-                    f"ensure ImageProvider is properly registered."
+                    f"Set llm_provider to 'image' or 'kling_image'. "
+                    f"Provider initialization may have failed; check provider registry and API config."
                 )
                 logger.error(error_msg)
                 raise TypeError(error_msg)
@@ -240,12 +241,13 @@ class ImageAgent(LLMAgent):
 
     def _resolve_provider_runtime_config(
         self,
-        provider: ImageProvider,
+        provider: Any,
         *,
         has_input_images: bool,
     ) -> Dict[str, Any]:
         prefix = "IMAGE_TO_IMAGE" if has_input_images else "TEXT_TO_IMAGE"
         legacy_prefix = "IMAGE" if not has_input_images else None
+        default_llm_provider = "kling_image" if isinstance(provider, KlingImageProvider) else "image"
 
         def pick(name: str, fallback: Optional[str]) -> Optional[str]:
             value = self._env_or_default(f"{prefix}_{name}")
@@ -257,7 +259,7 @@ class ImageAgent(LLMAgent):
             "api_key": pick("API_KEY", provider.api_key),
             "base_url": pick("BASE_URL", provider.base_url),
             "model_name": pick("MODEL_NAME", provider.model_name),
-            "provider": pick("PROVIDER", None) or "image",
+            "provider": pick("PROVIDER", None) or default_llm_provider,
         }
         temp_value = pick("TEMPERATURE", None)
         if temp_value is not None:
@@ -269,7 +271,7 @@ class ImageAgent(LLMAgent):
 
     def _apply_provider_runtime_config(
         self,
-        provider: ImageProvider,
+        provider: Any,
         runtime_config: Dict[str, Any],
     ) -> None:
         provider.api_key = runtime_config.get("api_key") or provider.api_key
@@ -544,11 +546,11 @@ class ImageAgent(LLMAgent):
         provider = self.llm.provider
         
         # Verify provider type
-        if not isinstance(provider, ImageProvider):
+        if not isinstance(provider, (ImageProvider, KlingImageProvider)):
             raise TypeError(
-                f"ImageAgent requires ImageProvider, "
+                f"ImageAgent requires ImageProvider or KlingImageProvider, "
                 f"but got {type(provider).__name__}. "
-                f"Please ensure conf.llm_provider is set to 'image'."
+                f"Set conf.llm_provider to 'image' or 'kling_image'."
             )
         
         # Check if provider has the required methods

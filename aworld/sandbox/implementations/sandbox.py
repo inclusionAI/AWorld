@@ -88,6 +88,8 @@ class Sandbox(BaseSandbox, SandboxApi):
         self._initialized = False
         self._file_namespace = None
         self._terminal_namespace = None
+        self._remote_skill_execution_roots: dict[tuple[str, str], str] = {}
+        self._remote_skill_execution_base_dir: str | None = None
 
         user_mcp_config = copy.deepcopy(mcp_config) if mcp_config else {}
         user_mcp_servers = mcp_servers or []
@@ -1314,6 +1316,15 @@ class Sandbox(BaseSandbox, SandboxApi):
         if self._skill_configs is None or not self._skill_configs:
             return None
         return self._skill_configs
+
+    async def ensure_skill_execution_assets_ready(
+        self,
+        skill_name: str,
+        skill_config: Dict[str, Any],
+    ) -> str:
+        from aworld.sandbox.skill_sync import ensure_remote_skill_assets_ready
+
+        return await ensure_remote_skill_assets_ready(self, skill_name, skill_config)
 
     def __del__(self):
         super().__del__()

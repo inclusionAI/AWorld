@@ -326,7 +326,8 @@ async def test_manual_trigger_respects_semaphore(scheduler, temp_store):
     Verifies fix for Issue #4.
     """
     # Create mock executor that takes time to execute
-    async def slow_execution(job):
+    async def slow_execution(job, progress_callback=None):
+        del job, progress_callback
         await asyncio.sleep(0.5)
         return TaskResponse(success=True, msg="Success")
 
@@ -364,6 +365,55 @@ async def test_manual_trigger_respects_semaphore(scheduler, temp_store):
     assert result1.success is True
     assert result2.success is True
 
+
+@pytest.mark.asyncio
+async def test_schedule_loop_does_not_claim_due_job_without_execution_slot(temp_store):
+    """
+    Due jobs should not be claimed until an execution slot is actually available.
+
+    This prevents one-shot reminder jobs from being marked running and delayed for
+    minutes behind already-running heavy cron jobs.
+    """
+
+    async def slow_execution(job, progress_callback=None):
+        del job, progress_callback
+        await asyncio.sleep(0.35)
+        return TaskResponse(success=True, msg="Success")
+
+    slow_executor = AsyncMock(spec=CronExecutor)
+    slow_executor.execute_with_retry = AsyncMock(side_effect=slow_execution)
+
+    scheduler_limited = CronScheduler(temp_store, slow_executor, max_concurrent=1)
+    heavy_job = CronJob(
+        name="heavy-job",
+        schedule=CronSchedule(kind="every", every_seconds=3600),
+        payload=CronPayload(message="heavy"),
+    )
+
+    reminder_job = CronJob(
+        name="reminder-job",
+        schedule=CronSchedule(kind="every", every_seconds=3600),
+        payload=CronPayload(message="提醒用户站立"),
+        delete_after_run=True,
+    )
+
+    await temp_store.add_job(heavy_job)
+    await temp_store.add_job(reminder_job)
+
+    await scheduler_limited.start()
+    await asyncio.sleep(0.12)
+
+    persisted_heavy = await temp_store.get_job(heavy_job.id)
+    persisted_reminder = await temp_store.get_job(reminder_job.id)
+
+    assert persisted_heavy is not None
+    assert persisted_heavy.state.running is True
+    assert persisted_reminder is not None
+    assert persisted_reminder.state.running is False
+    assert persisted_reminder.state.last_run_at is None
+
+    await asyncio.sleep(0.5)
+    await scheduler_limited.stop()
 
 @pytest.mark.asyncio
 async def test_add_job_initializes_next_run(scheduler, temp_store):
@@ -644,6 +694,33 @@ async def test_enable_job_recalculates_next_run(scheduler, temp_store):
     assert updated_job is not None
     assert updated_job.enabled is True
     assert updated_job.state.next_run_at == future.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_update_job_recalculates_next_run_when_schedule_changes(scheduler, temp_store):
+    """Updating a recurring job schedule should refresh stale next_run_at."""
+    job = CronJob(
+        name="daily-report",
+        schedule=CronSchedule(kind="cron", cron_expr="0 8 * * *"),
+        payload=CronPayload(message="old"),
+        state=CronJobState(next_run_at="2026-01-01T08:00:00+00:00", last_status="error"),
+    )
+
+    await temp_store.add_job(job)
+
+    updated_job = await scheduler.update_job(
+        job.id,
+        schedule=CronSchedule(kind="cron", cron_expr="0 1 * * *"),
+        payload=CronPayload(message="new"),
+        state={"last_status": None, "last_error": None},
+    )
+
+    assert updated_job is not None
+    assert updated_job.schedule.cron_expr == "0 1 * * *"
+    assert updated_job.payload.message == "new"
+    assert updated_job.state.last_status is None
+    assert updated_job.state.next_run_at is not None
+    assert updated_job.state.next_run_at != "2026-01-01T08:00:00+00:00"
 
 
 if __name__ == "__main__":

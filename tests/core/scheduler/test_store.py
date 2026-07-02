@@ -332,5 +332,31 @@ async def test_store_coerces_legacy_string_max_runs_and_tool_fields(temp_store):
     assert restored.delete_after_run is False
 
 
+@pytest.mark.asyncio
+async def test_store_splits_comma_delimited_tool_names(temp_store):
+    """Comma-delimited legacy tool fields should be split into individual tool names."""
+    job = CronJob(
+        name="legacy-tool-list",
+        schedule=CronSchedule(kind="every", every_seconds=180),
+        payload=CronPayload(
+            message="run task",
+            agent_name="Aworld",
+            tool_names=["bash"],
+        ),
+        state=CronJobState(next_run_at="2026-04-12T10:32:00+00:00"),
+    )
+
+    await temp_store.add_job(job)
+
+    data = temp_store._read_data()
+    data["jobs"][0]["payload"]["tool_names"] = "CAST_SEARCH,bash,SKILL"
+    temp_store._write_data(data)
+
+    restored = await temp_store.get_job(job.id)
+
+    assert restored is not None
+    assert restored.payload.tool_names == ["CAST_SEARCH", "bash", "SKILL"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
