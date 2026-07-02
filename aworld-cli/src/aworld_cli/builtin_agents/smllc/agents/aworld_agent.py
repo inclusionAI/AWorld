@@ -36,6 +36,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import TeamSwarm, Swarm
 from aworld.core.agent.base import BaseAgent
 from aworld_cli.core import agent
+from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 
 from aworld.config import AgentConfig, ModelConfig
 
@@ -192,33 +193,14 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         >>> # Memory is persisted to filesystem automatically
     """
 
-    from aworld.utils.skill_loader import collect_skill_docs
-
-    # 收集 skills
-    ALL_SKILLS = {}
-
-    # 1. 从 plugin 目录收集
     plugin_base_dir = Path(__file__).resolve().parents[1]
-    if plugin_base_dir.exists():
-        try:
-            plugin_skills = collect_skill_docs(plugin_base_dir)
-            ALL_SKILLS.update(plugin_skills)
-            logger.debug(f"✅ Loaded {len(plugin_skills)} skills from plugin directory")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load skills from plugin directory: {e}")
-
-    # 2. 从用户目录收集（AWORLD_SKILLS_PATH 环境变量）
-    user_dir = os.environ.get("AWORLD_SKILLS_PATH")  # semicolon-separated paths
-    if user_dir:
-        for dir_path in user_dir.split(";"):
-            dir_path = dir_path.strip()
-            if dir_path and Path(dir_path).exists():
-                try:
-                    user_skills = collect_skill_docs(Path(dir_path))
-                    ALL_SKILLS.update(user_skills)
-                    logger.debug(f"✅ Loaded {len(user_skills)} skills from user directory: {dir_path}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to load skills from {dir_path}: {e}")
+    env_skills_path = os.environ.get("AWORLD_SKILLS_PATH")
+    skill_names = include_skills or os.environ.get("INCLUDE_SKILLS")
+    resolver_inputs = build_skill_resolver_inputs(
+        plugin_base_dir,
+        user_dir=env_skills_path,
+        skill_names=skill_names,
+    )
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
@@ -232,7 +214,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         use_vision=False,  # Enable if needed for image analysis
-        skill_configs=ALL_SKILLS
+        skill_configs={},
+        ext={"skill_resolver_inputs": resolver_inputs},
     )
 
     # Create sandbox with builtin filesystem and terminal tools (Phase 1)
@@ -290,6 +273,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=[
             CONTEXT_TOOL,      # Core: Context management
+            'SKILL',           # Skill activation (deferred loading; skill_configs filled at runtime)
             'CAST_SEARCH',     # Core: Lightweight code search
             'async_spawn_subagent',  # Core: Dynamic subagent delegation (AsyncTool, needs async_ prefix)
             'cron',            # Core: Scheduled task management

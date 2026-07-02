@@ -716,6 +716,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
             result = resolver.resolve(request)
             if agent_conf is not None:
                 agent_conf.skill_configs = result.skill_configs
+            if result.skill_configs:
+                if hasattr(agent, "skill_configs"):
+                    agent.skill_configs = result.skill_configs
+                tool_names = getattr(agent, "tool_names", None)
+                if isinstance(tool_names, list) and "SKILL" not in tool_names:
+                    tool_names.append("SKILL")
 
     def _consume_restored_messages(self) -> list[dict[str, Any]]:
         restored_messages = getattr(self, "_aworld_cli_restored_messages", None) or []
