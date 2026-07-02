@@ -15,6 +15,8 @@ from aworld.logs.util import logger
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
+_EVIDENCE_RETRY_LIMIT = 1
+
 
 @dataclass(frozen=True)
 class CandidateReplayRequest:
@@ -192,7 +194,7 @@ class AWorldCliCandidateReplayBackend:
                 f"variant_id={variant_id} index={index}/{repetitions}"
             )
             results.append(
-                await self._run_variant(
+                await self._run_variant_with_evidence_retries(
                     request,
                     variant_id=variant_id,
                     skill_root=skill_root,
@@ -217,6 +219,51 @@ class AWorldCliCandidateReplayBackend:
             f"status={aggregated.status}"
         )
         return aggregated
+
+    async def _run_variant_with_evidence_retries(
+        self,
+        request: CandidateReplayRequest,
+        *,
+        variant_id: str,
+        skill_root: str | None,
+        artifact_dir: Path,
+    ) -> ReplayVariantResult:
+        attempts: list[ReplayVariantResult] = []
+        for attempt_index in range(1, _EVIDENCE_RETRY_LIMIT + 2):
+            attempt_variant_id = (
+                variant_id
+                if attempt_index == 1
+                else f"{variant_id}__evidence_retry_{attempt_index}"
+            )
+            attempt_dir = (
+                artifact_dir
+                if attempt_index == 1
+                else artifact_dir / f"evidence_retry_{attempt_index}"
+            )
+            result = await self._run_variant(
+                request,
+                variant_id=attempt_variant_id,
+                skill_root=skill_root,
+                artifact_dir=attempt_dir,
+            )
+            attempts.append(result)
+            if not _is_evidence_quality_failure(result):
+                return _merge_replay_attempt_metrics(
+                    result,
+                    attempts=attempts,
+                    canonical_variant_id=variant_id,
+                )
+            if attempt_index <= _EVIDENCE_RETRY_LIMIT:
+                logger.info(
+                    "self_evolve.replay.evidence_retry "
+                    f"run_id={request.run_id} task_id={request.task_id} "
+                    f"variant_id={variant_id} attempt={attempt_index + 1}"
+                )
+        return _merge_replay_attempt_metrics(
+            attempts[-1],
+            attempts=attempts,
+            canonical_variant_id=variant_id,
+        )
 
     async def _run_variant(
         self,
@@ -272,6 +319,10 @@ class AWorldCliCandidateReplayBackend:
                 "reason": "trajectory_capture_unavailable",
                 "detail": "replay executor succeeded but did not return trajectory evidence",
             }
+        evidence_failure = _evidence_quality_failure(metrics)
+        if status == "succeeded" and evidence_failure is not None:
+            status = "failed"
+            failure = evidence_failure
 
         stdout_path = artifact_dir / "stdout.txt"
         stderr_path = artifact_dir / "stderr.txt"
@@ -295,6 +346,8 @@ class AWorldCliCandidateReplayBackend:
 
 class AWorldCliReplayExecutor:
     async def __call__(self, request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        artifact_dir = Path(request.artifact_dir)
+        evidence_manifest = artifact_dir / "evidence_manifest.jsonl"
         command = [
             sys.executable,
             "-m",
@@ -325,6 +378,8 @@ class AWorldCliReplayExecutor:
                 env={
                     **os.environ,
                     "AWORLD_SELF_EVOLVE_AUTO_DRAIN": "0",
+                    "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(artifact_dir),
+                    "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
                 },
             )
         except subprocess.TimeoutExpired as exc:
@@ -377,6 +432,16 @@ class AWorldCliReplayExecutor:
                     "returncode": completed.returncode,
                     "command": command,
                 },
+            )
+        evidence_failure = _evidence_quality_failure(metrics)
+        if evidence_failure is not None:
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=trajectory,
+                stdout=stdout,
+                stderr=stderr,
+                metrics=metrics,
+                failure=evidence_failure,
             )
         return ReplayExecutionResult(
             status="succeeded",
@@ -468,7 +533,9 @@ _REPLAY_EVIDENCE_POLICY = """
 Self-evolve replay evidence requirements:
 - Preserve the original user task above, but execute it with artifact-first evidence handling.
 - Do not stream large raw tool outputs, full pages, full documents, large JSON, or long logs directly into the conversation.
-- Persist large or unknown-size source material to a file or artifact first, then emit only bounded structured summaries with source identifiers, locations, and short excerpts.
+- Persist large or unknown-size source material under the directory named by AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR before inspecting or summarizing it.
+- Append one JSON object per evidence source to AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST (the replay evidence_manifest.jsonl file), including source_id, artifact_path, extraction_method, and the bounded excerpt or field list used for the final answer.
+- Emit only bounded structured summaries with source identifiers, locations, and short excerpts.
 - If any tool result is compacted, truncated, schema-invalid, or too large to inspect, treat that result as unusable evidence and retry with a narrower extraction strategy before answering.
 - Keep a concise evidence ledger mapping important final-answer claims to non-compacted extracts or artifact references.
 - Before finalizing, perform a claim-by-claim check and omit claims that are not supported by non-compacted evidence captured in the trajectory.
@@ -542,6 +609,71 @@ def _replay_evidence_metrics(
         "evidence_strategy_passed": not compacted,
         "evidence_compaction_signals": signals,
     }
+
+
+def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | None:
+    compacted = metrics.get("evidence_compacted") is True
+    strategy_failed = metrics.get("evidence_strategy_passed") is False
+    if not compacted and not strategy_failed:
+        return None
+    signals = metrics.get("evidence_compaction_signals")
+    if not isinstance(signals, list):
+        signals = []
+    return {
+        "reason": "evidence_quality_failed",
+        "detail": "replay produced compacted, truncated, or otherwise unusable evidence",
+        "evidence_compacted": compacted,
+        "evidence_strategy_passed": not strategy_failed,
+        "evidence_compaction_signals": [str(signal) for signal in signals],
+    }
+
+
+def _is_evidence_quality_failure(result: ReplayVariantResult) -> bool:
+    failure = result.failure
+    return isinstance(failure, Mapping) and failure.get("reason") == "evidence_quality_failed"
+
+
+def _merge_replay_attempt_metrics(
+    result: ReplayVariantResult,
+    *,
+    attempts: list[ReplayVariantResult],
+    canonical_variant_id: str,
+) -> ReplayVariantResult:
+    if len(attempts) == 1:
+        return result
+    retry_failures = [
+        attempt.failure
+        for attempt in attempts[:-1]
+        if attempt.failure is not None
+    ]
+    signals: list[str] = []
+    for attempt in attempts:
+        raw_signals = attempt.metrics.get("evidence_compaction_signals")
+        if not isinstance(raw_signals, list):
+            continue
+        for item in raw_signals:
+            signal = str(item).strip()
+            if signal and signal not in signals:
+                signals.append(signal)
+    metrics = {
+        **dict(result.metrics),
+        "replay_attempt_count": len(attempts),
+        "evidence_retry_count": len(attempts) - 1,
+    }
+    if retry_failures:
+        metrics["retry_failures"] = retry_failures
+    if signals:
+        metrics["evidence_compaction_signals"] = signals
+    return ReplayVariantResult(
+        variant_id=canonical_variant_id,
+        status=result.status,
+        trajectory=result.trajectory,
+        metrics=metrics,
+        stdout_path=result.stdout_path,
+        stderr_path=result.stderr_path,
+        failure=result.failure,
+        repetition_results=result.repetition_results,
+    )
 
 
 def _text_output(value: Any) -> str:
