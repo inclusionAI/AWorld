@@ -1697,8 +1697,8 @@ def _default_cli_skill_candidate(
                     "directly into the conversation."
                 ),
                 (
-                    "Do not use `curl | head`, `curl | grep`, or `curl | sed` to preview "
-                    "raw web pages; minified HTML can still be huge and trigger compaction."
+                    "For large or unknown-size sources, avoid raw dumps and line-based previews; "
+                    "they can still emit huge single-line content and trigger compaction."
                 ),
                 (
                     "Save full raw evidence to a file or artifact first, then return only "
