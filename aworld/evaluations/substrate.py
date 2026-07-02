@@ -386,7 +386,7 @@ class AgentJudgeBackend:
                 raise
         else:
             response = await _run_executor()
-        payload = _coerce_judge_payload(response)
+        payload = _coerce_judge_payload(response, judge_schema=suite.judge_schema)
         return JudgeExecution(backend_id=self.backend_id, payload=payload)
 
     async def judge(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> dict[str, Any]:
@@ -1596,8 +1596,28 @@ def _extract_json_objects(text: str) -> list[dict[str, Any]]:
     return objects
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
+def _candidate_judge_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    if "results" in value:
+        results = value.get("results") or []
+        if not results:
+            raise ValueError("judge response results array is empty")
+        return dict(results[0])
+    return dict(value)
+
+
+def _extract_json_object(
+    text: str,
+    *,
+    judge_schema: JudgeSchemaDef | None = None,
+) -> dict[str, Any]:
     candidates = _extract_json_objects(text)
+    if judge_schema is not None and judge_schema.json_schema():
+        for candidate in candidates:
+            try:
+                return judge_schema.validate_payload(_candidate_judge_payload(candidate))
+            except Exception:
+                continue
+
     for candidate in candidates:
         if "results" in candidate:
             return candidate
@@ -1612,18 +1632,17 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     raise ValueError("judge response does not contain a valid JSON object")
 
 
-def _coerce_judge_payload(response: Mapping[str, Any] | str) -> dict[str, Any]:
+def _coerce_judge_payload(
+    response: Mapping[str, Any] | str,
+    *,
+    judge_schema: JudgeSchemaDef | None = None,
+) -> dict[str, Any]:
     if isinstance(response, str):
-        response = _extract_json_object(response)
+        response = _extract_json_object(response, judge_schema=judge_schema)
     else:
         response = dict(response)
 
-    if "results" in response:
-        results = response.get("results") or []
-        if not results:
-            raise ValueError("judge response results array is empty")
-        return dict(results[0])
-    return dict(response)
+    return _candidate_judge_payload(response)
 
 
 async def _default_agent_judge_executor(prompt: JudgePrompt, system_prompt: str) -> str:

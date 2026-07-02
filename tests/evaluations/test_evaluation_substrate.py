@@ -45,6 +45,11 @@ class AliasJudgeOutput(BaseModel):
     verdict: str
 
 
+class GenericJudgeOutput(BaseModel):
+    decision: str
+    confidence: float
+
+
 @pytest.fixture(autouse=True)
 def _reset_eval_registry_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(substrate_module, "_EVAL_SUITE_REGISTRY", {})
@@ -1406,6 +1411,42 @@ Final report:
     assert payload["score"] == pytest.approx(74.6)
     assert payload["verdict"] == "Pass"
     assert payload["A1_groundedness"] == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_uses_schema_to_select_generic_json_payload() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+Intermediate calculation:
+
+```json
+{"score": 3, "weight": 0.25, "rationale": "not the payload"}
+```
+
+Final answer:
+
+```json
+{"decision": "accept", "confidence": 0.82}
+```
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(
+            suite_id="generic-json-judge",
+            judge_schema=JudgeSchemaDef(output_model=GenericJudgeOutput),
+        ),
+    )
+
+    assert payload == {"decision": "accept", "confidence": 0.82}
 
 
 @pytest.mark.asyncio
