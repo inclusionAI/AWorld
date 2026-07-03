@@ -128,6 +128,7 @@ class OptimizeTopLevelCommand:
                 replay_max_steps=getattr(args, "replay_max_steps", None),
                 baseline_replay_repetitions=getattr(args, "baseline_replay_repetitions", None),
                 candidate_replay_repetitions=getattr(args, "candidate_replay_repetitions", None),
+                progress_callback=_print_optimize_progress,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
             print(f"Optimize error: {exc}")
@@ -192,6 +193,7 @@ def run_optimize_cli(
     baseline_replay_repetitions: int | None = None,
     candidate_replay_repetitions: int | None = None,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
+    progress_callback: Callable[[str, str], Any] | None = None,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
@@ -225,6 +227,8 @@ def run_optimize_cli(
         judge_agent_name=judge_agent_name,
         judge_backend_ref=judge_backend_ref,
     )
+    if progress_callback is not None:
+        progress_callback("prepare", "Preparing self-evolve optimize request")
     return self_evolve.optimize_from_cli_request(
         agent=agent,
         task=task,
@@ -244,6 +248,7 @@ def run_optimize_cli(
         ),
         replay_enabled=apply == "auto_verified",
         runtime_registry_refresher=runtime_registry_refresher,
+        progress_callback=progress_callback,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
@@ -261,6 +266,10 @@ def _auto_verified_default(
     if value is not None or apply_policy != "auto_verified":
         return value
     return default
+
+
+def _print_optimize_progress(stage: str, message: str) -> None:
+    print(f"[self-evolve:{stage}] {message}", flush=True)
 
 
 def _judge_options(
