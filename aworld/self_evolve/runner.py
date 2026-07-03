@@ -1596,15 +1596,21 @@ def _baseline_comparison_feedback_metrics(
 ) -> dict[str, float]:
     if baseline_summary is None or candidate_summary is None:
         return {}
-    baseline_score = _metric_number(baseline_summary.metrics, "score")
-    candidate_score = _metric_number(candidate_summary.metrics, "score")
-    if baseline_score is None or candidate_score is None:
-        return {}
-    return {
-        "baseline_score": baseline_score,
-        "candidate_score": candidate_score,
-        "score_delta": candidate_score - baseline_score,
-    }
+    comparison: dict[str, float] = {}
+    for metric_key in (
+        "score",
+        "evidence_block_count",
+        "evidence_incomplete",
+        "latency_ms",
+    ):
+        baseline_value = _metric_number(baseline_summary.metrics, metric_key)
+        candidate_value = _metric_number(candidate_summary.metrics, metric_key)
+        if baseline_value is None or candidate_value is None:
+            continue
+        comparison[f"baseline_{metric_key}"] = baseline_value
+        comparison[f"candidate_{metric_key}"] = candidate_value
+        comparison[f"{metric_key}_delta"] = candidate_value - baseline_value
+    return comparison
 
 
 def _select_iteration_state(

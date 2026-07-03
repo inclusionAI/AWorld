@@ -22,6 +22,18 @@ _SCALAR_METRIC_KEYS = {
     "veto_triggered",
     "has_evidence",
     "agent_finished",
+    "baseline_score",
+    "candidate_score",
+    "score_delta",
+    "baseline_evidence_block_count",
+    "candidate_evidence_block_count",
+    "evidence_block_count_delta",
+    "baseline_evidence_incomplete",
+    "candidate_evidence_incomplete",
+    "evidence_incomplete_delta",
+    "baseline_latency_ms",
+    "candidate_latency_ms",
+    "latency_ms_delta",
     "evidence_manifest_invalid_entry_count",
     "evidence_manifest_entry_count",
 }
@@ -29,8 +41,14 @@ _SCALAR_METRIC_KEYS = {
 _EVIDENCE_METRIC_KEYS = {
     "A1_groundedness",
     "evidence_block_count",
+    "baseline_evidence_block_count",
+    "candidate_evidence_block_count",
+    "evidence_block_count_delta",
     "evidence_compacted",
     "evidence_incomplete",
+    "baseline_evidence_incomplete",
+    "candidate_evidence_incomplete",
+    "evidence_incomplete_delta",
     "evidence_manifest_invalid_entry_count",
     "evidence_manifest_entry_count",
     "veto_triggered",
@@ -148,6 +166,18 @@ def _required_behaviors(
             ]
         )
 
+    if _has_verifiability_regression(metrics):
+        behaviors.extend(
+            [
+                "reduce_answer_scope_to_verified_claims",
+                "prefer_fewer_verified_claims_over_broad_synthesis",
+                "optimize_verifiability_per_evidence_block",
+                "avoid_collecting_more_evidence_without_verifiability_gain",
+            ]
+        )
+    if _has_cost_or_latency_regression(metrics):
+        behaviors.append("cap_evidence_acquisition_and_summarization_cost")
+
     if _has_efficiency_improvement_issue(failed_gates=failed_gates, metrics=metrics):
         behaviors.extend(
             [
@@ -159,6 +189,38 @@ def _required_behaviors(
             ]
         )
     return list(dict.fromkeys(behaviors))
+
+
+def _has_verifiability_regression(metrics: Mapping[str, Any]) -> bool:
+    score_delta = _metric_float(metrics.get("score_delta"))
+    evidence_block_delta = _metric_float(metrics.get("evidence_block_count_delta"))
+    incomplete_delta = _metric_float(metrics.get("evidence_incomplete_delta"))
+    baseline_incomplete = _metric_float(metrics.get("baseline_evidence_incomplete"))
+    candidate_incomplete = _metric_float(metrics.get("candidate_evidence_incomplete"))
+    score_regressed = score_delta is not None and score_delta <= 0
+    evidence_expanded = evidence_block_delta is not None and evidence_block_delta > 0
+    evidence_became_less_complete = (
+        incomplete_delta is not None
+        and incomplete_delta > 0
+    ) or (
+        baseline_incomplete is not None
+        and candidate_incomplete is not None
+        and candidate_incomplete > baseline_incomplete
+    )
+    return score_regressed and (evidence_expanded or evidence_became_less_complete)
+
+
+def _has_cost_or_latency_regression(metrics: Mapping[str, Any]) -> bool:
+    latency_delta = _metric_float(metrics.get("latency_ms_delta"))
+    if latency_delta is not None and latency_delta > 0:
+        return True
+    baseline_latency = _metric_float(metrics.get("baseline_latency_ms"))
+    candidate_latency = _metric_float(metrics.get("candidate_latency_ms"))
+    return (
+        baseline_latency is not None
+        and candidate_latency is not None
+        and candidate_latency > baseline_latency
+    )
 
 
 def _has_efficiency_improvement_issue(

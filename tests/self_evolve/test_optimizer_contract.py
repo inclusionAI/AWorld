@@ -299,6 +299,40 @@ def test_feedback_normalization_requires_stronger_evidence_repair_for_veto_and_m
     assert "raise_groundedness_before_breadth" in summary["required_behaviors"]
 
 
+def test_feedback_normalization_penalizes_more_evidence_with_lower_verifiability() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-scope-regression",
+            dataset_split="validation",
+            metrics={
+                "score": 65.67,
+                "baseline_score": 68.0,
+                "candidate_score": 65.67,
+                "score_delta": -2.33,
+                "baseline_evidence_block_count": 22.3,
+                "candidate_evidence_block_count": 30.0,
+                "evidence_block_count_delta": 7.7,
+                "baseline_evidence_incomplete": 0.33,
+                "candidate_evidence_incomplete": 0.67,
+                "evidence_incomplete_delta": 0.34,
+                "baseline_latency_ms": 202_372,
+                "candidate_latency_ms": 333_973,
+                "latency_ms_delta": 131_601,
+                "failed_gates": ["score_improvement"],
+            },
+        )
+    )
+
+    assert summary["metrics"]["evidence_block_count_delta"] == 7.7
+    assert summary["metrics"]["evidence_incomplete_delta"] == 0.34
+    assert summary["metrics"]["latency_ms_delta"] == 131_601
+    assert "reduce_answer_scope_to_verified_claims" in summary["required_behaviors"]
+    assert "prefer_fewer_verified_claims_over_broad_synthesis" in summary["required_behaviors"]
+    assert "optimize_verifiability_per_evidence_block" in summary["required_behaviors"]
+    assert "avoid_collecting_more_evidence_without_verifiability_gain" in summary["required_behaviors"]
+    assert "cap_evidence_acquisition_and_summarization_cost" in summary["required_behaviors"]
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic_strategy() -> None:
     prompts = []
@@ -345,6 +379,62 @@ async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic
     assert "raise_groundedness_before_breadth" in prompt
     assert "invalid manifest entries" in instruction_text
     assert "veto" in instruction_text
+    assert "xiaoyuzhou" not in instruction_text.lower()
+    assert "podcast" not in instruction_text.lower()
+    assert "curl" not in instruction_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_turns_scope_and_cost_regression_feedback_into_generic_strategy() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nPrefer fewer verified claims over broad synthesis.\n",
+            "rationale": "Feedback shows lower verifiability despite more evidence.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-scope-regression",
+                metrics={
+                    "score": 65.67,
+                    "baseline_score": 68.0,
+                    "candidate_score": 65.67,
+                    "score_delta": -2.33,
+                    "baseline_evidence_block_count": 22.3,
+                    "candidate_evidence_block_count": 30.0,
+                    "evidence_block_count_delta": 7.7,
+                    "baseline_evidence_incomplete": 0.33,
+                    "candidate_evidence_incomplete": 0.67,
+                    "evidence_incomplete_delta": 0.34,
+                    "baseline_latency_ms": 202_372,
+                    "candidate_latency_ms": 333_973,
+                    "latency_ms_delta": 131_601,
+                    "failed_gates": ["score_improvement"],
+                },
+                dataset_split="validation",
+            ),
+        ),
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    await optimizer.propose(request)
+
+    prompt = prompts[0]
+    instruction_text = prompt[: prompt.find("{")]
+    assert "reduce_answer_scope_to_verified_claims" in prompt
+    assert "prefer_fewer_verified_claims_over_broad_synthesis" in prompt
+    assert "cap_evidence_acquisition_and_summarization_cost" in prompt
+    assert "fewer verified claims" in instruction_text
+    assert "do not expand answer breadth" in instruction_text
+    assert "cap evidence acquisition and summarization cost" in instruction_text
     assert "xiaoyuzhou" not in instruction_text.lower()
     assert "podcast" not in instruction_text.lower()
     assert "curl" not in instruction_text.lower()
