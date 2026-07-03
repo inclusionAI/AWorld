@@ -4,16 +4,55 @@ from typing import Any
 
 from aworld.models.utils import num_tokens_from_string
 
-REPLAY_TOOL_CALL_ARGUMENT_TOKEN_THRESHOLD = 1024
+# ---------------------------------------------------------------------------
+# Tool call argument compaction thresholds (memory replay → LLM context)
+#
+# Two-layer compaction (see normalize_tool_call_arguments_for_replay):
+#   Layer 1 – per-string field: replaces oversized values with
+#             {"_aworld_replay": "compacted_string_field", ...}
+#   Layer 2 – whole arguments JSON: if still over token budget after layer 1,
+#             replaces entire arguments with
+#             {"_aworld_replay": "compacted_tool_call_arguments", ...}
+#
+# Raised from conservative defaults (256 tok / 1200 multiline chars / 1024 total)
+# so that typical agent shell patterns (heredoc file writes, inline python -c,
+# large JSON/base64 in command) survive replay without premature compaction.
+# Trade-off: larger replay payloads consume more context window.
+# ---------------------------------------------------------------------------
+
+# Layer 2: max tokens for the full serialized arguments JSON after field compaction.
+# REPLAY_TOOL_CALL_ARGUMENT_TOKEN_THRESHOLD = 1024  # original default
+REPLAY_TOOL_CALL_ARGUMENT_TOKEN_THRESHOLD = 16384
+
 _MAX_SCHEMA_KEYS = 6
 _MAX_SCHEMA_DEPTH = 2
 _MAX_SUMMARY_KEYS = 8
-_MAX_STRING_FIELD_TOKENS = 256
-_MAX_STRING_FIELD_CHARS = 4096
-_MAX_MULTILINE_STRING_FIELD_CHARS = 1200
-_PRESERVE_SEMANTIC_STRING_FIELDS = {"directive", "instruction", "request", "query", "goal", "task"}
-_SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD = 1024
-_SEMANTIC_STRING_FIELD_CHAR_THRESHOLD = 8192
+
+# Layer 1 – general string fields (any key not in _PRESERVE_SEMANTIC_STRING_FIELDS).
+# _MAX_STRING_FIELD_TOKENS = 256  # original default
+_MAX_STRING_FIELD_TOKENS = 8192
+# _MAX_STRING_FIELD_CHARS = 4096  # original default
+_MAX_STRING_FIELD_CHARS = 32768
+# Multiline strings (e.g. cat << 'EOF') hit this bar when value contains '\n'.
+# _MAX_MULTILINE_STRING_FIELD_CHARS = 1200  # original default
+_MAX_MULTILINE_STRING_FIELD_CHARS = 65536
+
+# Layer 1 – semantic / shell fields: skip compaction while under these limits.
+# "command" is included so bash/terminal heredoc and inline scripts get a wider budget.
+# _PRESERVE_SEMANTIC_STRING_FIELDS = {"directive", "instruction", "request", "query", "goal", "task"}  # original default
+_PRESERVE_SEMANTIC_STRING_FIELDS = {
+    "command",
+    "directive",
+    "instruction",
+    "request",
+    "query",
+    "goal",
+    "task",
+}
+# _SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD = 1024  # original default
+_SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD = 8192
+# _SEMANTIC_STRING_FIELD_CHAR_THRESHOLD = 8192  # original default
+_SEMANTIC_STRING_FIELD_CHAR_THRESHOLD = 65536
 
 
 def _canonical_json(value: Any) -> str:
@@ -100,10 +139,15 @@ def _string_field_placeholder(
 
 
 def _should_compact_string_field(value: str, *, field_hint: str | None = None) -> bool:
+    """Return True if a string field should be replaced with a compacted placeholder."""
     if not value:
         return False
+    # Semantic fields (e.g. command, directive) keep full text up to wider limits.
     if field_hint and field_hint.lower() in _PRESERVE_SEMANTIC_STRING_FIELDS:
-        if len(value) <= _SEMANTIC_STRING_FIELD_CHAR_THRESHOLD and num_tokens_from_string(value) <= _SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD:
+        if (
+            len(value) <= _SEMANTIC_STRING_FIELD_CHAR_THRESHOLD
+            and num_tokens_from_string(value) <= _SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD
+        ):
             return False
     if len(value) > _MAX_STRING_FIELD_CHARS:
         return True
