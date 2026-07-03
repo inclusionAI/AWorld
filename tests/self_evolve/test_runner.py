@@ -53,12 +53,24 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
     )
     baseline_summary = EvaluationSummary(
         variant_id="baseline",
-        metrics={"score": 75.4, "B2_efficiency": 3.0},
+        metrics={
+            "score": 75.4,
+            "B2_efficiency": 3.0,
+            "evidence_block_count": 22.3,
+            "evidence_incomplete": 0.33,
+            "latency_ms": 202_372,
+        },
         dataset_split="validation",
     )
     candidate_summary = EvaluationSummary(
         variant_id="cand-1",
-        metrics={"score": 70.3, "B2_efficiency": 2.7},
+        metrics={
+            "score": 70.3,
+            "B2_efficiency": 2.7,
+            "evidence_block_count": 30.0,
+            "evidence_incomplete": 0.67,
+            "latency_ms": 333_973,
+        },
         dataset_split="validation",
     )
 
@@ -81,6 +93,15 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
     assert metrics["baseline_score"] == 75.4
     assert metrics["candidate_score"] == 70.3
     assert metrics["score_delta"] == pytest.approx(-5.1)
+    assert metrics["baseline_evidence_block_count"] == 22.3
+    assert metrics["candidate_evidence_block_count"] == 30.0
+    assert metrics["evidence_block_count_delta"] == pytest.approx(7.7)
+    assert metrics["baseline_evidence_incomplete"] == 0.33
+    assert metrics["candidate_evidence_incomplete"] == 0.67
+    assert metrics["evidence_incomplete_delta"] == pytest.approx(0.34)
+    assert metrics["baseline_latency_ms"] == 202_372
+    assert metrics["candidate_latency_ms"] == 333_973
+    assert metrics["latency_ms_delta"] == 131_601
     assert metrics["failed_gates"] == ["score_improvement"]
 
 
