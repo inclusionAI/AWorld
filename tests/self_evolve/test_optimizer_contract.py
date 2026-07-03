@@ -333,6 +333,39 @@ def test_feedback_normalization_penalizes_more_evidence_with_lower_verifiability
     assert "cap_evidence_acquisition_and_summarization_cost" in summary["required_behaviors"]
 
 
+def test_feedback_normalization_outputs_structured_repair_plan() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-repair",
+            dataset_split="validation",
+            metrics={
+                "score": 62.0,
+                "A1_groundedness": 2.0,
+                "B2_efficiency": 2.5,
+                "evidence_compacted": True,
+                "evidence_incomplete": True,
+                "evidence_manifest_invalid_entry_count": 1,
+                "evidence_manifest_invalid_reasons": ["line 1: missing bounded evidence payload"],
+                "failed_gates": [
+                    "score_improvement",
+                    "evidence_quality",
+                    "required_verification",
+                ],
+            },
+        )
+    )
+
+    repair_plan = summary["repair_plan"]
+    assert repair_plan["priority"] == "evidence_verifiability"
+    assert "compacted_or_incomplete_evidence" in repair_plan["issues"]
+    assert "invalid_evidence_manifest" in repair_plan["issues"]
+    assert "score_or_efficiency_regression" in repair_plan["issues"]
+    assert "write_valid_bounded_evidence_manifest" in repair_plan["actions"]
+    assert "limit_final_answer_to_supported_claims" in repair_plan["actions"]
+    assert "all_final_claims_have_non_compacted_support" in repair_plan["acceptance_criteria"]
+    assert "manifest_has_no_invalid_entries" in repair_plan["acceptance_criteria"]
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic_strategy() -> None:
     prompts = []

@@ -212,10 +212,11 @@ def test_evidence_quality_gate_accepts_artifact_first_evidence_strategy() -> Non
         metrics={
             "has_evidence": 1.0,
             "evidence_block_count": 1,
-            "evidence_compacted": True,
-            "evidence_incomplete": True,
+            "evidence_compacted": False,
+            "evidence_incomplete": False,
             "evidence_strategy_passed": True,
             "evidence_manifest_entry_count": 2,
+            "evidence_manifest_invalid_entry_count": 0,
         },
     )
 
@@ -225,6 +226,29 @@ def test_evidence_quality_gate_accepts_artifact_first_evidence_strategy() -> Non
     assert result.reason == "evaluation evidence is present via artifact-first manifest"
     assert result.details["evidence_strategy_passed"] is True
     assert result.details["evidence_manifest_entry_count"] == 2
+
+
+def test_evidence_quality_gate_rejects_unverifiable_artifact_manifest() -> None:
+    result = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 4,
+                "evidence_compacted": True,
+                "evidence_incomplete": True,
+                "evidence_strategy_passed": True,
+                "evidence_manifest_entry_count": 2,
+                "evidence_manifest_invalid_entry_count": 1,
+            },
+        )
+    )
+
+    assert result.passed is False
+    assert result.reason == "artifact-first evidence is not fully verifiable"
+    assert result.details["evidence_manifest_invalid_entry_count"] == 1
+    assert result.details["evidence_compacted"] is True
+    assert result.details["evidence_incomplete"] is True
 
 
 def test_protected_path_gate_blocks_product_and_app_evaluator_paths() -> None:
