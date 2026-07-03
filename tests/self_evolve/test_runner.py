@@ -413,10 +413,19 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
                         "iteration": 1,
                         "candidate_id": "candidate-dup",
                         "status": "rejected",
+                        "baseline_metrics": {
+                            "score": 68.0,
+                            "evidence_block_count": 22.0,
+                            "evidence_incomplete": 0.3,
+                            "latency_ms": 200_000.0,
+                        },
                         "candidate_metrics": {
                             "score": 35.0,
                             "A1_groundedness": 1.0,
                             "evidence_compacted": True,
+                            "evidence_block_count": 30.0,
+                            "evidence_incomplete": 0.8,
+                            "latency_ms": 330_000.0,
                         },
                         "failed_gates": ["evidence_quality", "score_improvement"],
                     }
@@ -524,6 +533,24 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
         "evidence_quality",
         "score_improvement",
     ]
+    assert optimizer.requests[0].prior_feedback[0].metrics["baseline_score"] == 68.0
+    assert optimizer.requests[0].prior_feedback[0].metrics["candidate_score"] == 35.0
+    assert optimizer.requests[0].prior_feedback[0].metrics["score_delta"] == pytest.approx(-33.0)
+    assert (
+        optimizer.requests[0]
+        .prior_feedback[0]
+        .metrics["evidence_block_count_delta"]
+        == pytest.approx(8.0)
+    )
+    assert (
+        optimizer.requests[0]
+        .prior_feedback[0]
+        .metrics["evidence_incomplete_delta"]
+        == pytest.approx(0.5)
+    )
+    assert optimizer.requests[0].prior_feedback[0].metrics["latency_ms_delta"] == pytest.approx(
+        130_000.0
+    )
     assert optimizer.requests[1].validation_feedback[0].metrics["failed_gates"] == [
         "duplicate_rejected_candidate"
     ]
