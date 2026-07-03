@@ -403,7 +403,7 @@ class AWorldTrajectoryEvaluatorBackend:
         runner_kwargs: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         call = self._run_evaluator_source(runner, runner_kwargs=runner_kwargs)
-        if self.judge_timeout_seconds is None:
+        if self.judge_timeout_seconds is None or self.run_evaluator_source is None:
             return await call
         return await asyncio.wait_for(call, timeout=self.judge_timeout_seconds)
 

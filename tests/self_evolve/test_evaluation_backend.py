@@ -428,6 +428,52 @@ async def test_aworld_trajectory_evaluator_backend_runs_default_source_runtime_o
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_does_not_outer_timeout_default_source_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+
+    def slow_but_successful_source_runtime(**kwargs):
+        import time
+
+        time.sleep(0.05)
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 81.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 81.0},
+        }
+
+    monkeypatch.setattr(
+        evaluation_module,
+        "_load_run_evaluator_source_cli",
+        lambda: slow_but_successful_source_runtime,
+    )
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        judge_timeout_seconds=0.01,
+    )
+
+    summary = await asyncio.wait_for(
+        backend.evaluate_variant(
+            EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+        ),
+        timeout=1.0,
+    )
+
+    assert summary.metrics["score"] == 81.0
+    assert summary.metrics["evaluator_gate_passed"] is True
+    assert summary.metrics["judge_success_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_compares_variant_trajectories(tmp_path) -> None:
     baseline_trajectory = [
         {
