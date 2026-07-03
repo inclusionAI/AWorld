@@ -374,7 +374,7 @@ def _resolve_source_judge_backend(
     judge_timeout_seconds: float | None = None,
 ) -> JudgeBackend:
     if judge_agent_path is not None:
-        return AgentJudgeBackend.from_agent_markdown(
+        return AgentJudgeBackend.from_agent_markdown_as_instructions(
             judge_agent_path,
             backend_id=file_backend_id,
             prompt_builder=prompt_builder,
