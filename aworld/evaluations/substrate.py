@@ -354,6 +354,25 @@ class AgentJudgeBackend:
             timeout_seconds=timeout_seconds,
         )
 
+    @classmethod
+    def from_agent_markdown_as_instructions(
+        cls,
+        path: str | Path,
+        *,
+        backend_id: str | None = None,
+        prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> "AgentJudgeBackend":
+        agent_markdown_path = Path(path).expanduser()
+        resolved_backend_id = backend_id or agent_markdown_path.stem
+        return cls(
+            backend_id=resolved_backend_id,
+            system_prompt=_agent_markdown_instruction_prompt(agent_markdown_path),
+            executor=None,
+            prompt_builder=prompt_builder,
+            timeout_seconds=timeout_seconds,
+        )
+
     def is_available(self) -> bool:
         if self.executor is not None:
             return True
@@ -386,7 +405,7 @@ class AgentJudgeBackend:
                 raise
         else:
             response = await _run_executor()
-        payload = _coerce_judge_payload(response, judge_schema=suite.judge_schema)
+        payload = _coerce_judge_payload(response, judge_schema=getattr(suite, "judge_schema", None))
         return JudgeExecution(backend_id=self.backend_id, payload=payload)
 
     async def judge(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> dict[str, Any]:
@@ -414,6 +433,25 @@ def _normalize_markdown_tool_list(value: Any) -> dict[str, Any]:
         if isinstance(parsed, Mapping):
             return dict(parsed)
     return {}
+
+
+def _agent_markdown_instruction_prompt(agent_markdown_path: Path) -> str:
+    from aworld.utils.skill_loader import extract_front_matter
+
+    lines = agent_markdown_path.read_text(encoding="utf-8").splitlines()
+    frontmatter, body_start = extract_front_matter(lines)
+    body = "\n".join(lines[body_start:]).strip()
+    name = _frontmatter_scalar(frontmatter.get("name"), agent_markdown_path.stem)
+    description = _frontmatter_scalar(
+        frontmatter.get("description", frontmatter.get("desc")),
+        "Trajectory evaluation judge",
+    )
+    header = (
+        f"Judge instructions loaded from {agent_markdown_path}\n"
+        f"Name: {name}\n"
+        f"Description: {description}\n\n"
+    )
+    return f"{header}{body}".strip()
 
 
 def _materialize_agent_markdown_as_skill(

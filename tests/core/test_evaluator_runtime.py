@@ -128,6 +128,32 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
     assert output.exists()
 
 
+def test_source_file_judge_agent_uses_direct_instruction_backend(tmp_path: Path) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text(
+        "---\nname: judge\n---\nReturn JSON only.\n",
+        encoding="utf-8",
+    )
+
+    suite = _build_source_suite(
+        kind="answer",
+        input_path=input_path,
+        judge_agent_path=judge_agent,
+        task_id=None,
+        id_field="id",
+        task_field="input",
+        answer_field="answer",
+        out_dir=str(tmp_path),
+    )
+
+    assert suite.judge_backend.backend_id == "source-agent-md"
+    assert suite.judge_backend.executor is None
+    assert "Return JSON only." in suite.judge_backend.system_prompt
+    assert "Agent loaded from" not in suite.judge_backend.system_prompt
+
+
 def test_run_evaluator_source_cli_supports_cli_judge_agent_name(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

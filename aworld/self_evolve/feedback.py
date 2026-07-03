@@ -22,15 +22,23 @@ _SCALAR_METRIC_KEYS = {
     "veto_triggered",
     "has_evidence",
     "agent_finished",
+    "evidence_manifest_invalid_entry_count",
+    "evidence_manifest_entry_count",
 }
 
 _EVIDENCE_METRIC_KEYS = {
+    "A1_groundedness",
     "evidence_block_count",
     "evidence_compacted",
     "evidence_incomplete",
+    "evidence_manifest_invalid_entry_count",
+    "evidence_manifest_entry_count",
+    "veto_triggered",
 }
 
 _LOW_EFFICIENCY_THRESHOLD = 3.0
+_MIN_VERIFIED_SCORE = 70.0
+_MIN_GROUNDEDNESS = 3.0
 
 
 def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
@@ -71,6 +79,12 @@ def _evidence_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
     issues = _string_list(metrics.get("evidence_issues"))
     if issues:
         summary["issues"] = issues
+    invalid_reasons = _string_list(metrics.get("evidence_manifest_invalid_reasons"))
+    if invalid_reasons:
+        summary["invalid_reasons"] = invalid_reasons
+    invalid_count = metrics.get("evidence_manifest_invalid_entry_count")
+    if isinstance(invalid_count, (int, float)):
+        summary["invalid_entry_count"] = invalid_count
     return summary
 
 
@@ -84,6 +98,14 @@ def _required_behaviors(
     has_evidence_failure = "evidence_quality" in set(failed_gates)
     has_evidence_compaction = evidence.get("evidence_compacted") is True
     has_incomplete_evidence = evidence.get("evidence_incomplete") is True
+    has_manifest_errors = _positive_number(evidence.get("invalid_entry_count")) or _positive_number(
+        evidence.get("evidence_manifest_invalid_entry_count")
+    )
+    has_veto = evidence.get("veto_triggered") is True or metrics.get("veto_triggered") is True
+    groundedness = _metric_float(evidence.get("A1_groundedness"))
+    if groundedness is None:
+        groundedness = _metric_float(metrics.get("A1_groundedness"))
+    score = _metric_float(metrics.get("score"))
     if has_evidence_failure or has_evidence_compaction or has_incomplete_evidence:
         behaviors.extend(
             [
@@ -92,6 +114,37 @@ def _required_behaviors(
                 "non_compacted_evidence",
                 "claim_evidence_ledger",
                 "claim_by_claim_verification",
+            ]
+        )
+    if has_manifest_errors:
+        behaviors.extend(
+            [
+                "manifest_schema_compliance",
+                "artifact_reference_integrity",
+                "validate_manifest_before_final",
+            ]
+        )
+    if has_veto:
+        behaviors.extend(
+            [
+                "pre_final_veto_check",
+                "support_every_claim_with_artifact_reference",
+                "remove_or_qualify_unsupported_claims",
+            ]
+        )
+    if groundedness is not None and groundedness < _MIN_GROUNDEDNESS:
+        behaviors.extend(
+            [
+                "raise_groundedness_before_breadth",
+                "support_every_claim_with_artifact_reference",
+                "quote_or_reference_minimal_source_spans",
+            ]
+        )
+    if score is not None and score < _MIN_VERIFIED_SCORE:
+        behaviors.extend(
+            [
+                "prioritize_gate_thresholds",
+                "improve_score_before_expanding_scope",
             ]
         )
 
@@ -128,6 +181,17 @@ def _has_efficiency_improvement_issue(
         and isinstance(candidate_score, (int, float))
         and candidate_score <= baseline_score
     )
+
+
+def _metric_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _positive_number(value: Any) -> bool:
+    numeric = _metric_float(value)
+    return numeric is not None and numeric > 0
 
 
 def _string_list(value: Any) -> list[str]:

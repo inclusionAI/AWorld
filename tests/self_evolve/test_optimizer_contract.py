@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
@@ -258,6 +259,95 @@ async def test_llm_mutator_turns_low_efficiency_feedback_into_generic_strategy()
     assert "podcast" not in instruction_text.lower()
     assert "curl" not in instruction_text.lower()
     assert "cdp" not in instruction_text.lower()
+
+
+def test_feedback_normalization_requires_stronger_evidence_repair_for_veto_and_manifest_errors() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-evidence-risk",
+            dataset_split="validation",
+            metrics={
+                "score": 65.25,
+                "A1_groundedness": 2.0,
+                "veto_triggered": True,
+                "evidence_compacted": True,
+                "evidence_incomplete": True,
+                "evidence_manifest_invalid_entry_count": 2,
+                "evidence_manifest_invalid_reasons": [
+                    "missing source_id",
+                    "missing artifact_path",
+                ],
+                "failed_gates": [
+                    "required_verification",
+                    "judge_only_signal",
+                ],
+            },
+        )
+    )
+
+    assert summary["metrics"]["evidence_manifest_invalid_entry_count"] == 2
+    assert summary["evidence"]["invalid_entry_count"] == 2
+    assert summary["evidence"]["invalid_reasons"] == [
+        "missing source_id",
+        "missing artifact_path",
+    ]
+    assert summary["evidence"]["veto_triggered"] is True
+    assert summary["evidence"]["A1_groundedness"] == 2.0
+    assert "manifest_schema_compliance" in summary["required_behaviors"]
+    assert "pre_final_veto_check" in summary["required_behaviors"]
+    assert "support_every_claim_with_artifact_reference" in summary["required_behaviors"]
+    assert "raise_groundedness_before_breadth" in summary["required_behaviors"]
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic_strategy() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nAdd strict artifact evidence validation before final answers.\n",
+            "rationale": "The feedback shows invalid manifest entries and veto risk.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-veto",
+                metrics={
+                    "score": 65.25,
+                    "A1_groundedness": 2.0,
+                    "veto_triggered": True,
+                    "failed_gates": ["required_verification", "judge_only_signal"],
+                    "evidence_compacted": True,
+                    "evidence_incomplete": True,
+                    "evidence_manifest_invalid_entry_count": 2,
+                    "evidence_manifest_invalid_reasons": ["missing source_id"],
+                },
+                dataset_split="validation",
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    await optimizer.propose(request)
+
+    prompt = prompts[0]
+    instruction_text = prompt[: prompt.find("{")]
+    assert "manifest_schema_compliance" in prompt
+    assert "pre_final_veto_check" in prompt
+    assert "support_every_claim_with_artifact_reference" in prompt
+    assert "raise_groundedness_before_breadth" in prompt
+    assert "invalid manifest entries" in instruction_text
+    assert "veto" in instruction_text
+    assert "xiaoyuzhou" not in instruction_text.lower()
+    assert "podcast" not in instruction_text.lower()
+    assert "curl" not in instruction_text.lower()
 
 
 @pytest.mark.asyncio
