@@ -635,9 +635,13 @@ def _replay_evidence_metrics(
         evidence_manifest=evidence_manifest,
     )
     manifest_valid = manifest_metrics.get("evidence_manifest_valid") is True
+    manifest_invalid_count = manifest_metrics.get("evidence_manifest_invalid_entry_count")
+    manifest_fully_valid = manifest_valid and not (
+        isinstance(manifest_invalid_count, (int, float)) and manifest_invalid_count > 0
+    )
     return {
         "evidence_compacted": compacted,
-        "evidence_strategy_passed": (not compacted) or manifest_valid,
+        "evidence_strategy_passed": (not compacted) or manifest_fully_valid,
         "evidence_compaction_signals": signals,
         **manifest_metrics,
     }
@@ -747,6 +751,11 @@ def _has_manifest_evidence_payload(entry: Mapping[str, Any]) -> bool:
 def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | None:
     compacted = metrics.get("evidence_compacted") is True
     strategy_failed = metrics.get("evidence_strategy_passed") is False
+    invalid_manifest_count = metrics.get("evidence_manifest_invalid_entry_count")
+    manifest_invalid = (
+        isinstance(invalid_manifest_count, (int, float))
+        and invalid_manifest_count > 0
+    )
     if not strategy_failed:
         return None
     signals = metrics.get("evidence_compaction_signals")
@@ -757,6 +766,7 @@ def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | No
         "detail": "replay produced compacted, truncated, or otherwise unusable evidence",
         "evidence_compacted": compacted,
         "evidence_strategy_passed": not strategy_failed,
+        "evidence_manifest_invalid_entry_count": invalid_manifest_count if manifest_invalid else 0,
         "evidence_compaction_signals": [str(signal) for signal in signals],
     }
 

@@ -69,6 +69,12 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         evidence=evidence,
         metrics=metrics,
     )
+    repair_plan = _repair_plan(
+        failed_gates=failed_gates,
+        evidence=evidence,
+        metrics=metrics,
+        required_behaviors=required_behaviors,
+    )
     return {
         "variant_id": feedback.variant_id,
         "dataset_split": feedback.dataset_split,
@@ -76,6 +82,7 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         "failed_gates": failed_gates,
         "evidence": evidence,
         "required_behaviors": required_behaviors,
+        "repair_plan": repair_plan,
     }
 
 
@@ -189,6 +196,79 @@ def _required_behaviors(
             ]
         )
     return list(dict.fromkeys(behaviors))
+
+
+def _repair_plan(
+    *,
+    failed_gates: list[str],
+    evidence: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    required_behaviors: list[str],
+) -> dict[str, Any]:
+    issues: list[str] = []
+    actions: list[str] = []
+    acceptance_criteria: list[str] = []
+    has_evidence_problem = (
+        "evidence_quality" in set(failed_gates)
+        or evidence.get("evidence_compacted") is True
+        or evidence.get("evidence_incomplete") is True
+    )
+    has_manifest_problem = _positive_number(
+        evidence.get("invalid_entry_count")
+    ) or _positive_number(evidence.get("evidence_manifest_invalid_entry_count"))
+    if has_evidence_problem:
+        issues.append("compacted_or_incomplete_evidence")
+        actions.extend(
+            [
+                "capture_bounded_non_compacted_evidence",
+                "limit_final_answer_to_supported_claims",
+            ]
+        )
+        acceptance_criteria.append("all_final_claims_have_non_compacted_support")
+    if has_manifest_problem:
+        issues.append("invalid_evidence_manifest")
+        actions.append("write_valid_bounded_evidence_manifest")
+        acceptance_criteria.append("manifest_has_no_invalid_entries")
+    if "score_improvement" in set(failed_gates) or _has_efficiency_improvement_issue(
+        failed_gates=failed_gates,
+        metrics=metrics,
+    ):
+        issues.append("score_or_efficiency_regression")
+        actions.extend(
+            [
+                "reduce_answer_scope_to_verified_claims",
+                "stop_after_sufficient_verified_evidence",
+            ]
+        )
+        acceptance_criteria.append(
+            "candidate_score_exceeds_baseline_without_extra_unverified_scope"
+        )
+    if "required_verification" in set(failed_gates):
+        issues.append("missing_deterministic_verification")
+        actions.append("run_pre_final_claim_verification")
+        acceptance_criteria.append("deterministic_verification_passes_before_final")
+
+    if not issues:
+        return {
+            "priority": "maintain_verified_behavior",
+            "issues": [],
+            "actions": [],
+            "acceptance_criteria": [],
+        }
+
+    priority = (
+        "evidence_verifiability"
+        if has_evidence_problem or has_manifest_problem
+        else "score_and_efficiency"
+    )
+    if required_behaviors:
+        actions.extend(required_behaviors[:5])
+    return {
+        "priority": priority,
+        "issues": list(dict.fromkeys(issues)),
+        "actions": list(dict.fromkeys(actions)),
+        "acceptance_criteria": list(dict.fromkeys(acceptance_criteria)),
+    }
 
 
 def _has_verifiability_regression(metrics: Mapping[str, Any]) -> bool:

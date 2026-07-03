@@ -877,9 +877,10 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
         )
     )
 
-    assert result.succeeded is True
+    assert result.succeeded is False
+    assert result.failure["reason"] == "evidence_quality_failed"
     assert result.metrics["evidence_compacted"] is True
-    assert result.metrics["evidence_strategy_passed"] is True
+    assert result.metrics["evidence_strategy_passed"] is False
     assert result.metrics["evidence_manifest_present"] is True
     assert result.metrics["evidence_manifest_entry_count"] == 1
     assert result.metrics["evidence_manifest_invalid_entry_count"] == 1

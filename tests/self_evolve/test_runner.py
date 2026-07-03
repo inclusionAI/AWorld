@@ -1474,7 +1474,7 @@ async def test_runner_auto_verified_rejects_compacted_evaluator_evidence(
 
 
 @pytest.mark.asyncio
-async def test_runner_evidence_quality_reuses_replay_artifact_manifest(
+async def test_runner_evidence_quality_rejects_unverifiable_replay_artifact_manifest(
     tmp_path,
 ) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
@@ -1591,12 +1591,12 @@ async def test_runner_evidence_quality_reuses_replay_artifact_manifest(
         gate for gate in report["gate_results"] if gate["gate_name"] == "evidence_quality"
     ]
     assert evidence_gates
-    assert all(gate["passed"] is True for gate in evidence_gates)
+    assert all(gate["passed"] is False for gate in evidence_gates)
     assert {gate["reason"] for gate in evidence_gates} == {
-        "evaluation evidence is present via artifact-first manifest"
+        "artifact-first evidence is not fully verifiable"
     }
     assert "score_improvement" in report["iterations"][0]["failed_gates"]
-    assert "evidence_quality" not in report["iterations"][0]["failed_gates"]
+    assert "evidence_quality" in report["iterations"][0]["failed_gates"]
 
 
 @pytest.mark.asyncio
@@ -2163,6 +2163,59 @@ def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generi
     assert "verifiability per evidence block" in candidate_content
     assert "avoid collecting more evidence without a verifiability gain" in candidate_content.lower()
     assert "cap evidence acquisition and summarization cost" in candidate_content.lower()
+    assert "curl" not in candidate_content.lower()
+    assert "podcast" not in candidate_content.lower()
+
+
+def test_default_cli_skill_candidate_turns_repair_plan_into_acceptance_criteria() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-1",
+                            "dataset_split": "historical",
+                            "metrics": {"score": 62.0},
+                            "failed_gates": ["evidence_quality", "score_improvement"],
+                            "required_behaviors": [
+                                "manifest_schema_compliance",
+                                "claim_by_claim_verification",
+                            ],
+                            "repair_plan": {
+                                "priority": "evidence_verifiability",
+                                "issues": [
+                                    "compacted_or_incomplete_evidence",
+                                    "invalid_evidence_manifest",
+                                ],
+                                "actions": [
+                                    "write_valid_bounded_evidence_manifest",
+                                    "limit_final_answer_to_supported_claims",
+                                ],
+                                "acceptance_criteria": [
+                                    "all_final_claims_have_non_compacted_support",
+                                    "manifest_has_no_invalid_entries",
+                                ],
+                            },
+                        }
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "Verified evidence acceptance criteria" in candidate_content
+    assert "Every final factual claim must have non-compacted support" in candidate_content
+    assert "The evidence manifest must have no invalid entries" in candidate_content
+    assert "Do not finalize if these criteria are not met" in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 

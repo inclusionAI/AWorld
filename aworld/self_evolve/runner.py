@@ -1757,6 +1757,41 @@ def _feedback_required_behaviors_from_mutation_prompt(prompt: str | None) -> set
     return behaviors
 
 
+def _feedback_repair_plan_from_mutation_prompt(prompt: str | None) -> dict[str, set[str]]:
+    if not prompt:
+        return {"issues": set(), "actions": set(), "acceptance_criteria": set()}
+    start = prompt.find("{")
+    if start < 0:
+        return {"issues": set(), "actions": set(), "acceptance_criteria": set()}
+    try:
+        payload = json.loads(prompt[start:])
+    except json.JSONDecodeError:
+        return {"issues": set(), "actions": set(), "acceptance_criteria": set()}
+    if not isinstance(payload, Mapping):
+        return {"issues": set(), "actions": set(), "acceptance_criteria": set()}
+
+    feedback_items: list[object] = []
+    for key in ("prior_feedback", "validation_feedback"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            feedback_items.extend(value)
+
+    result = {"issues": set(), "actions": set(), "acceptance_criteria": set()}
+    for item in feedback_items:
+        if not isinstance(item, Mapping):
+            continue
+        summary = item.get("feedback_summary")
+        summary = summary if isinstance(summary, Mapping) else item
+        repair_plan = summary.get("repair_plan")
+        if not isinstance(repair_plan, Mapping):
+            continue
+        for key in result:
+            values = repair_plan.get(key)
+            if isinstance(values, list):
+                result[key].update(str(value) for value in values if str(value).strip())
+    return result
+
+
 def _feedback_has_scope_or_cost_issue(prompt: str | None) -> bool:
     behaviors = _feedback_required_behaviors_from_mutation_prompt(prompt)
     return bool(
@@ -1823,6 +1858,7 @@ def _default_cli_skill_candidate(
     feedback_guidance = _feedback_guidance_from_mutation_prompt(mutation_prompt)
     evidence_preservation_issue = _feedback_has_evidence_preservation_issue(mutation_prompt)
     scope_or_cost_issue = _feedback_has_scope_or_cost_issue(mutation_prompt)
+    repair_plan = _feedback_repair_plan_from_mutation_prompt(mutation_prompt)
     if not trace_packs and not feedback_guidance:
         return current_content
 
@@ -1899,6 +1935,24 @@ def _default_cli_skill_candidate(
                 (
                     "Cap evidence acquisition and summarization cost by using the smallest "
                     "bounded extracts that can support the requested answer."
+                ),
+            ]
+        )
+    if repair_plan["acceptance_criteria"]:
+        guidance.extend(
+            [
+                "Verified evidence acceptance criteria:",
+                (
+                    "Every final factual claim must have non-compacted support in a "
+                    "bounded extract, artifact reference, structured field, or source span."
+                ),
+                (
+                    "The evidence manifest must have no invalid entries; each entry must "
+                    "identify a source and include bounded evidence payload."
+                ),
+                (
+                    "Do not finalize if these criteria are not met; instead narrow the "
+                    "answer to only verified claims or report the missing evidence."
                 ),
             ]
         )

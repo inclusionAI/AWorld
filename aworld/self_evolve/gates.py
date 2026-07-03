@@ -323,6 +323,9 @@ class EvidenceQualityGate:
         evidence_manifest_entry_count = int(
             _number_metric(summary.metrics, "evidence_manifest_entry_count") or 0
         )
+        evidence_manifest_invalid_entry_count = int(
+            _number_metric(summary.metrics, "evidence_manifest_invalid_entry_count") or 0
+        )
         artifact_first_evidence = (
             _bool_metric(summary.metrics, "evidence_strategy_passed") is True
             and evidence_manifest_entry_count > 0
@@ -345,12 +348,22 @@ class EvidenceQualityGate:
             "evidence_incomplete": incomplete,
             "evidence_strategy_passed": artifact_first_evidence,
             "evidence_manifest_entry_count": evidence_manifest_entry_count,
+            "evidence_manifest_invalid_entry_count": evidence_manifest_invalid_entry_count,
         }
         if not has_evidence:
             return GateResult(
                 gate_name="evidence_quality",
                 passed=False,
                 reason="verified apply requires replay tool evidence",
+                details=details,
+            )
+        if artifact_first_evidence and (
+            evidence_manifest_invalid_entry_count > 0 or compacted or incomplete
+        ):
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="artifact-first evidence is not fully verifiable",
                 details=details,
             )
         if artifact_first_evidence:
