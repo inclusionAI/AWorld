@@ -83,6 +83,19 @@ class SelfEvolveRunnerResult:
     selected_candidate: CandidateVariant | None
 
 
+def _emit_progress(
+    progress_callback: Callable[[str, str], Any] | None,
+    stage: str,
+    message: str,
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(stage, message)
+    except Exception as exc:
+        logger.debug(f"self_evolve.progress_callback_failed stage={stage} error={exc}")
+
+
 class SelfEvolveRunner:
     def __init__(
         self,
@@ -108,6 +121,7 @@ class SelfEvolveRunner:
         replay_stability_margin: float = 0.0,
         replay_agent: str | None = None,
         runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
+        progress_callback: Callable[[str, str], Any] | None = None,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -130,6 +144,7 @@ class SelfEvolveRunner:
         self.replay_stability_margin = replay_stability_margin
         self.replay_agent = replay_agent
         self.runtime_registry_refresher = runtime_registry_refresher
+        self.progress_callback = progress_callback
 
     async def run_explicit_target(
         self,
@@ -144,6 +159,11 @@ class SelfEvolveRunner:
     ) -> SelfEvolveRunnerResult:
         if apply_policy not in {"proposal", "auto_verified"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
+        _emit_progress(
+            self.progress_callback,
+            "start",
+            f"Starting self-evolve run {run_id}",
+        )
 
         run = SelfEvolveRun(run_id=run_id, target=target.identity, status=SelfEvolveRunStatus.RUNNING)
         self.store.create_run(run)
@@ -190,6 +210,11 @@ class SelfEvolveRunner:
                 gate_results=(stopping_result,),
             )
             self.store.create_run(completed_run)
+            _emit_progress(
+                self.progress_callback,
+                "completed",
+                f"Self-evolve run {run_id} finished with status {completed_run.status.value}",
+            )
             return SelfEvolveRunnerResult(run=completed_run, selected_candidate=None)
 
         selected_candidate: CandidateVariant | None = None
@@ -216,6 +241,11 @@ class SelfEvolveRunner:
         }
 
         for iteration_index in range(self.max_iterations):
+            _emit_progress(
+                self.progress_callback,
+                "candidate_generation",
+                f"Generating candidate iteration {iteration_index + 1}/{self.max_iterations}",
+            )
             optimizer_result = await self.optimizer.propose(
                 OptimizerRequest.from_dataset(
                     target=target.identity,
@@ -322,6 +352,14 @@ class SelfEvolveRunner:
                 )
                 if not replay_blocked_verified_apply:
                     try:
+                        _emit_progress(
+                            self.progress_callback,
+                            "evaluation",
+                            (
+                                "Evaluating baseline and candidate "
+                                f"for iteration {iteration_index + 1}/{self.max_iterations}"
+                            ),
+                        )
                         (
                             iteration_baseline_summary,
                             iteration_candidate_summary,
@@ -612,6 +650,11 @@ class SelfEvolveRunner:
             gate_results=tuple(gate_results),
         )
         self.store.create_run(completed_run)
+        _emit_progress(
+            self.progress_callback,
+            "completed",
+            f"Self-evolve run {run_id} finished with status {completed_run.status.value}",
+        )
         return SelfEvolveRunnerResult(run=completed_run, selected_candidate=selected_candidate)
 
     async def _replay_selected_candidate(
@@ -647,6 +690,15 @@ class SelfEvolveRunner:
                     reason="skill replay requires target filesystem path",
                 ),
             )
+        _emit_progress(
+            self.progress_callback,
+            "candidate_replay",
+            (
+                "Running paired replay "
+                f"(baseline x{self.baseline_replay_repetitions}, "
+                f"candidate x{self.candidate_replay_repetitions})"
+            ),
+        )
 
         overlay = create_candidate_skill_overlay(
             workspace_root=self.store.workspace_root,
@@ -850,6 +902,7 @@ def optimize_from_cli_request(
     candidate_replay_repetitions: int = 1,
     replay_stability_margin: float = 0.0,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
+    progress_callback: Callable[[str, str], Any] | None = None,
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
@@ -1043,6 +1096,7 @@ def optimize_from_cli_request(
             replay_stability_margin=replay_stability_margin,
             replay_agent=agent,
             runtime_registry_refresher=runtime_registry_refresher,
+            progress_callback=progress_callback,
         ).run_explicit_target(
             run_id=run_id,
             target=target_adapter,

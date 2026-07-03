@@ -55,6 +55,7 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert calls["target"] == "skill:demo"
     assert calls["dataset"] == "eval.jsonl"
     assert calls["apply"] == "proposal"
+    assert callable(calls["progress_callback"])
     assert calls["from_trajectory"] is None
     assert calls["task"] is None
     assert "report.json" in output
@@ -296,6 +297,50 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
     assert calls["iterations"] == 1
+
+
+def test_run_optimize_cli_can_forward_progress_callback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+    events = []
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        kwargs["progress_callback"]("replay", "Replay started")
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory="trajectory.log",
+        batch_config=None,
+        iterations=None,
+        apply="auto_verified",
+        infer_target=True,
+        workspace_root=str(tmp_path),
+        judge_agent="agent.md",
+        progress_callback=lambda stage, message: events.append((stage, message)),
+    )
+
+    assert events == [
+        ("prepare", "Preparing self-evolve optimize request"),
+        ("replay", "Replay started"),
+    ]
+    assert callable(calls["progress_callback"])
 
 
 def test_run_optimize_cli_keeps_proposal_defaults_cheap(

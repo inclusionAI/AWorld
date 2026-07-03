@@ -390,6 +390,96 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
 
 
 @pytest.mark.asyncio
+async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix evidence handling."}},
+            "action": {"content": "Evidence was missing."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="progress-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="progress-task",
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-progress",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+        rationale="progress test",
+        target_fingerprint="fingerprint",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    class Backend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={"score": 0.5},
+                dataset_split=request.dataset_split,
+            )
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+            )
+
+    events: list[tuple[str, str]] = []
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        evaluation_backend=Backend(),
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+        progress_callback=lambda stage, message: events.append((stage, message)),
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-progress",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    stages = [stage for stage, _ in events]
+    assert stages[:4] == [
+        "start",
+        "candidate_generation",
+        "candidate_replay",
+        "evaluation",
+    ]
+    assert stages[-1] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
