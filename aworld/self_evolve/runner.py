@@ -1692,12 +1692,67 @@ def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
             )
             if issue_text:
                 parts.append(f"evidence_issues={issue_text}")
+        required_behaviors = summary.get("required_behaviors")
+        if isinstance(required_behaviors, list) and required_behaviors:
+            behavior_text = ",".join(
+                str(behavior)
+                for behavior in required_behaviors[:5]
+                if str(behavior).strip()
+            )
+            if behavior_text:
+                parts.append(f"required_behaviors={behavior_text}")
         if not parts:
             continue
         split = summary.get("dataset_split") or item.get("dataset_split") or "validation"
         variant_id = summary.get("variant_id") or item.get("variant_id") or "candidate"
         guidance.append(f"{variant_id} on {split}: {'; '.join(parts)}")
     return guidance
+
+
+def _feedback_required_behaviors_from_mutation_prompt(prompt: str | None) -> set[str]:
+    if not prompt:
+        return set()
+    start = prompt.find("{")
+    if start < 0:
+        return set()
+    try:
+        payload = json.loads(prompt[start:])
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(payload, Mapping):
+        return set()
+
+    feedback_items: list[object] = []
+    for key in ("prior_feedback", "validation_feedback"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            feedback_items.extend(value)
+
+    behaviors: set[str] = set()
+    for item in feedback_items:
+        if not isinstance(item, Mapping):
+            continue
+        summary = item.get("feedback_summary")
+        summary = summary if isinstance(summary, Mapping) else item
+        required_behaviors = summary.get("required_behaviors")
+        if not isinstance(required_behaviors, list):
+            continue
+        behaviors.update(str(behavior) for behavior in required_behaviors if str(behavior).strip())
+    return behaviors
+
+
+def _feedback_has_scope_or_cost_issue(prompt: str | None) -> bool:
+    behaviors = _feedback_required_behaviors_from_mutation_prompt(prompt)
+    return bool(
+        behaviors
+        & {
+            "reduce_answer_scope_to_verified_claims",
+            "prefer_fewer_verified_claims_over_broad_synthesis",
+            "optimize_verifiability_per_evidence_block",
+            "avoid_collecting_more_evidence_without_verifiability_gain",
+            "cap_evidence_acquisition_and_summarization_cost",
+        }
+    )
 
 
 def _feedback_has_evidence_preservation_issue(prompt: str | None) -> bool:
@@ -1751,6 +1806,7 @@ def _default_cli_skill_candidate(
 ) -> str:
     feedback_guidance = _feedback_guidance_from_mutation_prompt(mutation_prompt)
     evidence_preservation_issue = _feedback_has_evidence_preservation_issue(mutation_prompt)
+    scope_or_cost_issue = _feedback_has_scope_or_cost_issue(mutation_prompt)
     if not trace_packs and not feedback_guidance:
         return current_content
 
@@ -1801,6 +1857,32 @@ def _default_cli_skill_candidate(
                     "Before finalizing, verify that every concrete claim is supported by "
                     "non-compacted evidence captured in the trajectory; do a claim-by-claim check "
                     "and omit claims that cannot be verified."
+                ),
+            ]
+        )
+    if scope_or_cost_issue:
+        guidance.extend(
+            [
+                "Scope and cost control requirements:",
+                (
+                    "Prefer fewer verified claims over broad synthesis when prior evaluation "
+                    "shows lower score, lower verifiability, or higher cost."
+                ),
+                (
+                    "Do not expand answer breadth until each concrete claim is tied to a "
+                    "non-compacted source excerpt, artifact reference, or structured field."
+                ),
+                (
+                    "Optimize verifiability per evidence block: each captured block should "
+                    "support a specific final-answer claim or be omitted."
+                ),
+                (
+                    "Avoid collecting more evidence without a verifiability gain; stop expanding "
+                    "once the required claims are supported."
+                ),
+                (
+                    "Cap evidence acquisition and summarization cost by using the smallest "
+                    "bounded extracts that can support the requested answer."
                 ),
             ]
         )

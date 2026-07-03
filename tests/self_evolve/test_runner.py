@@ -2089,6 +2089,57 @@ def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_pres
     assert "evidence_compacted=True" in candidate_content
 
 
+def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generic_guidance() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-1",
+                            "dataset_split": "historical",
+                            "metrics": {
+                                "score": 60.6,
+                                "baseline_score": 61.3,
+                                "candidate_score": 60.6,
+                                "score_delta": -0.7,
+                                "baseline_latency_ms": 218_595,
+                                "candidate_latency_ms": 348_558,
+                                "latency_ms_delta": 129_963,
+                            },
+                            "failed_gates": ["score_improvement"],
+                            "required_behaviors": [
+                                "reduce_answer_scope_to_verified_claims",
+                                "prefer_fewer_verified_claims_over_broad_synthesis",
+                                "optimize_verifiability_per_evidence_block",
+                                "avoid_collecting_more_evidence_without_verifiability_gain",
+                                "cap_evidence_acquisition_and_summarization_cost",
+                            ],
+                        }
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "Scope and cost control requirements" in candidate_content
+    assert "Prefer fewer verified claims over broad synthesis" in candidate_content
+    assert "Do not expand answer breadth" in candidate_content
+    assert "verifiability per evidence block" in candidate_content
+    assert "avoid collecting more evidence without a verifiability gain" in candidate_content.lower()
+    assert "cap evidence acquisition and summarization cost" in candidate_content.lower()
+    assert "curl" not in candidate_content.lower()
+    assert "podcast" not in candidate_content.lower()
+
+
 def test_auto_verified_inferred_target_can_create_new_skill_draft(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
