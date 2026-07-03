@@ -1380,9 +1380,25 @@ def _feedback_from_report(
 
 def _historical_feedback_metrics(iteration: Mapping[str, Any]) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
+    baseline_metrics = iteration.get("baseline_metrics")
     candidate_metrics = iteration.get("candidate_metrics")
     if isinstance(candidate_metrics, Mapping):
         metrics.update(dict(candidate_metrics))
+    if isinstance(baseline_metrics, Mapping) and isinstance(candidate_metrics, Mapping):
+        metrics.update(
+            _baseline_comparison_feedback_metrics(
+                baseline_summary=EvaluationSummary(
+                    variant_id="baseline",
+                    metrics=baseline_metrics,
+                    dataset_split="historical",
+                ),
+                candidate_summary=EvaluationSummary(
+                    variant_id=str(iteration.get("candidate_id") or "candidate"),
+                    metrics=candidate_metrics,
+                    dataset_split="historical",
+                ),
+            )
+        )
     held_out_metrics = iteration.get("held_out_metrics")
     if isinstance(held_out_metrics, Mapping):
         for key, value in held_out_metrics.items():
