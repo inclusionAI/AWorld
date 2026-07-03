@@ -17,6 +17,7 @@ from aworld.self_evolve.runner import (
     _default_cli_skill_candidate,
     _default_post_apply_evaluator,
     _iteration_validation_feedback,
+    _summary_with_replay_evidence_metrics,
     optimize_explicit_target,
     optimize_from_cli_request,
 )
@@ -103,6 +104,44 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
     assert metrics["candidate_latency_ms"] == 333_973
     assert metrics["latency_ms_delta"] == 131_601
     assert metrics["failed_gates"] == ["score_improvement"]
+
+
+def test_summary_with_replay_evidence_metrics_includes_replay_failure_diagnostics() -> None:
+    summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={"score": 68.0},
+        dataset_split="validation",
+    )
+    replay_variant = ReplayVariantResult(
+        variant_id="cand-1",
+        status="succeeded",
+        trajectory=[{"action": {"content": "answer"}}],
+        metrics={
+            "failed_repetition_count": 2,
+            "repetition_failures": [
+                {"type": "TimeoutExpired", "reason": "replay timed out"},
+                {
+                    "reason": "evidence_quality_failed",
+                    "evidence_manifest_invalid_entry_count": 1,
+                    "evidence_compaction_signals": ["tool_output_compacted"],
+                },
+            ],
+        },
+    )
+
+    merged = _summary_with_replay_evidence_metrics(summary, replay_variant)
+
+    assert merged.metrics["failed_repetition_count"] == 2
+    assert merged.metrics["replay_failed_repetition_count"] == 2
+    assert merged.metrics["replay_failure_reasons"] == [
+        "replay timed out",
+        "evidence_quality_failed",
+    ]
+    assert merged.metrics["replay_failure_types"] == [
+        "TimeoutExpired",
+        "evidence_quality_failed",
+    ]
+    assert merged.metrics["replay_evidence_manifest_invalid_entry_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -2306,6 +2345,53 @@ def test_default_cli_skill_candidate_turns_repair_plan_into_acceptance_criteria(
     assert "Every final factual claim must have non-compacted support" in candidate_content
     assert "The evidence manifest must have no invalid entries" in candidate_content
     assert "Do not finalize if these criteria are not met" in candidate_content
+    assert "curl" not in candidate_content.lower()
+    assert "podcast" not in candidate_content.lower()
+
+
+def test_default_cli_skill_candidate_turns_replay_failures_into_recovery_rules() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-1",
+                            "dataset_split": "historical",
+                            "failed_gates": ["evidence_quality"],
+                            "repair_plan": {
+                                "priority": "evidence_verifiability",
+                                "issues": [
+                                    "replay_timeout",
+                                    "replay_evidence_quality_failure",
+                                ],
+                                "actions": [
+                                    "change_strategy_after_failed_replay",
+                                    "do_not_finalize_after_failed_evidence_retry",
+                                ],
+                                "acceptance_criteria": [
+                                    "replay_repetitions_complete_without_evidence_failures",
+                                ],
+                            },
+                        }
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "Replay failure recovery requirements" in candidate_content
+    assert "After one failed replay evidence attempt" in candidate_content
+    assert "Do not finalize after a failed evidence retry" in candidate_content
+    assert "complete without replay evidence failures" in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 

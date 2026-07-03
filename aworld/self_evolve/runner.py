@@ -1495,13 +1495,47 @@ def _summary_with_replay_evidence_metrics(
         "evidence_manifest_present",
         "evidence_manifest_valid",
         "evidence_compaction_signals",
+        "failed_repetition_count",
+        "repetition_failures",
     )
     merged_metrics = dict(summary.metrics)
     for metric_name in evidence_metric_names:
         if metric_name in replay_metrics:
             merged_metrics[metric_name] = replay_metrics[metric_name]
             merged_metrics[f"replay_{metric_name}"] = replay_metrics[metric_name]
+    failure_summary = _replay_failure_summary(replay_metrics.get("repetition_failures"))
+    merged_metrics.update(failure_summary)
     return replace(summary, metrics=merged_metrics)
+
+
+def _replay_failure_summary(value: object) -> dict[str, object]:
+    if not isinstance(value, list):
+        return {}
+    reasons: list[str] = []
+    types: list[str] = []
+    evidence_manifest_invalid_entry_count = 0
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        reason = item.get("reason")
+        if isinstance(reason, str) and reason and reason not in reasons:
+            reasons.append(reason)
+        failure_type = item.get("type") or item.get("reason")
+        if isinstance(failure_type, str) and failure_type and failure_type not in types:
+            types.append(failure_type)
+        invalid_count = item.get("evidence_manifest_invalid_entry_count")
+        if isinstance(invalid_count, (int, float)):
+            evidence_manifest_invalid_entry_count += int(invalid_count)
+    summary: dict[str, object] = {}
+    if reasons:
+        summary["replay_failure_reasons"] = reasons
+    if types:
+        summary["replay_failure_types"] = types
+    if evidence_manifest_invalid_entry_count:
+        summary["replay_evidence_manifest_invalid_entry_count"] = (
+            evidence_manifest_invalid_entry_count
+        )
+    return summary
 
 
 def _can_reuse_single_case_replay_validation(dataset: SelfEvolveDataset) -> bool:
@@ -2007,6 +2041,24 @@ def _default_cli_skill_candidate(
                 (
                     "Do not finalize if these criteria are not met; instead narrow the "
                     "answer to only verified claims or report the missing evidence."
+                ),
+            ]
+        )
+    if repair_plan["issues"] & {"replay_timeout", "replay_evidence_quality_failure"}:
+        guidance.extend(
+            [
+                "Replay failure recovery requirements:",
+                (
+                    "After one failed replay evidence attempt, change the evidence strategy "
+                    "instead of repeating the same path."
+                ),
+                (
+                    "Do not finalize after a failed evidence retry; first produce a bounded "
+                    "missing-evidence report or narrow the answer to verified claims only."
+                ),
+                (
+                    "The replay should complete without replay evidence failures before the "
+                    "candidate can be considered ready for verified apply."
                 ),
             ]
         )

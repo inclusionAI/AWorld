@@ -366,6 +366,36 @@ def test_feedback_normalization_outputs_structured_repair_plan() -> None:
     assert "manifest_has_no_invalid_entries" in repair_plan["acceptance_criteria"]
 
 
+def test_feedback_normalization_turns_replay_failures_into_recovery_plan() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-replay-failure",
+            dataset_split="validation",
+            metrics={
+                "score": 68.0,
+                "failed_repetition_count": 2,
+                "replay_failure_reasons": [
+                    "replay timed out",
+                    "evidence_quality_failed",
+                ],
+                "replay_failure_types": [
+                    "TimeoutExpired",
+                    "evidence_quality_failed",
+                ],
+                "replay_evidence_manifest_invalid_entry_count": 1,
+                "failed_gates": ["evidence_quality"],
+            },
+        )
+    )
+
+    repair_plan = summary["repair_plan"]
+    assert "replay_timeout" in repair_plan["issues"]
+    assert "replay_evidence_quality_failure" in repair_plan["issues"]
+    assert "change_strategy_after_failed_replay" in repair_plan["actions"]
+    assert "do_not_finalize_after_failed_evidence_retry" in repair_plan["actions"]
+    assert "replay_repetitions_complete_without_evidence_failures" in repair_plan["acceptance_criteria"]
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic_strategy() -> None:
     prompts = []

@@ -36,6 +36,9 @@ _SCALAR_METRIC_KEYS = {
     "latency_ms_delta",
     "evidence_manifest_invalid_entry_count",
     "evidence_manifest_entry_count",
+    "failed_repetition_count",
+    "replay_failed_repetition_count",
+    "replay_evidence_manifest_invalid_entry_count",
 }
 
 _EVIDENCE_METRIC_KEYS = {
@@ -51,6 +54,7 @@ _EVIDENCE_METRIC_KEYS = {
     "evidence_incomplete_delta",
     "evidence_manifest_invalid_entry_count",
     "evidence_manifest_entry_count",
+    "replay_evidence_manifest_invalid_entry_count",
     "veto_triggered",
 }
 
@@ -110,6 +114,15 @@ def _evidence_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
     invalid_count = metrics.get("evidence_manifest_invalid_entry_count")
     if isinstance(invalid_count, (int, float)):
         summary["invalid_entry_count"] = invalid_count
+    replay_invalid_count = metrics.get("replay_evidence_manifest_invalid_entry_count")
+    if isinstance(replay_invalid_count, (int, float)):
+        summary["replay_invalid_entry_count"] = replay_invalid_count
+    replay_failure_reasons = _string_list(metrics.get("replay_failure_reasons"))
+    if replay_failure_reasons:
+        summary["replay_failure_reasons"] = replay_failure_reasons
+    replay_failure_types = _string_list(metrics.get("replay_failure_types"))
+    if replay_failure_types:
+        summary["replay_failure_types"] = replay_failure_types
     return summary
 
 
@@ -213,9 +226,21 @@ def _repair_plan(
         or evidence.get("evidence_compacted") is True
         or evidence.get("evidence_incomplete") is True
     )
-    has_manifest_problem = _positive_number(
-        evidence.get("invalid_entry_count")
-    ) or _positive_number(evidence.get("evidence_manifest_invalid_entry_count"))
+    has_manifest_problem = (
+        _positive_number(evidence.get("invalid_entry_count"))
+        or _positive_number(evidence.get("evidence_manifest_invalid_entry_count"))
+        or _positive_number(evidence.get("replay_invalid_entry_count"))
+        or _positive_number(evidence.get("replay_evidence_manifest_invalid_entry_count"))
+    )
+    replay_failure_text = " ".join(
+        str(item)
+        for item in (
+            list(evidence.get("replay_failure_reasons") or [])
+            + list(evidence.get("replay_failure_types") or [])
+        )
+    ).lower()
+    has_replay_timeout = "timeout" in replay_failure_text
+    has_replay_evidence_failure = "evidence_quality_failed" in replay_failure_text
     if has_evidence_problem:
         issues.append("compacted_or_incomplete_evidence")
         actions.extend(
@@ -229,6 +254,19 @@ def _repair_plan(
         issues.append("invalid_evidence_manifest")
         actions.append("write_valid_bounded_evidence_manifest")
         acceptance_criteria.append("manifest_has_no_invalid_entries")
+    if has_replay_timeout:
+        issues.append("replay_timeout")
+        actions.append("change_strategy_after_failed_replay")
+        acceptance_criteria.append("replay_repetitions_complete_without_evidence_failures")
+    if has_replay_evidence_failure:
+        issues.append("replay_evidence_quality_failure")
+        actions.extend(
+            [
+                "change_strategy_after_failed_replay",
+                "do_not_finalize_after_failed_evidence_retry",
+            ]
+        )
+        acceptance_criteria.append("replay_repetitions_complete_without_evidence_failures")
     if "score_improvement" in set(failed_gates) or _has_efficiency_improvement_issue(
         failed_gates=failed_gates,
         metrics=metrics,
