@@ -316,6 +316,86 @@ def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> 
     assert "skill_alias_match:agent-browser" not in report.signals
 
 
+def test_credit_assigner_reuses_verified_web_grounding_skill_before_browser_alias(
+    tmp_path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "agent-browser",
+        description="Fast browser automation CLI for AI agents.",
+    )
+    _write_skill(
+        tmp_path,
+        "web-content-grounding",
+        description="Verified self-evolve skill for artifact-backed web evidence grounding.",
+    )
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {
+                    "input": {
+                        "content": (
+                            "https://www.xiaoyuzhoufm.com/episode/demo，"
+                            "这个播客的核心内容与关键洞察是什么？"
+                        )
+                    },
+                    "messages": [],
+                },
+                "action": {
+                    "content": "I will open the rendered page with agent-browser.",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "mcp",
+                                "arguments": "{\"command\":\"agent-browser open https://example.test\"}",
+                            }
+                        }
+                    ],
+                    "is_agent_finished": False,
+                },
+                "reward": {"status": "ok"},
+            },
+            {
+                "meta": {"step": 2, "agent_id": "agent", "pre_agent": "mcp"},
+                "state": {
+                    "input": {
+                        "content": (
+                            "Rendered podcast page has metadata, shownotes, and audio, "
+                            "but no transcript."
+                        )
+                    },
+                    "messages": [],
+                },
+                "action": {
+                    "content": "The final answer needs stronger web-page evidence grounding.",
+                    "tool_calls": [],
+                    "is_agent_finished": True,
+                },
+                "reward": {"status": "failed"},
+            },
+        ],
+        source_kind="current_trajectory",
+        task_id="podcast-task",
+    )
+    assigner = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    )
+
+    report = assigner.assign(pack)
+
+    assert report.selected_target is not None
+    assert report.selected_target.target_type == "skill"
+    assert report.selected_target.target_id == "web-content-grounding"
+    assert report.selected_target.path == str(
+        tmp_path / "aworld-skills" / "web-content-grounding" / "SKILL.md"
+    )
+    assert report.confidence >= 0.9
+    assert "verified_skill_target:web-content-grounding" in report.signals
+    assert "new_skill_candidate" not in report.signals
+    assert "skill_alias_match:agent-browser" not in report.signals
+
+
 def test_credit_assigner_ignores_skill_catalog_mentions_in_system_messages(tmp_path) -> None:
     _write_skill(
         tmp_path,
