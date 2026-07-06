@@ -141,6 +141,38 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_prompt_requires_minimal_delta_and_preserve_list() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nKeep existing login guidance.\n\nAdd one note about CDP profile mismatch.\n",
+            "rationale": "Small targeted change.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(),
+        trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        max_candidates=1,
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    await optimizer.propose(request)
+
+    prompt = prompts[0]
+    assert "minimal behavior delta" in prompt
+    assert "preserve list" in prompt
+    assert "must stay unchanged" in prompt
+    assert "Do not rewrite the whole target" in prompt
+    assert "acceptance check" in prompt
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
     prompts = []
 
