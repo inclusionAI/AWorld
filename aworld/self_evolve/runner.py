@@ -1495,6 +1495,10 @@ def _summary_with_replay_evidence_metrics(
         "evidence_manifest_present",
         "evidence_manifest_valid",
         "evidence_compaction_signals",
+        "evidence_bundle_path",
+        "evidence_bundle_present",
+        "evidence_bundle_valid",
+        "evidence_bundle_entry_count",
         "failed_repetition_count",
         "repetition_failures",
     )

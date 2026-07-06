@@ -551,6 +551,11 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         case_value = case_input.get("input") or case_input.get("query") or case_input.get("prompt")
         if not extracted_payload.get("question") and case_value is not None:
             extracted_payload["question"] = str(case_value)
+    evidence_bundle = _load_prompt_evidence_bundle(
+        extracted_payload.get("evidence_bundle_path") or target.get("evidence_bundle_path")
+    )
+    if evidence_bundle:
+        extracted_payload["evidence_bundle"] = evidence_bundle
     runtime_context = _trajectory_runtime_context(
         case_input=case_input,
         target=target,
@@ -624,7 +629,87 @@ def _trajectory_prompt_payload(extracted_payload: Mapping[str, Any]) -> tuple[di
         if isinstance(item, Mapping):
             evidence_items.append(_compact_prompt_evidence(item))
     payload["evidence"] = evidence_items
-    return payload, _summarize_prompt_evidence(evidence_items)
+    return payload, _summarize_prompt_evidence(
+        evidence_items,
+        evidence_bundle=payload.get("evidence_bundle"),
+    )
+
+
+def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    path = Path(value).expanduser()
+    try:
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "path": str(path),
+            "valid": False,
+            "entry_count": 0,
+            "entries": [],
+        }
+    if not isinstance(bundle, Mapping):
+        return {
+            "path": str(path),
+            "valid": False,
+            "entry_count": 0,
+            "entries": [],
+        }
+    entries = [
+        _compact_prompt_bundle_entry(entry)
+        for entry in bundle.get("entries") or []
+        if isinstance(entry, Mapping)
+    ]
+    return {
+        "path": str(path),
+        "format": str(bundle.get("format") or ""),
+        "version": bundle.get("version"),
+        "valid": bool(bundle.get("valid")) and bool(entries),
+        "entry_count": len(entries),
+        "entries": entries[:5],
+    }
+
+
+def _compact_prompt_bundle_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    compacted = {
+        "source_id": str(entry.get("source_id") or ""),
+        "artifact_path": str(entry.get("artifact_path") or ""),
+        "extraction_method": str(entry.get("extraction_method") or ""),
+    }
+    bounded = entry.get("bounded_evidence")
+    if isinstance(bounded, Mapping):
+        compacted["bounded_evidence"] = _compact_bounded_evidence_payload(bounded)
+    return compacted
+
+
+def _compact_bounded_evidence_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    compacted: dict[str, Any] = {}
+    for index, (key, value) in enumerate(payload.items()):
+        if index >= 8:
+            break
+        compacted[str(key)] = _compact_bounded_evidence_value(value)
+    return compacted
+
+
+def _compact_bounded_evidence_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if len(value) <= _MAX_PROMPT_EVIDENCE_CONTENT_CHARS:
+            return value
+        edge_chars = _MAX_PROMPT_EVIDENCE_CONTENT_CHARS // 2
+        omitted = len(value) - (edge_chars * 2)
+        return (
+            f"{value[:edge_chars]}\n"
+            f"... [omitted {omitted} chars from evidence bundle] ...\n"
+            f"{value[-edge_chars:]}"
+        )
+    if isinstance(value, Mapping):
+        return {
+            str(k): _compact_bounded_evidence_value(v)
+            for k, v in list(value.items())[:8]
+        }
+    if isinstance(value, list):
+        return [_compact_bounded_evidence_value(item) for item in value[:8]]
+    return value
 
 
 def _compact_prompt_evidence(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -651,7 +736,11 @@ def _compact_prompt_evidence(item: Mapping[str, Any]) -> dict[str, Any]:
     return compacted
 
 
-def _summarize_prompt_evidence(evidence_items: list[Mapping[str, Any]]) -> dict[str, Any]:
+def _summarize_prompt_evidence(
+    evidence_items: list[Mapping[str, Any]],
+    *,
+    evidence_bundle: object = None,
+) -> dict[str, Any]:
     sources = []
     total_original_chars = 0
     prompt_compacted_count = 0
@@ -669,7 +758,7 @@ def _summarize_prompt_evidence(evidence_items: list[Mapping[str, Any]]) -> dict[
             prompt_compacted_count += 1
         if item.get("truncated"):
             source_truncated_count += 1
-    return {
+    summary = {
         "evidence_block_count": len(evidence_items),
         "sources": sources,
         "total_original_chars": total_original_chars,
@@ -677,6 +766,12 @@ def _summarize_prompt_evidence(evidence_items: list[Mapping[str, Any]]) -> dict[
         "source_truncated_count": source_truncated_count,
         "max_prompt_evidence_content_chars": _MAX_PROMPT_EVIDENCE_CONTENT_CHARS,
     }
+    if isinstance(evidence_bundle, Mapping):
+        summary["canonical_bundle_valid"] = bool(evidence_bundle.get("valid"))
+        entry_count = evidence_bundle.get("entry_count")
+        if isinstance(entry_count, int):
+            summary["canonical_bundle_entry_count"] = entry_count
+    return summary
 
 
 def _trajectory_runtime_context(

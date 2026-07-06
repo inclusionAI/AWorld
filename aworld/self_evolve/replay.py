@@ -686,14 +686,76 @@ def _evidence_manifest_metrics(
         if reason is not None:
             invalid_reasons.append(f"line {line_number}: {reason}")
             continue
-        entries.append(entry)
+        entries.append(_canonical_evidence_entry(entry, artifact_dir=artifact_dir))
     metrics["evidence_manifest_entry_count"] = len(entries)
     metrics["evidence_manifest_valid"] = bool(entries)
     if invalid_reasons:
         metrics["evidence_manifest_invalid_entry_count"] = len(invalid_reasons)
     if invalid_reasons:
         metrics["evidence_manifest_invalid_reasons"] = invalid_reasons
+    bundle_metrics = _write_evidence_bundle(
+        artifact_dir=artifact_dir,
+        evidence_manifest=evidence_manifest,
+        entries=entries,
+        invalid_reasons=invalid_reasons,
+    )
+    metrics.update(bundle_metrics)
     return metrics
+
+
+def _write_evidence_bundle(
+    *,
+    artifact_dir: Path | None,
+    evidence_manifest: Path,
+    entries: list[Mapping[str, Any]],
+    invalid_reasons: list[str],
+) -> dict[str, Any]:
+    if artifact_dir is None:
+        return {}
+    bundle_path = artifact_dir / "evidence_bundle.json"
+    bundle = {
+        "format": "aworld.self_evolve.evidence_bundle",
+        "version": 1,
+        "manifest_path": str(evidence_manifest),
+        "valid": bool(entries) and not invalid_reasons,
+        "entries": entries,
+    }
+    if invalid_reasons:
+        bundle["invalid_reasons"] = invalid_reasons
+    bundle_path.write_text(
+        json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return {
+        "evidence_bundle_path": str(bundle_path),
+        "evidence_bundle_present": True,
+        "evidence_bundle_valid": bundle["valid"],
+        "evidence_bundle_entry_count": len(entries),
+    }
+
+
+def _canonical_evidence_entry(
+    entry: Mapping[str, Any],
+    *,
+    artifact_dir: Path | None,
+) -> dict[str, Any]:
+    artifact_path = Path(str(entry.get("artifact_path")))
+    if not artifact_path.is_absolute() and artifact_dir is not None:
+        artifact_path = artifact_dir / artifact_path
+    return {
+        "source_id": str(entry.get("source_id") or ""),
+        "artifact_path": str(artifact_path),
+        "extraction_method": str(entry.get("extraction_method") or ""),
+        "bounded_evidence": _bounded_evidence_payload(entry),
+    }
+
+
+def _bounded_evidence_payload(entry: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key in _MANIFEST_EVIDENCE_PAYLOAD_KEYS:
+        if key in entry:
+            payload[key] = entry[key]
+    return payload
 
 
 def _invalid_evidence_manifest_entry_reason(
@@ -972,13 +1034,21 @@ def build_paired_replay_dataset(
                 },
                 "baseline": {
                     "status": replay_result.baseline.status,
-                    "metrics": dict(replay_result.baseline.metrics),
+                    "metrics": _evaluation_replay_metrics(
+                        aggregate_metrics=replay_result.baseline.metrics,
+                        repetition_metrics=baseline_result.metrics,
+                    ),
+                    "aggregate_metrics": dict(replay_result.baseline.metrics),
                     "failure": replay_result.baseline.failure,
                     "variant_id": baseline_result.variant_id,
                 },
                 "candidate": {
                     "status": replay_result.candidate.status,
-                    "metrics": dict(replay_result.candidate.metrics),
+                    "metrics": _evaluation_replay_metrics(
+                        aggregate_metrics=replay_result.candidate.metrics,
+                        repetition_metrics=candidate_result.metrics,
+                    ),
+                    "aggregate_metrics": dict(replay_result.candidate.metrics),
                     "failure": replay_result.candidate.failure,
                     "variant_id": candidate_result.variant_id,
                 },
@@ -1021,6 +1091,23 @@ def build_paired_replay_dataset(
             held_out_case_ids=dataset.recipe.held_out_case_ids,
         ),
     )
+
+
+def _evaluation_replay_metrics(
+    *,
+    aggregate_metrics: Mapping[str, Any],
+    repetition_metrics: Mapping[str, Any],
+) -> dict[str, Any]:
+    metrics = dict(aggregate_metrics)
+    for key in (
+        "evidence_bundle_path",
+        "evidence_bundle_present",
+        "evidence_bundle_valid",
+        "evidence_bundle_entry_count",
+    ):
+        if key in repetition_metrics:
+            metrics[key] = repetition_metrics[key]
+    return metrics
 
 
 def _evaluation_repetition_results(

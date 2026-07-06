@@ -326,14 +326,20 @@ class EvidenceQualityGate:
         evidence_manifest_invalid_entry_count = int(
             _number_metric(summary.metrics, "evidence_manifest_invalid_entry_count") or 0
         )
+        evidence_bundle_entry_count = int(
+            _number_metric(summary.metrics, "evidence_bundle_entry_count") or 0
+        )
+        evidence_bundle_valid = _bool_metric(summary.metrics, "evidence_bundle_valid") is True
         artifact_first_evidence = (
             _bool_metric(summary.metrics, "evidence_strategy_passed") is True
             and evidence_manifest_entry_count > 0
         )
+        canonical_bundle_evidence = evidence_bundle_valid and evidence_bundle_entry_count > 0
         has_evidence = (
             summary.metrics.get("has_evidence") == 1.0
             or evidence_block_count > 0
             or artifact_first_evidence
+            or canonical_bundle_evidence
         )
         compacted = _bool_metric(summary.metrics, "evidence_compacted")
         if compacted is None:
@@ -349,6 +355,8 @@ class EvidenceQualityGate:
             "evidence_strategy_passed": artifact_first_evidence,
             "evidence_manifest_entry_count": evidence_manifest_entry_count,
             "evidence_manifest_invalid_entry_count": evidence_manifest_invalid_entry_count,
+            "evidence_bundle_valid": evidence_bundle_valid,
+            "evidence_bundle_entry_count": evidence_bundle_entry_count,
         }
         if not has_evidence:
             return GateResult(
@@ -357,9 +365,14 @@ class EvidenceQualityGate:
                 reason="verified apply requires replay tool evidence",
                 details=details,
             )
-        if artifact_first_evidence and (
-            evidence_manifest_invalid_entry_count > 0 or compacted or incomplete
-        ):
+        if canonical_bundle_evidence and evidence_manifest_invalid_entry_count == 0:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=True,
+                reason="evaluation evidence is present via canonical evidence bundle",
+                details=details,
+            )
+        if artifact_first_evidence and evidence_manifest_invalid_entry_count > 0:
             return GateResult(
                 gate_name="evidence_quality",
                 passed=False,

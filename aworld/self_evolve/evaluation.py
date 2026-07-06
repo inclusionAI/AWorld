@@ -701,11 +701,38 @@ def _aworld_trajectory_record(
     request: EvaluationRequest,
 ) -> Mapping[str, Any]:
     trajectory = _trajectory_for_variant(case, request=request)
-    return {
+    record: dict[str, Any] = {
         "task_id": case.case_id,
         "is_sub_task": False,
         "trajectory": json.dumps(trajectory, ensure_ascii=False),
     }
+    evidence_bundle_path = _evidence_bundle_path_for_variant(case, request=request)
+    if evidence_bundle_path:
+        record["evidence_bundle_path"] = evidence_bundle_path
+    return record
+
+
+def _evidence_bundle_path_for_variant(case: Any, *, request: EvaluationRequest) -> str | None:
+    metadata = case.metadata if isinstance(case.metadata, Mapping) else {}
+    replay = metadata.get("replay")
+    if not isinstance(replay, Mapping):
+        return None
+    variant_keys = [request.variant_id]
+    if request.candidate is not None:
+        variant_keys.extend([request.candidate.candidate_id, "candidate"])
+    else:
+        variant_keys.extend(["baseline"])
+    for key in variant_keys:
+        block = replay.get(key)
+        if not isinstance(block, Mapping):
+            continue
+        metrics = block.get("metrics")
+        if not isinstance(metrics, Mapping):
+            continue
+        path = metrics.get("evidence_bundle_path") or metrics.get("replay_evidence_bundle_path")
+        if isinstance(path, str) and path.strip():
+            return path
+    return None
 
 
 def _trajectory_for_variant(case: Any, *, request: EvaluationRequest) -> list[Mapping[str, Any]]:
