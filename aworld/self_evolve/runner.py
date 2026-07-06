@@ -1796,6 +1796,28 @@ def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
             )
             if issue_text:
                 parts.append(f"evidence_issues={issue_text}")
+        replay_failure_reasons = evidence.get("replay_failure_reasons")
+        if not isinstance(replay_failure_reasons, list):
+            replay_failure_reasons = metrics.get("replay_failure_reasons")
+        if isinstance(replay_failure_reasons, list) and replay_failure_reasons:
+            reason_text = ",".join(
+                str(reason).strip()
+                for reason in replay_failure_reasons[:3]
+                if str(reason).strip()
+            )
+            if reason_text:
+                parts.append(f"replay_failure_reasons={reason_text}")
+        replay_failure_types = evidence.get("replay_failure_types")
+        if not isinstance(replay_failure_types, list):
+            replay_failure_types = metrics.get("replay_failure_types")
+        if isinstance(replay_failure_types, list) and replay_failure_types:
+            type_text = ",".join(
+                str(failure_type).strip()
+                for failure_type in replay_failure_types[:3]
+                if str(failure_type).strip()
+            )
+            if type_text:
+                parts.append(f"replay_failure_types={type_text}")
         required_behaviors = summary.get("required_behaviors")
         if isinstance(required_behaviors, list) and required_behaviors:
             behavior_text = ",".join(
@@ -2044,7 +2066,11 @@ def _default_cli_skill_candidate(
                 ),
             ]
         )
-    if repair_plan["issues"] & {"replay_timeout", "replay_evidence_quality_failure"}:
+    if repair_plan["issues"] & {
+        "replay_timeout",
+        "replay_evidence_quality_failure",
+        "replay_trajectory_capture_failure",
+    }:
         guidance.extend(
             [
                 "Replay failure recovery requirements:",
@@ -2055,6 +2081,14 @@ def _default_cli_skill_candidate(
                 (
                     "Do not finalize after a failed evidence retry; first produce a bounded "
                     "missing-evidence report or narrow the answer to verified claims only."
+                ),
+                (
+                    "If replay succeeds but returns no trajectory evidence, treat the run "
+                    "as unusable and change strategy."
+                ),
+                (
+                    "Do not finalize without captured trajectory evidence that includes "
+                    "tool evidence and final state."
                 ),
                 (
                     "The replay should complete without replay evidence failures before the "
