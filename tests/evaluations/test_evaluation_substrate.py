@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import json
+from pathlib import Path
 import pytest
 from pydantic import BaseModel, Field
 
@@ -1411,6 +1413,117 @@ Final report:
     assert payload["score"] == pytest.approx(74.6)
     assert payload["verdict"] == "Pass"
     assert payload["A1_groundedness"] == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_resolves_read_only_artifact_requests(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "evidence.txt"
+    artifact_path.write_text("artifact evidence content", encoding="utf-8")
+    calls: list[str] = []
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        calls.append(prompt)
+        payload = json.loads(prompt)
+        if len(calls) == 1:
+            return {
+                "artifact_read_requests": [
+                    {
+                        "path": str(artifact_path),
+                        "max_chars": 200,
+                    }
+                ]
+            }
+        assert payload["artifact_read_results"][0]["content"] == "artifact evidence content"
+        return {
+            "score": 88.0,
+            "verdict": "Pass",
+            "veto_triggered": False,
+        }
+
+    prompt = {
+        "artifact_backed_evidence": {
+            "mode": "read_only_artifact_index",
+            "read_policy": {
+                "read_only": True,
+                "external_network_allowed": False,
+                "mutation_allowed": False,
+            },
+            "artifacts": [
+                {
+                    "kind": "source_artifact",
+                    "path": str(artifact_path),
+                    "available": True,
+                }
+            ],
+        },
+        "required_output_schema": {"score": "number"},
+    }
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(88.0)
+    assert payload["verdict"] == "Pass"
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_denies_artifact_reads_outside_index(tmp_path: Path) -> None:
+    allowed_path = tmp_path / "allowed.txt"
+    denied_path = tmp_path / "denied.txt"
+    allowed_path.write_text("allowed evidence", encoding="utf-8")
+    denied_path.write_text("denied evidence", encoding="utf-8")
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        payload = json.loads(prompt)
+        if "artifact_read_results" not in payload:
+            return {"artifact_read_requests": [{"path": str(denied_path)}]}
+        result = payload["artifact_read_results"][0]
+        assert result["status"] == "denied"
+        assert result["reason"] == "path_not_in_artifact_index"
+        assert "content" not in result
+        return {"score": 10.0, "verdict": "Fail"}
+
+    prompt = {
+        "artifact_backed_evidence": {
+            "mode": "read_only_artifact_index",
+            "read_policy": {
+                "read_only": True,
+                "external_network_allowed": False,
+                "mutation_allowed": False,
+            },
+            "artifacts": [
+                {
+                    "kind": "source_artifact",
+                    "path": str(allowed_path),
+                    "available": True,
+                }
+            ],
+        },
+    }
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(10.0)
 
 
 @pytest.mark.asyncio

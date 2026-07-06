@@ -732,7 +732,8 @@ def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
     assert runtime_context["OUT_DIR"] == ""
     contract = prompt["evaluation_runtime_contract"]
     assert contract["inputs_are_complete"] is True
-    assert contract["primary_evaluation_input"] == "extracted_trajectory"
+    assert contract["primary_evaluation_input"] == "artifact_backed_evidence"
+    assert contract["bounded_prompt_input"] == "extracted_trajectory"
     assert contract["do_not_request_missing_parameters"] is True
     assert contract["output_format"] == "single_json_object"
     assert "Do not ask the user for TRAJECTORY_LOG" in prompt["instruction"]
@@ -834,8 +835,182 @@ def test_trajectory_prompt_includes_canonical_evidence_bundle(tmp_path: Path) ->
     )
     assert prompt["evidence_summary"]["canonical_bundle_entry_count"] == 1
     assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == (
-        "extracted_trajectory"
+        "artifact_backed_evidence"
     )
+
+
+def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "source-1",
+                        "artifact_path": str(tmp_path / "source.txt"),
+                        "extraction_method": "bounded_extract",
+                        "bounded_evidence": {
+                            "claim_support": "compact verified evidence",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    extracted_path = tmp_path / "extracted.json"
+    extracted_path.write_text(
+        json.dumps(
+            {
+                "task_id": "case-1",
+                "question": (
+                    "summarize the source"
+                    "\n\nSelf-evolve replay evidence requirements:\n"
+                    + ("internal replay instruction " * 200)
+                ),
+                "system_prompt_excerpt": "system instructions " * 1000,
+                "steps": [
+                    {
+                        "step": index,
+                        "agent_id": "Aworld",
+                        "tool_calls": [
+                            {
+                                "name": "reader",
+                                "args": {"content": "large argument " * 1000},
+                            }
+                        ],
+                        "assistant_content": "assistant reasoning " * 1000,
+                        "is_agent_finished": index == 3,
+                    }
+                    for index in range(1, 4)
+                ],
+                "final_answer": "answer",
+                "evidence": [
+                    {
+                        "source": "state.messages",
+                        "content": "raw evidence " * 5000,
+                        "original_length": 65000,
+                        "truncated": True,
+                    }
+                    for _ in range(8)
+                ],
+                "evidence_bundle_path": str(bundle_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "summarize the source"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "artifacts": {"outcome": {"extracted_path": str(extracted_path)}},
+            },
+            suite=None,
+        )
+    )
+
+    trajectory = prompt["extracted_trajectory"]
+    evidence = trajectory["evidence"]
+    assert prompt["evidence_summary"]["bundle_first"] is True
+    assert prompt["evidence_summary"]["raw_evidence_content_suppressed"] is True
+    assert trajectory["evidence_bundle"]["valid"] is True
+    assert "Self-evolve replay evidence requirements" not in trajectory["question"]
+    assert len(trajectory["system_prompt_excerpt"]) <= 800
+    assert len(evidence) <= 3
+    assert all("content" not in item for item in evidence)
+    assert all(len(step.get("assistant_content", "")) <= 200 for step in trajectory["steps"])
+    assert all(
+        "args" not in call
+        for step in trajectory["steps"]
+        for call in step.get("tool_calls", [])
+    )
+    artifact_backed = prompt["artifact_backed_evidence"]
+    assert artifact_backed["mode"] == "read_only_artifact_index"
+    assert artifact_backed["prompt_payload_is_bounded"] is True
+    assert artifact_backed["read_policy"]["external_network_allowed"] is False
+    assert artifact_backed["read_policy"]["mutation_allowed"] is False
+    assert {
+        (artifact["kind"], artifact["path"])
+        for artifact in artifact_backed["artifacts"]
+    } >= {
+        ("extracted_trajectory_json", str(extracted_path)),
+        ("canonical_evidence_bundle", str(bundle_path)),
+        ("source_artifact", str(tmp_path / "source.txt")),
+    }
+    assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == (
+        "artifact_backed_evidence"
+    )
+    assert prompt["evaluation_runtime_contract"]["may_use_read_only_artifact_access"] is True
+    assert prompt["evaluation_runtime_contract"]["do_not_call_external_tools"] is True
+    assert len(json.dumps(prompt, ensure_ascii=False)) < 30000
+
+
+def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(
+    tmp_path: Path,
+) -> None:
+    entries = []
+    expected_paths = set()
+    for index in range(7):
+        source_path = tmp_path / f"source-{index}.txt"
+        source_path.write_text(f"source evidence {index}", encoding="utf-8")
+        expected_paths.add(str(source_path))
+        entries.append(
+            {
+                "source_id": f"source-{index}",
+                "artifact_path": str(source_path),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"excerpt": f"bounded evidence {index}"},
+            }
+        )
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": entries,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "trajectory": [
+                    {
+                        "state": {"input": {"content": "question"}, "messages": []},
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {"content": "answer", "is_agent_finished": "True"},
+                    }
+                ],
+                "evidence_bundle_path": str(bundle_path),
+            },
+            suite=None,
+        )
+    )
+
+    prompt_entries = prompt["extracted_trajectory"]["evidence_bundle"]["entries"]
+    source_artifact_paths = {
+        artifact["path"]
+        for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+        if artifact["kind"] == "source_artifact"
+    }
+    assert len(prompt_entries) == 5
+    assert source_artifact_paths == expected_paths
+    assert prompt["evidence_summary"]["canonical_bundle_entry_count"] == 7
 
 
 def test_trajectory_prompt_compacts_noisy_evidence_without_losing_quality_signals() -> None:
