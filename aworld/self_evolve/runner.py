@@ -62,6 +62,10 @@ from aworld.self_evolve.replay import (
     build_replay_request,
     load_candidate_replay_result,
 )
+from aworld.self_evolve.release_checks import (
+    build_content_quality_diagnostics,
+    build_release_checklist,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget, SkillTextTarget
 from aworld.self_evolve.trace_pack import TracePack
@@ -737,6 +741,20 @@ class SelfEvolveRunner:
                 }
                 for gate_result in gate_results
             ]
+            report["release_checklist"] = build_release_checklist(
+                apply_policy=apply_policy,
+                gate_results=report["gate_results"],
+            )
+        content_quality_metrics = (
+            dict(held_out_summary.metrics)
+            if held_out_summary is not None
+            else dict(candidate_summary.metrics)
+            if candidate_summary is not None
+            else {}
+        )
+        report["content_quality_diagnostics"] = build_content_quality_diagnostics(
+            content_quality_metrics
+        )
         self.store.write_report(run_id, report)
 
         completed_run = SelfEvolveRun(
@@ -2766,6 +2784,7 @@ def _infer_target_from_trace_packs(
         key=lambda item: (
             item.selected_target is not None,
             item.confidence,
+            _target_selection_priority(item),
         ),
     )
     if best_report.selected_target is not None:
@@ -2774,6 +2793,19 @@ def _infer_target_from_trace_packs(
             best_report.selected_target.target_id,
         )
     return best_report, None
+
+
+def _target_selection_priority(report: TargetSelectionReport) -> int:
+    if report.selected_target is None:
+        return 0
+    priorities = {
+        "prompt-section": 30,
+        "tool-description": 25,
+        "skill": 20,
+        "config": 10,
+        "workspace-artifact": 5,
+    }
+    return priorities.get(report.selected_target.target_type, 1)
 
 
 def _explicit_target_selection_report(

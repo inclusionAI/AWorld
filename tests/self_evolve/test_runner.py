@@ -307,6 +307,12 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert report["release_checklist"]["status"] == "passed"
+    assert {
+        check["check_id"]: check["status"]
+        for check in report["release_checklist"]["checks"]
+    }["verification"] == "passed"
+    assert report["content_quality_diagnostics"]["blocking"] is False
     assert refreshed == [result.selected_candidate.candidate_id]
     assert report["post_apply"]["refresh"] == {"refreshed": True, "strategy": "test-hook"}
     assert {gate["gate_name"] for gate in report["gate_results"]} >= {
@@ -433,6 +439,98 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
     assert report["iterations"][0]["status"] == "rejected"
     assert report["iterations"][1]["candidate_id"] == "candidate-2"
     assert report["iterations"][1]["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_runner_reports_gate_results_when_all_candidates_are_rejected(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="rejected-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="rejected-task",
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-rejected",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+        rationale="will be rejected",
+        target_fingerprint="fingerprint",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    class FailingBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.9, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.1,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        post_apply_evaluator=post_apply,
+        evaluation_backend=FailingBackend(),
+        min_eval_cases=0,
+        max_iterations=1,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-all-rejected",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    report = json.loads((store.run_path("run-all-rejected") / "report.json").read_text(encoding="utf-8"))
+    assert report["selected_candidate_id"] == "candidate-rejected"
+    assert report["release_checklist"]["status"] == "blocked"
+    assert any(
+        gate["gate_name"] == "score_improvement" and gate["passed"] is False
+        for gate in report["gate_results"]
+    )
 
 
 @pytest.mark.asyncio

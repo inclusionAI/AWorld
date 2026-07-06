@@ -101,6 +101,10 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
     return (
         "Propose one concise text-only self-evolve candidate. "
         "Use trace evidence and trainable cases only; do not assume held-out data. "
+        "Prefer the smallest useful change: encode a minimal behavior delta that directly "
+        "addresses the observed failure, include a preserve list naming behavior that must "
+        "stay unchanged, and include an acceptance check that would prove the delta helped. "
+        "Do not rewrite the whole target when a local addition or replacement is enough. "
         "Use trace-driven reflective optimization: identify why the prior run lost score, "
         "then encode reusable procedural guidance that can improve task quality, tool economy, "
         "latency, and completion reliability. "

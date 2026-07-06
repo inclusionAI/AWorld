@@ -259,11 +259,12 @@ class TrajectoryCreditAssigner:
         if not evidence_ids:
             evidence_ids = tuple(step.evidence_id for step in trace_pack.steps)
         signals = _dedupe(
-            existing_signals + (f"skill_alias_match:{entry.target.target_id}",)
+            tuple(signal for signal in existing_signals if signal != "low_confidence")
+            + (f"skill_alias_match:{entry.target.target_id}",)
         )
         return TargetSelectionReport(
             selected_target=entry.target,
-            confidence=0.85,
+            confidence=0.9,
             evidence_step_ids=evidence_ids,
             failure_category="skill",
             signals=signals,
