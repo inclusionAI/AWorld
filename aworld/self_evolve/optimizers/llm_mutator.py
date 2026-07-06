@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import re
 from typing import Any, Callable, Mapping
 
 from aworld.self_evolve.feedback import normalize_feedback_summary
@@ -24,6 +25,8 @@ class TraceReflectiveLLMMutator:
         candidates: list[CandidateVariant] = []
         lineage: list[OptimizerLineage] = []
         filtered_noop_count = 0
+        filtered_high_baseline_regression_count = 0
+        require_targeted_delta = _request_has_high_baseline_regression(request)
 
         for index in range(request.max_candidates):
             prompt = _build_mutation_prompt(request, candidate_index=index)
@@ -33,6 +36,12 @@ class TraceReflectiveLLMMutator:
             content, rationale = _parse_mutator_output(output)
             if content == request.current_content:
                 filtered_noop_count += 1
+                continue
+            if require_targeted_delta and _is_weak_high_baseline_regression_candidate(
+                content,
+                current_content=request.current_content,
+            ):
+                filtered_high_baseline_regression_count += 1
                 continue
 
             candidate_id = _candidate_id(request, content, index=index)
@@ -57,7 +66,12 @@ class TraceReflectiveLLMMutator:
         return OptimizerResult(
             candidates=tuple(candidates),
             lineage=tuple(lineage),
-            diagnostics={"filtered_noop_candidates": filtered_noop_count},
+            diagnostics={
+                "filtered_noop_candidates": filtered_noop_count,
+                "filtered_high_baseline_regression_candidates": (
+                    filtered_high_baseline_regression_count
+                ),
+            },
         )
 
 
@@ -165,3 +179,95 @@ def _candidate_id(request: OptimizerRequest, content: str, *, index: int) -> str
         f"{request.target.target_type}:{request.target.target_id}:{index}:{content}".encode("utf-8")
     ).hexdigest()[:12]
     return f"llm-mutator-{digest}"
+
+
+def _request_has_high_baseline_regression(request: OptimizerRequest) -> bool:
+    for feedback in (*request.validation_feedback, *request.prior_feedback):
+        summary = normalize_feedback_summary(feedback)
+        metrics = summary.get("metrics")
+        metrics = metrics if isinstance(metrics, Mapping) else {}
+        baseline_score = _metric_float(metrics.get("baseline_score"))
+        candidate_score = _metric_float(metrics.get("candidate_score"))
+        score_delta = _metric_float(metrics.get("score_delta"))
+        if baseline_score is None or baseline_score < 85.0:
+            continue
+        if score_delta is not None and score_delta <= 0:
+            return True
+        if candidate_score is not None and candidate_score <= baseline_score:
+            return True
+
+        required_behaviors = _string_set(summary.get("required_behaviors"))
+        if required_behaviors & {
+            "differentiate_from_high_scoring_baseline",
+            "preserve_baseline_strengths",
+            "define_behavior_delta_before_tools",
+            "prefer_targeted_changes_over_broad_rewrites",
+        }:
+            return True
+
+        repair_plan = summary.get("repair_plan")
+        if isinstance(repair_plan, Mapping) and _string_set(repair_plan.get("actions")) & {
+            "preserve_high_scoring_baseline_strengths",
+            "define_candidate_behavior_delta",
+            "prefer_targeted_change_over_broad_rewrite",
+        }:
+            return True
+    return False
+
+
+def _is_weak_high_baseline_regression_candidate(
+    content: str,
+    *,
+    current_content: str,
+) -> bool:
+    text = content.lower()
+    has_preserve = bool(
+        re.search(
+            r"\b(preserve|keep|unchanged|baseline strengths|baseline behavior|保留|保持|不变)\b",
+            text,
+        )
+    )
+    has_behavior_delta = bool(
+        re.search(
+            r"\b(behavior delta|delta|change only|only add|only change|small targeted|"
+            r"targeted change|行为增量|执行行为|只改变|仅新增)\b",
+            text,
+        )
+    )
+    has_acceptance_check = bool(
+        re.search(
+            r"\b(acceptance check|acceptance criteria|must beat|must pass|verify|"
+            r"verification|no worse than|验收|准入|验证|检查)\b",
+            text,
+        )
+    )
+    if has_preserve and has_behavior_delta and has_acceptance_check:
+        return False
+
+    growth_ratio = len(content) / max(len(current_content), 1)
+    broad_terms = (
+        "comprehensive",
+        "broader",
+        "more evidence",
+        "collect more",
+        "expand",
+        "always",
+        "all claims",
+        "全面",
+        "更多证据",
+        "扩大",
+    )
+    has_broad_guidance = any(term in text for term in broad_terms)
+    return has_broad_guidance or growth_ratio > 1.4
+
+
+def _metric_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _string_set(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {str(item).strip() for item in value if str(item).strip()}

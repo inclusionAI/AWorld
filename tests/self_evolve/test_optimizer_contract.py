@@ -610,6 +610,92 @@ async def test_llm_mutator_filters_noop_candidates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_filters_weak_high_baseline_regression_candidate() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": (
+                "# Demo\n\n"
+                "Collect more evidence, add more comprehensive reasoning, and use broader "
+                "validation before final answers.\n"
+            ),
+            "rationale": "Broad guidance after the candidate regressed against a strong baseline.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-regressed",
+                metrics={
+                    "score": 87.5,
+                    "baseline_score": 90.5,
+                    "candidate_score": 87.5,
+                    "score_delta": -3.0,
+                    "B2_efficiency": 3.0,
+                    "failed_gates": ["score_improvement"],
+                },
+                dataset_split="validation",
+            ),
+        ),
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    result = await optimizer.propose(request)
+
+    assert result.candidates == ()
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_accepts_targeted_high_baseline_delta_candidate() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": (
+                "# Demo\n\n"
+                "## Preserve\n"
+                "- Keep the existing successful evidence flow and final answer structure unchanged.\n\n"
+                "## Behavior delta\n"
+                "- Before adding any extra evidence step, verify the existing evidence bundle is valid "
+                "and stop when it already supports the answer.\n\n"
+                "## Acceptance check\n"
+                "- The candidate must beat the baseline score while keeping efficiency no worse than "
+                "the baseline and producing no invalid evidence bundle entries.\n"
+            ),
+            "rationale": "Small targeted delta against a high-scoring baseline.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-regressed",
+                metrics={
+                    "score": 87.5,
+                    "baseline_score": 90.5,
+                    "candidate_score": 87.5,
+                    "score_delta": -3.0,
+                    "B2_efficiency": 3.0,
+                    "failed_gates": ["score_improvement"],
+                },
+                dataset_split="validation",
+            ),
+        ),
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    result = await optimizer.propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 0
+
+
+@pytest.mark.asyncio
 async def test_dspy_adapter_missing_dependency_fails_only_when_selected() -> None:
     optimizer = DSPyGEPAOptimizer(import_module=lambda name: (_ for _ in ()).throw(ImportError(name)))
 
