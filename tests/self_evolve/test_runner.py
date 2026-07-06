@@ -852,6 +852,114 @@ async def test_runner_replays_duplicate_rejected_candidate_before_final_gate(
 
 
 @pytest.mark.asyncio
+async def test_runner_rejects_duplicate_previously_accepted_candidate(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nAlready accepted guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-accepted-run"
+    historical_dir.mkdir(parents=True)
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-accepted-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "succeeded",
+                "candidate_ids": ["candidate-accepted"],
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-accepted",
+                        "status": "accepted",
+                        "baseline_metrics": {"score": 50.0},
+                        "candidate_metrics": {"score": 90.0},
+                        "held_out_metrics": {
+                            "deterministic_signal": True,
+                            "command_case_count": 1,
+                            "command_pass_count": 1,
+                            "global_regression_passed": True,
+                        },
+                        "failed_gates": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve guidance."}},
+            "action": {"content": "Need better guidance."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="accepted-dup-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="accepted-dup-task",
+    )
+    duplicate_candidate = CandidateVariant(
+        candidate_id="candidate-accepted",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content=candidate_content,
+        rationale="repeat previously accepted candidate",
+        target_fingerprint="fingerprint",
+    )
+
+    class DuplicateAcceptedOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(duplicate_candidate,))
+
+    class ShouldNotEvaluate:
+        async def evaluate_variant(self, request):
+            pytest.fail("duplicate accepted candidate should not reach evaluation")
+
+    async def post_apply(candidate):
+        pytest.fail("duplicate accepted candidate should not auto apply")
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=DuplicateAcceptedOptimizer(),
+        post_apply_evaluator=post_apply,
+        evaluation_backend=ShouldNotEvaluate(),
+        min_eval_cases=0,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-duplicate-accepted",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-duplicate-accepted"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["iterations"][0]["failed_gates"] == ["duplicate_accepted_candidate"]
+
+
+@pytest.mark.asyncio
 async def test_runner_auto_verified_rejects_without_evaluation_backend(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -1842,6 +1950,125 @@ async def test_runner_auto_verified_rejects_single_candidate_rerun_without_basel
         gate["gate_name"] == "replay_confidence"
         and gate["passed"] is False
         and gate["reason"] == "fixed historical baseline plus one candidate rerun is limited confidence"
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_verified_rejects_when_candidate_successful_replays_are_low(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="partial-replay-success",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="partial-replay-success",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+            "rationale": "Partial replay candidate.",
+        }
+
+    async def post_apply(candidate):
+        pytest.fail("low successful replay count must not apply")
+
+    class PartialReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={
+                        "repetition_count": 2,
+                        "successful_repetition_count": 2,
+                        "failed_repetition_count": 0,
+                    },
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={
+                        "repetition_count": 3,
+                        "successful_repetition_count": 1,
+                        "failed_repetition_count": 2,
+                        "repetition_failures": [
+                            {"type": "TimeoutExpired", "reason": "replay timed out"},
+                            {"type": "TimeoutExpired", "reason": "replay timed out"},
+                        ],
+                    },
+                ),
+            )
+
+    class PositiveBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate else 0.2,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=PositiveBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=PartialReplayBackend(),
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-partial-replay-success",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-partial-replay-success"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert any(
+        gate["gate_name"] == "replay_confidence"
+        and gate["passed"] is False
+        and gate["reason"] == "candidate replay successful repetitions are insufficient"
+        and gate["details"]["candidate_successful_repetition_count"] == 1
         for gate in report["gate_results"]
     )
 

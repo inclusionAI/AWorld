@@ -54,6 +54,35 @@ def test_score_improvement_gate_requires_min_delta() -> None:
     assert failed.reason == "score improvement below minimum delta"
 
 
+def test_score_improvement_gate_rejects_inconclusive_baseline_judge_timeout() -> None:
+    gate = ScoreImprovementGate(min_delta=0.1)
+
+    result = gate.evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 0.0,
+                "judge_attempt_count": 3,
+                "judge_success_count": 0,
+                "judge_failure_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "score": 88.0,
+                "judge_attempt_count": 2,
+                "judge_success_count": 1,
+                "judge_failure_count": 1,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.reason == "baseline judge failed completely; score improvement is inconclusive"
+    assert result.details["baseline_judge_success_count"] == 0
+
+
 def test_cost_latency_regression_gate_limits_regressions() -> None:
     gate = CostLatencyRegressionGate(max_cost_regression_ratio=0.25, max_latency_regression_ratio=0.5)
 

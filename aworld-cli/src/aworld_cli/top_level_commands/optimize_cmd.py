@@ -161,6 +161,7 @@ def render_optimize_summary(report: Any) -> str:
     best_candidate_id = _read_report_value(report, "best_candidate_id")
     selected_candidate_id = _read_report_value(report, "selected_candidate_id")
     failed_gate_names = _failed_gate_names(_read_report_value(report, "gate_results"))
+    run_id = _read_report_value(report, "run_id")
 
     lines = ["Optimize run submitted."]
     if status:
@@ -181,6 +182,22 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Selected candidate: {selected_candidate_id}")
     if status == "rejected" and failed_gate_names:
         lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
+    if (
+        status == "rejected"
+        and replay_path
+        and run_id
+        and _has_judge_timeout(report)
+        and not _has_replay_repetition_failure(report)
+    ):
+        lines.append(
+            "Resume evaluator: "
+            f"aworld-cli optimize --from-run {run_id} --rerun-evaluator"
+        )
+    if status == "rejected" and replay_path and _has_replay_repetition_failure(report):
+        lines.append(
+            "Replay recovery: rerun full optimize with a higher --replay-timeout; "
+            "--from-run --rerun-evaluator cannot add missing replay repetitions."
+        )
     return "\n".join(lines)
 
 
@@ -378,3 +395,63 @@ def _failed_gate_names(gate_results: Any) -> list[str]:
         if isinstance(gate_name, str):
             names.append(gate_name)
     return names
+
+
+def _has_judge_timeout(report: Any) -> bool:
+    for key in ("baseline_metrics", "candidate_metrics", "held_out_metrics"):
+        metrics = _read_report_value(report, key)
+        if _metrics_have_judge_timeout(metrics):
+            return True
+    return False
+
+
+def _has_replay_repetition_failure(report: Any) -> bool:
+    for key in ("baseline_metrics", "candidate_metrics", "held_out_metrics"):
+        metrics = _read_report_value(report, key)
+        if _metrics_have_replay_repetition_failure(metrics):
+            return True
+    return False
+
+
+def _metrics_have_replay_repetition_failure(metrics: Any) -> bool:
+    if not isinstance(metrics, Mapping):
+        return False
+    repetition_count = metrics.get("repetition_count")
+    successful_count = metrics.get("successful_repetition_count")
+    failed_count = metrics.get("failed_repetition_count")
+    if (
+        isinstance(repetition_count, (int, float))
+        and isinstance(successful_count, (int, float))
+        and int(repetition_count) > int(successful_count)
+    ):
+        return True
+    if isinstance(failed_count, (int, float)) and int(failed_count) > 0:
+        return True
+    failure_types = metrics.get("replay_failure_types") or metrics.get("replay_repetition_failures")
+    return _contains_timeout_failure(failure_types)
+
+
+def _metrics_have_judge_timeout(metrics: Any) -> bool:
+    if not isinstance(metrics, Mapping):
+        return False
+    failures = metrics.get("judge_failures")
+    if not isinstance(failures, (list, tuple)):
+        return False
+    return _contains_timeout_failure(failures)
+
+
+def _contains_timeout_failure(value: Any) -> bool:
+    if not isinstance(value, (list, tuple)):
+        return False
+    for failure in value:
+        if isinstance(failure, str):
+            if failure == "TimeoutExpired" or "timed out" in failure.lower():
+                return True
+            continue
+        if not isinstance(failure, Mapping):
+            continue
+        failure_type = str(failure.get("type") or "")
+        reason = str(failure.get("reason") or "")
+        if failure_type in {"TimeoutError", "TimeoutExpired"} or "timed out" in reason.lower():
+            return True
+    return False
