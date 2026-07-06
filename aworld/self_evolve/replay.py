@@ -942,12 +942,18 @@ def _aggregate_variant_results(
     evidence_compaction_signals: list[str] = []
     evidence_compacted_values: list[bool] = []
     evidence_strategy_passed_values: list[bool] = []
+    evidence_bundle_valid_values: list[bool] = []
+    latest_evidence_bundle_path: str | None = None
     for result in results:
         for key, value in result.metrics.items():
             if key == "evidence_compacted" and isinstance(value, bool):
                 evidence_compacted_values.append(value)
             elif key == "evidence_strategy_passed" and isinstance(value, bool):
                 evidence_strategy_passed_values.append(value)
+            elif key == "evidence_bundle_valid" and isinstance(value, bool):
+                evidence_bundle_valid_values.append(value)
+            elif key == "evidence_bundle_path" and isinstance(value, str) and value.strip():
+                latest_evidence_bundle_path = value
             elif key == "evidence_compaction_signals" and isinstance(value, list):
                 for item in value:
                     signal = str(item).strip()
@@ -969,6 +975,11 @@ def _aggregate_variant_results(
         metrics["evidence_compacted"] = any(evidence_compacted_values)
     if evidence_strategy_passed_values:
         metrics["evidence_strategy_passed"] = all(evidence_strategy_passed_values)
+    if evidence_bundle_valid_values:
+        metrics["evidence_bundle_valid"] = all(evidence_bundle_valid_values)
+        metrics["evidence_bundle_valid_values"] = evidence_bundle_valid_values
+    if latest_evidence_bundle_path:
+        metrics["evidence_bundle_path"] = latest_evidence_bundle_path
     if evidence_compaction_signals:
         metrics["evidence_compaction_signals"] = evidence_compaction_signals
     for key, values in numeric_metrics.items():

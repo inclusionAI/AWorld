@@ -2273,6 +2273,8 @@ def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generi
                                 "baseline_latency_ms": 218_595,
                                 "candidate_latency_ms": 348_558,
                                 "latency_ms_delta": 129_963,
+                                "B2_efficiency": 2.3,
+                                "B4_robustness": 2.7,
                             },
                             "failed_gates": ["score_improvement"],
                             "required_behaviors": [
@@ -2281,6 +2283,10 @@ def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generi
                                 "optimize_verifiability_per_evidence_block",
                                 "avoid_collecting_more_evidence_without_verifiability_gain",
                                 "cap_evidence_acquisition_and_summarization_cost",
+                                "plan_before_tools",
+                                "minimize_failed_attempts",
+                                "avoid_repeated_paths",
+                                "stop_after_sufficient_evidence",
                             ],
                         }
                     }
@@ -2301,6 +2307,10 @@ def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generi
     assert "verifiability per evidence block" in candidate_content
     assert "avoid collecting more evidence without a verifiability gain" in candidate_content.lower()
     assert "cap evidence acquisition and summarization cost" in candidate_content.lower()
+    assert "Plan the shortest viable evidence path" in candidate_content
+    assert "Set a small evidence budget" in candidate_content
+    assert "Do not repeat a failed or low-yield evidence path" in candidate_content
+    assert "Stop after sufficient verified evidence" in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
