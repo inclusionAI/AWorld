@@ -1013,6 +1013,75 @@ def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(
     assert prompt["evidence_summary"]["canonical_bundle_entry_count"] == 7
 
 
+def test_trajectory_prompt_artifact_index_rejects_bundle_paths_outside_trusted_roots(
+    tmp_path: Path,
+) -> None:
+    trusted_dir = tmp_path / "trusted"
+    trusted_dir.mkdir()
+    trusted_source = trusted_dir / "source.txt"
+    trusted_source.write_text("trusted evidence", encoding="utf-8")
+    untrusted_source = tmp_path / "outside" / "secret.txt"
+    untrusted_source.parent.mkdir()
+    untrusted_source.write_text("secret evidence", encoding="utf-8")
+    bundle_path = trusted_dir / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "trusted",
+                        "artifact_path": str(trusted_source),
+                        "bounded_evidence": {"excerpt": "trusted evidence"},
+                    },
+                    {
+                        "source_id": "untrusted",
+                        "artifact_path": str(untrusted_source),
+                        "bounded_evidence": {"excerpt": "untrusted evidence"},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    extracted_path = trusted_dir / "extracted.json"
+    extracted_path.write_text(
+        json.dumps(
+            {
+                "task_id": "case-1",
+                "question": "question",
+                "steps": [{"step": 1, "is_agent_finished": True}],
+                "final_answer": "answer",
+                "evidence": [],
+                "evidence_bundle_path": str(bundle_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "artifacts": {"outcome": {"extracted_path": str(extracted_path)}},
+            },
+            suite=None,
+        )
+    )
+
+    source_artifact_paths = {
+        artifact["path"]
+        for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+        if artifact["kind"] == "source_artifact"
+    }
+    assert str(trusted_source) in source_artifact_paths
+    assert str(untrusted_source) not in source_artifact_paths
+
+
 def test_trajectory_prompt_compacts_noisy_evidence_without_losing_quality_signals() -> None:
     noisy_content = "alpha " * 2000
     prompt = json.loads(
