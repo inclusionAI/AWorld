@@ -365,11 +365,15 @@ def _parse_aworld_trajectory_log_line(line: str) -> Mapping[str, Any]:
 
 def _extract_aworld_trajectory_record_payload(record: Mapping[str, Any], *, task_id: str) -> dict[str, Any]:
     trajectory = json.loads(record["trajectory"])
-    return extract_aworld_trajectory_payload(
+    payload = extract_aworld_trajectory_payload(
         trajectory,
         task_id=task_id,
         is_sub_task=record.get("is_sub_task"),
     )
+    evidence_bundle_path = record.get("evidence_bundle_path")
+    if isinstance(evidence_bundle_path, str) and evidence_bundle_path.strip():
+        payload["evidence_bundle_path"] = evidence_bundle_path
+    return payload
 
 
 def iter_aworld_trajectory_records(log_path: str | Path) -> Iterable[tuple[str, dict[str, Any]]]:

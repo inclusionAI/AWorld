@@ -228,6 +228,32 @@ def test_evidence_quality_gate_accepts_artifact_first_evidence_strategy() -> Non
     assert result.details["evidence_manifest_entry_count"] == 2
 
 
+def test_evidence_quality_gate_accepts_valid_bundle_despite_raw_compaction() -> None:
+    summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={
+            "has_evidence": 1.0,
+            "evidence_block_count": 4,
+            "evidence_compacted": True,
+            "evidence_incomplete": True,
+            "evidence_strategy_passed": True,
+            "evidence_manifest_entry_count": 2,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_bundle_valid": True,
+            "evidence_bundle_entry_count": 2,
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(summary)
+
+    assert result.passed is True
+    assert result.reason == "evaluation evidence is present via canonical evidence bundle"
+    assert result.details["evidence_compacted"] is True
+    assert result.details["evidence_incomplete"] is True
+    assert result.details["evidence_bundle_valid"] is True
+    assert result.details["evidence_bundle_entry_count"] == 2
+
+
 def test_evidence_quality_gate_rejects_unverifiable_artifact_manifest() -> None:
     result = EvidenceQualityGate().evaluate(
         EvaluationSummary(

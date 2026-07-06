@@ -778,6 +778,66 @@ def test_build_trajectory_prompt_includes_runtime_context_from_source_target() -
     }
 
 
+def test_trajectory_prompt_includes_canonical_evidence_bundle(tmp_path: Path) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "source-1",
+                        "artifact_path": str(tmp_path / "source.txt"),
+                        "extraction_method": "bounded_extract",
+                        "bounded_evidence": {
+                            "bounded_excerpt": "short verified evidence",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "trajectory": [
+                    {
+                        "state": {"input": {"content": "question"}, "messages": []},
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {"content": "answer", "is_agent_finished": "True"},
+                    }
+                ],
+                "artifacts": {
+                    "outcome": {
+                        "extracted_path": None,
+                    }
+                },
+                "evidence_bundle_path": str(bundle_path),
+            },
+            suite=None,
+        )
+    )
+
+    bundle = prompt["extracted_trajectory"]["evidence_bundle"]
+    assert bundle["valid"] is True
+    assert bundle["entry_count"] == 1
+    assert bundle["entries"][0]["source_id"] == "source-1"
+    assert bundle["entries"][0]["bounded_evidence"]["bounded_excerpt"] == (
+        "short verified evidence"
+    )
+    assert prompt["evidence_summary"]["canonical_bundle_entry_count"] == 1
+    assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == (
+        "extracted_trajectory"
+    )
+
+
 def test_trajectory_prompt_compacts_noisy_evidence_without_losing_quality_signals() -> None:
     noisy_content = "alpha " * 2000
     prompt = json.loads(

@@ -118,6 +118,9 @@ def test_summary_with_replay_evidence_metrics_includes_replay_failure_diagnostic
         trajectory=[{"action": {"content": "answer"}}],
         metrics={
             "failed_repetition_count": 2,
+            "evidence_bundle_valid": True,
+            "evidence_bundle_entry_count": 2,
+            "evidence_bundle_path": "/tmp/evidence_bundle.json",
             "repetition_failures": [
                 {"type": "TimeoutExpired", "reason": "replay timed out"},
                 {
@@ -142,6 +145,10 @@ def test_summary_with_replay_evidence_metrics_includes_replay_failure_diagnostic
         "evidence_quality_failed",
     ]
     assert merged.metrics["replay_evidence_manifest_invalid_entry_count"] == 1
+    assert merged.metrics["evidence_bundle_valid"] is True
+    assert merged.metrics["replay_evidence_bundle_valid"] is True
+    assert merged.metrics["evidence_bundle_entry_count"] == 2
+    assert merged.metrics["replay_evidence_bundle_entry_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -1651,6 +1658,7 @@ async def test_runner_evidence_quality_rejects_unverifiable_replay_artifact_mani
                         "successful_repetition_count": 2,
                         "evidence_strategy_passed": True,
                         "evidence_manifest_entry_count": 1,
+                        "evidence_manifest_invalid_entry_count": 1,
                     },
                 ),
                 candidate=ReplayVariantResult(
@@ -1662,6 +1670,7 @@ async def test_runner_evidence_quality_rejects_unverifiable_replay_artifact_mani
                         "successful_repetition_count": 3,
                         "evidence_strategy_passed": True,
                         "evidence_manifest_entry_count": 2,
+                        "evidence_manifest_invalid_entry_count": 1,
                     },
                 ),
             )

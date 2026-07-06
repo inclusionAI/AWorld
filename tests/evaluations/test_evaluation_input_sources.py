@@ -224,6 +224,35 @@ def test_trajectory_log_source_extracts_action_result_tool_evidence(tmp_path: Pa
     ]
 
 
+def test_trajectory_log_source_preserves_evidence_bundle_path(tmp_path: Path) -> None:
+    task_id = "task-bundle"
+    bundle_path = tmp_path / "evidence_bundle.json"
+    trajectory = [
+        {
+            "state": {"input": {"content": "question"}, "messages": []},
+            "meta": {"step": 1, "pre_agent": "runner", "agent_id": "agent"},
+            "action": {"content": "answer", "is_agent_finished": "True"},
+        }
+    ]
+    log_path = tmp_path / "trajectory.log"
+    log_path.write_text(
+        repr(
+            {
+                "task_id": task_id,
+                "is_sub_task": False,
+                "trajectory": json.dumps(trajectory),
+                "evidence_bundle_path": str(bundle_path),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    record = next(iter(AWorldTrajectoryLogSource(path=log_path, task_ids=[task_id]).iter_records()))
+
+    assert record.raw_payload["evidence_bundle_path"] == str(bundle_path)
+
+
 def test_judge_schema_normalizer_runs_before_typed_validation() -> None:
     schema = JudgeSchemaDef(
         output_model=_ScoreJudgeOutput,
