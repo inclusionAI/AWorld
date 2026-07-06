@@ -1527,6 +1527,62 @@ async def test_agent_judge_backend_denies_artifact_reads_outside_index(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_agent_judge_backend_accumulates_multi_round_artifact_reads(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "first.txt"
+    second_path = tmp_path / "second.txt"
+    first_path.write_text("first evidence", encoding="utf-8")
+    second_path.write_text("second evidence", encoding="utf-8")
+    calls: list[dict] = []
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        payload = json.loads(prompt)
+        calls.append(payload)
+        results = payload.get("artifact_read_results") or []
+        if len(results) == 0:
+            return {"artifact_read_requests": [{"path": str(first_path)}]}
+        if len(results) == 1:
+            assert results[0]["content"] == "first evidence"
+            return {"artifact_read_requests": [{"path": str(second_path)}]}
+        assert [result["content"] for result in results] == [
+            "first evidence",
+            "second evidence",
+        ]
+        return {"score": 91.0, "verdict": "Pass"}
+
+    prompt = {
+        "artifact_backed_evidence": {
+            "mode": "read_only_artifact_index",
+            "read_policy": {
+                "read_only": True,
+                "external_network_allowed": False,
+                "mutation_allowed": False,
+            },
+            "artifacts": [
+                {"kind": "source_artifact", "path": str(first_path), "available": True},
+                {"kind": "source_artifact", "path": str(second_path), "available": True},
+            ],
+        },
+    }
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(91.0)
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_agent_judge_backend_uses_schema_to_select_generic_json_payload() -> None:
     async def fake_executor(prompt: str, system_prompt: str):
         return """

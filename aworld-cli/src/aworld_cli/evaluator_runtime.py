@@ -776,6 +776,11 @@ def _artifact_backed_evidence_index(
 ) -> dict[str, Any]:
     artifacts: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    trusted_roots = _artifact_trusted_roots(
+        runtime_context=runtime_context,
+        extracted_path=extracted_path,
+        evidence_bundle=evidence_bundle,
+    )
 
     def add_artifact(kind: str, path_value: object, **metadata: Any) -> None:
         if not isinstance(path_value, str) or not path_value.strip():
@@ -793,6 +798,11 @@ def _artifact_backed_evidence_index(
         artifact.update({k: v for k, v in metadata.items() if v not in (None, "")})
         artifacts.append(artifact)
 
+    def add_source_artifact(path_value: object, **metadata: Any) -> None:
+        if not _is_path_under_trusted_roots(path_value, trusted_roots):
+            return
+        add_artifact("source_artifact", path_value, **metadata)
+
     add_artifact("trajectory_log", runtime_context.get("trajectory_log_path"))
     add_artifact("extracted_trajectory_json", str(extracted_path) if extracted_path else None)
     add_artifact(
@@ -807,8 +817,7 @@ def _artifact_backed_evidence_index(
         for entry in evidence_bundle.get("artifact_entries") or evidence_bundle.get("entries") or []:
             if not isinstance(entry, Mapping):
                 continue
-            add_artifact(
-                "source_artifact",
+            add_source_artifact(
                 entry.get("artifact_path"),
                 source_id=entry.get("source_id"),
                 extraction_method=entry.get("extraction_method"),
@@ -837,6 +846,48 @@ def _artifact_backed_evidence_index(
             ),
         },
     }
+
+
+def _artifact_trusted_roots(
+    *,
+    runtime_context: Mapping[str, str],
+    extracted_path: object,
+    evidence_bundle: Mapping[str, Any],
+) -> list[Path]:
+    roots: list[Path] = []
+
+    def add_root(path_value: object, *, use_parent: bool = False) -> None:
+        if not isinstance(path_value, str) or not path_value.strip():
+            return
+        path = Path(path_value).expanduser()
+        root = path.parent if use_parent else path
+        resolved = root.resolve(strict=False)
+        if resolved not in roots:
+            roots.append(resolved)
+
+    add_root(runtime_context.get("out_dir"))
+    add_root(str(extracted_path) if extracted_path else None, use_parent=True)
+    add_root(
+        evidence_bundle.get("path") if isinstance(evidence_bundle, Mapping) else None,
+        use_parent=True,
+    )
+    add_root(runtime_context.get("report_output_path"), use_parent=True)
+    return roots
+
+
+def _is_path_under_trusted_roots(path_value: object, trusted_roots: list[Path]) -> bool:
+    if not isinstance(path_value, str) or not path_value.strip():
+        return False
+    if not trusted_roots:
+        return False
+    path = Path(path_value).expanduser().resolve(strict=False)
+    for root in trusted_roots:
+        try:
+            if path == root or path.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:

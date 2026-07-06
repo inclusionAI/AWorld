@@ -1828,7 +1828,13 @@ def _append_artifact_read_results_to_prompt(
         payload = {"original_prompt": text}
     if not isinstance(payload, dict):
         payload = {"original_prompt": text}
-    payload["artifact_read_results"] = read_results
+    existing_results = payload.get("artifact_read_results")
+    if not isinstance(existing_results, list):
+        existing_results = []
+    payload["artifact_read_results"] = [
+        *[dict(item) for item in existing_results if isinstance(item, Mapping)],
+        *read_results,
+    ]
     payload["artifact_read_followup_instruction"] = (
         "Use artifact_read_results as read-only evidence and now return the final "
         "single JSON object matching required_output_schema. Do not request the same artifact again."
