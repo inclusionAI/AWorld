@@ -366,12 +366,16 @@ class AgentJudgeBackend:
         backend_id: str | None = None,
         prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None,
         timeout_seconds: float | None = None,
+        system_prompt_prefix: str | None = None,
     ) -> "AgentJudgeBackend":
         agent_markdown_path = Path(path).expanduser()
         resolved_backend_id = backend_id or agent_markdown_path.stem
+        system_prompt = _agent_markdown_instruction_prompt(agent_markdown_path)
+        if system_prompt_prefix:
+            system_prompt = f"{system_prompt_prefix.rstrip()}\n\n{system_prompt}"
         return cls(
             backend_id=resolved_backend_id,
-            system_prompt=_agent_markdown_instruction_prompt(agent_markdown_path),
+            system_prompt=system_prompt,
             executor=None,
             prompt_builder=prompt_builder,
             timeout_seconds=timeout_seconds,

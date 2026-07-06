@@ -56,12 +56,21 @@ from aworld_cli.plugin_capabilities.hooks import PluginHookResult, load_plugin_h
 _CLI_AGENT_RUNTIME_BOOTSTRAPPED = False
 _SUPPORTED_SOURCE_KINDS = ("task", "answer", "trajectory")
 _MAX_PROMPT_EVIDENCE_CONTENT_CHARS = 4000
-_MAX_BUNDLE_FIRST_SYSTEM_PROMPT_CHARS = 800
+_MAX_BUNDLE_FIRST_SYSTEM_PROMPT_CHARS = 0
 _MAX_BUNDLE_FIRST_QUESTION_CHARS = 1500
 _MAX_BUNDLE_FIRST_RAW_EVIDENCE_BLOCKS = 3
 _MAX_BUNDLE_FIRST_STEP_COUNT = 8
 _MAX_BUNDLE_FIRST_STEP_TEXT_CHARS = 180
 _SELF_EVOLVE_REPLAY_MARKER = "Self-evolve replay evidence requirements:"
+_TRAJECTORY_JUDGE_SYSTEM_CONTRACT = """AWorld trajectory evaluator runtime contract:
+- Prefer artifact_backed_evidence over any legacy TRAJECTORY_LOG parsing instructions in the judge document.
+- Treat extracted_trajectory as a bounded prompt fallback, not as the complete raw log.
+- Do not parse trajectory_log_path yourself unless the framework-provided artifact_read_results are insufficient.
+- To inspect listed artifacts, return a single JSON object with artifact_read_requests, for example {"artifact_read_requests":[{"path":"<listed artifact path>","max_chars":4000}]}.
+- Request only files listed in artifact_backed_evidence.artifacts; the framework will deny every other path.
+- After artifact_read_results are provided, return the final compact JSON assessment matching required_output_schema.
+- Never call network, shell, browser, task execution, or mutation tools while judging.
+"""
 
 
 def _sanitize_path_token(value: str) -> str:
@@ -343,6 +352,7 @@ def _build_cli_agent_judge_backend(
     backend_id: str,
     prompt_builder,
     judge_timeout_seconds: float | None = None,
+    system_prompt_prefix: str | None = None,
 ):
     executor_cache: dict[str, Any] = {}
 
@@ -362,7 +372,11 @@ def _build_cli_agent_judge_backend(
 
     return AgentJudgeBackend(
         backend_id=backend_id,
-        system_prompt=f"CLI agent judge loaded from {agent_name}",
+        system_prompt=(
+            f"{system_prompt_prefix.rstrip()}\n\nCLI agent judge loaded from {agent_name}"
+            if system_prompt_prefix
+            else f"CLI agent judge loaded from {agent_name}"
+        ),
         executor=_executor,
         prompt_builder=prompt_builder,
         timeout_seconds=judge_timeout_seconds,
@@ -385,6 +399,11 @@ def _resolve_source_judge_backend(
             backend_id=file_backend_id,
             prompt_builder=prompt_builder,
             timeout_seconds=judge_timeout_seconds,
+            system_prompt_prefix=(
+                _TRAJECTORY_JUDGE_SYSTEM_CONTRACT
+                if file_backend_id == "trajectory-evaluator-agent-md"
+                else None
+            ),
         )
     if judge_agent_name is not None and str(judge_agent_name).strip():
         resolved_name = str(judge_agent_name).strip()
@@ -393,6 +412,11 @@ def _resolve_source_judge_backend(
             backend_id=f"{named_backend_prefix}:{resolved_name}",
             prompt_builder=prompt_builder,
             judge_timeout_seconds=judge_timeout_seconds,
+            system_prompt_prefix=(
+                _TRAJECTORY_JUDGE_SYSTEM_CONTRACT
+                if file_backend_id == "trajectory-evaluator-agent-md"
+                else None
+            ),
         )
     if judge_backend_ref is not None and str(judge_backend_ref).strip():
         return _load_source_judge_backend_ref(str(judge_backend_ref).strip())
@@ -754,7 +778,9 @@ def _compact_bundle_first_steps(value: object) -> list[dict[str, Any]]:
 
 def _compact_text(value: object, max_chars: int) -> str:
     text = str(value or "")
-    if max_chars <= 0 or len(text) <= max_chars:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
         return text
     marker = f"\n... [omitted {len(text) - max_chars} chars] ...\n"
     remaining = max_chars - len(marker)

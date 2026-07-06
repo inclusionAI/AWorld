@@ -599,6 +599,46 @@ def test_trajectory_source_gate_consumes_veto_signal(tmp_path: Path) -> None:
     assert any(condition["metric_name"] == "veto_triggered" for condition in decision.failed_conditions)
 
 
+def test_trajectory_source_judge_system_prompt_prefers_artifact_backed_contract(
+    tmp_path: Path,
+) -> None:
+    task_id = "task-contract"
+    trajectory = [
+        {
+            "state": {"input": {"content": "question"}, "messages": []},
+            "meta": {"step": 1},
+            "action": {"content": "final", "is_agent_finished": "True"},
+        }
+    ]
+    input_path = tmp_path / "trajectory.log"
+    input_path.write_text(
+        repr({"task_id": task_id, "is_sub_task": False, "trajectory": json.dumps(trajectory)}) + "\n",
+        encoding="utf-8",
+    )
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text(
+        "---\nname: judge\n---\nParse TRAJECTORY_LOG yourself before scoring.\n",
+        encoding="utf-8",
+    )
+
+    suite = _build_source_suite(
+        kind="trajectory",
+        input_path=input_path,
+        judge_agent_path=judge_agent,
+        task_id=task_id,
+        id_field="id",
+        task_field="input",
+        answer_field="answer",
+        out_dir=str(tmp_path),
+    )
+
+    system_prompt = suite.judge_backend.system_prompt
+    assert system_prompt.startswith("AWorld trajectory evaluator runtime contract:")
+    assert "Prefer artifact_backed_evidence over any legacy TRAJECTORY_LOG parsing instructions" in system_prompt
+    assert "artifact_read_requests" in system_prompt
+    assert "Parse TRAJECTORY_LOG yourself before scoring" in system_prompt
+
+
 def test_aworld_trajectory_log_without_task_id_builds_task_execution_suite(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -923,7 +963,7 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
     assert prompt["evidence_summary"]["raw_evidence_content_suppressed"] is True
     assert trajectory["evidence_bundle"]["valid"] is True
     assert "Self-evolve replay evidence requirements" not in trajectory["question"]
-    assert len(trajectory["system_prompt_excerpt"]) <= 800
+    assert trajectory["system_prompt_excerpt"] == ""
     assert len(evidence) <= 3
     assert all("content" not in item for item in evidence)
     assert all(len(step.get("assistant_content", "")) <= 200 for step in trajectory["steps"])
