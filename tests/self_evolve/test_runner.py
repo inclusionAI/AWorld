@@ -2208,6 +2208,70 @@ def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
     assert "held_out_verification" in candidate_content
 
 
+def test_default_cli_skill_candidate_prioritizes_newest_prior_feedback() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "latest-candidate",
+                            "dataset_split": "historical",
+                            "metrics": {
+                                "score": 88.0,
+                                "baseline_score": 89.5,
+                                "candidate_score": 88.0,
+                                "score_delta": -1.5,
+                            },
+                            "failed_gates": ["score_improvement"],
+                            "required_behaviors": [
+                                "differentiate_from_high_scoring_baseline"
+                            ],
+                        }
+                    },
+                    {
+                        "feedback_summary": {
+                            "variant_id": "older-candidate",
+                            "dataset_split": "historical",
+                            "metrics": {"score": 0.0},
+                            "failed_gates": ["required_verification"],
+                        }
+                    },
+                    {
+                        "feedback_summary": {
+                            "variant_id": "oldest-candidate",
+                            "dataset_split": "historical",
+                            "metrics": {"score": 0.0},
+                            "failed_gates": ["judge_only_signal"],
+                        }
+                    },
+                    {
+                        "feedback_summary": {
+                            "variant_id": "stale-candidate",
+                            "dataset_split": "historical",
+                            "metrics": {"score": 0.0},
+                            "failed_gates": ["global_regression_benchmark"],
+                        }
+                    },
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "latest-candidate on historical" in candidate_content
+    assert "baseline_score" in candidate_content
+    assert "differentiate_from_high_scoring_baseline" in candidate_content
+    assert "stale-candidate on historical" not in candidate_content
+
+
 def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_preservation_guidance() -> None:
     current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
     prompt = (

@@ -2116,7 +2116,7 @@ def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
     feedback_items: list[object] = []
     prior_feedback = payload.get("prior_feedback")
     if isinstance(prior_feedback, list):
-        feedback_items.extend(prior_feedback[-3:])
+        feedback_items.extend(prior_feedback[:3])
     validation_feedback = payload.get("validation_feedback")
     if isinstance(validation_feedback, list):
         feedback_items.extend(validation_feedback[-3:])
@@ -2124,7 +2124,7 @@ def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
         return []
 
     guidance: list[str] = []
-    for item in feedback_items[-3:]:
+    for item in feedback_items[:3]:
         if not isinstance(item, Mapping):
             continue
         summary = item.get("feedback_summary")
