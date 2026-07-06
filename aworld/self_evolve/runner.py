@@ -49,7 +49,7 @@ from aworld.self_evolve.gates import (
     TokenLimitGate,
     TrustProvenanceGate,
 )
-from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest
+from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.provenance import TargetProvenance
@@ -60,6 +60,7 @@ from aworld.self_evolve.replay import (
     ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
+    load_candidate_replay_result,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget, SkillTextTarget
@@ -81,6 +82,42 @@ from aworld.skills.release import mark_skill_content_verified
 class SelfEvolveRunnerResult:
     run: SelfEvolveRun
     selected_candidate: CandidateVariant | None
+
+
+@dataclass(frozen=True)
+class _FixedCandidateOptimizer:
+    candidate: CandidateVariant
+    source_run_id: str
+
+    async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+        return OptimizerResult(
+            candidates=(self.candidate,),
+            diagnostics={
+                "source": "stored_self_evolve_run",
+                "source_run_id": self.source_run_id,
+                "candidate_id": self.candidate.candidate_id,
+            },
+        )
+
+
+@dataclass(frozen=True)
+class _StoredCandidateReplayBackend:
+    replay_result: CandidateReplayResult
+    source_replay_path: str
+
+    async def replay_candidate(
+        self,
+        request,
+        *,
+        candidate: CandidateVariant,
+        dataset: SelfEvolveDataset,
+    ) -> CandidateReplayResult:
+        if candidate.candidate_id != self.replay_result.request.candidate_id:
+            raise ValueError(
+                "stored replay candidate does not match selected candidate: "
+                f"{self.replay_result.request.candidate_id} != {candidate.candidate_id}"
+            )
+        return self.replay_result
 
 
 def _emit_progress(
@@ -122,6 +159,7 @@ class SelfEvolveRunner:
         replay_agent: str | None = None,
         runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
         progress_callback: Callable[[str, str], Any] | None = None,
+        skip_duplicate_rejected_candidate_gate: bool = False,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -145,6 +183,7 @@ class SelfEvolveRunner:
         self.replay_agent = replay_agent
         self.runtime_registry_refresher = runtime_registry_refresher
         self.progress_callback = progress_callback
+        self.skip_duplicate_rejected_candidate_gate = skip_duplicate_rejected_candidate_gate
 
     async def run_explicit_target(
         self,
@@ -302,13 +341,14 @@ class SelfEvolveRunner:
                     target_provenance=target_provenance,
                 )
             )
-            duplicate_gate = _duplicate_rejected_candidate_gate(
-                iteration_candidate,
-                rejected_candidate_ids=rejected_candidate_ids,
-                apply_policy=apply_policy,
-            )
-            if duplicate_gate is not None:
-                iteration_gate_results.append(duplicate_gate)
+            if not self.skip_duplicate_rejected_candidate_gate:
+                duplicate_gate = _duplicate_rejected_candidate_gate(
+                    iteration_candidate,
+                    rejected_candidate_ids=rejected_candidate_ids,
+                    apply_policy=apply_policy,
+                )
+                if duplicate_gate is not None:
+                    iteration_gate_results.append(duplicate_gate)
             iteration_gate_results.append(
                 BudgetGate().evaluate(
                     estimate_replay_cost(
@@ -880,6 +920,8 @@ def optimize_from_cli_request(
     from_session: str | None = None,
     from_trajectory: str | None = None,
     batch_config: str | None = None,
+    from_run: str | None = None,
+    rerun_evaluator: bool = False,
     current_trajectory: Iterable[Mapping[str, Any]] | None = None,
     iterations: int | None = None,
     apply_policy: str = "proposal",
@@ -906,11 +948,39 @@ def optimize_from_cli_request(
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
+    if rerun_evaluator:
+        if not from_run:
+            raise ValueError("--rerun-evaluator requires --from-run")
+        return _rerun_evaluator_from_stored_run(
+            workspace_root=workspace_root,
+            from_run=from_run,
+            agent=agent,
+            task=task,
+            apply_policy=apply_policy,
+            evaluation_backend=evaluation_backend,
+            post_apply_evaluator=post_apply_evaluator,
+            min_eval_cases=min_eval_cases,
+            judge_repetitions=judge_repetitions,
+            judge_timeout_seconds=judge_timeout_seconds,
+            max_run_tokens=max_run_tokens,
+            min_score_delta=min_score_delta,
+            auto_apply_target_types=auto_apply_target_types,
+            judge_config=judge_config,
+            replay_timeout_seconds=replay_timeout_seconds,
+            replay_max_steps=replay_max_steps,
+            replay_candidate_limit=replay_candidate_limit,
+            baseline_replay_repetitions=baseline_replay_repetitions,
+            candidate_replay_repetitions=candidate_replay_repetitions,
+            replay_stability_margin=replay_stability_margin,
+            runtime_registry_refresher=runtime_registry_refresher,
+            progress_callback=progress_callback,
+        )
     if (
         not dataset
         and not from_session
         and not from_trajectory
         and not batch_config
+        and not from_run
         and current_trajectory is None
     ):
         raise ValueError("an eval source is required")
@@ -1270,8 +1340,298 @@ def _target_runtime_skill_path(target: SelfEvolveTarget) -> Path | None:
     return Path(target.identity.path).resolve() if target.identity.path else None
 
 
+def _rerun_evaluator_from_stored_run(
+    *,
+    workspace_root: str | Path,
+    from_run: str,
+    agent: str | None,
+    task: str | None,
+    apply_policy: str,
+    evaluation_backend: EvaluationBackend | None,
+    post_apply_evaluator: Callable[[CandidateVariant], Any] | None,
+    min_eval_cases: int,
+    judge_repetitions: int,
+    judge_timeout_seconds: float | None,
+    max_run_tokens: int,
+    min_score_delta: float,
+    auto_apply_target_types: tuple[str, ...],
+    judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None,
+    replay_timeout_seconds: int,
+    replay_max_steps: int | None,
+    replay_candidate_limit: int,
+    baseline_replay_repetitions: int,
+    candidate_replay_repetitions: int,
+    replay_stability_margin: float,
+    runtime_registry_refresher: Callable[[CandidateVariant], Any] | None,
+    progress_callback: Callable[[str, str], Any] | None,
+) -> Mapping[str, Any]:
+    store = FilesystemSelfEvolveStore(workspace_root)
+    source_run_path = _resolve_stored_run_path(store, from_run)
+    source_run_id = source_run_path.name
+    source_report = _load_json_mapping(source_run_path / "report.json")
+    candidate_id = _stored_selected_candidate_id(source_report)
+    candidate = _load_candidate_variant(source_run_path / "candidates" / f"{candidate_id}.json")
+    replay_path = source_run_path / "replay" / candidate.candidate_id
+    replay_result = load_candidate_replay_result(replay_path)
+    if not replay_result.succeeded:
+        raise ValueError(
+            "stored replay did not produce successful paired trajectories; "
+            "rerun the full optimize flow instead"
+        )
+
+    source_config, split_seed = _source_config_from_stored_dataset_recipe(
+        source_run_path / "dataset_recipe.json"
+    )
+    built_dataset = build_dataset_from_source(
+        source_config,
+        current_trajectory=None,
+        task_id=task,
+        split_seed=split_seed,
+    )
+    trace_packs = tuple(
+        case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
+    )
+    target_adapter = _target_from_ref(
+        candidate.target,
+        workspace_root=workspace_root,
+        allow_auto_apply=(
+            apply_policy == "auto_verified"
+            and candidate.target.target_type in auto_apply_target_types
+        ),
+    )
+    target_selection_report = _load_target_selection_report(
+        source_run_path / "target_selection.json"
+    )
+    if apply_policy == "auto_verified" and evaluation_backend is None:
+        evaluation_backend = _evaluation_backend_from_judge_config(
+            judge_config,
+            workspace_root=workspace_root,
+            judge_repetitions=judge_repetitions,
+            judge_timeout_seconds=judge_timeout_seconds,
+        )
+    if apply_policy == "auto_verified" and post_apply_evaluator is None:
+        post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
+
+    run_id = _rerun_cli_run_id(source_run_id, candidate.candidate_id)
+    _emit_progress(
+        progress_callback,
+        "resume",
+        f"Reusing replay artifacts from {source_run_id} for candidate {candidate.candidate_id}",
+    )
+
+    import asyncio
+
+    result = asyncio.run(
+        SelfEvolveRunner(
+            store=store,
+            optimizer=_FixedCandidateOptimizer(
+                candidate=candidate,
+                source_run_id=source_run_id,
+            ),
+            evaluation_backend=evaluation_backend,
+            post_apply_evaluator=post_apply_evaluator,
+            min_score_delta=min_score_delta,
+            max_iterations=1,
+            min_eval_cases=min_eval_cases,
+            judge_repetitions=judge_repetitions,
+            max_run_tokens=max_run_tokens,
+            auto_apply_target_types=auto_apply_target_types,
+            replay_enabled=True,
+            candidate_replay_backend=_StoredCandidateReplayBackend(
+                replay_result=replay_result,
+                source_replay_path=str(replay_path),
+            ),
+            replay_timeout_seconds=replay_timeout_seconds,
+            replay_max_steps=replay_max_steps,
+            replay_candidate_limit=replay_candidate_limit,
+            baseline_replay_repetitions=baseline_replay_repetitions,
+            candidate_replay_repetitions=candidate_replay_repetitions,
+            replay_stability_margin=replay_stability_margin,
+            replay_agent=agent,
+            runtime_registry_refresher=runtime_registry_refresher,
+            progress_callback=progress_callback,
+            skip_duplicate_rejected_candidate_gate=True,
+        ).run_explicit_target(
+            run_id=run_id,
+            target=target_adapter,
+            dataset=built_dataset,
+            trace_packs=trace_packs,
+            apply_policy=apply_policy,
+            target_selection_report=target_selection_report,
+        )
+    )
+    run_path = store.run_path(run_id)
+    report_path = run_path / "report.json"
+    selected_candidate_id = (
+        result.selected_candidate.candidate_id
+        if result.selected_candidate is not None
+        else None
+    )
+    report = _load_json_mapping(report_path)
+    summary = {
+        "report_path": str(report_path),
+        "best_candidate_id": (
+            selected_candidate_id
+            if result.run.status.value == "succeeded" and apply_policy == "auto_verified"
+            else None
+        ),
+        "selected_candidate_id": selected_candidate_id,
+        "run_id": result.run.run_id,
+        "status": result.run.status.value,
+        "source_run_id": source_run_id,
+        "replay_path": str(replay_path),
+    }
+    target_selection_path = run_path / "target_selection.json"
+    if target_selection_path.exists():
+        summary["target_selection_path"] = str(target_selection_path)
+    evaluator_report_paths = report.get("evaluator_report_paths")
+    if isinstance(evaluator_report_paths, list):
+        summary["evaluator_report_paths"] = evaluator_report_paths
+    gate_results = report.get("gate_results")
+    if isinstance(gate_results, list):
+        summary["gate_results"] = gate_results
+    return summary
+
+
 def _content_fingerprint(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _resolve_stored_run_path(store: FilesystemSelfEvolveStore, from_run: str) -> Path:
+    raw = Path(from_run).expanduser()
+    if raw.exists():
+        run_path = raw
+    else:
+        run_path = store.run_path(from_run)
+    if not run_path.exists() or not run_path.is_dir():
+        raise FileNotFoundError(f"self-evolve run not found: {from_run}")
+    if not (run_path / "report.json").exists():
+        raise FileNotFoundError(f"self-evolve report not found under run: {run_path}")
+    return run_path
+
+
+def _stored_selected_candidate_id(report: Mapping[str, Any]) -> str:
+    for key in ("selected_candidate_id", "best_candidate_id"):
+        value = report.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    candidate_ids = report.get("candidate_ids")
+    if isinstance(candidate_ids, list):
+        for value in candidate_ids:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    raise ValueError("stored run report does not identify a selected candidate")
+
+
+def _load_candidate_variant(path: Path) -> CandidateVariant:
+    payload = _load_json_mapping(path)
+    target_payload = payload.get("target")
+    if not isinstance(target_payload, Mapping):
+        raise ValueError(f"candidate JSON is missing target: {path}")
+    return CandidateVariant(
+        candidate_id=str(payload.get("candidate_id") or ""),
+        target=SelfEvolveTargetRef(
+            target_type=str(target_payload.get("target_type") or ""),
+            target_id=str(target_payload.get("target_id") or ""),
+            path=(
+                str(target_payload.get("path"))
+                if target_payload.get("path") is not None
+                else None
+            ),
+        ),
+        content=str(payload.get("content") or ""),
+        rationale=str(payload.get("rationale") or ""),
+        parent_candidate_ids=tuple(
+            str(item)
+            for item in payload.get("parent_candidate_ids", ())
+            if isinstance(item, str)
+        ),
+        target_fingerprint=(
+            str(payload.get("target_fingerprint"))
+            if payload.get("target_fingerprint") is not None
+            else None
+        ),
+    )
+
+
+def _source_config_from_stored_dataset_recipe(
+    path: Path,
+) -> tuple[SelfEvolveEvalSourceConfig, str]:
+    payload = _load_json_mapping(path)
+    source = payload.get("source")
+    if not isinstance(source, Mapping):
+        raise ValueError(f"dataset recipe is missing source: {path}")
+    kind = str(source.get("kind") or "")
+    if kind not in {"trajectory_log", "jsonl", "session", "batch_config"}:
+        raise ValueError(f"stored dataset source cannot be rebuilt for rerun: {kind}")
+    task_ids_payload = source.get("task_ids")
+    task_ids = tuple(
+        str(item)
+        for item in task_ids_payload
+        if isinstance(item, str)
+    ) if isinstance(task_ids_payload, list) else ()
+    source_config = SelfEvolveEvalSourceConfig(
+        kind=kind,
+        path=(str(source.get("path")) if source.get("path") is not None else None),
+        session_id=(
+            str(source.get("session_id"))
+            if source.get("session_id") is not None
+            else None
+        ),
+        task_ids=task_ids,
+    )
+    split_seed = str(payload.get("split_seed") or "self-evolve-default-split")
+    return source_config, split_seed
+
+
+def _load_target_selection_report(path: Path) -> TargetSelectionReport | None:
+    if not path.exists():
+        return None
+    payload = _load_json_mapping(path)
+    target_payload = payload.get("selected_target")
+    selected_target: SelfEvolveTargetRef | None = None
+    if isinstance(target_payload, Mapping):
+        selected_target = SelfEvolveTargetRef(
+            target_type=str(target_payload.get("target_type") or ""),
+            target_id=str(target_payload.get("target_id") or ""),
+            path=(
+                str(target_payload.get("path"))
+                if target_payload.get("path") is not None
+                else None
+            ),
+        )
+    return TargetSelectionReport(
+        selected_target=selected_target,
+        confidence=float(payload.get("confidence") or 0.0),
+        evidence_step_ids=tuple(
+            str(item)
+            for item in payload.get("evidence_step_ids", ())
+            if isinstance(item, str)
+        ),
+        failure_category=str(payload.get("failure_category") or "unknown"),
+        signals=tuple(
+            str(item)
+            for item in payload.get("signals", ())
+            if isinstance(item, str)
+        ),
+        no_target_reason=(
+            str(payload.get("no_target_reason"))
+            if payload.get("no_target_reason") is not None
+            else None
+        ),
+        diagnostics=(
+            dict(payload.get("diagnostics"))
+            if isinstance(payload.get("diagnostics"), Mapping)
+            else None
+        ),
+    )
+
+
+def _rerun_cli_run_id(source_run_id: str, candidate_id: str) -> str:
+    return (
+        "cli-rerun-"
+        f"{abs(hash((source_run_id, candidate_id, 'evaluator'))) % 10**12:012d}"
+    )
 
 
 def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
@@ -1920,6 +2280,26 @@ def _feedback_has_scope_or_cost_issue(prompt: str | None) -> bool:
     )
 
 
+def _feedback_has_high_baseline_regression_issue(prompt: str | None) -> bool:
+    behaviors = _feedback_required_behaviors_from_mutation_prompt(prompt)
+    if behaviors & {
+        "differentiate_from_high_scoring_baseline",
+        "preserve_baseline_strengths",
+        "define_behavior_delta_before_tools",
+        "prefer_targeted_changes_over_broad_rewrites",
+    }:
+        return True
+    repair_plan = _feedback_repair_plan_from_mutation_prompt(prompt)
+    return bool(
+        repair_plan["actions"]
+        & {
+            "preserve_high_scoring_baseline_strengths",
+            "define_candidate_behavior_delta",
+            "prefer_targeted_change_over_broad_rewrite",
+        }
+    )
+
+
 def _feedback_has_evidence_preservation_issue(prompt: str | None) -> bool:
     if not prompt:
         return False
@@ -1972,6 +2352,9 @@ def _default_cli_skill_candidate(
     feedback_guidance = _feedback_guidance_from_mutation_prompt(mutation_prompt)
     evidence_preservation_issue = _feedback_has_evidence_preservation_issue(mutation_prompt)
     scope_or_cost_issue = _feedback_has_scope_or_cost_issue(mutation_prompt)
+    high_baseline_regression_issue = _feedback_has_high_baseline_regression_issue(
+        mutation_prompt
+    )
     repair_plan = _feedback_repair_plan_from_mutation_prompt(mutation_prompt)
     if not trace_packs and not feedback_guidance:
         return current_content
@@ -2113,6 +2496,34 @@ def _default_cli_skill_candidate(
                 (
                     "The replay should complete without replay evidence failures before the "
                     "candidate can be considered ready for verified apply."
+                ),
+            ]
+        )
+    if high_baseline_regression_issue:
+        guidance.extend(
+            [
+                "High-baseline improvement requirements:",
+                (
+                    "Preserve baseline strengths first: keep any existing behavior that already "
+                    "earns high groundedness, relevance, completeness, and completion scores."
+                ),
+                (
+                    "Define an explicit behavior delta before tool use: name the small "
+                    "execution behavior that will differ from the baseline and why it should "
+                    "raise score, compliance, efficiency, or robustness."
+                ),
+                (
+                    "Prefer one targeted change over broad rewrites; do not rewrite broad "
+                    "strategy when the baseline is already strong."
+                ),
+                (
+                    "Use a pre-final acceptance check: candidate_score exceeds baseline_score "
+                    "only if the answer is at least as grounded and complete while improving "
+                    "one weaker dimension such as compliance, efficiency, or robustness."
+                ),
+                (
+                    "If no concrete behavior delta is available, preserve the baseline strategy "
+                    "and avoid adding extra instructions that only increase complexity."
                 ),
             ]
         )

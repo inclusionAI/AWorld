@@ -258,6 +258,41 @@ def test_optimize_command_passes_replay_runtime_limits(
     assert calls["candidate_replay_repetitions"] == 3
 
 
+def test_optimize_command_passes_rerun_evaluator_from_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-run",
+            "cli-159068069202",
+            "--rerun-evaluator",
+            "--apply",
+            "auto_verified",
+            "--judge-agent",
+            "agent.md",
+        ]
+    )
+
+    assert handled is True
+    assert calls["from_run"] == "cli-159068069202"
+    assert calls["rerun_evaluator"] is True
+    assert calls["from_trajectory"] is None
+    assert calls["judge_agent"] == "agent.md"
+
+
 def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

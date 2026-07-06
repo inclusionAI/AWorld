@@ -18,6 +18,7 @@ from aworld.self_evolve.replay import (
     ReplayExecutionResult,
     ReplayVariantResult,
     build_paired_replay_dataset,
+    load_candidate_replay_result,
 )
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef
 from aworld.skills.compat_provider import build_compat_registry
@@ -30,6 +31,14 @@ def _candidate(content: str, candidate_id: str = "cand-1") -> CandidateVariant:
         content=content,
         rationale="test candidate",
         target_fingerprint="sha256:old",
+    )
+
+
+def _write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, default=lambda value: value.__dict__, indent=2),
+        encoding="utf-8",
     )
 
 
@@ -230,6 +239,53 @@ def test_paired_replay_dataset_expands_repetition_trajectories_into_eval_cases()
         "task-1__replay_2",
         "task-1__replay_3",
     ]
+
+
+def test_load_candidate_replay_result_restores_repetition_artifacts(tmp_path: Path) -> None:
+    replay_dir = tmp_path / "replay" / "cand-1"
+    request = CandidateReplayRequest(
+        run_id="run-1",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input={"content": "task"},
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    _write_json(replay_dir / "request.json", request)
+    for variant_root, base_variant_id, count in (
+        (replay_dir / "baseline", "baseline", 2),
+        (replay_dir / "cand-1", "cand-1", 3),
+    ):
+        variant_root.mkdir(parents=True)
+        _write_json(
+            variant_root / "aggregate_metrics.json",
+            {
+                "repetition_count": count,
+                "successful_repetition_count": count,
+                "failed_repetition_count": 0,
+            },
+        )
+        for index in range(1, count + 1):
+            repetition_dir = variant_root / str(index)
+            repetition_dir.mkdir()
+            (repetition_dir / "stdout.txt").write_text("", encoding="utf-8")
+            (repetition_dir / "stderr.txt").write_text("", encoding="utf-8")
+            _write_json(repetition_dir / "metrics.json", {"returncode": 0})
+            _write_json(
+                repetition_dir / "trajectory.json",
+                [{"action": {"content": f"{base_variant_id}-{index}"}}],
+            )
+
+    loaded = load_candidate_replay_result(replay_dir)
+
+    assert loaded.request.candidate_id == "cand-1"
+    assert loaded.succeeded is True
+    assert len(loaded.baseline.repetition_results) == 2
+    assert len(loaded.candidate.repetition_results) == 3
+    assert loaded.candidate.trajectory[0]["action"]["content"] == "cand-1-3"
 
 
 def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
