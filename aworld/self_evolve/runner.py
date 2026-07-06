@@ -2050,6 +2050,22 @@ def _default_cli_skill_candidate(
                     "Cap evidence acquisition and summarization cost by using the smallest "
                     "bounded extracts that can support the requested answer."
                 ),
+                (
+                    "Plan the shortest viable evidence path before tool use; choose the "
+                    "fewest actions likely to produce verifiable bounded evidence."
+                ),
+                (
+                    "Set a small evidence budget for attempts, sources, and final claims; "
+                    "spend new calls only when they add support for an uncovered claim."
+                ),
+                (
+                    "Do not repeat a failed or low-yield evidence path; switch strategy "
+                    "after one failed, compacted, or unsupported attempt."
+                ),
+                (
+                    "Stop after sufficient verified evidence is captured, then answer only "
+                    "with claims covered by the evidence ledger."
+                ),
             ]
         )
     if repair_plan["acceptance_criteria"]:

@@ -972,6 +972,46 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
     )
 
 
+def test_replay_aggregate_metrics_include_bundle_validity() -> None:
+    from aworld.self_evolve.replay import _aggregate_variant_results
+
+    artifact_dir = Path("/tmp/self-evolve-replay-aggregate")
+    results = [
+        ReplayVariantResult(
+            variant_id="cand-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "answer 1"}}],
+            metrics={
+                "evidence_bundle_valid": True,
+                "evidence_bundle_entry_count": 2,
+                "evidence_bundle_path": "/tmp/bundle-1.json",
+            },
+        ),
+        ReplayVariantResult(
+            variant_id="cand-2",
+            status="succeeded",
+            trajectory=[{"action": {"content": "answer 2"}}],
+            metrics={
+                "evidence_bundle_valid": True,
+                "evidence_bundle_entry_count": 4,
+                "evidence_bundle_path": "/tmp/bundle-2.json",
+            },
+        ),
+    ]
+
+    aggregate = _aggregate_variant_results(
+        base_variant_id="candidate",
+        results=results,
+        artifact_dir=artifact_dir,
+    )
+
+    assert aggregate.metrics["evidence_bundle_valid"] is True
+    assert aggregate.metrics["evidence_bundle_valid_values"] == [True, True]
+    assert aggregate.metrics["evidence_bundle_entry_count"] == 3.0
+    assert aggregate.metrics["evidence_bundle_entry_count_values"] == [2.0, 4.0]
+    assert aggregate.metrics["evidence_bundle_path"] == "/tmp/bundle-2.json"
+
+
 @pytest.mark.asyncio
 async def test_aworld_cli_replay_executor_rejects_compacted_evidence_without_manifest(
     monkeypatch: pytest.MonkeyPatch,
