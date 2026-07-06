@@ -95,6 +95,13 @@ class TrajectoryCreditAssigner:
             llm_report = self._assign_from_llm(trace_pack, signals)
             if llm_report is not None:
                 return llm_report
+            existing_reusable_skill_report = self._assign_existing_reusable_skill(
+                trace_pack,
+                serialized=serialized,
+                existing_signals=signals,
+            )
+            if existing_reusable_skill_report is not None:
+                return existing_reusable_skill_report
             draft_skill_report = self._assign_new_skill_candidate(
                 trace_pack,
                 serialized=serialized,
@@ -152,7 +159,7 @@ class TrajectoryCreditAssigner:
     ) -> TargetSelectionReport | None:
         if self.inventory.draft_skill_root is None:
             return None
-        target_id = _draft_skill_target_id(serialized)
+        target_id = _reusable_skill_target_id(serialized)
         if target_id is None:
             return None
         if self.inventory.find("skill", target_id) is not None:
@@ -183,6 +190,45 @@ class TrajectoryCreditAssigner:
             diagnostics={
                 "pack_id": trace_pack.pack_id,
                 "draft_skill_reason": "trajectory indicates a reusable web evidence grounding gap",
+            },
+        )
+
+    def _assign_existing_reusable_skill(
+        self,
+        trace_pack: TracePack,
+        *,
+        serialized: str,
+        existing_signals: tuple[str, ...],
+    ) -> TargetSelectionReport | None:
+        target_id = _reusable_skill_target_id(serialized)
+        if target_id is None:
+            return None
+        entry = self.inventory.find("skill", target_id)
+        if entry is None or entry.provenance.protected:
+            return None
+
+        evidence_ids = _matching_evidence_ids(
+            trace_pack,
+            ("http", "podcast", "播客", "xiaoyuzhou", "grounding", "evidence"),
+        )
+        signals = _dedupe(
+            tuple(signal for signal in existing_signals if signal != "low_confidence")
+            + (
+                "reusable_skill_target",
+                f"verified_skill_target:{target_id}",
+            )
+        )
+        return TargetSelectionReport(
+            selected_target=entry.target,
+            confidence=0.9,
+            evidence_step_ids=evidence_ids,
+            failure_category="skill",
+            signals=signals,
+            diagnostics={
+                "pack_id": trace_pack.pack_id,
+                "reusable_skill_reason": (
+                    "trajectory matches an installed self-evolve skill capability"
+                ),
             },
         )
 
@@ -440,7 +486,7 @@ def _deterministic_signal(serialized: str) -> _Signal:
     )
 
 
-def _draft_skill_target_id(serialized: str) -> str | None:
+def _reusable_skill_target_id(serialized: str) -> str | None:
     has_web_source = "http://" in serialized or "https://" in serialized
     if not has_web_source:
         return None
