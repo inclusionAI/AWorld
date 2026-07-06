@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from aworld.evaluations.sources import (
     AWorldTrajectoryLogSource,
+    EvalSourceRecord,
     JsonlTaskSource,
     JsonlTaskAnswerSource,
     create_source_eval_suite,
@@ -251,6 +252,53 @@ def test_trajectory_log_source_preserves_evidence_bundle_path(tmp_path: Path) ->
     record = next(iter(AWorldTrajectoryLogSource(path=log_path, task_ids=[task_id]).iter_records()))
 
     assert record.raw_payload["evidence_bundle_path"] == str(bundle_path)
+
+
+def test_trajectory_log_state_adapter_counts_valid_evidence_bundle_as_evidence(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "source-1",
+                        "artifact_path": str(tmp_path / "source.txt"),
+                        "bounded_evidence": {"excerpt": "source evidence"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    record = EvalSourceRecord(
+        case_id="case-bundle-only",
+        input={"task_id": "case-bundle-only"},
+        answer="answer",
+        raw_payload={
+            "task_id": "case-bundle-only",
+            "question": "question",
+            "steps": [{"step": 1, "is_agent_finished": True}],
+            "final_answer": "answer",
+            "evidence": [],
+            "evidence_bundle_path": str(bundle_path),
+        },
+    )
+
+    state = TrajectoryLogStateAdapter(extraction_dir=tmp_path).adapt(
+        record=record,
+        case=record.to_case(),
+        target={},
+    )
+
+    assert state.outcome["evidence_blocks"] == 1
+    assert state.outcome["raw_evidence_blocks"] == 0
+    assert state.outcome["canonical_evidence_bundle_valid"] is True
+    assert state.outcome["canonical_evidence_bundle_entries"] == 1
 
 
 def test_judge_schema_normalizer_runs_before_typed_validation() -> None:
