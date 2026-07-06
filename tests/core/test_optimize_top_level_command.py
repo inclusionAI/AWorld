@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli import main as main_module
-from aworld_cli.top_level_commands.optimize_cmd import run_optimize_cli
+from aworld_cli.top_level_commands.optimize_cmd import render_optimize_summary, run_optimize_cli
 
 
 def test_registry_registers_builtin_optimize_command_from_plugin_manifest() -> None:
@@ -291,6 +291,68 @@ def test_optimize_command_passes_rerun_evaluator_from_run(
     assert calls["rerun_evaluator"] is True
     assert calls["from_trajectory"] is None
     assert calls["judge_agent"] == "agent.md"
+
+
+def test_render_optimize_summary_suggests_rerun_evaluator_after_judge_timeout() -> None:
+    summary = render_optimize_summary(
+        {
+            "run_id": "cli-123",
+            "status": "rejected",
+            "report_path": ".aworld/self_evolve/cli-123/report.json",
+            "replay_path": ".aworld/self_evolve/cli-123/replay/cand-1",
+            "selected_candidate_id": "cand-1",
+            "gate_results": [
+                {
+                    "gate_name": "score_improvement",
+                    "passed": False,
+                    "reason": "baseline judge failed completely; score improvement is inconclusive",
+                }
+            ],
+            "baseline_metrics": {
+                "judge_attempt_count": 3,
+                "judge_success_count": 0,
+                "judge_failure_count": 3,
+                "judge_failures": [
+                    {"type": "TimeoutError", "reason": "AWorld trajectory judge timed out after 120s"}
+                ],
+            },
+        }
+    )
+
+    assert "Rejected gates: score_improvement" in summary
+    assert (
+        "Resume evaluator: aworld-cli optimize --from-run cli-123 --rerun-evaluator"
+        in summary
+    )
+
+
+def test_render_optimize_summary_warns_when_replay_success_count_is_insufficient() -> None:
+    summary = render_optimize_summary(
+        {
+            "run_id": "cli-456",
+            "status": "rejected",
+            "report_path": ".aworld/self_evolve/cli-456/report.json",
+            "replay_path": ".aworld/self_evolve/cli-456/replay/cand-1",
+            "selected_candidate_id": "cand-1",
+            "gate_results": [
+                {
+                    "gate_name": "held_out_verification",
+                    "passed": False,
+                    "reason": "candidate is not verified on sufficient held-out cases",
+                }
+            ],
+            "candidate_metrics": {
+                "repetition_count": 3,
+                "successful_repetition_count": 1,
+                "failed_repetition_count": 2,
+                "replay_failure_types": ["TimeoutExpired"],
+            },
+        }
+    )
+
+    assert "Rejected gates: held_out_verification" in summary
+    assert "Replay recovery:" in summary
+    assert "Resume evaluator:" not in summary
 
 
 def test_run_optimize_cli_uses_interactive_auto_verified_defaults(

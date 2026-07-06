@@ -28,6 +28,26 @@ class ScoreImprovementGate:
                 passed=False,
                 reason="score metric missing",
             )
+        baseline_judge_attempts = _number_metric(baseline.metrics, "judge_attempt_count")
+        baseline_judge_successes = _number_metric(baseline.metrics, "judge_success_count")
+        baseline_judge_failures = _number_metric(baseline.metrics, "judge_failure_count")
+        if (
+            baseline_judge_attempts is not None
+            and baseline_judge_attempts > 0
+            and baseline_judge_successes == 0
+        ):
+            return GateResult(
+                gate_name="score_improvement",
+                passed=False,
+                reason="baseline judge failed completely; score improvement is inconclusive",
+                details={
+                    "baseline": baseline_score,
+                    "candidate": candidate_score,
+                    "baseline_judge_attempt_count": baseline_judge_attempts,
+                    "baseline_judge_success_count": baseline_judge_successes,
+                    "baseline_judge_failure_count": baseline_judge_failures,
+                },
+            )
         delta = candidate_score - baseline_score
         return GateResult(
             gate_name="score_improvement",

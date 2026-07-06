@@ -278,6 +278,11 @@ class SelfEvolveRunner:
             for feedback in prior_feedback
             if feedback.metrics.get("candidate_status") == "rejected"
         }
+        accepted_candidate_ids = {
+            feedback.variant_id
+            for feedback in prior_feedback
+            if feedback.metrics.get("candidate_status") == "accepted"
+        }
 
         for iteration_index in range(self.max_iterations):
             _emit_progress(
@@ -342,6 +347,13 @@ class SelfEvolveRunner:
                 )
             )
             if not self.skip_duplicate_rejected_candidate_gate:
+                duplicate_accepted_gate = _duplicate_accepted_candidate_gate(
+                    iteration_candidate,
+                    accepted_candidate_ids=accepted_candidate_ids,
+                    apply_policy=apply_policy,
+                )
+                if duplicate_accepted_gate is not None:
+                    iteration_gate_results.append(duplicate_accepted_gate)
                 duplicate_gate = _duplicate_rejected_candidate_gate(
                     iteration_candidate,
                     rejected_candidate_ids=rejected_candidate_ids,
@@ -349,6 +361,54 @@ class SelfEvolveRunner:
                 )
                 if duplicate_gate is not None:
                     iteration_gate_results.append(duplicate_gate)
+            accepted_duplicate_blocked = any(
+                gate.gate_name == "duplicate_accepted_candidate" and not gate.passed
+                for gate in iteration_gate_results
+            )
+            if accepted_duplicate_blocked:
+                iteration_reports.append(
+                    {
+                        "iteration": iteration_index + 1,
+                        "candidate_id": iteration_candidate.candidate_id,
+                        "status": "rejected",
+                        "baseline_metrics": None,
+                        "candidate_metrics": None,
+                        "held_out_metrics": None,
+                        "failed_gates": [
+                            gate.gate_name
+                            for gate in iteration_gate_results
+                            if not gate.passed
+                        ],
+                    }
+                )
+                iteration_states.append(
+                    {
+                        "candidate": iteration_candidate,
+                        "baseline_summary": None,
+                        "candidate_summary": None,
+                        "held_out_summary": None,
+                        "replay_result": None,
+                        "replay_dataset": None,
+                        "gate_results": iteration_gate_results,
+                        "status": "rejected",
+                    }
+                )
+                validation_feedback = (
+                    EvaluationSummary(
+                        variant_id=iteration_candidate.candidate_id,
+                        metrics={
+                            "failed_gates": [
+                                gate.gate_name
+                                for gate in iteration_gate_results
+                                if not gate.passed
+                            ],
+                            "candidate_status": "rejected",
+                        },
+                        dataset_split="validation",
+                    ),
+                )
+                rejected_candidate_ids.add(iteration_candidate.candidate_id)
+                continue
             iteration_gate_results.append(
                 BudgetGate().evaluate(
                     estimate_replay_cost(
@@ -1712,6 +1772,29 @@ def _duplicate_rejected_candidate_gate(
     )
 
 
+def _duplicate_accepted_candidate_gate(
+    candidate: CandidateVariant,
+    *,
+    accepted_candidate_ids: set[str],
+    apply_policy: str,
+) -> GateResult | None:
+    if apply_policy != "auto_verified":
+        return None
+    duplicated = candidate.candidate_id in accepted_candidate_ids
+    if not duplicated:
+        return GateResult(
+            gate_name="duplicate_accepted_candidate",
+            passed=True,
+            reason="candidate has not been previously accepted for this target",
+        )
+    return GateResult(
+        gate_name="duplicate_accepted_candidate",
+        passed=False,
+        reason="candidate repeats a previously accepted candidate for this target",
+        details={"candidate_id": candidate.candidate_id},
+    )
+
+
 def _load_prior_rejected_feedback(
     store: FilesystemSelfEvolveStore,
     target: SelfEvolveTargetRef,
@@ -1773,13 +1856,13 @@ def _feedback_from_report(
         for iteration in iterations:
             if not isinstance(iteration, Mapping):
                 continue
-            if iteration.get("status") != "rejected":
+            if iteration.get("status") not in {"rejected", "accepted"}:
                 continue
             candidate_id = iteration.get("candidate_id")
             if not isinstance(candidate_id, str) or not candidate_id:
                 continue
             metrics = _historical_feedback_metrics(iteration)
-            metrics["candidate_status"] = "rejected"
+            metrics["candidate_status"] = str(iteration.get("status"))
             metrics["run_id"] = report.get("run_id")
             metrics["report_path"] = str(report_path)
             items.append(
@@ -1937,6 +2020,12 @@ def _replay_confidence_gate(
         return None
     baseline_source = replay_result.baseline.metrics.get("replay_source")
     candidate_repetitions = replay_result.candidate.metrics.get("repetition_count")
+    candidate_successful_repetitions = replay_result.candidate.metrics.get(
+        "successful_repetition_count"
+    )
+    candidate_failed_repetitions = replay_result.candidate.metrics.get(
+        "failed_repetition_count"
+    )
     if (
         baseline_source == "historical"
         and isinstance(candidate_repetitions, (int, float))
@@ -1951,6 +2040,27 @@ def _replay_confidence_gate(
                 "candidate_repetition_count": int(candidate_repetitions),
             },
         )
+    if (
+        isinstance(candidate_repetitions, (int, float))
+        and int(candidate_repetitions) >= 3
+        and isinstance(candidate_successful_repetitions, (int, float))
+        and int(candidate_successful_repetitions) < 3
+    ):
+        return GateResult(
+            gate_name="replay_confidence",
+            passed=False,
+            reason="candidate replay successful repetitions are insufficient",
+            details={
+                "baseline_replay_source": baseline_source,
+                "candidate_repetition_count": int(candidate_repetitions),
+                "candidate_successful_repetition_count": int(candidate_successful_repetitions),
+                "candidate_failed_repetition_count": (
+                    int(candidate_failed_repetitions)
+                    if isinstance(candidate_failed_repetitions, (int, float))
+                    else None
+                ),
+            },
+        )
     return GateResult(
         gate_name="replay_confidence",
         passed=True,
@@ -1958,6 +2068,7 @@ def _replay_confidence_gate(
         details={
             "baseline_replay_source": baseline_source,
             "candidate_repetition_count": candidate_repetitions,
+            "candidate_successful_repetition_count": candidate_successful_repetitions,
         },
     )
 
