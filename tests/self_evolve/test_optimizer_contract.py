@@ -396,6 +396,30 @@ def test_feedback_normalization_turns_replay_failures_into_recovery_plan() -> No
     assert "replay_repetitions_complete_without_evidence_failures" in repair_plan["acceptance_criteria"]
 
 
+def test_feedback_normalization_turns_missing_trajectory_capture_into_recovery_plan() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-missing-trajectory",
+            dataset_split="validation",
+            metrics={
+                "score": 63.0,
+                "failed_repetition_count": 1,
+                "replay_failed_repetition_count": 1,
+                "replay_failure_reasons": ["trajectory_capture_unavailable"],
+                "replay_failure_types": ["trajectory_capture_unavailable"],
+                "failed_gates": ["score_improvement", "evidence_quality"],
+            },
+        )
+    )
+
+    repair_plan = summary["repair_plan"]
+    assert "replay_trajectory_capture_failure" in repair_plan["issues"]
+    assert "change_strategy_after_failed_replay" in repair_plan["actions"]
+    assert "ensure_replay_returns_trajectory_evidence" in repair_plan["actions"]
+    assert "do_not_finalize_without_captured_trajectory" in repair_plan["actions"]
+    assert "replay_repetitions_return_trajectory_evidence" in repair_plan["acceptance_criteria"]
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic_strategy() -> None:
     prompts = []

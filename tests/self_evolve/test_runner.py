@@ -2396,6 +2396,61 @@ def test_default_cli_skill_candidate_turns_replay_failures_into_recovery_rules()
     assert "podcast" not in candidate_content.lower()
 
 
+def test_default_cli_skill_candidate_turns_missing_trajectory_capture_into_recovery_rules() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-1",
+                            "dataset_split": "historical",
+                            "failed_gates": ["candidate_replay", "evidence_quality"],
+                            "metrics": {
+                                "replay_failure_reasons": [
+                                    "trajectory_capture_unavailable"
+                                ],
+                                "replay_failure_types": [
+                                    "trajectory_capture_unavailable"
+                                ],
+                            },
+                            "repair_plan": {
+                                "priority": "evidence_verifiability",
+                                "issues": [
+                                    "replay_trajectory_capture_failure",
+                                ],
+                                "actions": [
+                                    "change_strategy_after_failed_replay",
+                                    "ensure_replay_returns_trajectory_evidence",
+                                    "do_not_finalize_without_captured_trajectory",
+                                ],
+                                "acceptance_criteria": [
+                                    "replay_repetitions_return_trajectory_evidence",
+                                ],
+                            },
+                        }
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "Replay failure recovery requirements" in candidate_content
+    assert "returns no trajectory evidence" in candidate_content
+    assert "Do not finalize without captured trajectory evidence" in candidate_content
+    assert "replay_failure_reasons=trajectory_capture_unavailable" in candidate_content
+    assert "curl" not in candidate_content.lower()
+    assert "podcast" not in candidate_content.lower()
+
+
 def test_auto_verified_inferred_target_can_create_new_skill_draft(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

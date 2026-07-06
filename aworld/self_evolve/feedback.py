@@ -241,6 +241,9 @@ def _repair_plan(
     ).lower()
     has_replay_timeout = "timeout" in replay_failure_text
     has_replay_evidence_failure = "evidence_quality_failed" in replay_failure_text
+    has_replay_trajectory_capture_failure = (
+        "trajectory_capture_unavailable" in replay_failure_text
+    )
     if has_evidence_problem:
         issues.append("compacted_or_incomplete_evidence")
         actions.extend(
@@ -267,6 +270,16 @@ def _repair_plan(
             ]
         )
         acceptance_criteria.append("replay_repetitions_complete_without_evidence_failures")
+    if has_replay_trajectory_capture_failure:
+        issues.append("replay_trajectory_capture_failure")
+        actions.extend(
+            [
+                "change_strategy_after_failed_replay",
+                "ensure_replay_returns_trajectory_evidence",
+                "do_not_finalize_without_captured_trajectory",
+            ]
+        )
+        acceptance_criteria.append("replay_repetitions_return_trajectory_evidence")
     if "score_improvement" in set(failed_gates) or _has_efficiency_improvement_issue(
         failed_gates=failed_gates,
         metrics=metrics,
