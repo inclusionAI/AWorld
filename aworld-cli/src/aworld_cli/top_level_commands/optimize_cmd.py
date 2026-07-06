@@ -37,6 +37,18 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--dataset", type=str)
         parser.add_argument("--from-session", type=str, dest="from_session")
         parser.add_argument("--from-trajectory", type=str, dest="from_trajectory")
+        parser.add_argument(
+            "--from-run",
+            type=str,
+            dest="from_run",
+            help="Reuse artifacts from a previous self-evolve run.",
+        )
+        parser.add_argument(
+            "--rerun-evaluator",
+            action="store_true",
+            dest="rerun_evaluator",
+            help="Reuse replay artifacts from --from-run and rerun evaluator/gates only.",
+        )
         parser.add_argument("--batch-config", type=str, dest="batch_config")
         parser.add_argument("--iterations", type=int)
         parser.add_argument("--apply", type=str, default="proposal")
@@ -114,6 +126,8 @@ class OptimizeTopLevelCommand:
                 dataset=getattr(args, "dataset", None),
                 from_session=getattr(args, "from_session", None),
                 from_trajectory=getattr(args, "from_trajectory", None),
+                from_run=getattr(args, "from_run", None),
+                rerun_evaluator=getattr(args, "rerun_evaluator", False),
                 batch_config=getattr(args, "batch_config", None),
                 iterations=getattr(args, "iterations", None),
                 apply=apply_policy,
@@ -194,6 +208,8 @@ def run_optimize_cli(
     candidate_replay_repetitions: int | None = None,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
+    from_run: str | None = None,
+    rerun_evaluator: bool = False,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
@@ -236,6 +252,8 @@ def run_optimize_cli(
         dataset=dataset,
         from_session=from_session,
         from_trajectory=from_trajectory,
+        from_run=from_run,
+        rerun_evaluator=rerun_evaluator,
         batch_config=batch_config,
         iterations=iterations,
         apply_policy=apply,

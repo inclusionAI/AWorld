@@ -333,6 +333,37 @@ def test_feedback_normalization_penalizes_more_evidence_with_lower_verifiability
     assert "cap_evidence_acquisition_and_summarization_cost" in summary["required_behaviors"]
 
 
+def test_feedback_normalization_requires_behavior_delta_for_high_scoring_baseline_regression() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-high-baseline-regression",
+            dataset_split="validation",
+            metrics={
+                "score": 88.0,
+                "baseline_score": 89.5,
+                "candidate_score": 88.0,
+                "score_delta": -1.5,
+                "B2_efficiency": 3.5,
+                "B3_compliance": 4.0,
+                "failed_gates": ["score_improvement"],
+            },
+        )
+    )
+
+    assert summary["metrics"]["baseline_score"] == 89.5
+    assert summary["metrics"]["score_delta"] == -1.5
+    assert "differentiate_from_high_scoring_baseline" in summary["required_behaviors"]
+    assert "preserve_baseline_strengths" in summary["required_behaviors"]
+    assert "define_behavior_delta_before_tools" in summary["required_behaviors"]
+    assert "prefer_targeted_changes_over_broad_rewrites" in summary["required_behaviors"]
+    assert "score_or_efficiency_regression" in summary["repair_plan"]["issues"]
+    assert "define_candidate_behavior_delta" in summary["repair_plan"]["actions"]
+    assert (
+        "candidate_score_exceeds_baseline_score"
+        in summary["repair_plan"]["acceptance_criteria"]
+    )
+
+
 def test_feedback_normalization_outputs_structured_repair_plan() -> None:
     summary = normalize_feedback_summary(
         EvaluationSummary(

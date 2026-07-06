@@ -2315,6 +2315,55 @@ def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generi
     assert "podcast" not in candidate_content.lower()
 
 
+def test_default_cli_skill_candidate_turns_high_baseline_regression_into_behavior_delta() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-1",
+                            "dataset_split": "historical",
+                            "metrics": {
+                                "score": 88.0,
+                                "baseline_score": 89.5,
+                                "candidate_score": 88.0,
+                                "score_delta": -1.5,
+                                "B2_efficiency": 3.5,
+                                "B3_compliance": 4.0,
+                            },
+                            "failed_gates": ["score_improvement"],
+                            "required_behaviors": [
+                                "differentiate_from_high_scoring_baseline",
+                                "preserve_baseline_strengths",
+                                "define_behavior_delta_before_tools",
+                                "prefer_targeted_changes_over_broad_rewrites",
+                            ],
+                        }
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "High-baseline improvement requirements" in candidate_content
+    assert "preserve baseline strengths" in candidate_content.lower()
+    assert "explicit behavior delta" in candidate_content.lower()
+    assert "targeted change" in candidate_content.lower()
+    assert "do not rewrite broad strategy" in candidate_content.lower()
+    assert "acceptance check" in candidate_content.lower()
+    assert "candidate_score exceeds baseline_score" in candidate_content
+    assert "podcast" not in candidate_content.lower()
+
+
 def test_default_cli_skill_candidate_turns_repair_plan_into_acceptance_criteria() -> None:
     current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
     prompt = (

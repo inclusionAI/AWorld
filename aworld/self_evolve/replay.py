@@ -76,6 +76,19 @@ class CandidateReplayBackend(Protocol):
         """Replay baseline/candidate variants and return their trajectories."""
 
 
+def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResult:
+    """Load a previously materialized candidate replay result from disk."""
+    root = Path(replay_dir).expanduser()
+    request_payload = _load_json_object(root / "request.json")
+    request = _candidate_replay_request_from_mapping(request_payload)
+    baseline = _load_variant_result_from_dir(root / "baseline", base_variant_id="baseline")
+    candidate = _load_variant_result_from_dir(
+        root / _safe_path(request.candidate_id),
+        base_variant_id=request.candidate_id,
+    )
+    return CandidateReplayResult(request=request, baseline=baseline, candidate=candidate)
+
+
 @dataclass(frozen=True)
 class ReplayExecutionRequest:
     variant_id: str
@@ -1010,6 +1023,177 @@ def _aggregate_variant_results(
         failure=failure,
         repetition_results=tuple(results),
     )
+
+
+def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> CandidateReplayRequest:
+    target_payload = payload.get("target")
+    if not isinstance(target_payload, Mapping):
+        raise ValueError("stored replay request is missing target")
+    return CandidateReplayRequest(
+        run_id=str(payload.get("run_id") or ""),
+        task_id=str(payload.get("task_id") or ""),
+        workspace_root=str(payload.get("workspace_root") or ""),
+        target=SelfEvolveTargetRef(
+            target_type=str(target_payload.get("target_type") or ""),
+            target_id=str(target_payload.get("target_id") or ""),
+            path=(
+                str(target_payload.get("path"))
+                if target_payload.get("path") is not None
+                else None
+            ),
+        ),
+        candidate_id=str(payload.get("candidate_id") or ""),
+        overlay_skill_root=str(payload.get("overlay_skill_root") or ""),
+        task_input=payload.get("task_input"),
+        baseline_skill_root=(
+            str(payload.get("baseline_skill_root"))
+            if payload.get("baseline_skill_root") is not None
+            else None
+        ),
+        agent=str(payload.get("agent")) if payload.get("agent") is not None else None,
+        timeout_seconds=_optional_float(payload.get("timeout_seconds")),
+        max_steps=_optional_int(payload.get("max_steps")),
+        max_tokens=_optional_int(payload.get("max_tokens")),
+        max_cost_usd=_optional_float(payload.get("max_cost_usd")),
+        baseline_repetitions=_positive_int(payload.get("baseline_repetitions"), default=1),
+        candidate_repetitions=_positive_int(payload.get("candidate_repetitions"), default=1),
+    )
+
+
+def _load_variant_result_from_dir(
+    variant_dir: Path,
+    *,
+    base_variant_id: str,
+) -> ReplayVariantResult:
+    if not variant_dir.exists():
+        raise FileNotFoundError(f"stored replay variant not found: {variant_dir}")
+    repetition_dirs = _stored_repetition_dirs(variant_dir)
+    if not repetition_dirs:
+        return _load_single_variant_result(variant_dir, variant_id=base_variant_id)
+
+    results = [
+        _load_single_variant_result(
+            _effective_repetition_dir(path),
+            variant_id=(
+                base_variant_id
+                if len(repetition_dirs) == 1
+                else f"{base_variant_id}-{index}"
+            ),
+        )
+        for index, path in enumerate(repetition_dirs, start=1)
+    ]
+    aggregate_metrics = _load_optional_json_object(variant_dir / "aggregate_metrics.json")
+    successful = [result for result in results if result.succeeded]
+    selected = successful[-1] if successful else results[-1]
+    status = "succeeded" if successful else "failed"
+    failure = _load_optional_json_object(variant_dir / "failure.json")
+    if status != "succeeded" and failure is None:
+        failure = {
+            "reason": "one or more replay repetitions failed",
+            "failures": [
+                result.failure for result in results if result.failure is not None
+            ],
+        }
+    metrics = dict(aggregate_metrics or {})
+    metrics.setdefault("repetition_count", len(results))
+    metrics.setdefault("successful_repetition_count", len(successful))
+    metrics.setdefault("failed_repetition_count", len(results) - len(successful))
+    return ReplayVariantResult(
+        variant_id=base_variant_id,
+        status=status,
+        trajectory=selected.trajectory,
+        metrics=metrics,
+        stdout_path=selected.stdout_path,
+        stderr_path=selected.stderr_path,
+        failure=failure,
+        repetition_results=tuple(results),
+    )
+
+
+def _stored_repetition_dirs(variant_dir: Path) -> list[Path]:
+    dirs = [
+        path
+        for path in variant_dir.iterdir()
+        if path.is_dir() and path.name.isdigit()
+    ]
+    return sorted(dirs, key=lambda path: int(path.name))
+
+
+def _effective_repetition_dir(repetition_dir: Path) -> Path:
+    retry_dirs = [
+        path
+        for path in repetition_dir.iterdir()
+        if path.is_dir() and path.name.startswith("evidence_retry_")
+    ]
+    for path in sorted(retry_dirs, key=lambda item: item.name, reverse=True):
+        if (path / "trajectory.json").exists() and not (path / "failure.json").exists():
+            return path
+    return repetition_dir
+
+
+def _load_single_variant_result(variant_dir: Path, *, variant_id: str) -> ReplayVariantResult:
+    trajectory_payload = _load_json_value(variant_dir / "trajectory.json")
+    if not isinstance(trajectory_payload, list):
+        raise ValueError(f"stored replay trajectory must be a list: {variant_dir}")
+    trajectory = [item for item in trajectory_payload if isinstance(item, Mapping)]
+    metrics = _load_optional_json_object(variant_dir / "metrics.json") or {}
+    failure = _load_optional_json_object(variant_dir / "failure.json")
+    status = "failed" if failure is not None else "succeeded"
+    if not trajectory:
+        status = "failed"
+        failure = failure or {
+            "reason": "trajectory_capture_unavailable",
+            "detail": "stored replay trajectory is empty",
+        }
+    stdout_path = variant_dir / "stdout.txt"
+    stderr_path = variant_dir / "stderr.txt"
+    return ReplayVariantResult(
+        variant_id=variant_id,
+        status=status,
+        trajectory=trajectory,
+        metrics=metrics,
+        stdout_path=str(stdout_path) if stdout_path.exists() else None,
+        stderr_path=str(stderr_path) if stderr_path.exists() else None,
+        failure=failure,
+    )
+
+
+def _load_json_object(path: Path) -> Mapping[str, Any]:
+    payload = _load_json_value(path)
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"expected JSON object in {path}")
+    return payload
+
+
+def _load_optional_json_object(path: Path) -> Mapping[str, Any] | None:
+    if not path.exists():
+        return None
+    return _load_json_object(path)
+
+
+def _load_json_value(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    if value is None:
+        return default
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError("stored replay repetition counts must be positive")
+    return parsed
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def build_paired_replay_dataset(

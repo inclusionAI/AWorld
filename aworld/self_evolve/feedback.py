@@ -60,6 +60,7 @@ _EVIDENCE_METRIC_KEYS = {
 
 _LOW_EFFICIENCY_THRESHOLD = 3.0
 _MIN_VERIFIED_SCORE = 70.0
+_HIGH_BASELINE_SCORE = 85.0
 _MIN_GROUNDEDNESS = 3.0
 
 
@@ -208,6 +209,15 @@ def _required_behaviors(
                 "stop_after_sufficient_evidence",
             ]
         )
+    if _has_high_scoring_baseline_regression(metrics):
+        behaviors.extend(
+            [
+                "differentiate_from_high_scoring_baseline",
+                "preserve_baseline_strengths",
+                "define_behavior_delta_before_tools",
+                "prefer_targeted_changes_over_broad_rewrites",
+            ]
+        )
     return list(dict.fromkeys(behaviors))
 
 
@@ -294,6 +304,15 @@ def _repair_plan(
         acceptance_criteria.append(
             "candidate_score_exceeds_baseline_without_extra_unverified_scope"
         )
+    if _has_high_scoring_baseline_regression(metrics):
+        actions.extend(
+            [
+                "preserve_high_scoring_baseline_strengths",
+                "define_candidate_behavior_delta",
+                "prefer_targeted_change_over_broad_rewrite",
+            ]
+        )
+        acceptance_criteria.append("candidate_score_exceeds_baseline_score")
     if "required_verification" in set(failed_gates):
         issues.append("missing_deterministic_verification")
         actions.append("run_pre_final_claim_verification")
@@ -374,6 +393,17 @@ def _has_efficiency_improvement_issue(
         and isinstance(candidate_score, (int, float))
         and candidate_score <= baseline_score
     )
+
+
+def _has_high_scoring_baseline_regression(metrics: Mapping[str, Any]) -> bool:
+    baseline_score = _metric_float(metrics.get("baseline_score"))
+    candidate_score = _metric_float(metrics.get("candidate_score"))
+    score_delta = _metric_float(metrics.get("score_delta"))
+    if baseline_score is None or baseline_score < _HIGH_BASELINE_SCORE:
+        return False
+    if score_delta is not None:
+        return score_delta <= 0
+    return candidate_score is not None and candidate_score <= baseline_score
 
 
 def _metric_float(value: Any) -> float | None:

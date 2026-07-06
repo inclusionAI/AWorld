@@ -132,7 +132,12 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "tool calls, prefer direct structured extraction over broad exploration, minimize failed "
         "attempts, avoid repeated paths after one unsuccessful try, stop after sufficient evidence "
         "is captured, and compare against the baseline on quality, tool economy, latency, and "
-        "completion reliability.\n"
+        "completion reliability. "
+        "If feedback shows a high-scoring baseline with candidate_score <= baseline_score, "
+        "do not propose broad extra guidance. Preserve the baseline strengths and encode a "
+        "small explicit behavior delta: what execution behavior should change, what behavior "
+        "should stay unchanged, and what acceptance check proves the candidate beats the "
+        "baseline on score, compliance, efficiency, or robustness.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
 
