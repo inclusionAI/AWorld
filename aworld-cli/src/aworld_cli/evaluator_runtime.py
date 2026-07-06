@@ -61,11 +61,13 @@ _MAX_BUNDLE_FIRST_QUESTION_CHARS = 1500
 _MAX_BUNDLE_FIRST_RAW_EVIDENCE_BLOCKS = 3
 _MAX_BUNDLE_FIRST_STEP_COUNT = 8
 _MAX_BUNDLE_FIRST_STEP_TEXT_CHARS = 180
+_MAX_EVIDENCE_DIGEST_ENTRIES = 8
+_MAX_EVIDENCE_DIGEST_VALUE_CHARS = 1200
 _SELF_EVOLVE_REPLAY_MARKER = "Self-evolve replay evidence requirements:"
 _TRAJECTORY_JUDGE_SYSTEM_CONTRACT = """AWorld trajectory evaluator runtime contract:
-- Prefer artifact_backed_evidence over any legacy TRAJECTORY_LOG parsing instructions in the judge document.
+- Prefer evidence_digest over artifact_backed_evidence and any legacy TRAJECTORY_LOG parsing instructions in the judge document.
 - Treat extracted_trajectory as a bounded prompt fallback, not as the complete raw log.
-- Do not parse trajectory_log_path yourself unless the framework-provided artifact_read_results are insufficient.
+- Do not parse trajectory_log_path yourself unless evidence_digest and framework-provided artifact_read_results are insufficient.
 - To inspect listed artifacts, return a single JSON object with artifact_read_requests, for example {"artifact_read_requests":[{"path":"<listed artifact path>","max_chars":4000}]}.
 - Request only files listed in artifact_backed_evidence.artifacts; the framework will deny every other path.
 - After artifact_read_results are provided, return the final compact JSON assessment matching required_output_schema.
@@ -600,10 +602,16 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
         evidence_bundle=evidence_bundle,
         evidence_summary=evidence_summary,
     )
+    evidence_digest = _evidence_digest(
+        extracted_payload=extracted_payload,
+        evidence_bundle=evidence_bundle,
+        artifact_backed_evidence=artifact_backed_evidence,
+    )
     payload = {
         "case": {key: value for key, value in case_input.items() if not str(key).startswith("_")},
         "evaluation_runtime_contract": _evaluation_runtime_contract(),
         "runtime_context": runtime_context,
+        "evidence_digest": evidence_digest,
         "artifact_backed_evidence": artifact_backed_evidence,
         "extracted_trajectory": prompt_trajectory,
         "evidence_summary": evidence_summary,
@@ -643,8 +651,10 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
             "for judge agents that expect TRAJECTORY_LOG, TASK_ID, or OUT_DIR. "
             "Do not ask the user for TRAJECTORY_LOG, TASK_ID, OUT_DIR, report paths, or other parameters. "
             "Do not call external tools, network tools, task execution tools, or mutation tools. "
+            "Use evidence_digest as the default evidence view for scoring. "
             "If your runtime provides read-only artifact access, inspect only files listed in "
-            "artifact_backed_evidence.artifacts. Otherwise, use the bounded extracted_trajectory payload. "
+            "artifact_backed_evidence.artifacts only when evidence_digest is insufficient. "
+            "Otherwise, use the bounded extracted_trajectory payload. "
             "When extracted_trajectory.evidence_bundle.valid is true, treat that canonical bundle as the "
             "primary evidence; raw evidence and steps may be metadata-only execution context. "
             "Evidence content may be bounded for prompt size; use evidence_summary to account for compaction. "
@@ -661,7 +671,8 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
 def _evaluation_runtime_contract() -> dict[str, object]:
     return {
         "inputs_are_complete": True,
-        "primary_evaluation_input": "artifact_backed_evidence",
+        "primary_evaluation_input": "evidence_digest",
+        "secondary_evaluation_input": "artifact_backed_evidence",
         "bounded_prompt_input": "extracted_trajectory",
         "full_evidence_location": "artifact_backed_evidence.artifacts",
         "canonical_evidence_bundle_supported": True,
@@ -677,6 +688,91 @@ def _evaluation_runtime_contract() -> dict[str, object]:
         "output_format": "single_json_object",
         "on_insufficient_evidence": "return_valid_json_failure_assessment",
     }
+
+
+def _evidence_digest(
+    *,
+    extracted_payload: Mapping[str, Any],
+    evidence_bundle: Mapping[str, Any],
+    artifact_backed_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    bundle_valid = _is_valid_prompt_evidence_bundle(evidence_bundle)
+    entries: list[dict[str, Any]] = []
+    if bundle_valid:
+        for entry in evidence_bundle.get("entries") or []:
+            if not isinstance(entry, Mapping):
+                continue
+            digest_entry = _evidence_digest_bundle_entry(entry)
+            if digest_entry:
+                entries.append(digest_entry)
+            if len(entries) >= _MAX_EVIDENCE_DIGEST_ENTRIES:
+                break
+    else:
+        for item in extracted_payload.get("evidence") or []:
+            if not isinstance(item, Mapping):
+                continue
+            digest_entry = _evidence_digest_raw_evidence_entry(item)
+            if digest_entry:
+                entries.append(digest_entry)
+            if len(entries) >= _MAX_EVIDENCE_DIGEST_ENTRIES:
+                break
+
+    artifacts = artifact_backed_evidence.get("artifacts")
+    artifact_read_available = bool(artifacts) if isinstance(artifacts, list) else False
+    return {
+        "mode": "judge_ready_evidence_digest",
+        "canonical_bundle_valid": bundle_valid,
+        "entry_count": len(entries),
+        "artifact_read_available": artifact_read_available,
+        "entries": entries,
+        "fallback_artifact_index": "artifact_backed_evidence.artifacts",
+    }
+
+
+def _evidence_digest_bundle_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = entry.get("bounded_evidence")
+    if not isinstance(evidence, Mapping):
+        evidence = {}
+    digest_entry = {
+        "source_id": str(entry.get("source_id") or ""),
+        "artifact_path": str(entry.get("artifact_path") or ""),
+        "extraction_method": str(entry.get("extraction_method") or ""),
+        "evidence": _compact_digest_mapping(evidence),
+    }
+    return {key: value for key, value in digest_entry.items() if value not in ("", {})}
+
+
+def _evidence_digest_raw_evidence_entry(item: Mapping[str, Any]) -> dict[str, Any]:
+    content = item.get("content")
+    digest_entry = {
+        "source_id": str(item.get("source_id") or item.get("source") or ""),
+        "source": str(item.get("source") or ""),
+        "tool_name": str(item.get("tool_name") or item.get("action_name") or ""),
+        "evidence": {
+            "excerpt": _compact_digest_value(content),
+        },
+    }
+    return {key: value for key, value in digest_entry.items() if value not in ("", {})}
+
+
+def _compact_digest_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    compacted: dict[str, Any] = {}
+    for key, item in list(value.items())[:8]:
+        compacted[str(key)] = _compact_digest_value(item)
+    return compacted
+
+
+def _compact_digest_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if len(value) <= _MAX_EVIDENCE_DIGEST_VALUE_CHARS:
+            return value
+        omitted = len(value) - _MAX_EVIDENCE_DIGEST_VALUE_CHARS
+        return f"{value[:_MAX_EVIDENCE_DIGEST_VALUE_CHARS]}\n... [omitted {omitted} chars from evidence digest] ..."
+    if isinstance(value, Mapping):
+        return _compact_digest_mapping(value)
+    if isinstance(value, list):
+        return [_compact_digest_value(item) for item in value[:8]]
+    return value
 
 
 def _trajectory_prompt_payload(extracted_payload: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:

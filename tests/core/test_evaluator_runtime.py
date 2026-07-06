@@ -634,7 +634,7 @@ def test_trajectory_source_judge_system_prompt_prefers_artifact_backed_contract(
 
     system_prompt = suite.judge_backend.system_prompt
     assert system_prompt.startswith("AWorld trajectory evaluator runtime contract:")
-    assert "Prefer artifact_backed_evidence over any legacy TRAJECTORY_LOG parsing instructions" in system_prompt
+    assert "Prefer evidence_digest over artifact_backed_evidence" in system_prompt
     assert "artifact_read_requests" in system_prompt
     assert "Parse TRAJECTORY_LOG yourself before scoring" in system_prompt
 
@@ -772,7 +772,8 @@ def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
     assert runtime_context["OUT_DIR"] == ""
     contract = prompt["evaluation_runtime_contract"]
     assert contract["inputs_are_complete"] is True
-    assert contract["primary_evaluation_input"] == "artifact_backed_evidence"
+    assert contract["primary_evaluation_input"] == "evidence_digest"
+    assert contract["secondary_evaluation_input"] == "artifact_backed_evidence"
     assert contract["bounded_prompt_input"] == "extracted_trajectory"
     assert contract["do_not_request_missing_parameters"] is True
     assert contract["output_format"] == "single_json_object"
@@ -780,6 +781,8 @@ def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
     assert "Return only one compact JSON object" in prompt["instruction"]
     assert "Do not include analysis" in prompt["instruction"]
     assert "Do not include markdown" in prompt["instruction"]
+    assert prompt["evidence_digest"]["mode"] == "judge_ready_evidence_digest"
+    assert prompt["evidence_digest"]["entries"][0]["evidence"]["excerpt"] == "evidence"
 
 
 def test_build_trajectory_prompt_includes_runtime_context_from_source_target() -> None:
@@ -874,8 +877,10 @@ def test_trajectory_prompt_includes_canonical_evidence_bundle(tmp_path: Path) ->
         "short verified evidence"
     )
     assert prompt["evidence_summary"]["canonical_bundle_entry_count"] == 1
-    assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == (
-        "artifact_backed_evidence"
+    assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == "evidence_digest"
+    assert prompt["evidence_digest"]["canonical_bundle_valid"] is True
+    assert prompt["evidence_digest"]["entries"][0]["evidence"]["bounded_excerpt"] == (
+        "short verified evidence"
     )
 
 
@@ -985,9 +990,21 @@ def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload
         ("canonical_evidence_bundle", str(bundle_path)),
         ("source_artifact", str(tmp_path / "source.txt")),
     }
-    assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == (
-        "artifact_backed_evidence"
-    )
+    evidence_digest = prompt["evidence_digest"]
+    assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == "evidence_digest"
+    assert evidence_digest["mode"] == "judge_ready_evidence_digest"
+    assert evidence_digest["canonical_bundle_valid"] is True
+    assert evidence_digest["entry_count"] == 1
+    assert evidence_digest["entries"] == [
+        {
+            "source_id": "source-1",
+            "artifact_path": str(tmp_path / "source.txt"),
+            "extraction_method": "bounded_extract",
+            "evidence": {"claim_support": "compact verified evidence"},
+        }
+    ]
+    assert evidence_digest["artifact_read_available"] is True
+    assert "raw evidence" not in json.dumps(evidence_digest, ensure_ascii=False)
     assert prompt["evaluation_runtime_contract"]["may_use_read_only_artifact_access"] is True
     assert prompt["evaluation_runtime_contract"]["do_not_call_external_tools"] is True
     assert len(json.dumps(prompt, ensure_ascii=False)) < 30000
