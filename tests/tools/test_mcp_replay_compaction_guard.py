@@ -39,3 +39,35 @@ async def test_mcp_executor_blocks_compacted_replay_arguments_before_server_call
     assert len(results) == 1
     assert "compacted for replay" in results[0].content
     assert "regenerate the full tool call arguments" in results[0].content
+
+
+@pytest.mark.asyncio
+async def test_mcp_executor_blocks_nested_compacted_string_field_before_server_call():
+    executor = MCPToolExecutor()
+    executor.initialized = True
+    server = _UnexpectedCallServer()
+    executor.mcp_servers = {"terminal": {"instance": server}}
+
+    results, _ = await executor.async_execute_action(
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="mcp_execute_command",
+                params={
+                    "command": {
+                        "_aworld_replay": "compacted_string_field",
+                        "field_hint": "command",
+                        "sanitized_reason": "oversized_string_field_compaction",
+                    },
+                    "output_format": "text",
+                },
+            )
+        ]
+    )
+
+    assert server.called is False
+    assert len(results) == 1
+    assert "compacted string field" in results[0].content
+    assert "command" in results[0].content
+    assert "cannot be executed directly" in results[0].content
+    assert "schema-valid tool call arguments" in results[0].content

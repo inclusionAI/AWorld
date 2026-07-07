@@ -173,6 +173,60 @@ async def test_llm_mutator_prompt_requires_minimal_delta_and_preserve_list() -> 
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_prompts_population_with_distinct_strategy_slots() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": (
+                "# Demo\n\n"
+                f"Candidate slot {len(prompts)} guidance.\n"
+                "Preserve baseline strengths.\n"
+                "Behavior delta: change only one execution behavior.\n"
+                "Acceptance check: candidate must beat baseline and be no worse than baseline.\n"
+            ),
+            "rationale": "Population member.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-regressed",
+                metrics={
+                    "score": 88.0,
+                    "baseline_score": 91.0,
+                    "candidate_score": 88.0,
+                    "score_delta": -3.0,
+                    "failed_gates": ["score_improvement"],
+                    "A1_groundedness_delta": -1.0,
+                    "A2_completeness_delta": -0.5,
+                    "B2_efficiency_delta": 0.0,
+                },
+                dataset_split="validation",
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=3,
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    result = await optimizer.propose(request)
+
+    assert len(result.candidates) == 3
+    assert "population_strategy" in prompts[0]
+    assert "conservative_preserve_then_delta" in prompts[0]
+    assert "evidence_integrity_delta" in prompts[1]
+    assert "score_dimension_repair_delta" in prompts[2]
+    assert "A1_groundedness_delta" in prompts[0]
+    assert "A2_completeness_delta" in prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
     prompts = []
 
@@ -483,6 +537,38 @@ def test_feedback_normalization_turns_missing_trajectory_capture_into_recovery_p
     assert "replay_repetitions_return_trajectory_evidence" in repair_plan["acceptance_criteria"]
 
 
+def test_feedback_normalization_turns_compacted_tool_arguments_into_recovery_plan() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-compacted-tool-argument",
+            dataset_split="validation",
+            metrics={
+                "score": 72.0,
+                "failed_repetition_count": 1,
+                "replay_failure_reasons": [
+                    "tool call argument field command contains compacted_string_field",
+                    "tool schema rejected invalid tool argument",
+                ],
+                "replay_failure_types": [
+                    "compacted_tool_argument_replayed",
+                    "invalid_tool_argument",
+                ],
+                "failed_gates": ["candidate_replay"],
+            },
+        )
+    )
+
+    assert "avoid_compacted_tool_arguments" in summary["required_behaviors"]
+    assert "regenerate_schema_valid_tool_arguments" in summary["required_behaviors"]
+    assert "stop_repeating_invalid_tool_calls" in summary["required_behaviors"]
+
+    repair_plan = summary["repair_plan"]
+    assert "compacted_tool_argument_replay" in repair_plan["issues"]
+    assert "regenerate_compacted_tool_arguments" in repair_plan["actions"]
+    assert "switch_to_artifact_read_after_invalid_tool_argument" in repair_plan["actions"]
+    assert "tool_arguments_are_schema_valid_and_non_compacted" in repair_plan["acceptance_criteria"]
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic_strategy() -> None:
     prompts = []
@@ -532,6 +618,54 @@ async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic
     assert "xiaoyuzhou" not in instruction_text.lower()
     assert "podcast" not in instruction_text.lower()
     assert "curl" not in instruction_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_turns_compacted_tool_argument_feedback_into_generic_strategy() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nRegenerate schema-valid tool arguments before retrying failed paths.\n",
+            "rationale": "Feedback shows compacted tool argument replay.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-compacted-tool-argument",
+                metrics={
+                    "score": 72.0,
+                    "replay_failure_reasons": [
+                        "tool call argument field command contains compacted_string_field"
+                    ],
+                    "replay_failure_types": [
+                        "compacted_tool_argument_replayed",
+                        "invalid_tool_argument",
+                    ],
+                    "failed_gates": ["candidate_replay"],
+                },
+                dataset_split="validation",
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    await optimizer.propose(request)
+
+    instruction_text = prompts[0][: prompts[0].find("{")]
+    assert "compacted tool arguments" in instruction_text
+    assert "schema-valid tool arguments" in instruction_text
+    assert "read saved artifacts" in instruction_text
+    assert "do not repeat" in instruction_text
+    assert "curl" not in instruction_text.lower()
+    assert "podcast" not in instruction_text.lower()
 
 
 @pytest.mark.asyncio
@@ -607,6 +741,37 @@ async def test_llm_mutator_filters_noop_candidates() -> None:
 
     assert result.candidates == ()
     assert result.diagnostics["filtered_noop_candidates"] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_filters_duplicate_content_across_population() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": (
+                "# Demo\n\n"
+                "## Preserve\n"
+                "- Keep baseline behavior unchanged.\n\n"
+                "## Behavior delta\n"
+                "- Change only one execution behavior before finalization.\n\n"
+                "## Acceptance check\n"
+                "- Verify the candidate must beat the baseline and be no worse than baseline.\n"
+            ),
+            "rationale": "Repeated candidate.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        max_candidates=3,
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    result = await optimizer.propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.diagnostics["filtered_duplicate_candidates"] == 2
 
 
 @pytest.mark.asyncio

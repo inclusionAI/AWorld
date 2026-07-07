@@ -402,6 +402,83 @@ async def test_aworld_cli_candidate_replay_backend_aggregates_repetitions(
 
 
 @pytest.mark.asyncio
+async def test_aworld_cli_candidate_replay_backend_reuses_stored_baseline_replay(
+    tmp_path: Path,
+) -> None:
+    baseline_dir = tmp_path / "stored-baseline"
+    (baseline_dir / "1").mkdir(parents=True)
+    (baseline_dir / "1" / "trajectory.json").write_text(
+        json.dumps([{"action": {"content": "stored baseline"}}]),
+        encoding="utf-8",
+    )
+    (baseline_dir / "1" / "metrics.json").write_text(
+        json.dumps({"score": 0.7}),
+        encoding="utf-8",
+    )
+    (baseline_dir / "2").mkdir(parents=True)
+    (baseline_dir / "2" / "trajectory.json").write_text(
+        json.dumps([{"action": {"content": "stored baseline selected"}}]),
+        encoding="utf-8",
+    )
+    (baseline_dir / "2" / "metrics.json").write_text(
+        json.dumps({"score": 0.9}),
+        encoding="utf-8",
+    )
+    (baseline_dir / "aggregate_metrics.json").write_text(
+        json.dumps(
+            {
+                "repetition_count": 2,
+                "successful_repetition_count": 2,
+                "score": 0.8,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[ReplayExecutionRequest] = []
+
+    async def fake_executor(request):
+        calls.append(request)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+            metrics={"score": 1.0},
+        )
+
+    request = CandidateReplayRequest(
+        run_id="run-baseline-reuse",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay-skills"),
+        task_input="Replay this task",
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+        baseline_replay_dir=str(baseline_dir),
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n", candidate_id="cand-1"),
+        dataset=SelfEvolveDataset(
+            cases=(EvalCase(case_id="task-1", input="Replay this task"),),
+            recipe=DatasetRecipe(
+                source={"kind": "test", "case_count": 1},
+                split_seed="seed",
+                splits={"train": ["task-1"], "validation": [], "held_out": []},
+            ),
+        ),
+    )
+
+    assert [call.variant_id for call in calls] == ["cand-1-1", "cand-1-2", "cand-1-3"]
+    assert result.baseline.succeeded is True
+    assert result.baseline.metrics["repetition_count"] == 2
+    assert result.baseline.trajectory[0]["action"]["content"] == "stored baseline selected"
+    assert result.candidate.succeeded is True
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_candidate_replay_backend_allows_partial_repetition_success(
     tmp_path: Path,
 ) -> None:

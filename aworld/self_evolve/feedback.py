@@ -25,6 +25,30 @@ _SCALAR_METRIC_KEYS = {
     "baseline_score",
     "candidate_score",
     "score_delta",
+    "baseline_A1_groundedness",
+    "candidate_A1_groundedness",
+    "A1_groundedness_delta",
+    "baseline_A2_completeness",
+    "candidate_A2_completeness",
+    "A2_completeness_delta",
+    "baseline_A3_relevance",
+    "candidate_A3_relevance",
+    "A3_relevance_delta",
+    "baseline_A4_readability",
+    "candidate_A4_readability",
+    "A4_readability_delta",
+    "baseline_B1_tool_use",
+    "candidate_B1_tool_use",
+    "B1_tool_use_delta",
+    "baseline_B2_efficiency",
+    "candidate_B2_efficiency",
+    "B2_efficiency_delta",
+    "baseline_B3_compliance",
+    "candidate_B3_compliance",
+    "B3_compliance_delta",
+    "baseline_B4_robustness",
+    "candidate_B4_robustness",
+    "B4_robustness_delta",
     "baseline_evidence_block_count",
     "candidate_evidence_block_count",
     "evidence_block_count_delta",
@@ -209,6 +233,15 @@ def _required_behaviors(
                 "stop_after_sufficient_evidence",
             ]
         )
+    if _has_compacted_tool_argument_issue(evidence=evidence, metrics=metrics):
+        behaviors.extend(
+            [
+                "avoid_compacted_tool_arguments",
+                "regenerate_schema_valid_tool_arguments",
+                "stop_repeating_invalid_tool_calls",
+                "switch_to_artifact_read_after_invalid_tool_argument",
+            ]
+        )
     if _has_high_scoring_baseline_regression(metrics):
         behaviors.extend(
             [
@@ -216,6 +249,30 @@ def _required_behaviors(
                 "preserve_baseline_strengths",
                 "define_behavior_delta_before_tools",
                 "prefer_targeted_changes_over_broad_rewrites",
+            ]
+        )
+    dimension_regressions = _dimension_regressions(metrics)
+    if "A1_groundedness" in dimension_regressions:
+        behaviors.extend(
+            [
+                "preserve_groundedness",
+                "support_every_claim_with_artifact_reference",
+                "do_not_trade_groundedness_for_breadth",
+            ]
+        )
+    if "A2_completeness" in dimension_regressions:
+        behaviors.extend(
+            [
+                "preserve_answer_completeness",
+                "do_not_narrow_supported_answer",
+                "restore_baseline_supported_claims",
+            ]
+        )
+    if "B2_efficiency" in dimension_regressions:
+        behaviors.extend(
+            [
+                "preserve_or_improve_efficiency",
+                "avoid_extra_steps_without_score_gain",
             ]
         )
     return list(dict.fromkeys(behaviors))
@@ -254,6 +311,10 @@ def _repair_plan(
     has_replay_trajectory_capture_failure = (
         "trajectory_capture_unavailable" in replay_failure_text
     )
+    has_compacted_tool_argument_issue = _has_compacted_tool_argument_issue(
+        evidence=evidence,
+        metrics=metrics,
+    )
     if has_evidence_problem:
         issues.append("compacted_or_incomplete_evidence")
         actions.extend(
@@ -280,6 +341,16 @@ def _repair_plan(
             ]
         )
         acceptance_criteria.append("replay_repetitions_complete_without_evidence_failures")
+    if has_compacted_tool_argument_issue:
+        issues.append("compacted_tool_argument_replay")
+        actions.extend(
+            [
+                "regenerate_compacted_tool_arguments",
+                "switch_to_artifact_read_after_invalid_tool_argument",
+                "stop_repeating_invalid_tool_calls",
+            ]
+        )
+        acceptance_criteria.append("tool_arguments_are_schema_valid_and_non_compacted")
     if has_replay_trajectory_capture_failure:
         issues.append("replay_trajectory_capture_failure")
         actions.extend(
@@ -313,6 +384,15 @@ def _repair_plan(
             ]
         )
         acceptance_criteria.append("candidate_score_exceeds_baseline_score")
+    dimension_regressions = _dimension_regressions(metrics)
+    if dimension_regressions:
+        issues.append("dimension_regression")
+        actions.extend(
+            [
+                f"restore_{dimension}" for dimension in dimension_regressions[:_MAX_LIST_ITEMS]
+            ]
+        )
+        acceptance_criteria.append("regressed_dimensions_are_no_worse_than_baseline")
     if "required_verification" in set(failed_gates):
         issues.append("missing_deterministic_verification")
         actions.append("run_pre_final_claim_verification")
@@ -339,6 +419,35 @@ def _repair_plan(
         "actions": list(dict.fromkeys(actions)),
         "acceptance_criteria": list(dict.fromkeys(acceptance_criteria)),
     }
+
+
+def _has_compacted_tool_argument_issue(
+    *,
+    evidence: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+) -> bool:
+    replay_failure_text = " ".join(
+        str(item)
+        for item in (
+            list(evidence.get("replay_failure_reasons") or [])
+            + list(evidence.get("replay_failure_types") or [])
+            + list(metrics.get("replay_failure_reasons") or [])
+            + list(metrics.get("replay_failure_types") or [])
+            + list(metrics.get("evidence_issues") or [])
+        )
+    ).lower()
+    return any(
+        marker in replay_failure_text
+        for marker in (
+            "compacted_string_field",
+            "compacted tool argument",
+            "compacted_tool_argument",
+            "invalid tool argument",
+            "invalid_tool_argument",
+            "schema-valid tool call arguments",
+            "input should be a valid string",
+        )
+    )
 
 
 def _has_verifiability_regression(metrics: Mapping[str, Any]) -> bool:
@@ -404,6 +513,30 @@ def _has_high_scoring_baseline_regression(metrics: Mapping[str, Any]) -> bool:
     if score_delta is not None:
         return score_delta <= 0
     return candidate_score is not None and candidate_score <= baseline_score
+
+
+def _dimension_regressions(metrics: Mapping[str, Any]) -> list[str]:
+    dimensions = (
+        "A1_groundedness",
+        "A2_completeness",
+        "A3_relevance",
+        "A4_readability",
+        "B1_tool_use",
+        "B2_efficiency",
+        "B3_compliance",
+        "B4_robustness",
+    )
+    regressions: list[str] = []
+    for dimension in dimensions:
+        delta = _metric_float(metrics.get(f"{dimension}_delta"))
+        if delta is not None and delta < 0:
+            regressions.append(dimension)
+            continue
+        baseline = _metric_float(metrics.get(f"baseline_{dimension}"))
+        candidate = _metric_float(metrics.get(f"candidate_{dimension}"))
+        if baseline is not None and candidate is not None and candidate < baseline:
+            regressions.append(dimension)
+    return regressions
 
 
 def _metric_float(value: Any) -> float | None:

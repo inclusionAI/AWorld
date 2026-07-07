@@ -156,7 +156,7 @@ class SelfEvolveRunner:
         candidate_replay_backend: CandidateReplayBackend | None = None,
         replay_timeout_seconds: int = 600,
         replay_max_steps: int | None = 1,
-        replay_candidate_limit: int = 1,
+        replay_candidate_limit: int = 2,
         baseline_replay_repetitions: int = 1,
         candidate_replay_repetitions: int = 1,
         replay_stability_margin: float = 0.0,
@@ -303,6 +303,7 @@ class SelfEvolveRunner:
                     validation_feedback=validation_feedback,
                     prior_feedback=prior_feedback,
                     dataset=dataset,
+                    max_candidates=max(1, self.replay_candidate_limit),
                 )
             )
             optimizer_diagnostics.append(
@@ -320,16 +321,10 @@ class SelfEvolveRunner:
             for lineage in optimizer_result.lineage:
                 self.store.write_optimizer_lineage(run_id, lineage)
 
-            iteration_candidate = (
-                optimizer_result.candidates[0] if optimizer_result.candidates else None
+            candidate_population = tuple(
+                optimizer_result.candidates[: max(1, self.replay_candidate_limit)]
             )
-            iteration_baseline_summary: EvaluationSummary | None = None
-            iteration_candidate_summary: EvaluationSummary | None = None
-            iteration_held_out_summary: EvaluationSummary | None = None
-            iteration_replay_result: CandidateReplayResult | None = None
-            iteration_replay_dataset: SelfEvolveDataset | None = None
-            iteration_gate_results: list[GateResult] = []
-            if iteration_candidate is None:
+            if not candidate_population:
                 iteration_reports.append(
                     {
                         "iteration": iteration_index + 1,
@@ -340,323 +335,40 @@ class SelfEvolveRunner:
                 )
                 continue
 
-            current_content = target.load_current_content()
-            iteration_gate_results.extend(
-                _candidate_gate_results(
-                    iteration_candidate,
-                    current_content=current_content,
-                    workspace_root=self.store.workspace_root,
-                    max_chars=self.max_run_tokens,
+            accepted_in_iteration = False
+            reusable_baseline_replay_dir: str | None = None
+            for candidate_index, iteration_candidate in enumerate(candidate_population):
+                state, report_item, validation_feedback = await self._evaluate_iteration_candidate(
+                    run_id=run_id,
+                    target=target,
+                    dataset=dataset,
+                    candidate=iteration_candidate,
+                    apply_policy=apply_policy,
                     target_provenance=target_provenance,
-                )
-            )
-            if not self.skip_duplicate_rejected_candidate_gate:
-                duplicate_accepted_gate = _duplicate_accepted_candidate_gate(
-                    iteration_candidate,
-                    accepted_candidate_ids=accepted_candidate_ids,
-                    apply_policy=apply_policy,
-                )
-                if duplicate_accepted_gate is not None:
-                    iteration_gate_results.append(duplicate_accepted_gate)
-                duplicate_gate = _duplicate_rejected_candidate_gate(
-                    iteration_candidate,
+                    iteration_number=iteration_index + 1,
+                    candidate_number=candidate_index + 1,
+                    candidate_count=len(candidate_population),
                     rejected_candidate_ids=rejected_candidate_ids,
-                    apply_policy=apply_policy,
+                    accepted_candidate_ids=accepted_candidate_ids,
+                    baseline_replay_dir=reusable_baseline_replay_dir,
                 )
-                if duplicate_gate is not None:
-                    iteration_gate_results.append(duplicate_gate)
-            accepted_duplicate_blocked = any(
-                gate.gate_name == "duplicate_accepted_candidate" and not gate.passed
-                for gate in iteration_gate_results
-            )
-            if accepted_duplicate_blocked:
-                iteration_reports.append(
-                    {
-                        "iteration": iteration_index + 1,
-                        "candidate_id": iteration_candidate.candidate_id,
-                        "status": "rejected",
-                        "baseline_metrics": None,
-                        "candidate_metrics": None,
-                        "held_out_metrics": None,
-                        "failed_gates": [
-                            gate.gate_name
-                            for gate in iteration_gate_results
-                            if not gate.passed
-                        ],
-                    }
-                )
-                iteration_states.append(
-                    {
-                        "candidate": iteration_candidate,
-                        "baseline_summary": None,
-                        "candidate_summary": None,
-                        "held_out_summary": None,
-                        "replay_result": None,
-                        "replay_dataset": None,
-                        "gate_results": iteration_gate_results,
-                        "status": "rejected",
-                    }
-                )
-                validation_feedback = (
-                    EvaluationSummary(
-                        variant_id=iteration_candidate.candidate_id,
-                        metrics={
-                            "failed_gates": [
-                                gate.gate_name
-                                for gate in iteration_gate_results
-                                if not gate.passed
-                            ],
-                            "candidate_status": "rejected",
-                        },
-                        dataset_split="validation",
-                    ),
-                )
-                rejected_candidate_ids.add(iteration_candidate.candidate_id)
-                continue
-            iteration_gate_results.append(
-                BudgetGate().evaluate(
-                    estimate_replay_cost(
-                        dataset=dataset,
-                        candidate_count=len(optimizer_result.candidates),
-                        judge_repetitions=self.judge_repetitions,
-                        baseline_repetitions=self.baseline_replay_repetitions,
-                        candidate_repetitions=self.candidate_replay_repetitions,
-                        replay_candidate_limit=self.replay_candidate_limit,
-                        max_run_tokens=self.max_run_tokens,
-                    )
-                )
-            )
-            (
-                iteration_replay_result,
-                iteration_replay_dataset,
-                replay_gate,
-            ) = await self._replay_selected_candidate(
-                run_id=run_id,
-                target=target,
-                dataset=dataset,
-                selected_candidate=iteration_candidate,
-                apply_policy=apply_policy,
-            )
-            if replay_gate is not None:
-                iteration_gate_results.append(replay_gate)
-            replay_confidence_gate = _replay_confidence_gate(
-                iteration_replay_result,
-                apply_policy=apply_policy,
-            )
-            if replay_confidence_gate is not None:
-                iteration_gate_results.append(replay_confidence_gate)
-
-            evaluation_dataset = iteration_replay_dataset or dataset
-            if self.evaluation_backend is not None:
-                replay_blocked_verified_apply = (
-                    apply_policy == "auto_verified"
-                    and self.replay_enabled
-                    and iteration_candidate.target.target_type == "skill"
-                    and iteration_replay_dataset is None
-                )
-                if not replay_blocked_verified_apply:
-                    try:
-                        _emit_progress(
-                            self.progress_callback,
-                            "evaluation",
-                            (
-                                "Evaluating baseline and candidate "
-                                f"for iteration {iteration_index + 1}/{self.max_iterations}"
-                            ),
+                iteration_reports.append(report_item)
+                iteration_states.append(state)
+                if reusable_baseline_replay_dir is None:
+                    replay_state = state.get("replay_result")
+                    if isinstance(replay_state, CandidateReplayResult) and replay_state.baseline.succeeded:
+                        reusable_baseline_replay_dir = _baseline_replay_artifact_dir(
+                            replay_state
                         )
-                        (
-                            iteration_baseline_summary,
-                            iteration_candidate_summary,
-                        ) = await evaluate_baseline_and_candidate(
-                            self.evaluation_backend,
-                            dataset=evaluation_dataset,
-                            candidate=iteration_candidate,
-                            dataset_split="validation",
-                            artifact_namespace=run_id,
-                        )
-                        if iteration_replay_result is not None:
-                            iteration_baseline_summary = _summary_with_replay_evidence_metrics(
-                                iteration_baseline_summary,
-                                iteration_replay_result.baseline,
-                            )
-                            iteration_candidate_summary = _summary_with_replay_evidence_metrics(
-                                iteration_candidate_summary,
-                                iteration_replay_result.candidate,
-                            )
-                        score_gate = ScoreImprovementGate(
-                            min_delta=self.min_score_delta
-                        ).evaluate(
-                            baseline=iteration_baseline_summary,
-                            candidate=iteration_candidate_summary,
-                        )
-                        cost_latency_gate = CostLatencyRegressionGate(
-                            max_cost_regression_ratio=0.25,
-                            max_latency_regression_ratio=0.5,
-                        ).evaluate(
-                            baseline=iteration_baseline_summary,
-                            candidate=iteration_candidate_summary,
-                        )
-                        iteration_gate_results.extend([score_gate, cost_latency_gate])
-                        replay_stability_gate = _replay_stability_gate(
-                            baseline_summary=iteration_baseline_summary,
-                            candidate_summary=iteration_candidate_summary,
-                            min_score_delta=self.min_score_delta,
-                            replay_stability_margin=self.replay_stability_margin,
-                            replay_used=iteration_replay_dataset is not None,
-                        )
-                        if replay_stability_gate is not None:
-                            iteration_gate_results.append(replay_stability_gate)
-                        if apply_policy == "auto_verified":
-                            if _can_reuse_single_case_replay_validation(
-                                evaluation_dataset
-                            ):
-                                logger.info(
-                                    "self_evolve.evaluator.held_out.skip "
-                                    f"run_id={run_id} candidate_id={iteration_candidate.candidate_id} "
-                                    "reason=single_case_replay_validation_reused"
-                                )
-                                iteration_held_out_summary = replace(
-                                    iteration_candidate_summary,
-                                    dataset_split="single_case_replay",
-                                )
-                            else:
-                                iteration_held_out_summary = await self.evaluation_backend.evaluate_variant(
-                                    EvaluationRequest(
-                                        variant_id=iteration_candidate.candidate_id,
-                                        candidate=iteration_candidate,
-                                        dataset=evaluation_dataset,
-                                        dataset_split="held_out",
-                                        artifact_namespace=run_id,
-                                    )
-                                )
-                                if iteration_replay_result is not None:
-                                    iteration_held_out_summary = _summary_with_replay_evidence_metrics(
-                                        iteration_held_out_summary,
-                                        iteration_replay_result.candidate,
-                                    )
-                            confidence = determine_candidate_confidence(
-                                dataset=evaluation_dataset,
-                                validation_summary=iteration_candidate_summary,
-                                held_out_summary=iteration_held_out_summary,
-                                min_eval_cases=self.min_eval_cases,
-                            )
-                            evidence_quality_gates = [
-                                gate
-                                for gate in (
-                                    _evidence_quality_gate(
-                                        iteration_candidate_summary
-                                    ),
-                                    _evidence_quality_gate(
-                                        iteration_held_out_summary
-                                    ),
-                                )
-                                if gate is not None
-                            ]
-                            iteration_gate_results.extend(
-                                [
-                                    *evidence_quality_gates,
-                                    RequiredVerificationGate().evaluate(
-                                        iteration_held_out_summary
-                                    ),
-                                    HeldOutVerificationGate(
-                                        min_eval_cases=self.min_eval_cases
-                                    ).evaluate(confidence),
-                                    JudgeOnlySignalGate().evaluate(confidence),
-                                    GlobalRegressionBenchmarkGate().evaluate(
-                                        iteration_candidate,
-                                        iteration_held_out_summary,
-                                    ),
-                                ]
-                            )
-                    except Exception as exc:
-                        iteration_gate_results.append(
-                            GateResult(
-                                gate_name="evaluation",
-                                passed=False,
-                                reason="evaluation backend failed",
-                                details={
-                                    "type": type(exc).__name__,
-                                    "reason": str(exc),
-                                },
-                            )
-                        )
-            elif apply_policy == "auto_verified":
-                iteration_gate_results.append(
-                    GateResult(
-                        gate_name="auto_verified_evaluation",
-                        passed=False,
-                        reason="auto_verified apply policy requires evaluation backend",
-                    )
-                )
-
-            if apply_policy == "auto_verified":
-                iteration_gate_results.append(
-                    GateResult(
-                        gate_name="auto_apply_target_type",
-                        passed=target.identity.target_type in self.auto_apply_target_types,
-                        reason=(
-                            "target type is allowlisted for auto apply"
-                            if target.identity.target_type in self.auto_apply_target_types
-                            else "target type is not allowlisted for auto apply"
-                        ),
-                        details={
-                            "target_type": target.identity.target_type,
-                            "auto_apply_target_types": list(self.auto_apply_target_types),
-                        },
-                    )
-                )
-
-            failed_gates = [gate for gate in iteration_gate_results if not gate.passed]
-            iteration_status = (
-                "accepted"
-                if apply_policy != "auto_verified" or not failed_gates
-                else "rejected"
-            )
-            iteration_reports.append(
-                {
-                    "iteration": iteration_index + 1,
-                    "candidate_id": iteration_candidate.candidate_id,
-                    "status": iteration_status,
-                    "baseline_metrics": (
-                        dict(iteration_baseline_summary.metrics)
-                        if iteration_baseline_summary is not None
-                        else None
-                    ),
-                    "candidate_metrics": (
-                        dict(iteration_candidate_summary.metrics)
-                        if iteration_candidate_summary is not None
-                        else None
-                    ),
-                    "held_out_metrics": (
-                        dict(iteration_held_out_summary.metrics)
-                        if iteration_held_out_summary is not None
-                        else None
-                    ),
-                    "failed_gates": [gate.gate_name for gate in failed_gates],
-                }
-            )
-            iteration_states.append(
-                {
-                    "candidate": iteration_candidate,
-                    "baseline_summary": iteration_baseline_summary,
-                    "candidate_summary": iteration_candidate_summary,
-                    "held_out_summary": iteration_held_out_summary,
-                    "replay_result": iteration_replay_result,
-                    "replay_dataset": iteration_replay_dataset,
-                    "gate_results": iteration_gate_results,
-                    "status": iteration_status,
-                }
-            )
-            validation_feedback = _iteration_validation_feedback(
-                candidate=iteration_candidate,
-                baseline_summary=iteration_baseline_summary,
-                candidate_summary=iteration_candidate_summary,
-                held_out_summary=iteration_held_out_summary,
-                failed_gates=failed_gates,
-            )
-            if failed_gates:
-                rejected_candidate_ids.add(iteration_candidate.candidate_id)
-            if iteration_status == "accepted":
+                failed_gates = [
+                    gate for gate in state["gate_results"] if not gate.passed
+                ]
+                if failed_gates:
+                    rejected_candidate_ids.add(iteration_candidate.candidate_id)
+                if state["status"] == "accepted":
+                    accepted_in_iteration = True
+                    break
+            if accepted_in_iteration:
                 break
 
         selected_state = _select_iteration_state(iteration_states)
@@ -778,6 +490,313 @@ class SelfEvolveRunner:
         )
         return SelfEvolveRunnerResult(run=completed_run, selected_candidate=selected_candidate)
 
+    async def _evaluate_iteration_candidate(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+        candidate: CandidateVariant,
+        apply_policy: str,
+        target_provenance: TargetProvenance | None,
+        iteration_number: int,
+        candidate_number: int,
+        candidate_count: int,
+        rejected_candidate_ids: set[str],
+        accepted_candidate_ids: set[str],
+        baseline_replay_dir: str | None = None,
+    ) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
+        baseline_summary: EvaluationSummary | None = None
+        candidate_summary: EvaluationSummary | None = None
+        held_out_summary: EvaluationSummary | None = None
+        replay_result: CandidateReplayResult | None = None
+        replay_dataset: SelfEvolveDataset | None = None
+        gate_results: list[GateResult] = []
+
+        current_content = target.load_current_content()
+        gate_results.extend(
+            _candidate_gate_results(
+                candidate,
+                current_content=current_content,
+                workspace_root=self.store.workspace_root,
+                max_chars=self.max_run_tokens,
+                target_provenance=target_provenance,
+            )
+        )
+        if not self.skip_duplicate_rejected_candidate_gate:
+            duplicate_accepted_gate = _duplicate_accepted_candidate_gate(
+                candidate,
+                accepted_candidate_ids=accepted_candidate_ids,
+                apply_policy=apply_policy,
+            )
+            if duplicate_accepted_gate is not None:
+                gate_results.append(duplicate_accepted_gate)
+            duplicate_gate = _duplicate_rejected_candidate_gate(
+                candidate,
+                rejected_candidate_ids=rejected_candidate_ids,
+                apply_policy=apply_policy,
+            )
+            if duplicate_gate is not None:
+                gate_results.append(duplicate_gate)
+        accepted_duplicate_blocked = any(
+            gate.gate_name == "duplicate_accepted_candidate" and not gate.passed
+            for gate in gate_results
+        )
+        rejected_duplicate_blocked = any(
+            gate.gate_name == "duplicate_rejected_candidate" and not gate.passed
+            for gate in gate_results
+        )
+        if accepted_duplicate_blocked or rejected_duplicate_blocked:
+            failed_gates = [gate for gate in gate_results if not gate.passed]
+            report_item = _iteration_report_item(
+                iteration_number=iteration_number,
+                candidate_number=candidate_number,
+                candidate_count=candidate_count,
+                candidate=candidate,
+                status="rejected",
+                baseline_summary=None,
+                candidate_summary=None,
+                held_out_summary=None,
+                failed_gates=failed_gates,
+            )
+            state = _iteration_state(
+                candidate=candidate,
+                baseline_summary=None,
+                candidate_summary=None,
+                held_out_summary=None,
+                replay_result=None,
+                replay_dataset=None,
+                gate_results=gate_results,
+                status="rejected",
+            )
+            feedback = (
+                EvaluationSummary(
+                    variant_id=candidate.candidate_id,
+                    metrics={
+                        "failed_gates": [gate.gate_name for gate in failed_gates],
+                        "candidate_status": "rejected",
+                    },
+                    dataset_split="validation",
+                ),
+            )
+            return state, report_item, feedback
+
+        gate_results.append(
+            BudgetGate().evaluate(
+                estimate_replay_cost(
+                    dataset=dataset,
+                    candidate_count=candidate_count,
+                    judge_repetitions=self.judge_repetitions,
+                    baseline_repetitions=self.baseline_replay_repetitions,
+                    candidate_repetitions=self.candidate_replay_repetitions,
+                    replay_candidate_limit=self.replay_candidate_limit,
+                    max_run_tokens=self.max_run_tokens,
+                )
+            )
+        )
+        replay_result, replay_dataset, replay_gate = await self._replay_selected_candidate(
+            run_id=run_id,
+            target=target,
+            dataset=dataset,
+            selected_candidate=candidate,
+            apply_policy=apply_policy,
+            baseline_replay_dir=baseline_replay_dir,
+        )
+        if replay_gate is not None:
+            gate_results.append(replay_gate)
+        replay_confidence_gate = _replay_confidence_gate(
+            replay_result,
+            apply_policy=apply_policy,
+        )
+        if replay_confidence_gate is not None:
+            gate_results.append(replay_confidence_gate)
+
+        evaluation_dataset = replay_dataset or dataset
+        if self.evaluation_backend is not None:
+            replay_blocked_verified_apply = (
+                apply_policy == "auto_verified"
+                and self.replay_enabled
+                and candidate.target.target_type == "skill"
+                and replay_dataset is None
+            )
+            if not replay_blocked_verified_apply:
+                try:
+                    _emit_progress(
+                        self.progress_callback,
+                        "evaluation",
+                        (
+                            "Evaluating baseline and candidate "
+                            f"for iteration {iteration_number}/{self.max_iterations} "
+                            f"candidate {candidate_number}/{candidate_count}"
+                        ),
+                    )
+                    baseline_summary, candidate_summary = await evaluate_baseline_and_candidate(
+                        self.evaluation_backend,
+                        dataset=evaluation_dataset,
+                        candidate=candidate,
+                        dataset_split="validation",
+                        artifact_namespace=run_id,
+                    )
+                    if replay_result is not None:
+                        baseline_summary = _summary_with_replay_evidence_metrics(
+                            baseline_summary,
+                            replay_result.baseline,
+                        )
+                        candidate_summary = _summary_with_replay_evidence_metrics(
+                            candidate_summary,
+                            replay_result.candidate,
+                        )
+                    score_gate = ScoreImprovementGate(
+                        min_delta=self.min_score_delta
+                    ).evaluate(
+                        baseline=baseline_summary,
+                        candidate=candidate_summary,
+                    )
+                    cost_latency_gate = CostLatencyRegressionGate(
+                        max_cost_regression_ratio=0.25,
+                        max_latency_regression_ratio=0.5,
+                    ).evaluate(
+                        baseline=baseline_summary,
+                        candidate=candidate_summary,
+                    )
+                    gate_results.extend([score_gate, cost_latency_gate])
+                    replay_stability_gate = _replay_stability_gate(
+                        baseline_summary=baseline_summary,
+                        candidate_summary=candidate_summary,
+                        min_score_delta=self.min_score_delta,
+                        replay_stability_margin=self.replay_stability_margin,
+                        replay_used=replay_dataset is not None,
+                    )
+                    if replay_stability_gate is not None:
+                        gate_results.append(replay_stability_gate)
+                    if apply_policy == "auto_verified":
+                        if _can_reuse_single_case_replay_validation(evaluation_dataset):
+                            logger.info(
+                                "self_evolve.evaluator.held_out.skip "
+                                f"run_id={run_id} candidate_id={candidate.candidate_id} "
+                                "reason=single_case_replay_validation_reused"
+                            )
+                            held_out_summary = replace(
+                                candidate_summary,
+                                dataset_split="single_case_replay",
+                            )
+                        else:
+                            held_out_summary = await self.evaluation_backend.evaluate_variant(
+                                EvaluationRequest(
+                                    variant_id=candidate.candidate_id,
+                                    candidate=candidate,
+                                    dataset=evaluation_dataset,
+                                    dataset_split="held_out",
+                                    artifact_namespace=run_id,
+                                )
+                            )
+                            if replay_result is not None:
+                                held_out_summary = _summary_with_replay_evidence_metrics(
+                                    held_out_summary,
+                                    replay_result.candidate,
+                                )
+                        confidence = determine_candidate_confidence(
+                            dataset=evaluation_dataset,
+                            validation_summary=candidate_summary,
+                            held_out_summary=held_out_summary,
+                            min_eval_cases=self.min_eval_cases,
+                        )
+                        evidence_quality_gates = [
+                            gate
+                            for gate in (
+                                _evidence_quality_gate(candidate_summary),
+                                _evidence_quality_gate(held_out_summary),
+                            )
+                            if gate is not None
+                        ]
+                        gate_results.extend(
+                            [
+                                *evidence_quality_gates,
+                                RequiredVerificationGate().evaluate(held_out_summary),
+                                HeldOutVerificationGate(
+                                    min_eval_cases=self.min_eval_cases
+                                ).evaluate(confidence),
+                                JudgeOnlySignalGate().evaluate(confidence),
+                                GlobalRegressionBenchmarkGate().evaluate(
+                                    candidate,
+                                    held_out_summary,
+                                ),
+                            ]
+                        )
+                except Exception as exc:
+                    gate_results.append(
+                        GateResult(
+                            gate_name="evaluation",
+                            passed=False,
+                            reason="evaluation backend failed",
+                            details={
+                                "type": type(exc).__name__,
+                                "reason": str(exc),
+                            },
+                        )
+                    )
+        elif apply_policy == "auto_verified":
+            gate_results.append(
+                GateResult(
+                    gate_name="auto_verified_evaluation",
+                    passed=False,
+                    reason="auto_verified apply policy requires evaluation backend",
+                )
+            )
+
+        if apply_policy == "auto_verified":
+            gate_results.append(
+                GateResult(
+                    gate_name="auto_apply_target_type",
+                    passed=target.identity.target_type in self.auto_apply_target_types,
+                    reason=(
+                        "target type is allowlisted for auto apply"
+                        if target.identity.target_type in self.auto_apply_target_types
+                        else "target type is not allowlisted for auto apply"
+                    ),
+                    details={
+                        "target_type": target.identity.target_type,
+                        "auto_apply_target_types": list(self.auto_apply_target_types),
+                    },
+                )
+            )
+
+        failed_gates = [gate for gate in gate_results if not gate.passed]
+        status = (
+            "accepted"
+            if apply_policy != "auto_verified" or not failed_gates
+            else "rejected"
+        )
+        report_item = _iteration_report_item(
+            iteration_number=iteration_number,
+            candidate_number=candidate_number,
+            candidate_count=candidate_count,
+            candidate=candidate,
+            status=status,
+            baseline_summary=baseline_summary,
+            candidate_summary=candidate_summary,
+            held_out_summary=held_out_summary,
+            failed_gates=failed_gates,
+        )
+        state = _iteration_state(
+            candidate=candidate,
+            baseline_summary=baseline_summary,
+            candidate_summary=candidate_summary,
+            held_out_summary=held_out_summary,
+            replay_result=replay_result,
+            replay_dataset=replay_dataset,
+            gate_results=gate_results,
+            status=status,
+        )
+        feedback = _iteration_validation_feedback(
+            candidate=candidate,
+            baseline_summary=baseline_summary,
+            candidate_summary=candidate_summary,
+            held_out_summary=held_out_summary,
+            failed_gates=failed_gates,
+        )
+        return state, report_item, feedback
+
     async def _replay_selected_candidate(
         self,
         *,
@@ -786,6 +805,7 @@ class SelfEvolveRunner:
         dataset: SelfEvolveDataset,
         selected_candidate: CandidateVariant,
         apply_policy: str,
+        baseline_replay_dir: str | None = None,
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
@@ -841,6 +861,7 @@ class SelfEvolveRunner:
             max_tokens=self.max_run_tokens,
             baseline_repetitions=self.baseline_replay_repetitions,
             candidate_repetitions=self.candidate_replay_repetitions,
+            baseline_replay_dir=baseline_replay_dir,
         )
         replay_result = await self.candidate_replay_backend.replay_candidate(
             request,
@@ -1020,7 +1041,7 @@ def optimize_from_cli_request(
     candidate_replay_backend: CandidateReplayBackend | None = None,
     replay_timeout_seconds: int = 600,
     replay_max_steps: int | None = 1,
-    replay_candidate_limit: int = 1,
+    replay_candidate_limit: int = 2,
     baseline_replay_repetitions: int = 1,
     candidate_replay_repetitions: int = 1,
     replay_stability_margin: float = 0.0,
@@ -1722,6 +1743,7 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             "task_id": replay_result.request.task_id,
             "candidate_id": replay_result.request.candidate_id,
             "overlay_skill_root": replay_result.request.overlay_skill_root,
+            "baseline_replay_dir": replay_result.request.baseline_replay_dir,
             "timeout_seconds": replay_result.request.timeout_seconds,
             "max_steps": replay_result.request.max_steps,
             "max_tokens": replay_result.request.max_tokens,
@@ -1755,6 +1777,12 @@ def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
         / "replay"
         / replay_result.request.candidate_id
     )
+
+
+def _baseline_replay_artifact_dir(replay_result: CandidateReplayResult) -> str:
+    if replay_result.request.baseline_replay_dir:
+        return replay_result.request.baseline_replay_dir
+    return str(Path(_replay_artifact_path(replay_result)) / "baseline")
 
 
 def _evaluator_report_paths(
@@ -2189,6 +2217,66 @@ def _iteration_validation_feedback(
     )
 
 
+def _iteration_report_item(
+    *,
+    iteration_number: int,
+    candidate_number: int,
+    candidate_count: int,
+    candidate: CandidateVariant,
+    status: str,
+    baseline_summary: EvaluationSummary | None,
+    candidate_summary: EvaluationSummary | None,
+    held_out_summary: EvaluationSummary | None,
+    failed_gates: list[GateResult],
+) -> dict[str, object]:
+    return {
+        "iteration": iteration_number,
+        "candidate_number": candidate_number,
+        "candidate_count": candidate_count,
+        "candidate_id": candidate.candidate_id,
+        "status": status,
+        "baseline_metrics": (
+            dict(baseline_summary.metrics)
+            if baseline_summary is not None
+            else None
+        ),
+        "candidate_metrics": (
+            dict(candidate_summary.metrics)
+            if candidate_summary is not None
+            else None
+        ),
+        "held_out_metrics": (
+            dict(held_out_summary.metrics)
+            if held_out_summary is not None
+            else None
+        ),
+        "failed_gates": [gate.gate_name for gate in failed_gates],
+    }
+
+
+def _iteration_state(
+    *,
+    candidate: CandidateVariant,
+    baseline_summary: EvaluationSummary | None,
+    candidate_summary: EvaluationSummary | None,
+    held_out_summary: EvaluationSummary | None,
+    replay_result: CandidateReplayResult | None,
+    replay_dataset: SelfEvolveDataset | None,
+    gate_results: list[GateResult],
+    status: str,
+) -> dict[str, object]:
+    return {
+        "candidate": candidate,
+        "baseline_summary": baseline_summary,
+        "candidate_summary": candidate_summary,
+        "held_out_summary": held_out_summary,
+        "replay_result": replay_result,
+        "replay_dataset": replay_dataset,
+        "gate_results": gate_results,
+        "status": status,
+    }
+
+
 def _baseline_comparison_feedback_metrics(
     *,
     baseline_summary: EvaluationSummary | None,
@@ -2199,6 +2287,14 @@ def _baseline_comparison_feedback_metrics(
     comparison: dict[str, float] = {}
     for metric_key in (
         "score",
+        "A1_groundedness",
+        "A2_completeness",
+        "A3_relevance",
+        "A4_readability",
+        "B1_tool_use",
+        "B2_efficiency",
+        "B3_compliance",
+        "B4_robustness",
         "evidence_block_count",
         "evidence_incomplete",
         "latency_ms",
@@ -2398,6 +2494,55 @@ def _feedback_repair_plan_from_mutation_prompt(prompt: str | None) -> dict[str, 
     return result
 
 
+def _population_strategy_from_mutation_prompt(prompt: str | None) -> str:
+    if not prompt:
+        return "conservative_preserve_then_delta"
+    start = prompt.find("{")
+    if start < 0:
+        return "conservative_preserve_then_delta"
+    try:
+        payload = json.loads(prompt[start:])
+    except json.JSONDecodeError:
+        return "conservative_preserve_then_delta"
+    if not isinstance(payload, Mapping):
+        return "conservative_preserve_then_delta"
+    strategy = payload.get("population_strategy")
+    if isinstance(strategy, Mapping):
+        name = strategy.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return "conservative_preserve_then_delta"
+
+
+def _feedback_metrics_from_mutation_prompt(prompt: str | None) -> list[Mapping[str, Any]]:
+    if not prompt:
+        return []
+    start = prompt.find("{")
+    if start < 0:
+        return []
+    try:
+        payload = json.loads(prompt[start:])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, Mapping):
+        return []
+    feedback_items: list[object] = []
+    for key in ("prior_feedback", "validation_feedback"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            feedback_items.extend(value)
+    metrics_items: list[Mapping[str, Any]] = []
+    for item in feedback_items:
+        if not isinstance(item, Mapping):
+            continue
+        summary = item.get("feedback_summary")
+        summary = summary if isinstance(summary, Mapping) else item
+        metrics = summary.get("metrics")
+        if isinstance(metrics, Mapping):
+            metrics_items.append(metrics)
+    return metrics_items
+
+
 def _feedback_has_scope_or_cost_issue(prompt: str | None) -> bool:
     behaviors = _feedback_required_behaviors_from_mutation_prompt(prompt)
     return bool(
@@ -2419,17 +2564,26 @@ def _feedback_has_high_baseline_regression_issue(prompt: str | None) -> bool:
         "preserve_baseline_strengths",
         "define_behavior_delta_before_tools",
         "prefer_targeted_changes_over_broad_rewrites",
-    }:
+        }:
         return True
     repair_plan = _feedback_repair_plan_from_mutation_prompt(prompt)
-    return bool(
-        repair_plan["actions"]
-        & {
-            "preserve_high_scoring_baseline_strengths",
-            "define_candidate_behavior_delta",
-            "prefer_targeted_change_over_broad_rewrite",
-        }
-    )
+    if repair_plan["actions"] & {
+        "preserve_high_scoring_baseline_strengths",
+        "define_candidate_behavior_delta",
+        "prefer_targeted_change_over_broad_rewrite",
+    }:
+        return True
+    for metrics in _feedback_metrics_from_mutation_prompt(prompt):
+        baseline_score = _metric_number(metrics, "baseline_score")
+        candidate_score = _metric_number(metrics, "candidate_score")
+        score_delta = _metric_number(metrics, "score_delta")
+        if baseline_score is None or baseline_score < 85.0:
+            continue
+        if score_delta is not None and score_delta <= 0:
+            return True
+        if candidate_score is not None and candidate_score <= baseline_score:
+            return True
+    return False
 
 
 def _feedback_has_evidence_preservation_issue(prompt: str | None) -> bool:
@@ -2488,11 +2642,13 @@ def _default_cli_skill_candidate(
         mutation_prompt
     )
     repair_plan = _feedback_repair_plan_from_mutation_prompt(mutation_prompt)
+    population_strategy = _population_strategy_from_mutation_prompt(mutation_prompt)
     if high_baseline_regression_issue:
         return _default_cli_high_baseline_delta_candidate(
             current_content=current_content,
             trace_packs=trace_packs,
             repair_plan=repair_plan,
+            population_strategy=population_strategy,
         )
     if not trace_packs and not feedback_guidance:
         return current_content
@@ -2637,6 +2793,36 @@ def _default_cli_skill_candidate(
                 ),
             ]
         )
+    if (
+        "compacted_tool_argument_replay" in repair_plan["issues"]
+        or repair_plan["actions"]
+        & {
+            "regenerate_compacted_tool_arguments",
+            "switch_to_artifact_read_after_invalid_tool_argument",
+            "stop_repeating_invalid_tool_calls",
+        }
+    ):
+        guidance.extend(
+            [
+                "Tool argument replay hygiene requirements:",
+                (
+                    "Do not execute replay placeholders, compacted string fields, or "
+                    "schema-invalid argument objects as real tool inputs."
+                ),
+                (
+                    "Regenerate the smallest schema-valid tool arguments from the current "
+                    "task context before retrying a tool path."
+                ),
+                (
+                    "If the original argument was compacted, read a saved artifact or use "
+                    "a narrower extraction path instead of replaying the placeholder."
+                ),
+                (
+                    "After one invalid tool-argument failure, stop repeating the same call "
+                    "and switch strategy before continuing."
+                ),
+            ]
+        )
     if high_baseline_regression_issue:
         guidance.extend(
             [
@@ -2689,6 +2875,7 @@ def _default_cli_high_baseline_delta_candidate(
     current_content: str,
     trace_packs: tuple[TracePack, ...],
     repair_plan: Mapping[str, set[str]],
+    population_strategy: str = "conservative_preserve_then_delta",
 ) -> str:
     evidence_ids = [
         step.evidence_id
@@ -2705,8 +2892,9 @@ def _default_cli_high_baseline_delta_candidate(
         "pre-final check over the already captured artifacts: every retained claim "
         "must map to a bounded source span or artifact reference, and any invalid "
         "manifest entry must be repaired with a bounded evidence payload or the "
-        "unsupported claim must be omitted."
+        "unsupported claim must be omitted without reducing supported answer completeness."
     )
+    strategy_focus = "preserve the high-scoring baseline and add only one minimal delta"
     if (
         "score_or_efficiency_regression" in issues
         or "stop_after_sufficient_verified_evidence" in actions
@@ -2716,6 +2904,7 @@ def _default_cli_high_baseline_delta_candidate(
             "stop broad exploration and only add another evidence step when it covers "
             "a specific unsupported claim or repairs a concrete verification failure."
         )
+        strategy_focus = "avoid extra steps unless they repair a named verification gap"
     if "invalid_evidence_manifest" in issues or "write_valid_bounded_evidence_manifest" in actions:
         behavior_delta = (
             "Before finalizing, validate the evidence manifest entries and repair only "
@@ -2723,23 +2912,75 @@ def _default_cli_high_baseline_delta_candidate(
             "collect unrelated evidence while repairing the manifest. Each repaired "
             "entry must include a bounded evidence payload such as excerpt, "
             "structured_extract, or source_span; fields_used is only an index and "
-            "cannot replace that payload."
+            "cannot replace that payload. Do not narrow the answer or omit supported "
+            "claims solely to make the manifest easier to validate."
         )
+        strategy_focus = "repair evidence references without changing supported answer content"
+    if (
+        "compacted_tool_argument_replay" in issues
+        or actions
+        & {
+            "regenerate_compacted_tool_arguments",
+            "switch_to_artifact_read_after_invalid_tool_argument",
+            "stop_repeating_invalid_tool_calls",
+        }
+    ):
+        behavior_delta = (
+            "Before retrying any failed tool path, verify that the tool arguments are "
+            "schema-valid real inputs and not replay placeholders or compacted string "
+            "fields. If a required argument was compacted, regenerate the smallest valid "
+            "argument from the current task context or read the saved artifact; after one "
+            "invalid-argument failure, stop repeating that call and switch strategy."
+        )
+        strategy_focus = "preserve baseline behavior while preventing invalid replay tool arguments"
+    if population_strategy == "evidence_integrity_delta":
+        behavior_delta = (
+            "Use an artifact-first evidence contract before finalizing: persist source "
+            "material as artifacts, write a manifest entry only when it has a bounded "
+            "payload, and treat fields_used, artifact names, or source ids as indexes "
+            "rather than evidence. If the bounded payload is missing or compacted, "
+            "retry with a narrower extraction or mark the claim unsupported instead of "
+            "answering from memory."
+        )
+        strategy_focus = "make evidence validity the only changed execution behavior"
+    elif population_strategy == "score_dimension_repair_delta":
+        regressed_dimensions = [
+            action.removeprefix("restore_")
+            for action in sorted(actions)
+            if action.startswith("restore_")
+        ]
+        dimension_text = (
+            ", ".join(regressed_dimensions)
+            if regressed_dimensions
+            else "A1_groundedness, A2_completeness, and B2_efficiency"
+        )
+        behavior_delta = (
+            "Before finalizing, compare the draft answer against the baseline-strength "
+            f"dimensions ({dimension_text}). Restore any baseline-supported claim whose "
+            "removal would lower completeness, require a source span for claims that "
+            "affect groundedness, and avoid any additional step that does not improve "
+            "one of those regressed dimensions."
+        )
+        strategy_focus = f"restore {dimension_text} without broadening task scope"
 
     acceptance_check = (
-        "candidate_score exceeds baseline_score, groundedness and completeness stay no "
-        "worse than baseline, evidence_manifest_invalid_entry_count == 0, and every "
-        "manifest entry includes bounded evidence payload."
+        "candidate_score exceeds baseline_score, A1_groundedness and A2_completeness "
+        "stay no worse than baseline, answer completeness is preserved, "
+        "evidence_manifest_invalid_entry_count == 0, and every manifest entry includes "
+        "bounded evidence payload."
     )
     if "candidate_score_exceeds_baseline_score" in acceptance_criteria:
         acceptance_check = (
-            "candidate_score exceeds baseline_score while preserving baseline groundedness, "
-            "completion, and relevance; evidence_manifest_invalid_entry_count == 0; "
-            "otherwise keep the baseline behavior."
+            "candidate_score exceeds baseline_score while preserving baseline "
+            "A1_groundedness, A2_completeness, answer completeness, and relevance; "
+            "evidence_manifest_invalid_entry_count == 0; otherwise keep the baseline behavior."
         )
 
     section = [
         "## Self-Evolve Targeted Delta",
+        "",
+        f"### Population strategy: {population_strategy}",
+        f"- Focus: {strategy_focus}.",
         "",
         "### Preserve",
         (
@@ -2749,6 +2990,11 @@ def _default_cli_high_baseline_delta_candidate(
         (
             "- Do not rewrite broad strategy or add extra evidence collection unless "
             "it addresses a concrete failed check."
+        ),
+        (
+            "- Preserve A1_groundedness, A2_completeness, and answer completeness; "
+            "do not narrow the answer, and do not omit supported claims unless a "
+            "claim lacks non-compacted evidence."
         ),
         "",
         "### Behavior delta",
