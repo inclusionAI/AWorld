@@ -2704,7 +2704,8 @@ def _default_cli_high_baseline_delta_candidate(
         "Before adding new evidence paths or expanding the final answer, run one "
         "pre-final check over the already captured artifacts: every retained claim "
         "must map to a bounded source span or artifact reference, and any invalid "
-        "manifest entry must be repaired or the unsupported claim must be omitted."
+        "manifest entry must be repaired with a bounded evidence payload or the "
+        "unsupported claim must be omitted."
     )
     if (
         "score_or_efficiency_regression" in issues
@@ -2719,17 +2720,22 @@ def _default_cli_high_baseline_delta_candidate(
         behavior_delta = (
             "Before finalizing, validate the evidence manifest entries and repair only "
             "schema-invalid or unsupported references; do not broaden the answer or "
-            "collect unrelated evidence while repairing the manifest."
+            "collect unrelated evidence while repairing the manifest. Each repaired "
+            "entry must include a bounded evidence payload such as excerpt, "
+            "structured_extract, or source_span; fields_used is only an index and "
+            "cannot replace that payload."
         )
 
     acceptance_check = (
         "candidate_score exceeds baseline_score, groundedness and completeness stay no "
-        "worse than baseline, and the replay evidence bundle has no invalid manifest entries."
+        "worse than baseline, evidence_manifest_invalid_entry_count == 0, and every "
+        "manifest entry includes bounded evidence payload."
     )
     if "candidate_score_exceeds_baseline_score" in acceptance_criteria:
         acceptance_check = (
             "candidate_score exceeds baseline_score while preserving baseline groundedness, "
-            "completion, and relevance; otherwise keep the baseline behavior."
+            "completion, and relevance; evidence_manifest_invalid_entry_count == 0; "
+            "otherwise keep the baseline behavior."
         )
 
     section = [
@@ -2747,6 +2753,12 @@ def _default_cli_high_baseline_delta_candidate(
         "",
         "### Behavior delta",
         f"- {behavior_delta}",
+        (
+            "- When writing evidence_manifest.jsonl, every entry must include bounded "
+            "evidence payload: use excerpt, structured_extract, or source_span. "
+            "fields_used can help describe selected fields, but it cannot replace "
+            "the bounded evidence payload."
+        ),
         "",
         "### Acceptance check",
         f"- {acceptance_check}",

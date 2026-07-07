@@ -2817,6 +2817,13 @@ def test_default_cli_skill_candidate_generates_targeted_delta_for_high_baseline_
     assert "Evidence preservation requirements" not in candidate_content
     assert "Previous validation feedback" not in candidate_content
     assert "candidate_score exceeds baseline_score" in candidate_content
+    assert "bounded evidence payload" in candidate_content
+    assert "fields_used" in candidate_content
+    assert "cannot replace" in candidate_content
+    assert "excerpt" in candidate_content
+    assert "structured_extract" in candidate_content
+    assert "source_span" in candidate_content
+    assert "evidence_manifest_invalid_entry_count == 0" in candidate_content
     assert "podcast" not in candidate_content.lower()
 
 
