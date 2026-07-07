@@ -2545,14 +2545,14 @@ def test_default_cli_skill_candidate_prioritizes_newest_prior_feedback() -> None
                             "variant_id": "latest-candidate",
                             "dataset_split": "historical",
                             "metrics": {
-                                "score": 88.0,
-                                "baseline_score": 89.5,
-                                "candidate_score": 88.0,
-                                "score_delta": -1.5,
+                                "score": 68.0,
+                                "baseline_score": 72.5,
+                                "candidate_score": 68.0,
+                                "score_delta": -4.5,
                             },
                             "failed_gates": ["score_improvement"],
                             "required_behaviors": [
-                                "differentiate_from_high_scoring_baseline"
+                                "plan_before_tools"
                             ],
                         }
                     },
@@ -2592,8 +2592,7 @@ def test_default_cli_skill_candidate_prioritizes_newest_prior_feedback() -> None
     )
 
     assert "latest-candidate on historical" in candidate_content
-    assert "baseline_score" in candidate_content
-    assert "differentiate_from_high_scoring_baseline" in candidate_content
+    assert "plan_before_tools" in candidate_content
     assert "stale-candidate on historical" not in candidate_content
 
 
@@ -2704,7 +2703,7 @@ def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generi
     assert "podcast" not in candidate_content.lower()
 
 
-def test_default_cli_skill_candidate_turns_high_baseline_regression_into_behavior_delta() -> None:
+def test_default_cli_skill_candidate_returns_noop_for_high_baseline_regression() -> None:
     current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
     prompt = (
         "Propose one concise text-only self-evolve candidate.\n"
@@ -2743,14 +2742,7 @@ def test_default_cli_skill_candidate_turns_high_baseline_regression_into_behavio
         mutation_prompt=prompt,
     )
 
-    assert "High-baseline improvement requirements" in candidate_content
-    assert "preserve baseline strengths" in candidate_content.lower()
-    assert "explicit behavior delta" in candidate_content.lower()
-    assert "targeted change" in candidate_content.lower()
-    assert "do not rewrite broad strategy" in candidate_content.lower()
-    assert "acceptance check" in candidate_content.lower()
-    assert "candidate_score exceeds baseline_score" in candidate_content
-    assert "podcast" not in candidate_content.lower()
+    assert candidate_content == current_content
 
 
 def test_default_cli_skill_candidate_turns_repair_plan_into_acceptance_criteria() -> None:
