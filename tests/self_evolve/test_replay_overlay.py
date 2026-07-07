@@ -1010,13 +1010,21 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
         )
     )
 
-    assert result.succeeded is False
-    assert result.failure["reason"] == "evidence_quality_failed"
+    assert result.succeeded is True
+    assert result.failure is None
     assert result.metrics["evidence_compacted"] is True
-    assert result.metrics["evidence_strategy_passed"] is False
+    assert result.metrics["evidence_strategy_passed"] is True
     assert result.metrics["evidence_manifest_present"] is True
-    assert result.metrics["evidence_manifest_entry_count"] == 1
-    assert result.metrics["evidence_manifest_invalid_entry_count"] == 1
+    assert result.metrics["evidence_manifest_entry_count"] == 2
+    assert "evidence_manifest_invalid_entry_count" not in result.metrics
+    bundle = json.loads((tmp_path / "artifacts" / "evidence_bundle.json").read_text())
+    assert bundle["valid"] is True
+    assert bundle["entries"][0]["bounded_evidence"]["source"] == "artifact_preview"
+    assert (
+        bundle["entries"][0]["bounded_evidence"]["bounded_excerpt"]
+        == "bounded non-compacted evidence excerpt"
+    )
+    assert bundle["entries"][0]["bounded_evidence"]["truncated"] is False
 
 
 @pytest.mark.asyncio
@@ -1103,6 +1111,82 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
     assert bundle["entries"][0]["bounded_evidence"]["bounded_excerpt"] == (
         "bounded non-compacted evidence excerpt"
     )
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_rejects_manifest_artifact_outside_replay_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "Tool output compacted for context reuse.",
+                    }
+                ]
+            },
+            "action": {"content": "Replay completed.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        outside_path = tmp_path / "outside.txt"
+        outside_path.write_text("secret should not be allowlisted", encoding="utf-8")
+        (artifact_dir / "evidence_manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "source_id": "outside",
+                    "artifact_path": str(outside_path),
+                    "extraction_method": "outside_file",
+                    "fields_used": ["content"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Tool output compacted for context reuse.\n"
+            + json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.succeeded is False
+    assert result.failure["reason"] == "evidence_quality_failed"
+    assert result.metrics["evidence_manifest_entry_count"] == 0
+    assert result.metrics["evidence_manifest_invalid_entry_count"] == 1
+    assert result.metrics["evidence_manifest_invalid_reasons"] == [
+        "line 1: artifact_path is outside replay artifact directory"
+    ]
 
 
 def test_replay_aggregate_metrics_include_bundle_validity() -> None:

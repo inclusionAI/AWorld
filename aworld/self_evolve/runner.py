@@ -303,8 +303,17 @@ class SelfEvolveRunner:
                     validation_feedback=validation_feedback,
                     prior_feedback=prior_feedback,
                     dataset=dataset,
-                    max_candidates=max(1, self.replay_candidate_limit),
+                    max_candidates=_candidate_generation_limit(
+                        replay_candidate_limit=self.replay_candidate_limit,
+                        rejected_candidate_ids=rejected_candidate_ids,
+                        accepted_candidate_ids=accepted_candidate_ids,
+                    ),
                 )
+            )
+            filtered_known_duplicates = _known_duplicate_candidate_count(
+                optimizer_result.candidates,
+                rejected_candidate_ids=rejected_candidate_ids,
+                accepted_candidate_ids=accepted_candidate_ids,
             )
             optimizer_diagnostics.append(
                 {
@@ -312,7 +321,10 @@ class SelfEvolveRunner:
                     "candidate_ids": [
                         candidate.candidate_id for candidate in optimizer_result.candidates
                     ],
-                    "diagnostics": dict(optimizer_result.diagnostics),
+                    "diagnostics": {
+                        **dict(optimizer_result.diagnostics),
+                        "filtered_known_duplicate_candidates": filtered_known_duplicates,
+                    },
                 }
             )
             for candidate in optimizer_result.candidates:
@@ -322,9 +334,80 @@ class SelfEvolveRunner:
                 self.store.write_optimizer_lineage(run_id, lineage)
 
             candidate_population = tuple(
-                optimizer_result.candidates[: max(1, self.replay_candidate_limit)]
-            )
+                candidate
+                for candidate in optimizer_result.candidates
+                if candidate.candidate_id not in rejected_candidate_ids
+                and candidate.candidate_id not in accepted_candidate_ids
+            )[: max(1, self.replay_candidate_limit)]
             if not candidate_population:
+                skipped_feedback: list[EvaluationSummary] = []
+                skipped_duplicates = [
+                    candidate
+                    for candidate in optimizer_result.candidates
+                    if candidate.candidate_id in rejected_candidate_ids
+                    or candidate.candidate_id in accepted_candidate_ids
+                ]
+                for candidate_index, skipped_candidate in enumerate(
+                    skipped_duplicates[: max(1, self.replay_candidate_limit)]
+                ):
+                    duplicate_gates: list[GateResult] = []
+                    accepted_gate = _duplicate_accepted_candidate_gate(
+                        skipped_candidate,
+                        accepted_candidate_ids=accepted_candidate_ids,
+                        apply_policy=apply_policy,
+                    )
+                    if accepted_gate is not None:
+                        duplicate_gates.append(accepted_gate)
+                    rejected_gate = _duplicate_rejected_candidate_gate(
+                        skipped_candidate,
+                        rejected_candidate_ids=rejected_candidate_ids,
+                        apply_policy=apply_policy,
+                    )
+                    if rejected_gate is not None:
+                        duplicate_gates.append(rejected_gate)
+                    failed_duplicate_gates = [
+                        gate for gate in duplicate_gates if not gate.passed
+                    ]
+                    iteration_reports.append(
+                        _iteration_report_item(
+                            iteration_number=iteration_index + 1,
+                            candidate_number=candidate_index + 1,
+                            candidate_count=len(skipped_duplicates),
+                            candidate=skipped_candidate,
+                            status="rejected",
+                            baseline_summary=None,
+                            candidate_summary=None,
+                            held_out_summary=None,
+                            failed_gates=failed_duplicate_gates,
+                        )
+                    )
+                    iteration_states.append(
+                        _iteration_state(
+                            candidate=skipped_candidate,
+                            baseline_summary=None,
+                            candidate_summary=None,
+                            held_out_summary=None,
+                            replay_result=None,
+                            replay_dataset=None,
+                            gate_results=duplicate_gates,
+                            status="rejected",
+                        )
+                    )
+                    skipped_feedback.append(
+                        EvaluationSummary(
+                            variant_id=skipped_candidate.candidate_id,
+                            metrics={
+                                "failed_gates": [
+                                    gate.gate_name for gate in failed_duplicate_gates
+                                ],
+                                "candidate_status": "rejected",
+                            },
+                            dataset_split="validation",
+                        )
+                    )
+                if skipped_feedback:
+                    validation_feedback = tuple(skipped_feedback)
+                    continue
                 iteration_reports.append(
                     {
                         "iteration": iteration_index + 1,
@@ -2329,6 +2412,31 @@ def _iteration_candidate_score(state: Mapping[str, object]) -> float:
     return float("-inf")
 
 
+def _candidate_generation_limit(
+    *,
+    replay_candidate_limit: int,
+    rejected_candidate_ids: set[str],
+    accepted_candidate_ids: set[str],
+) -> int:
+    replay_limit = max(1, replay_candidate_limit)
+    known_duplicate_count = len(rejected_candidate_ids) + len(accepted_candidate_ids)
+    return min(max(replay_limit + known_duplicate_count, replay_limit), replay_limit * 3)
+
+
+def _known_duplicate_candidate_count(
+    candidates: tuple[CandidateVariant, ...],
+    *,
+    rejected_candidate_ids: set[str],
+    accepted_candidate_ids: set[str],
+) -> int:
+    return sum(
+        1
+        for candidate in candidates
+        if candidate.candidate_id in rejected_candidate_ids
+        or candidate.candidate_id in accepted_candidate_ids
+    )
+
+
 def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
     if not prompt:
         return []
@@ -2962,6 +3070,20 @@ def _default_cli_high_baseline_delta_candidate(
             "one of those regressed dimensions."
         )
         strategy_focus = f"restore {dimension_text} without broadening task scope"
+    if (
+        "high_baseline_without_efficiency_gain" in issues
+        or "replace_broad_validation_with_efficiency_delta" in actions
+        or "candidate_uses_no_more_steps_than_baseline" in acceptance_criteria
+    ):
+        behavior_delta = (
+            "Use a high-baseline efficiency delta: preserve the same claim set, answer "
+            "structure, and source references as the baseline, but complete with no more "
+            "tool calls or evidence steps than the baseline. Do not add pre-final "
+            "comparison passes, broad re-validation loops, or new external claims; only "
+            "reuse already captured bounded artifacts and remove unsupported claims whose "
+            "source links cannot be preserved."
+        )
+        strategy_focus = "improve high-baseline runs only through fewer steps at unchanged quality"
 
     acceptance_check = (
         "candidate_score exceeds baseline_score, A1_groundedness and A2_completeness "
@@ -2974,6 +3096,12 @@ def _default_cli_high_baseline_delta_candidate(
             "candidate_score exceeds baseline_score while preserving baseline "
             "A1_groundedness, A2_completeness, answer completeness, and relevance; "
             "evidence_manifest_invalid_entry_count == 0; otherwise keep the baseline behavior."
+        )
+    if "candidate_uses_no_more_steps_than_baseline" in acceptance_criteria:
+        acceptance_check = (
+            "candidate_score exceeds baseline_score; candidate_uses_no_more_steps_than_baseline; "
+            "candidate_groundedness_is_no_worse_than_baseline; answer completeness and source "
+            "references stay no worse than baseline; otherwise keep the baseline behavior."
         )
 
     section = [
