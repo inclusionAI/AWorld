@@ -2485,6 +2485,8 @@ def _default_cli_skill_candidate(
         mutation_prompt
     )
     repair_plan = _feedback_repair_plan_from_mutation_prompt(mutation_prompt)
+    if high_baseline_regression_issue:
+        return current_content
     if not trace_packs and not feedback_guidance:
         return current_content
 
