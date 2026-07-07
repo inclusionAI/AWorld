@@ -28,6 +28,15 @@ from aworld.self_evolve.credit_assignment import TargetSelectionReport
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult, SelfEvolveTargetRef
 
 
+class EmptyOptimizer:
+    async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+        return OptimizerResult(
+            candidates=(),
+            lineage=(),
+            diagnostics={"filtered_noop_candidates": 1},
+        )
+
+
 def _write_trajectory_log(path: Path, records: list[dict]) -> None:
     path.write_text(
         "\n".join(
@@ -43,6 +52,63 @@ def _write_trajectory_log(path: Path, records: list[dict]) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+@pytest.mark.asyncio
+async def test_auto_verified_no_candidate_is_rejected(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "summarize page"}},
+            "action": {"content": "summary failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-1",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="task-1",
+    )
+
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-no-candidate",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (
+            tmp_path / ".aworld" / "self_evolve" / "run-no-candidate" / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert result.run.status.value == "rejected"
+    assert report["status"] == "rejected"
+    assert report["candidate_ids"] == []
+    assert report["iterations"][0]["status"] == "no_candidate"
+    assert report["gate_results"] == [
+        {
+            "gate_name": "auto_verified_evaluation",
+            "passed": False,
+            "reason": "auto_verified apply policy requires a candidate",
+            "details": None,
+        }
+    ]
 
 
 def test_iteration_validation_feedback_includes_baseline_comparison_metrics() -> None:

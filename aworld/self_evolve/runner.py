@@ -679,14 +679,17 @@ class SelfEvolveRunner:
 
         post_apply: dict[str, object] | None = None
         final_status = SelfEvolveRunStatus.SUCCEEDED
-        if apply_policy == "auto_verified" and selected_candidate is not None:
-            failed_gates = [gate for gate in gate_results if not gate.passed]
-            if failed_gates:
+        if apply_policy == "auto_verified":
+            if selected_candidate is None:
                 final_status = SelfEvolveRunStatus.REJECTED
             else:
-                post_apply = await self._apply_auto_verified(run_id, target, selected_candidate)
-                if post_apply["status"] != "accepted":
+                failed_gates = [gate for gate in gate_results if not gate.passed]
+                if failed_gates:
                     final_status = SelfEvolveRunStatus.REJECTED
+                else:
+                    post_apply = await self._apply_auto_verified(run_id, target, selected_candidate)
+                    if post_apply["status"] != "accepted":
+                        final_status = SelfEvolveRunStatus.REJECTED
 
         report = {
             "run_id": run_id,

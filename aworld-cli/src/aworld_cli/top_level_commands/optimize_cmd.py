@@ -182,6 +182,11 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Selected candidate: {selected_candidate_id}")
     if status == "rejected" and failed_gate_names:
         lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
+    if status == "rejected" and _has_no_candidate(report):
+        lines.append(
+            "No candidate generated: optimizer produced no non-noop candidate, "
+            "so replay/evaluation/apply were skipped."
+        )
     if (
         status == "rejected"
         and replay_path
@@ -411,6 +416,22 @@ def _has_replay_repetition_failure(report: Any) -> bool:
         if _metrics_have_replay_repetition_failure(metrics):
             return True
     return False
+
+
+def _has_no_candidate(report: Any) -> bool:
+    selected_candidate_id = _read_report_value(report, "selected_candidate_id")
+    candidate_ids = _read_report_value(report, "candidate_ids")
+    if selected_candidate_id:
+        return False
+    if isinstance(candidate_ids, list) and candidate_ids:
+        return False
+    iterations = _read_report_value(report, "iterations")
+    if not isinstance(iterations, list):
+        return False
+    return any(
+        isinstance(iteration, Mapping) and iteration.get("status") == "no_candidate"
+        for iteration in iterations
+    )
 
 
 def _metrics_have_replay_repetition_failure(metrics: Any) -> bool:

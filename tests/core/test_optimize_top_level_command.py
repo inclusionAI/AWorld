@@ -355,6 +355,30 @@ def test_render_optimize_summary_warns_when_replay_success_count_is_insufficient
     assert "Resume evaluator:" not in summary
 
 
+def test_render_optimize_summary_explains_no_candidate_rejection() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "report_path": "/tmp/report.json",
+            "candidate_ids": [],
+            "selected_candidate_id": None,
+            "iterations": [{"iteration": 1, "status": "no_candidate"}],
+            "gate_results": [
+                {
+                    "gate_name": "auto_verified_evaluation",
+                    "passed": False,
+                    "reason": "auto_verified apply policy requires a candidate",
+                }
+            ],
+        }
+    )
+
+    assert "Status: rejected" in summary
+    assert "Rejected gates: auto_verified_evaluation" in summary
+    assert "No candidate generated:" in summary
+    assert "replay/evaluation/apply were skipped" in summary
+
+
 def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
