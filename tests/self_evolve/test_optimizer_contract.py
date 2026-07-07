@@ -450,6 +450,37 @@ def test_feedback_normalization_requires_behavior_delta_for_high_scoring_baselin
     )
 
 
+def test_feedback_normalization_requires_efficiency_delta_for_high_baseline_score_only_regression() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-high-baseline-efficiency-regression",
+            dataset_split="validation",
+            metrics={
+                "score": 87.3,
+                "baseline_score": 88.0,
+                "candidate_score": 87.3,
+                "score_delta": -0.7,
+                "baseline_A1_groundedness": 4.7,
+                "candidate_A1_groundedness": 4.3,
+                "A1_groundedness_delta": -0.4,
+                "baseline_B2_efficiency": 3.3,
+                "candidate_B2_efficiency": 3.3,
+                "B2_efficiency_delta": 0.0,
+                "failed_gates": ["score_improvement"],
+            },
+        )
+    )
+
+    assert "use_efficiency_delta_for_high_baseline" in summary["required_behaviors"]
+    assert "preserve_claim_set_and_source_links" in summary["required_behaviors"]
+    assert "do_not_add_verification_steps_without_score_gain" in summary["required_behaviors"]
+    repair_plan = summary["repair_plan"]
+    assert "high_baseline_without_efficiency_gain" in repair_plan["issues"]
+    assert "replace_broad_validation_with_efficiency_delta" in repair_plan["actions"]
+    assert "candidate_uses_no_more_steps_than_baseline" in repair_plan["acceptance_criteria"]
+    assert "candidate_groundedness_is_no_worse_than_baseline" in repair_plan["acceptance_criteria"]
+
+
 def test_feedback_normalization_outputs_structured_repair_plan() -> None:
     summary = normalize_feedback_summary(
         EvaluationSummary(

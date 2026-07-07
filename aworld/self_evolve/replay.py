@@ -17,6 +17,7 @@ from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
 _EVIDENCE_RETRY_LIMIT = 1
+_SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
 
 
 @dataclass(frozen=True)
@@ -769,14 +770,22 @@ def _canonical_evidence_entry(
     *,
     artifact_dir: Path | None,
 ) -> dict[str, Any]:
-    artifact_path = Path(str(entry.get("artifact_path")))
-    if not artifact_path.is_absolute() and artifact_dir is not None:
-        artifact_path = artifact_dir / artifact_path
+    artifact_path = _manifest_artifact_path(entry, artifact_dir=artifact_dir)
+    bounded_evidence = _bounded_evidence_payload(entry)
+    if not bounded_evidence:
+        synthetic_excerpt = _synthetic_bounded_artifact_excerpt(artifact_path)
+        if synthetic_excerpt:
+            bounded_evidence["bounded_excerpt"] = synthetic_excerpt["text"]
+            bounded_evidence["source"] = "artifact_preview"
+            bounded_evidence["truncated"] = synthetic_excerpt["truncated"]
+    fields_used = entry.get("fields_used")
+    if fields_used and "fields_used" not in bounded_evidence:
+        bounded_evidence["fields_used"] = fields_used
     return {
         "source_id": str(entry.get("source_id") or ""),
         "artifact_path": str(artifact_path),
         "extraction_method": str(entry.get("extraction_method") or ""),
-        "bounded_evidence": _bounded_evidence_payload(entry),
+        "bounded_evidence": bounded_evidence,
     }
 
 
@@ -796,11 +805,7 @@ def _invalid_evidence_manifest_entry_reason(
     for key in ("source_id", "artifact_path", "extraction_method"):
         if not str(entry.get(key) or "").strip():
             return f"missing {key}"
-    if not _has_manifest_evidence_payload(entry):
-        return "missing bounded evidence payload"
-    artifact_path = Path(str(entry.get("artifact_path")))
-    if not artifact_path.is_absolute() and artifact_dir is not None:
-        artifact_path = artifact_dir / artifact_path
+    artifact_path = _manifest_artifact_path(entry, artifact_dir=artifact_dir)
     if not artifact_path.exists():
         return "artifact_path does not exist"
     if artifact_dir is not None:
@@ -808,7 +813,32 @@ def _invalid_evidence_manifest_entry_reason(
             artifact_path.resolve().relative_to(artifact_dir.resolve())
         except ValueError:
             return "artifact_path is outside replay artifact directory"
+    if not _has_manifest_evidence_payload(entry) and not _synthetic_bounded_artifact_excerpt(
+        artifact_path
+    ):
+        return "missing bounded evidence payload"
     return None
+
+
+def _manifest_artifact_path(entry: Mapping[str, Any], *, artifact_dir: Path | None) -> Path:
+    artifact_path = Path(str(entry.get("artifact_path")))
+    if not artifact_path.is_absolute() and artifact_dir is not None:
+        artifact_path = artifact_dir / artifact_path
+    return artifact_path
+
+
+def _synthetic_bounded_artifact_excerpt(artifact_path: Path) -> dict[str, Any] | None:
+    try:
+        raw = artifact_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    truncated = len(text) > _SYNTHETIC_EVIDENCE_EXCERPT_CHARS
+    if truncated:
+        text = text[:_SYNTHETIC_EVIDENCE_EXCERPT_CHARS]
+    return {"text": text, "truncated": truncated}
 
 
 _MANIFEST_EVIDENCE_PAYLOAD_KEYS = (

@@ -176,6 +176,14 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "small explicit behavior delta: what execution behavior should change, what behavior "
         "should stay unchanged, and what acceptance check proves the candidate beats the "
         "baseline on score, compliance, efficiency, or robustness.\n"
+        "If feedback mentions high_baseline_without_efficiency_gain, "
+        "replace_broad_validation_with_efficiency_delta, "
+        "candidate_uses_no_more_steps_than_baseline, or "
+        "use_efficiency_delta_for_high_baseline, the candidate must improve by doing less "
+        "at the same quality: preserve the baseline claim set, answer structure, and source "
+        "references; do not add new verification loops, new evidence paths, or new external "
+        "claims; reduce or cap tool/evidence steps and pass only if groundedness and "
+        "completeness stay no worse than baseline.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
 

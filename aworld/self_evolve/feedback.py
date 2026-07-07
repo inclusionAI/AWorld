@@ -251,6 +251,15 @@ def _required_behaviors(
                 "prefer_targeted_changes_over_broad_rewrites",
             ]
         )
+    if _has_high_baseline_without_efficiency_gain(metrics):
+        behaviors.extend(
+            [
+                "use_efficiency_delta_for_high_baseline",
+                "preserve_claim_set_and_source_links",
+                "do_not_add_verification_steps_without_score_gain",
+                "candidate_must_use_no_more_steps_than_baseline",
+            ]
+        )
     dimension_regressions = _dimension_regressions(metrics)
     if "A1_groundedness" in dimension_regressions:
         behaviors.extend(
@@ -384,6 +393,21 @@ def _repair_plan(
             ]
         )
         acceptance_criteria.append("candidate_score_exceeds_baseline_score")
+    if _has_high_baseline_without_efficiency_gain(metrics):
+        issues.append("high_baseline_without_efficiency_gain")
+        actions.extend(
+            [
+                "replace_broad_validation_with_efficiency_delta",
+                "preserve_claim_set_and_source_links",
+                "avoid_extra_verification_steps",
+            ]
+        )
+        acceptance_criteria.extend(
+            [
+                "candidate_uses_no_more_steps_than_baseline",
+                "candidate_groundedness_is_no_worse_than_baseline",
+            ]
+        )
     dimension_regressions = _dimension_regressions(metrics)
     if dimension_regressions:
         issues.append("dimension_regression")
@@ -513,6 +537,19 @@ def _has_high_scoring_baseline_regression(metrics: Mapping[str, Any]) -> bool:
     if score_delta is not None:
         return score_delta <= 0
     return candidate_score is not None and candidate_score <= baseline_score
+
+
+def _has_high_baseline_without_efficiency_gain(metrics: Mapping[str, Any]) -> bool:
+    if not _has_high_scoring_baseline_regression(metrics):
+        return False
+    b2_delta = _metric_float(metrics.get("B2_efficiency_delta"))
+    baseline_b2 = _metric_float(metrics.get("baseline_B2_efficiency"))
+    candidate_b2 = _metric_float(metrics.get("candidate_B2_efficiency"))
+    if b2_delta is not None:
+        return b2_delta <= 0
+    if baseline_b2 is not None and candidate_b2 is not None:
+        return candidate_b2 <= baseline_b2
+    return True
 
 
 def _dimension_regressions(metrics: Mapping[str, Any]) -> list[str]:

@@ -784,6 +784,194 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
 
 
 @pytest.mark.asyncio
+async def test_runner_filters_prior_duplicate_candidates_before_replay_population(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-run"
+    historical_dir.mkdir(parents=True)
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-dup-1",
+                        "status": "rejected",
+                        "failed_gates": ["score_improvement"],
+                    },
+                    {
+                        "iteration": 2,
+                        "candidate_id": "candidate-dup-2",
+                        "status": "rejected",
+                        "failed_gates": ["candidate_replay"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve candidate generation."}},
+            "action": {"content": "Prior candidates repeated."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="duplicate-filter-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="duplicate-filter-task",
+    )
+    duplicate_one = CandidateVariant(
+        candidate_id="candidate-dup-1",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nDuplicate one.\n",
+        rationale="duplicate",
+        target_fingerprint="fingerprint",
+    )
+    duplicate_two = CandidateVariant(
+        candidate_id="candidate-dup-2",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nDuplicate two.\n",
+        rationale="duplicate",
+        target_fingerprint="fingerprint",
+    )
+    fresh_candidate = CandidateVariant(
+        candidate_id="candidate-fresh",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nFresh candidate.\n",
+        rationale="fresh",
+        target_fingerprint="fingerprint",
+    )
+
+    class PopulationOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            return OptimizerResult(
+                candidates=(duplicate_one, duplicate_two, fresh_candidate)
+            )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.candidate_ids.append(candidate.candidate_id)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={
+                        "repetition_count": request.baseline_repetitions,
+                        "successful_repetition_count": request.baseline_repetitions,
+                    },
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={
+                        "repetition_count": request.candidate_repetitions,
+                        "successful_repetition_count": request.candidate_repetitions,
+                    },
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate is not None else 0.2,
+                    "A1_groundedness": 5.0,
+                    "A2_completeness": 5.0,
+                    "A3_relevance": 5.0,
+                    "A4_readability": 5.0,
+                    "B1_tool_use": 5.0,
+                    "B2_efficiency": 5.0,
+                    "B3_compliance": 5.0,
+                    "B4_robustness": 5.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "command_pass_rate": 1.0,
+                    "global_regression_passed": True,
+                    "has_evidence": 1.0,
+                    "evidence_block_count": 1,
+                    "evidence_bundle_valid": True,
+                    "evidence_bundle_entry_count": 1,
+                    "evidence_manifest_entry_count": 1,
+                    "evidence_manifest_invalid_entry_count": 0,
+                    "evidence_strategy_passed": True,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
+
+    optimizer = PopulationOptimizer()
+    replay_backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        evaluation_backend=EvaluationBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-filter-duplicates",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert optimizer.requests[0].max_candidates > 2
+    assert replay_backend.candidate_ids == ["candidate-fresh"]
+    report = json.loads(
+        (tmp_path / ".aworld" / "self_evolve" / "run-filter-duplicates" / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["selected_candidate_id"] == "candidate-fresh"
+    assert report["optimizer_diagnostics"]["filtered_known_duplicate_candidates"] == 2
+    assert report["iterations"][0]["candidate_id"] == "candidate-fresh"
+
+
+@pytest.mark.asyncio
 async def test_runner_reports_gate_results_when_all_candidates_are_rejected(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -3101,6 +3289,78 @@ def test_default_cli_skill_candidate_generates_targeted_delta_for_high_baseline_
     assert "bounded evidence payload" in candidate_content
     assert "fields_used" in candidate_content
     assert "cannot replace" in candidate_content
+
+
+def test_default_cli_skill_candidate_uses_efficiency_delta_for_high_baseline_score_only_regression() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "population_strategy": {"name": "score_dimension_repair_delta"},
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-1",
+                            "dataset_split": "historical",
+                            "metrics": {
+                                "score": 87.3,
+                                "baseline_score": 88.0,
+                                "candidate_score": 87.3,
+                                "score_delta": -0.7,
+                                "baseline_A1_groundedness": 4.7,
+                                "candidate_A1_groundedness": 4.3,
+                                "A1_groundedness_delta": -0.4,
+                                "baseline_B2_efficiency": 3.3,
+                                "candidate_B2_efficiency": 3.3,
+                                "B2_efficiency_delta": 0.0,
+                            },
+                            "failed_gates": ["score_improvement"],
+                            "required_behaviors": [
+                                "differentiate_from_high_scoring_baseline",
+                                "preserve_baseline_strengths",
+                                "define_behavior_delta_before_tools",
+                                "use_efficiency_delta_for_high_baseline",
+                                "preserve_claim_set_and_source_links",
+                                "do_not_add_verification_steps_without_score_gain",
+                            ],
+                            "repair_plan": {
+                                "issues": [
+                                    "score_or_efficiency_regression",
+                                    "high_baseline_without_efficiency_gain",
+                                    "dimension_regression",
+                                ],
+                                "actions": [
+                                    "define_candidate_behavior_delta",
+                                    "replace_broad_validation_with_efficiency_delta",
+                                    "restore_A1_groundedness",
+                                ],
+                                "acceptance_criteria": [
+                                    "candidate_score_exceeds_baseline_score",
+                                    "candidate_uses_no_more_steps_than_baseline",
+                                    "candidate_groundedness_is_no_worse_than_baseline",
+                                ],
+                            },
+                        }
+                    }
+                ],
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "high-baseline efficiency delta" in candidate_content.lower()
+    assert "no more tool calls or evidence steps than the baseline" in candidate_content
+    assert "Do not add pre-final comparison passes" in candidate_content
+    assert "preserve the same claim set" in candidate_content
+    assert "candidate_uses_no_more_steps_than_baseline" in candidate_content
+    assert "curl" not in candidate_content.lower()
+    assert "podcast" not in candidate_content.lower()
 
 
 def test_default_cli_skill_candidate_uses_population_strategy_for_distinct_fallbacks() -> None:
