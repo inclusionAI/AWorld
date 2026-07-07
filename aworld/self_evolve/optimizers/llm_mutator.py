@@ -26,6 +26,8 @@ class TraceReflectiveLLMMutator:
         lineage: list[OptimizerLineage] = []
         filtered_noop_count = 0
         filtered_high_baseline_regression_count = 0
+        filtered_duplicate_count = 0
+        seen_content_fingerprints: set[str] = set()
         require_targeted_delta = _request_has_high_baseline_regression(request)
 
         for index in range(request.max_candidates):
@@ -37,12 +39,17 @@ class TraceReflectiveLLMMutator:
             if content == request.current_content:
                 filtered_noop_count += 1
                 continue
+            content_fingerprint = _content_fingerprint(content)
+            if content_fingerprint in seen_content_fingerprints:
+                filtered_duplicate_count += 1
+                continue
             if require_targeted_delta and _is_weak_high_baseline_regression_candidate(
                 content,
                 current_content=request.current_content,
             ):
                 filtered_high_baseline_regression_count += 1
                 continue
+            seen_content_fingerprints.add(content_fingerprint)
 
             candidate_id = _candidate_id(request, content, index=index)
             candidate = CandidateVariant(
@@ -71,13 +78,16 @@ class TraceReflectiveLLMMutator:
                 "filtered_high_baseline_regression_candidates": (
                     filtered_high_baseline_regression_count
                 ),
+                "filtered_duplicate_candidates": filtered_duplicate_count,
             },
         )
 
 
 def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -> str:
+    population_strategy = _population_strategy(candidate_index)
     payload = {
         "candidate_index": candidate_index,
+        "population_strategy": population_strategy,
         "target": {
             "target_type": request.target.target_type,
             "target_id": request.target.target_id,
@@ -118,6 +128,8 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "Prefer the smallest useful change: encode a minimal behavior delta that directly "
         "addresses the observed failure, include a preserve list naming behavior that must "
         "stay unchanged, and include an acceptance check that would prove the delta helped. "
+        f"Use this candidate population strategy: {population_strategy['name']} - "
+        f"{population_strategy['instruction']} "
         "Do not rewrite the whole target when a local addition or replacement is enough. "
         "Use trace-driven reflective optimization: identify why the prior run lost score, "
         "then encode reusable procedural guidance that can improve task quality, tool economy, "
@@ -151,6 +163,14 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "attempts, avoid repeated paths after one unsuccessful try, stop after sufficient evidence "
         "is captured, and compare against the baseline on quality, tool economy, latency, and "
         "completion reliability. "
+        "If feedback mentions compacted tool arguments, compacted_string_field, invalid tool "
+        "arguments, or required_behaviors such as avoid_compacted_tool_arguments, "
+        "regenerate_schema_valid_tool_arguments, stop_repeating_invalid_tool_calls, or "
+        "switch_to_artifact_read_after_invalid_tool_argument, the candidate must include generic "
+        "tool-argument hygiene: never execute replay placeholders as real tool inputs, regenerate "
+        "the smallest schema-valid tool arguments from the current task context, read saved "
+        "artifacts when the original argument was compacted, and do not repeat the same invalid "
+        "tool call after one schema failure. "
         "If feedback shows a high-scoring baseline with candidate_score <= baseline_score, "
         "do not propose broad extra guidance. Preserve the baseline strengths and encode a "
         "small explicit behavior delta: what execution behavior should change, what behavior "
@@ -158,6 +178,33 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "baseline on score, compliance, efficiency, or robustness.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
+
+
+def _population_strategy(candidate_index: int) -> dict[str, str]:
+    strategies = (
+        {
+            "name": "conservative_preserve_then_delta",
+            "instruction": (
+                "keep high-scoring baseline behavior explicit, then add only one targeted "
+                "behavior delta with a no-worse-than-baseline acceptance check"
+            ),
+        },
+        {
+            "name": "evidence_integrity_delta",
+            "instruction": (
+                "focus on evidence fidelity and verification behavior while preserving "
+                "answer breadth, groundedness, and completeness"
+            ),
+        },
+        {
+            "name": "score_dimension_repair_delta",
+            "instruction": (
+                "repair the lowest regressed scoring dimensions from feedback, especially "
+                "A1/A2/B2 deltas, without adding broad unrelated guidance"
+            ),
+        },
+    )
+    return strategies[candidate_index % len(strategies)]
 
 
 def _parse_mutator_output(output: Any) -> tuple[str, str]:
@@ -179,6 +226,11 @@ def _candidate_id(request: OptimizerRequest, content: str, *, index: int) -> str
         f"{request.target.target_type}:{request.target.target_id}:{index}:{content}".encode("utf-8")
     ).hexdigest()[:12]
     return f"llm-mutator-{digest}"
+
+
+def _content_fingerprint(content: str) -> str:
+    normalized = "\n".join(line.rstrip() for line in content.strip().splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _request_has_high_baseline_regression(request: OptimizerRequest) -> bool:

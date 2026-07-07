@@ -29,6 +29,7 @@ class CandidateReplayRequest:
     overlay_skill_root: str
     task_input: Any
     baseline_skill_root: str | None = None
+    baseline_replay_dir: str | None = None
     agent: str | None = None
     timeout_seconds: float | None = None
     max_steps: int | None = None
@@ -156,13 +157,25 @@ class AWorldCliCandidateReplayBackend:
             f"candidate_repetitions={request.candidate_repetitions}"
         )
 
-        baseline = await self._run_repetitions(
-            request,
-            base_variant_id="baseline",
-            skill_root=request.baseline_skill_root or _infer_baseline_skill_root(request),
-            artifact_dir=replay_dir / "baseline",
-            repetitions=request.baseline_repetitions,
-        )
+        if request.baseline_replay_dir:
+            baseline = _load_variant_result_from_dir(
+                Path(request.baseline_replay_dir),
+                base_variant_id="baseline",
+            )
+            logger.info(
+                "self_evolve.replay.baseline.reuse "
+                f"run_id={request.run_id} task_id={request.task_id} "
+                f"candidate_id={candidate.candidate_id} "
+                f"baseline_replay_dir={request.baseline_replay_dir}"
+            )
+        else:
+            baseline = await self._run_repetitions(
+                request,
+                base_variant_id="baseline",
+                skill_root=request.baseline_skill_root or _infer_baseline_skill_root(request),
+                artifact_dir=replay_dir / "baseline",
+                repetitions=request.baseline_repetitions,
+            )
         candidate_result = await self._run_repetitions(
             request,
             base_variant_id=candidate.candidate_id,
@@ -487,6 +500,7 @@ def build_replay_request(
     max_cost_usd: float | None = None,
     baseline_repetitions: int = 1,
     candidate_repetitions: int = 1,
+    baseline_replay_dir: str | Path | None = None,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -499,6 +513,9 @@ def build_replay_request(
         candidate_id=candidate.candidate_id,
         overlay_skill_root=str(Path(overlay_skill_root)),
         baseline_skill_root=_infer_baseline_skill_root_from_target(target),
+        baseline_replay_dir=(
+            str(Path(baseline_replay_dir)) if baseline_replay_dir is not None else None
+        ),
         task_input=case.input,
         agent=agent,
         timeout_seconds=timeout_seconds,
@@ -1048,6 +1065,11 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         baseline_skill_root=(
             str(payload.get("baseline_skill_root"))
             if payload.get("baseline_skill_root") is not None
+            else None
+        ),
+        baseline_replay_dir=(
+            str(payload.get("baseline_replay_dir"))
+            if payload.get("baseline_replay_dir") is not None
             else None
         ),
         agent=str(payload.get("agent")) if payload.get("agent") is not None else None,

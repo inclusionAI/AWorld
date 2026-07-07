@@ -122,6 +122,8 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
         variant_id="baseline",
         metrics={
             "score": 75.4,
+            "A1_groundedness": 5.0,
+            "A2_completeness": 4.7,
             "B2_efficiency": 3.0,
             "evidence_block_count": 22.3,
             "evidence_incomplete": 0.33,
@@ -133,6 +135,8 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
         variant_id="cand-1",
         metrics={
             "score": 70.3,
+            "A1_groundedness": 4.0,
+            "A2_completeness": 3.7,
             "B2_efficiency": 2.7,
             "evidence_block_count": 30.0,
             "evidence_incomplete": 0.67,
@@ -160,6 +164,15 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
     assert metrics["baseline_score"] == 75.4
     assert metrics["candidate_score"] == 70.3
     assert metrics["score_delta"] == pytest.approx(-5.1)
+    assert metrics["baseline_A1_groundedness"] == 5.0
+    assert metrics["candidate_A1_groundedness"] == 4.0
+    assert metrics["A1_groundedness_delta"] == pytest.approx(-1.0)
+    assert metrics["baseline_A2_completeness"] == 4.7
+    assert metrics["candidate_A2_completeness"] == 3.7
+    assert metrics["A2_completeness_delta"] == pytest.approx(-1.0)
+    assert metrics["baseline_B2_efficiency"] == 3.0
+    assert metrics["candidate_B2_efficiency"] == 2.7
+    assert metrics["B2_efficiency_delta"] == pytest.approx(-0.3)
     assert metrics["baseline_evidence_block_count"] == 22.3
     assert metrics["candidate_evidence_block_count"] == 30.0
     assert metrics["evidence_block_count_delta"] == pytest.approx(7.7)
@@ -505,6 +518,269 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
     assert report["iterations"][0]["status"] == "rejected"
     assert report["iterations"][1]["candidate_id"] == "candidate-2"
     assert report["iterations"][1]["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve high baseline behavior."}},
+            "action": {"content": "Baseline was already strong."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="population-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="population-task",
+    )
+    weak_candidate = CandidateVariant(
+        candidate_id="candidate-weak",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nBroad extra guidance.\n",
+        rationale="too broad",
+        target_fingerprint="fingerprint",
+    )
+    strong_candidate = CandidateVariant(
+        candidate_id="candidate-strong",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nSmall verified delta.\n",
+        rationale="targeted delta",
+        target_fingerprint="fingerprint",
+    )
+
+    class PopulationOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            return OptimizerResult(candidates=(weak_candidate, strong_candidate))
+
+    class PopulationBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str | None] = []
+
+        async def evaluate_variant(self, request):
+            self.candidate_ids.append(
+                request.candidate.candidate_id if request.candidate is not None else None
+            )
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={
+                        "score": 90.0,
+                        "A1_groundedness": 5.0,
+                        "A2_completeness": 4.5,
+                        "B2_efficiency": 4.0,
+                        "latency_ms": 100.0,
+                        "cost_usd": 1.0,
+                    },
+                    dataset_split=request.dataset_split,
+                )
+            score = 88.0 if request.candidate.candidate_id == "candidate-weak" else 94.0
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": score,
+                    "A1_groundedness": 5.0,
+                    "A2_completeness": 4.5,
+                    "B2_efficiency": 4.0,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
+
+    optimizer = PopulationOptimizer()
+    backend = PopulationBackend()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        post_apply_evaluator=post_apply,
+        evaluation_backend=backend,
+        min_eval_cases=0,
+        replay_candidate_limit=2,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-population",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert optimizer.requests[0].max_candidates == 2
+    assert result.selected_candidate is strong_candidate
+    assert backend.candidate_ids.count("candidate-weak") == 2
+    assert backend.candidate_ids.count("candidate-strong") == 2
+    report = json.loads((store.run_path("run-population") / "report.json").read_text(encoding="utf-8"))
+    assert report["candidate_ids"] == ["candidate-weak", "candidate-strong"]
+    assert report["selected_candidate_id"] == "candidate-strong"
+    assert report["iterations"][0]["candidate_id"] == "candidate-weak"
+    assert report["iterations"][0]["status"] == "rejected"
+    assert report["iterations"][1]["candidate_id"] == "candidate-strong"
+    assert report["iterations"][1]["status"] == "accepted"
+    assert "Small verified delta." in skill_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_runner_reuses_successful_baseline_replay_across_candidate_population(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve high baseline behavior."}},
+            "action": {"content": "Baseline was already strong."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="population-replay-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="population-replay-task",
+    )
+    candidate_one = CandidateVariant(
+        candidate_id="candidate-one",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nSmall delta one.\n",
+        rationale="first",
+        target_fingerprint="fingerprint",
+    )
+    candidate_two = CandidateVariant(
+        candidate_id="candidate-two",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nSmall delta two.\n",
+        rationale="second",
+        target_fingerprint="fingerprint",
+    )
+
+    class PopulationOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate_one, candidate_two))
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.baseline_replay_dirs: list[str | None] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.baseline_replay_dirs.append(getattr(request, "baseline_replay_dir", None))
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": candidate.candidate_id}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                score = 90.0
+            elif request.candidate.candidate_id == "candidate-one":
+                score = 89.0
+            else:
+                score = 92.0
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": score,
+                    "A1_groundedness": 5.0,
+                    "A2_completeness": 5.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=PopulationOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-baseline-reuse",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    expected_baseline_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-baseline-reuse"
+        / "replay"
+        / "candidate-one"
+        / "baseline"
+    )
+    assert result.run.status.value == "succeeded"
+    assert replay_backend.baseline_replay_dirs == [
+        None,
+        str(expected_baseline_dir),
+    ]
 
 
 @pytest.mark.asyncio
@@ -861,7 +1137,7 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_runner_replays_duplicate_rejected_candidate_before_final_gate(
+async def test_runner_skips_duplicate_rejected_candidate_before_replay(
     tmp_path,
 ) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
@@ -999,8 +1275,8 @@ async def test_runner_replays_duplicate_rejected_candidate_before_final_gate(
     )
 
     assert result.run.status.value == "rejected"
-    assert replay_backend.requests
-    assert evaluation_backend.requests
+    assert replay_backend.requests == []
+    assert evaluation_backend.requests == []
     assert skill_path.read_text(encoding="utf-8") == original_content
     report = json.loads(
         (
@@ -1011,8 +1287,8 @@ async def test_runner_replays_duplicate_rejected_candidate_before_final_gate(
             / "report.json"
         ).read_text(encoding="utf-8")
     )
-    assert report["replay"]["candidate"]["status"] == "succeeded"
-    assert "duplicate_rejected_candidate" in report["iterations"][0]["failed_gates"]
+    assert "replay" not in report
+    assert report["iterations"][0]["failed_gates"] == ["duplicate_rejected_candidate"]
 
 
 @pytest.mark.asyncio
@@ -2817,14 +3093,86 @@ def test_default_cli_skill_candidate_generates_targeted_delta_for_high_baseline_
     assert "Evidence preservation requirements" not in candidate_content
     assert "Previous validation feedback" not in candidate_content
     assert "candidate_score exceeds baseline_score" in candidate_content
+    assert "A1_groundedness" in candidate_content
+    assert "A2_completeness" in candidate_content
+    assert "answer completeness" in candidate_content
+    assert "do not narrow" in candidate_content
+    assert "do not omit supported claims" in candidate_content
     assert "bounded evidence payload" in candidate_content
     assert "fields_used" in candidate_content
     assert "cannot replace" in candidate_content
-    assert "excerpt" in candidate_content
-    assert "structured_extract" in candidate_content
-    assert "source_span" in candidate_content
-    assert "evidence_manifest_invalid_entry_count == 0" in candidate_content
-    assert "podcast" not in candidate_content.lower()
+
+
+def test_default_cli_skill_candidate_uses_population_strategy_for_distinct_fallbacks() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+
+    def prompt_for(strategy_name: str) -> str:
+        return (
+            "Propose one concise text-only self-evolve candidate.\n"
+            + json.dumps(
+                {
+                    "population_strategy": {"name": strategy_name},
+                    "prior_feedback": [
+                        {
+                            "feedback_summary": {
+                                "variant_id": "candidate-1",
+                                "dataset_split": "historical",
+                                "metrics": {
+                                    "score": 85.0,
+                                    "baseline_score": 90.0,
+                                    "candidate_score": 85.0,
+                                    "score_delta": -5.0,
+                                    "A1_groundedness_delta": -1.0,
+                                },
+                                "failed_gates": [
+                                    "score_improvement",
+                                    "evidence_quality",
+                                ],
+                                "repair_plan": {
+                                    "issues": [
+                                        "invalid_evidence_manifest",
+                                        "dimension_regression",
+                                    ],
+                                    "actions": [
+                                        "write_valid_bounded_evidence_manifest",
+                                        "restore_A1_groundedness",
+                                    ],
+                                    "acceptance_criteria": [
+                                        "candidate_score_exceeds_baseline_score"
+                                    ],
+                                },
+                            }
+                        }
+                    ],
+                }
+            )
+        )
+
+    conservative = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt_for("conservative_preserve_then_delta"),
+    )
+    evidence = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt_for("evidence_integrity_delta"),
+    )
+    dimension = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt_for("score_dimension_repair_delta"),
+    )
+
+    assert len({conservative, evidence, dimension}) == 3
+    assert "strategy: conservative_preserve_then_delta" in conservative
+    assert "strategy: evidence_integrity_delta" in evidence
+    assert "strategy: score_dimension_repair_delta" in dimension
+    assert "restore A1_groundedness" in dimension
+    assert "bounded payload" in evidence
+    assert "fields_used" in evidence
+    assert "evidence_manifest_invalid_entry_count == 0" in evidence
+    assert "podcast" not in evidence.lower()
 
 
 def test_default_cli_skill_candidate_turns_repair_plan_into_acceptance_criteria() -> None:
@@ -2978,6 +3326,68 @@ def test_default_cli_skill_candidate_turns_missing_trajectory_capture_into_recov
     assert "returns no trajectory evidence" in candidate_content
     assert "Do not finalize without captured trajectory evidence" in candidate_content
     assert "replay_failure_reasons=trajectory_capture_unavailable" in candidate_content
+    assert "curl" not in candidate_content.lower()
+    assert "podcast" not in candidate_content.lower()
+
+
+def test_default_cli_skill_candidate_turns_compacted_tool_arguments_into_recovery_rules() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-1",
+                            "dataset_split": "historical",
+                            "failed_gates": ["candidate_replay"],
+                            "metrics": {
+                                "replay_failure_reasons": [
+                                    "tool call argument field command contains compacted_string_field",
+                                    "tool schema rejected invalid tool argument",
+                                ],
+                                "replay_failure_types": [
+                                    "compacted_tool_argument_replayed",
+                                    "invalid_tool_argument",
+                                ],
+                            },
+                            "required_behaviors": [
+                                "avoid_compacted_tool_arguments",
+                                "regenerate_schema_valid_tool_arguments",
+                                "stop_repeating_invalid_tool_calls",
+                                "switch_to_artifact_read_after_invalid_tool_argument",
+                            ],
+                            "repair_plan": {
+                                "priority": "score_and_efficiency",
+                                "issues": ["compacted_tool_argument_replay"],
+                                "actions": [
+                                    "regenerate_compacted_tool_arguments",
+                                    "switch_to_artifact_read_after_invalid_tool_argument",
+                                    "stop_repeating_invalid_tool_calls",
+                                ],
+                                "acceptance_criteria": [
+                                    "tool_arguments_are_schema_valid_and_non_compacted",
+                                ],
+                            },
+                        }
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "Tool argument replay hygiene requirements" in candidate_content
+    assert "Do not execute replay placeholders" in candidate_content
+    assert "Regenerate the smallest schema-valid tool arguments" in candidate_content
+    assert "After one invalid tool-argument failure" in candidate_content
+    assert "read a saved artifact" in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -3503,6 +3913,7 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
+    assert report["optimizer_diagnostics"]["filtered_duplicate_candidates"] == 1
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
 
 

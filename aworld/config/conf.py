@@ -233,7 +233,7 @@ class SelfEvolveConfig(BaseConfig):
     replay_enabled: bool = True
     replay_timeout_seconds: int = 600
     replay_max_steps: Optional[int] = 1
-    replay_candidate_limit: int = 1
+    replay_candidate_limit: int = 2
     baseline_replay_repetitions: int = 1
     candidate_replay_repetitions: int = 1
     replay_stability_margin: float = 0.0

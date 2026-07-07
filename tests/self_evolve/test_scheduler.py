@@ -444,7 +444,7 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["replay_enabled"] is True
     assert captured["replay_timeout_seconds"] == 600
     assert captured["replay_max_steps"] == 1
-    assert captured["replay_candidate_limit"] == 1
+    assert captured["replay_candidate_limit"] == 2
 
 
 def test_job_worker_persists_framework_result_and_replay_diagnostics(tmp_path) -> None:
