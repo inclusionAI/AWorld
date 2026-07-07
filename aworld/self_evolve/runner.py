@@ -2489,7 +2489,11 @@ def _default_cli_skill_candidate(
     )
     repair_plan = _feedback_repair_plan_from_mutation_prompt(mutation_prompt)
     if high_baseline_regression_issue:
-        return current_content
+        return _default_cli_high_baseline_delta_candidate(
+            current_content=current_content,
+            trace_packs=trace_packs,
+            repair_plan=repair_plan,
+        )
     if not trace_packs and not feedback_guidance:
         return current_content
 
@@ -2674,6 +2678,87 @@ def _default_cli_skill_candidate(
         section.extend(f"  - {item}" for item in feedback_guidance)
 
     heading = "\n## Self-Evolve Trace Guidance\n"
+    prefix = current_content.rstrip()
+    if heading in current_content:
+        prefix = current_content.split(heading, 1)[0].rstrip()
+    return prefix + "\n\n" + "\n".join(section) + "\n"
+
+
+def _default_cli_high_baseline_delta_candidate(
+    *,
+    current_content: str,
+    trace_packs: tuple[TracePack, ...],
+    repair_plan: Mapping[str, set[str]],
+) -> str:
+    evidence_ids = [
+        step.evidence_id
+        for trace_pack in trace_packs[:2]
+        for step in trace_pack.steps[:2]
+    ]
+    task_ids = [trace_pack.task_id for trace_pack in trace_packs[:2]]
+    issues = repair_plan.get("issues", set())
+    actions = repair_plan.get("actions", set())
+    acceptance_criteria = repair_plan.get("acceptance_criteria", set())
+
+    behavior_delta = (
+        "Before adding new evidence paths or expanding the final answer, run one "
+        "pre-final check over the already captured artifacts: every retained claim "
+        "must map to a bounded source span or artifact reference, and any invalid "
+        "manifest entry must be repaired or the unsupported claim must be omitted."
+    )
+    if (
+        "score_or_efficiency_regression" in issues
+        or "stop_after_sufficient_verified_evidence" in actions
+    ):
+        behavior_delta = (
+            "After the minimum evidence needed for the requested answer is captured, "
+            "stop broad exploration and only add another evidence step when it covers "
+            "a specific unsupported claim or repairs a concrete verification failure."
+        )
+    if "invalid_evidence_manifest" in issues or "write_valid_bounded_evidence_manifest" in actions:
+        behavior_delta = (
+            "Before finalizing, validate the evidence manifest entries and repair only "
+            "schema-invalid or unsupported references; do not broaden the answer or "
+            "collect unrelated evidence while repairing the manifest."
+        )
+
+    acceptance_check = (
+        "candidate_score exceeds baseline_score, groundedness and completeness stay no "
+        "worse than baseline, and the replay evidence bundle has no invalid manifest entries."
+    )
+    if "candidate_score_exceeds_baseline_score" in acceptance_criteria:
+        acceptance_check = (
+            "candidate_score exceeds baseline_score while preserving baseline groundedness, "
+            "completion, and relevance; otherwise keep the baseline behavior."
+        )
+
+    section = [
+        "## Self-Evolve Targeted Delta",
+        "",
+        "### Preserve",
+        (
+            "- Keep the existing high-scoring evidence acquisition, answer structure, "
+            "and completion behavior unchanged."
+        ),
+        (
+            "- Do not rewrite broad strategy or add extra evidence collection unless "
+            "it addresses a concrete failed check."
+        ),
+        "",
+        "### Behavior delta",
+        f"- {behavior_delta}",
+        "",
+        "### Acceptance check",
+        f"- {acceptance_check}",
+    ]
+    if task_ids:
+        section.extend(
+            ["", "### Trace scope", f"- Source task ids: {', '.join(task_ids)}"]
+        )
+    if evidence_ids:
+        section.append(f"- Evidence steps: {', '.join(evidence_ids)}")
+
+    heading = "\n## Self-Evolve Targeted Delta\n"
     prefix = current_content.rstrip()
     if heading in current_content:
         prefix = current_content.split(heading, 1)[0].rstrip()
