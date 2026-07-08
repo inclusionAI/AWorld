@@ -292,10 +292,16 @@ async def test_runner_persists_proposal_artifacts_without_mutating_skill_target(
     assert "Mention CDP profile mismatch." in candidate_artifact
     assert "-Old guidance." in diff_path.read_text(encoding="utf-8")
     assert "+Mention CDP profile mismatch." in diff_path.read_text(encoding="utf-8")
-    assert json.loads(lineage_path.read_text(encoding="utf-8"))["trainable_case_ids"] == [
-        "run-task"
-    ]
-    assert json.loads(report_path.read_text(encoding="utf-8"))["apply_policy"] == "proposal"
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    assert lineage["trainable_case_ids"] == ["run-task"]
+    assert isinstance(lineage["content_fingerprint"], str)
+    assert isinstance(lineage["semantic_fingerprint"], str)
+    assert lineage["lesson_set_fingerprint"] is None
+    assert lineage["addressed_lesson_ids"] == []
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["apply_policy"] == "proposal"
+    assert report["optimizer_lineage"]["count"] == 1
+    assert report["optimizer_lineage"]["paths"] == [str(lineage_path)]
 
 
 @pytest.mark.asyncio
@@ -378,6 +384,94 @@ async def test_runner_writes_lesson_artifacts_from_validation_feedback(tmp_path)
     assert lesson_lines[0]["source_task_ids"] == ["lesson-task"]
     assert "score_improvement" in lesson_lines[0]["metrics"]["failed_gates"]
     assert "artifact_first" in lesson_lines[1]["metrics"]["required_behaviors"]
+
+
+@pytest.mark.asyncio
+async def test_runner_writes_harness_diagnostics_without_raw_evidence(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve evidence handling."}},
+            "action": {"content": "SECRET_API_KEY=abc123 raw evidence should not leak"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="diagnostic-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="diagnostic-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nNew guidance.\n",
+            "rationale": "Try artifact-backed evidence.",
+        }
+
+    class EvidenceFailureBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={
+                        "score": 80.0,
+                        "evaluator_mode": "aworld_trajectory_evaluator",
+                    },
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 85.0,
+                    "evaluator_mode": "aworld_trajectory_evaluator",
+                    "has_evidence": False,
+                    "evidence_compacted": True,
+                    "evidence_incomplete": True,
+                    "report_path": str(tmp_path / "report.json"),
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=EvidenceFailureBackend(),
+        min_eval_cases=0,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-diagnostics",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (store.run_path("run-diagnostics") / "report.json").read_text(encoding="utf-8")
+    )
+    diagnostics_path = Path(report["harness_diagnostics"]["path"])
+    diagnostics_text = diagnostics_path.read_text(encoding="utf-8")
+    diagnostics = [
+        json.loads(line) for line in diagnostics_text.splitlines() if line.strip()
+    ]
+
+    assert result.run.status.value == "rejected"
+    assert report["harness_diagnostics"]["count"] == len(diagnostics)
+    assert report["harness_diagnostics"]["types"]["artifact_lifecycle"] == 1
+    assert diagnostics[0]["promotion_status"] == "advisory"
+    assert diagnostics[0]["affected_gates"] == ["evidence_quality"]
+    assert diagnostics[0]["metrics"]["evidence_compacted"] is True
+    assert "SECRET_API_KEY" not in diagnostics_text
 
 
 @pytest.mark.asyncio
@@ -474,6 +568,14 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert report["release_normalization"]["normalization_verification_passed"] is True
+    assert report["release_normalization"]["pre_normalization_fingerprint"].startswith(
+        "sha256:"
+    )
+    assert report["release_normalization"]["normalized_release_fingerprint"].startswith(
+        "sha256:"
+    )
+    assert "Verified guidance." in report["release_normalization"]["preserved_runtime_constraints"]
     assert report["release_checklist"]["status"] == "passed"
     assert {
         check["check_id"]: check["status"]
@@ -591,6 +693,11 @@ async def test_runner_rejects_apply_when_release_normalization_removes_runtime_c
     assert report["post_apply"]["status"] == "rejected"
     assert report["post_apply"]["metrics"]["normalization_equivalence_passed"] is False
     assert "release_normalization" in report["post_apply"]["metrics"]["evaluator_mode"]
+    assert report["release_normalization"]["status"] == "rejected"
+    assert report["release_normalization"]["normalization_verification_passed"] is False
+    assert report["release_normalization"]["pre_normalization_fingerprint"].startswith(
+        "sha256:"
+    )
 
 
 @pytest.mark.asyncio

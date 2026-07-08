@@ -19,6 +19,12 @@ from aworld.self_evolve.datasets import (
     load_session_eval_cases,
     load_trajectory_set_eval_cases,
 )
+from aworld.self_evolve.diagnostics import (
+    HarnessDiagnostic,
+    HarnessDiagnosticKind,
+    LessonPromotionStatus,
+    extract_harness_diagnostics,
+)
 from aworld.self_evolve.evaluation import (
     AWorldTrajectoryEvaluatorBackend,
     CommandVerificationBackend,
@@ -156,11 +162,14 @@ __all__ = [
     "ExternalCodeEvolutionGate",
     "GateResult",
     "GlobalRegressionBenchmarkGate",
+    "HarnessDiagnostic",
+    "HarnessDiagnosticKind",
     "HeldOutVerificationGate",
     "JudgeInput",
     "JudgeOnlySignalGate",
     "JudgeRecord",
     "JudgeVerdict",
+    "LessonPromotionStatus",
     "LessonRecord",
     "LLMTargetDiagnosis",
     "DSPyGEPAOptimizer",
@@ -221,6 +230,7 @@ __all__ = [
     "estimate_replay_cost",
     "evaluate_baseline_and_candidate",
     "extract_lesson_records",
+    "extract_harness_diagnostics",
     "optimize_explicit_target",
     "optimize_from_cli_request",
     "rank_candidate_strategies",

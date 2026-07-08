@@ -7,16 +7,16 @@
   duplicate keys, cross-target handling, and member count limits.
 - [x] 1.2 Define lesson record schema for failure causes, failure memories,
   success memories, lean solution paths, and required runtime behaviors.
-- [ ] 1.3 Define harness diagnostic lesson fields for context, workflow, tool
+- [x] 1.3 Define harness diagnostic lesson fields for context, workflow, tool
   protocol, evaluation, memory, permission-boundary, and artifact-lifecycle
   issues, with advisory promotion status.
 - [x] 1.4 Reuse existing `EvaluationSummary`, `GateResult`, `TracePack`, feedback
   summaries, and self-evolve store serialization as diagnostic inputs instead of
   creating a separate runtime telemetry contract.
-- [ ] 1.5 Define self-evolve-owned `HarnessDiagnosticKind`,
+- [x] 1.5 Define self-evolve-owned `HarnessDiagnosticKind`,
   `LessonPromotionStatus`, and `HarnessDiagnostic` contracts.
 - [x] 1.6 Define candidate strategy and patch intent schema.
-- [ ] 1.7 Define lineage memory schema with content, semantic, and lesson-set
+- [x] 1.7 Define lineage memory schema with content, semantic, and lesson-set
   fingerprints.
 - [x] 1.8 Define release normalization input/output metadata.
 - [ ] 1.9 Add artifact layout documentation and report links for trajectory
@@ -59,10 +59,10 @@
 - [ ] 3.6 Extract harness diagnostics from evidence gaps, artifact lifecycle
   issues, replay setup problems, tool protocol issues, evaluator inconsistencies,
   repeated rejected variants, and protected-path attempts.
-- [ ] 3.7 Implement `extract_harness_diagnostics(...)` under
+- [x] 3.7 Implement `extract_harness_diagnostics(...)` under
   `aworld.self_evolve` using evaluation summaries, gate results, feedback
   summaries, trace packs, replay diagnostics, and prior-run lineage as inputs.
-- [ ] 3.8 Persist harness diagnostics as advisory lesson memory and keep source
+- [x] 3.8 Persist harness diagnostics as advisory lesson memory and keep source
   evidence refs attached.
 - [ ] 3.9 Add tests for evidence compaction, incomplete evidence, replay
   failures, high score successes, and mixed success/failure inputs.
@@ -140,7 +140,7 @@
   leaked into runtime instruction bodies.
 - [x] 7.9 Add tests proving apply is rejected when release normalization removes a
   behavior constraint required by accepted gates.
-- [ ] 7.10 Record pre-normalization fingerprints, normalized release fingerprints,
+- [x] 7.10 Record pre-normalization fingerprints, normalized release fingerprints,
   preserved runtime constraints, and normalization verification status in run
   reports.
 
@@ -149,7 +149,7 @@
 - [ ] 8.1 Integrate trajectory-set learning before existing replay selection.
 - [x] 8.2 Ensure existing replay/evaluator/gate/apply loop is reused unchanged
   after candidates are materialized.
-- [ ] 8.3 Add `FilesystemSelfEvolveStore` support for writing harness diagnostics
+- [x] 8.3 Add `FilesystemSelfEvolveStore` support for writing harness diagnostics
   under the existing `.aworld/self_evolve/<run_id>/` artifact layout.
 - [ ] 8.4 Add report sections for trajectory set, lesson extraction, population,
   harness diagnostics, lineage, no-op, and release normalization.

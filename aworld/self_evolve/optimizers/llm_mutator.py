@@ -66,6 +66,10 @@ class TraceReflectiveLLMMutator:
                     optimizer_name=self.optimizer_name,
                     optimizer_version=self.optimizer_version,
                     trainable_case_ids=tuple(case.case_id for case in request.trainable_cases),
+                    content_fingerprint=content_fingerprint,
+                    semantic_fingerprint=_semantic_fingerprint(content),
+                    lesson_set_fingerprint=_lesson_set_fingerprint(request),
+                    addressed_lesson_ids=_addressed_lesson_ids(request),
                     rationale=rationale,
                 )
             )
@@ -239,6 +243,35 @@ def _candidate_id(request: OptimizerRequest, content: str, *, index: int) -> str
 def _content_fingerprint(content: str) -> str:
     normalized = "\n".join(line.rstrip() for line in content.strip().splitlines())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _semantic_fingerprint(content: str) -> str:
+    semantic_lines = [
+        re.sub(r"\s+", " ", line.strip().lower())
+        for line in content.splitlines()
+        if line.strip() and line.strip() != "---"
+    ]
+    return hashlib.sha256("\n".join(semantic_lines).encode("utf-8")).hexdigest()
+
+
+def _lesson_set_fingerprint(request: OptimizerRequest) -> str | None:
+    lesson_ids = _addressed_lesson_ids(request)
+    if not lesson_ids:
+        return None
+    return hashlib.sha256("\n".join(lesson_ids).encode("utf-8")).hexdigest()
+
+
+def _addressed_lesson_ids(request: OptimizerRequest) -> tuple[str, ...]:
+    lesson_ids: list[str] = []
+    for feedback in (*request.validation_feedback, *request.prior_feedback):
+        summary = normalize_feedback_summary(feedback)
+        metrics = summary.get("metrics")
+        if not isinstance(metrics, Mapping):
+            continue
+        lesson_id = metrics.get("lesson_id")
+        if isinstance(lesson_id, str) and lesson_id:
+            lesson_ids.append(lesson_id)
+    return tuple(dict.fromkeys(lesson_ids))
 
 
 def _request_has_high_baseline_regression(request: OptimizerRequest) -> bool:

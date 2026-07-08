@@ -52,6 +52,10 @@ class OptimizerLineage:
     optimizer_version: str
     parent_candidate_ids: tuple[str, ...] = ()
     trainable_case_ids: tuple[str, ...] = ()
+    content_fingerprint: str | None = None
+    semantic_fingerprint: str | None = None
+    lesson_set_fingerprint: str | None = None
+    addressed_lesson_ids: tuple[str, ...] = ()
     rationale: str | None = None
 
 
