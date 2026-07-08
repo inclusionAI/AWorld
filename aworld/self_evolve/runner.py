@@ -2075,6 +2075,7 @@ def _feedback_from_report(
     report_path: Path,
 ) -> tuple[EvaluationSummary, ...]:
     items: list[EvaluationSummary] = []
+    items.extend(_lesson_feedback_from_report(report, report_path=report_path))
     iterations = report.get("iterations")
     if isinstance(iterations, list):
         for iteration in iterations:
@@ -2097,6 +2098,104 @@ def _feedback_from_report(
                 )
             )
     return tuple(items)
+
+
+def _lesson_feedback_from_report(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+) -> tuple[EvaluationSummary, ...]:
+    lessons_path = _lessons_path_from_report(report, report_path=report_path)
+    if lessons_path is None or not lessons_path.exists():
+        return ()
+    items: list[EvaluationSummary] = []
+    try:
+        raw_lines = lessons_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        lesson_id = payload.get("lesson_id")
+        if not isinstance(lesson_id, str) or not lesson_id:
+            continue
+        lesson_metrics = payload.get("metrics")
+        metrics: dict[str, Any] = dict(lesson_metrics) if isinstance(lesson_metrics, Mapping) else {}
+        metrics.update(
+            {
+                "lesson_id": lesson_id,
+                "lesson_type": str(payload.get("lesson_type") or ""),
+                "lesson_title": _bounded_text(payload.get("title"), max_chars=160),
+                "lesson_summary": _bounded_text(payload.get("summary"), max_chars=320),
+                "run_id": report.get("run_id"),
+                "report_path": str(report_path),
+            }
+        )
+        source_run_ids = _string_list(payload.get("source_run_ids"))
+        if source_run_ids:
+            metrics["source_run_ids"] = source_run_ids
+        source_task_ids = _string_list(payload.get("source_task_ids"))
+        if source_task_ids:
+            metrics["source_task_ids"] = source_task_ids
+        items.append(
+            EvaluationSummary(
+                variant_id=lesson_id,
+                metrics=metrics,
+                dataset_split="lesson_memory",
+            )
+        )
+    return tuple(items)
+
+
+def _lessons_path_from_report(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+) -> Path | None:
+    run_root = report_path.parent.resolve()
+    lessons = report.get("lessons")
+    raw_path: str | None = None
+    if isinstance(lessons, Mapping):
+        path_value = lessons.get("path")
+        if isinstance(path_value, str) and path_value:
+            raw_path = path_value
+    candidate_path = Path(raw_path) if raw_path is not None else run_root / "lessons" / "lessons.jsonl"
+    if not candidate_path.is_absolute():
+        candidate_path = run_root / candidate_path
+    try:
+        resolved = candidate_path.resolve()
+    except OSError:
+        return None
+    if not _path_is_relative_to(resolved, run_root):
+        return None
+    return resolved
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _bounded_text(value: Any, *, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item]
 
 
 def _historical_feedback_metrics(iteration: Mapping[str, Any]) -> dict[str, Any]:

@@ -1509,6 +1509,99 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_runner_feeds_prior_lesson_memory_into_optimizer_request(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-run"
+    lessons_dir = historical_dir / "lessons"
+    lessons_dir.mkdir(parents=True)
+    lessons_path = lessons_dir / "lessons.jsonl"
+    lessons_path.write_text(
+        json.dumps(
+            {
+                "lesson_id": "required-runtime-behavior-1",
+                "lesson_type": "required_runtime_behavior",
+                "title": "Preserve required runtime behavior",
+                "summary": "Future candidates should preserve artifact-first behavior.",
+                "target_scope": {"target_type": "skill", "target_id": "demo"},
+                "source_run_ids": ["old-run"],
+                "source_task_ids": ["old-task"],
+                "metrics": {
+                    "failed_gates": ["evidence_quality"],
+                    "required_behaviors": ["artifact_first", "claim_evidence_ledger"],
+                    "evidence_compacted": True,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "lessons": {"path": str(lessons_path), "count": 1},
+                "iterations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve evidence handling."}},
+            "action": {"content": "Evidence was missing."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="new-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="new-task",
+    )
+
+    class CapturingOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            return OptimizerResult(candidates=())
+
+    optimizer = CapturingOptimizer()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+    )
+
+    await runner.run_explicit_target(
+        run_id="new-run",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert optimizer.requests
+    assert len(optimizer.requests[0].prior_feedback) == 1
+    lesson_feedback = optimizer.requests[0].prior_feedback[0]
+    assert lesson_feedback.dataset_split == "lesson_memory"
+    assert lesson_feedback.metrics["lesson_id"] == "required-runtime-behavior-1"
+    assert "artifact_first" in lesson_feedback.metrics["required_behaviors"]
+
+
+@pytest.mark.asyncio
 async def test_runner_skips_duplicate_rejected_candidate_before_replay(
     tmp_path,
 ) -> None:

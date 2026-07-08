@@ -385,6 +385,32 @@ def test_feedback_normalization_requires_stronger_evidence_repair_for_veto_and_m
     assert "raise_groundedness_before_breadth" in summary["required_behaviors"]
 
 
+def test_feedback_normalization_preserves_lesson_memory_behaviors() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="required-runtime-behavior-1",
+            dataset_split="lesson_memory",
+            metrics={
+                "lesson_id": "required-runtime-behavior-1",
+                "lesson_type": "required_runtime_behavior",
+                "lesson_title": "Preserve required runtime behavior",
+                "lesson_summary": "Future candidates should preserve artifact-first behavior.",
+                "required_behaviors": [
+                    "artifact_first",
+                    "claim_evidence_ledger",
+                ],
+                "failed_gates": ["evidence_quality"],
+            },
+        )
+    )
+
+    assert summary["dataset_split"] == "lesson_memory"
+    assert summary["metrics"]["lesson_id"] == "required-runtime-behavior-1"
+    assert summary["metrics"]["lesson_type"] == "required_runtime_behavior"
+    assert "artifact_first" in summary["required_behaviors"]
+    assert "claim_evidence_ledger" in summary["required_behaviors"]
+
+
 def test_feedback_normalization_penalizes_more_evidence_with_lower_verifiability() -> None:
     summary = normalize_feedback_summary(
         EvaluationSummary(
