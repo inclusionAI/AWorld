@@ -331,10 +331,15 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         )
 
     refreshed = []
+    activated = []
 
     async def refresh_runtime(candidate):
         refreshed.append(candidate.candidate_id)
         return {"refreshed": True, "strategy": "test-hook"}
+
+    async def activate_runtime_skill(candidate):
+        activated.append(candidate.target.target_id)
+        return {"enabled": True, "skill_name": candidate.target.target_id}
 
     class VerifiedBackend:
         async def evaluate_variant(self, request):
@@ -366,6 +371,7 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         evaluation_backend=VerifiedBackend(),
         min_eval_cases=0,
         runtime_registry_refresher=refresh_runtime,
+        runtime_skill_activator=activate_runtime_skill,
     )
 
     result = await runner.run_explicit_target(
@@ -392,6 +398,8 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         for check in report["release_checklist"]["checks"]
     }["verification"] == "passed"
     assert report["content_quality_diagnostics"]["blocking"] is False
+    assert activated == ["demo"]
+    assert report["post_apply"]["activation"] == {"enabled": True, "skill_name": "demo"}
     assert refreshed == [result.selected_candidate.candidate_id]
     assert report["post_apply"]["refresh"] == {"refreshed": True, "strategy": "test-hook"}
     assert {gate["gate_name"] for gate in report["gate_results"]} >= {
@@ -1770,6 +1778,97 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
     assert report["post_apply"]["metrics"]["post_apply_passed"] is False
     journal = json.loads(Path(report["post_apply"]["journal_path"]).read_text(encoding="utf-8"))
     assert journal["status"] == "rolled_back"
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_verified_rolls_back_when_runtime_skill_activation_fails(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nVerified guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="activation-fail-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="activation-fail-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {"content": candidate_content, "rationale": "Verified candidate."}
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True, "deterministic_signal": True},
+            dataset_split="post_apply",
+        )
+
+    def activate_runtime_skill(candidate):
+        raise RuntimeError("skill activation failed")
+
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.5},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        post_apply_evaluator=post_apply,
+        evaluation_backend=VerifiedBackend(),
+        min_eval_cases=0,
+        runtime_skill_activator=activate_runtime_skill,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-activation-fail",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads(
+        (store.run_path("run-activation-fail") / "report.json").read_text(encoding="utf-8")
+    )
+    assert report["post_apply"]["status"] == "rolled_back"
+    assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert report["post_apply"]["metrics"]["activation_passed"] is False
+    assert report["post_apply"]["metrics"]["activation_error"] == "skill activation failed"
+    journal = json.loads(Path(report["post_apply"]["journal_path"]).read_text(encoding="utf-8"))
+    assert journal["status"] == "rolled_back"
+    assert journal["details"]["activation_passed"] is False
 
 
 @pytest.mark.asyncio

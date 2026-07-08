@@ -162,6 +162,7 @@ class SelfEvolveRunner:
         replay_stability_margin: float = 0.0,
         replay_agent: str | None = None,
         runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
+        runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
         progress_callback: Callable[[str, str], Any] | None = None,
         skip_duplicate_rejected_candidate_gate: bool = False,
     ) -> None:
@@ -186,6 +187,7 @@ class SelfEvolveRunner:
         self.replay_stability_margin = replay_stability_margin
         self.replay_agent = replay_agent
         self.runtime_registry_refresher = runtime_registry_refresher
+        self.runtime_skill_activator = runtime_skill_activator
         self.progress_callback = progress_callback
         self.skip_duplicate_rejected_candidate_gate = skip_duplicate_rejected_candidate_gate
 
@@ -1019,6 +1021,37 @@ class SelfEvolveRunner:
         if not isinstance(summary, EvaluationSummary):
             raise ValueError("post_apply_evaluator must return EvaluationSummary")
         if summary.metrics.get("post_apply_passed") is True:
+            activation_result: Any = None
+            if self.runtime_skill_activator is not None:
+                try:
+                    activation_result = self.runtime_skill_activator(applied_candidate)
+                    if inspect.isawaitable(activation_result):
+                        activation_result = await activation_result
+                except Exception as exc:
+                    target.rollback()
+                    self.store.update_apply_journal(
+                        journal_path,
+                        status="rolled_back",
+                        details={
+                            "post_apply_passed": True,
+                            "activation_passed": False,
+                            "activation_error": str(exc),
+                        },
+                    )
+                    metrics = dict(summary.metrics)
+                    metrics.update(
+                        {
+                            "activation_passed": False,
+                            "activation_error": str(exc),
+                        }
+                    )
+                    return {
+                        "status": "rolled_back",
+                        "metrics": metrics,
+                        "dataset_split": summary.dataset_split,
+                        "backup_path": str(backup_path),
+                        "journal_path": str(journal_path),
+                    }
             refresh_result: Any = None
             if self.runtime_registry_refresher is not None:
                 refresh_result = self.runtime_registry_refresher(applied_candidate)
@@ -1037,6 +1070,12 @@ class SelfEvolveRunner:
                 "journal_path": str(journal_path),
                 "release_state": "verified",
             }
+            if activation_result is not None:
+                result["activation"] = (
+                    dict(activation_result)
+                    if isinstance(activation_result, Mapping)
+                    else {"result": activation_result}
+                )
             if refresh_result is not None:
                 result["refresh"] = (
                     dict(refresh_result)
@@ -1129,6 +1168,7 @@ def optimize_from_cli_request(
     candidate_replay_repetitions: int = 1,
     replay_stability_margin: float = 0.0,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
+    runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
 ) -> Mapping[str, Any]:
     if apply_policy not in {"proposal", "auto_verified"}:
@@ -1158,6 +1198,7 @@ def optimize_from_cli_request(
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
             runtime_registry_refresher=runtime_registry_refresher,
+            runtime_skill_activator=runtime_skill_activator,
             progress_callback=progress_callback,
         )
     if (
@@ -1351,6 +1392,7 @@ def optimize_from_cli_request(
             replay_stability_margin=replay_stability_margin,
             replay_agent=agent,
             runtime_registry_refresher=runtime_registry_refresher,
+            runtime_skill_activator=runtime_skill_activator,
             progress_callback=progress_callback,
         ).run_explicit_target(
             run_id=run_id,
@@ -1548,6 +1590,7 @@ def _rerun_evaluator_from_stored_run(
     candidate_replay_repetitions: int,
     replay_stability_margin: float,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None,
+    runtime_skill_activator: Callable[[CandidateVariant], Any] | None,
     progress_callback: Callable[[str, str], Any] | None,
 ) -> Mapping[str, Any]:
     store = FilesystemSelfEvolveStore(workspace_root)
@@ -1634,6 +1677,7 @@ def _rerun_evaluator_from_stored_run(
             replay_stability_margin=replay_stability_margin,
             replay_agent=agent,
             runtime_registry_refresher=runtime_registry_refresher,
+            runtime_skill_activator=runtime_skill_activator,
             progress_callback=progress_callback,
             skip_duplicate_rejected_candidate_gate=True,
         ).run_explicit_target(

@@ -678,6 +678,77 @@ def test_run_optimize_cli_forwards_runtime_registry_refresher(
     )
 
     assert calls["runtime_registry_refresher"] is refresh_runtime
+    assert calls["runtime_skill_activator"] is not None
+
+
+def test_run_optimize_cli_defaults_runtime_skill_activator(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+    from aworld.self_evolve.types import SelfEvolveTargetRef
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    class FakeStateManager:
+        enabled: list[str] = []
+
+        def is_enabled(self, skill_name: str) -> bool:
+            return skill_name in self.enabled
+
+        def enable_skill(self, skill_name: str) -> None:
+            self.enabled.append(skill_name)
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_state_manager.SkillStateManager",
+        FakeStateManager,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:web-content-grounding",
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=None,
+        apply="auto_verified",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+    )
+
+    activator = calls["runtime_skill_activator"]
+    result = activator(
+        type(
+            "Candidate",
+            (),
+            {
+                "target": SelfEvolveTargetRef(
+                    target_type="skill",
+                    target_id="web-content-grounding",
+                    path=str(tmp_path / "SKILL.md"),
+                )
+            },
+        )()
+    )
+
+    assert result == {
+        "status": "enabled",
+        "skill_name": "web-content-grounding",
+        "was_enabled": False,
+        "enabled": True,
+    }
 
 
 def test_run_optimize_cli_maps_judge_backend_ref_to_framework_config(
