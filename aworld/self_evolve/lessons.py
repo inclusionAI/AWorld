@@ -158,8 +158,13 @@ def _lesson_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
         for key in (
             "evidence_compacted",
             "evidence_incomplete",
+            "evidence_bundle_valid",
+            "evidence_bundle_entry_count",
+            "evidence_manifest_entry_count",
             "evidence_manifest_invalid_entry_count",
             "invalid_entry_count",
+            "replay_invalid_entry_count",
+            "replay_evidence_manifest_invalid_entry_count",
             "veto_triggered",
         ):
             if key in evidence:
@@ -171,12 +176,62 @@ def _lesson_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
                 for issue in issues[:3]
                 if str(issue).strip()
             ]
+        compaction = _evidence_compaction_summary(evidence)
+        if compaction:
+            payload["evidence_compaction"] = compaction
     failed_gates = summary.get("failed_gates")
     if isinstance(failed_gates, list):
         payload["failed_gates"] = [
             sanitize_text(item, max_chars=80) for item in failed_gates[:8]
         ]
     return payload
+
+
+def _evidence_compaction_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    bool_fields = {
+        "evidence_compacted": "raw_evidence_compacted",
+        "evidence_incomplete": "raw_evidence_incomplete",
+        "evidence_bundle_valid": "bundle_valid",
+    }
+    for source_key, target_key in bool_fields.items():
+        value = evidence.get(source_key)
+        if isinstance(value, bool):
+            payload[target_key] = value
+    number_fields = {
+        "evidence_bundle_entry_count": "bundle_entry_count",
+        "evidence_manifest_entry_count": "manifest_entry_count",
+        "evidence_manifest_invalid_entry_count": "manifest_invalid_entry_count",
+        "invalid_entry_count": "manifest_invalid_entry_count",
+        "replay_invalid_entry_count": "replay_manifest_invalid_entry_count",
+        "replay_evidence_manifest_invalid_entry_count": "replay_manifest_invalid_entry_count",
+    }
+    for source_key, target_key in number_fields.items():
+        value = evidence.get(source_key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            payload[target_key] = int(value) if float(value).is_integer() else value
+    replay_failure_types = _bounded_string_list(evidence.get("replay_failure_types"), max_chars=80)
+    if replay_failure_types:
+        payload["replay_failure_types"] = replay_failure_types
+    replay_failure_reasons = _bounded_string_list(
+        evidence.get("replay_failure_reasons"),
+        max_chars=96,
+    )
+    if replay_failure_reasons:
+        payload["replay_failure_reasons"] = replay_failure_reasons
+    return payload
+
+
+def _bounded_string_list(value: Any, *, max_chars: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        sanitize_text(item, max_chars=max_chars)
+        for item in value[:3]
+        if str(item).strip()
+    ]
 
 
 def _failure_summary(

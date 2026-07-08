@@ -76,6 +76,8 @@ _EVIDENCE_METRIC_KEYS = {
     "baseline_evidence_block_count",
     "candidate_evidence_block_count",
     "evidence_block_count_delta",
+    "evidence_bundle_entry_count",
+    "evidence_bundle_valid",
     "evidence_compacted",
     "evidence_incomplete",
     "baseline_evidence_incomplete",
