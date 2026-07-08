@@ -6,7 +6,16 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 GATEWAY_LOGGER_NAME = "aworld.gateway"
+GATEWAY_CONSOLE_LOG_ENV = "AWORLD_GATEWAY_CONSOLE_LOG"
 _GATEWAY_HANDLER_MARKER = "_aworld_gateway_file_handler"
+_FALSEY_VALUES = {"0", "false", "no", "off"}
+
+
+def _is_gateway_console_log_enabled() -> bool:
+    configured = str(os.getenv(GATEWAY_CONSOLE_LOG_ENV) or "").strip().lower()
+    if configured in _FALSEY_VALUES:
+        return False
+    return True
 
 
 def resolve_gateway_log_path(log_path: Path | str | None = None) -> Path:
@@ -30,7 +39,7 @@ def configure_gateway_logging(*, log_path: Path | str | None = None) -> Path:
 
     gateway_root_logger = logging.getLogger(GATEWAY_LOGGER_NAME)
     gateway_root_logger.setLevel(logging.INFO)
-    gateway_root_logger.propagate = True
+    gateway_root_logger.propagate = _is_gateway_console_log_enabled()
 
     for handler in list(gateway_root_logger.handlers):
         if not getattr(handler, _GATEWAY_HANDLER_MARKER, False):

@@ -78,7 +78,6 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}")
 
         if resp.tool_calls:
-            is_call_tool = True
             logger.info(f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)")
             for idx, tool_call in enumerate(resp.tool_calls):
                 full_name: str = tool_call.function.name
@@ -90,13 +89,19 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}")
 
                 try:
-                    params = json.loads(tool_call.function.arguments)
+                    raw_arguments = tool_call.function.arguments
+                    if not isinstance(raw_arguments, str) or not raw_arguments.strip():
+                        logger.warning(
+                            f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} for {full_name} has invalid arguments: {raw_arguments!r}, skipping.")
+                        continue
+
+                    params = json.loads(raw_arguments)
                     logger.debug(
                         f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)")
                 except Exception as e:
                     logger.warning(
                         f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}")
-                    params = {}
+                    continue
 
                 # format in framework
                 # agent_info = AgentFactory.agent_instance(agent_id)
@@ -129,6 +134,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                agent_name=agent_id,
                                                params=params,
                                                policy_info=content + param_info))
+                    is_call_tool = True
                     logger.debug(f"🤖 [Agent:{agent_id}] Added agent action: {full_name}")
                 else:
                     action_name = '__'.join(names[1:]) if len(names) > 1 else ''
@@ -138,8 +144,9 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                agent_name=agent_id,
                                                params=params,
                                                policy_info=content))
+                    is_call_tool = True
                     logger.info(f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}")
-        else:
+        if not is_call_tool:
             if not content and resp.reasoning_content:
                 logger.info(f"💬 [Agent:{agent_id}] No tool calls or content, added reasoning content to action")
                 content = resp.reasoning_content
@@ -865,17 +872,45 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tool_calls_map = {}
             last_tool_calls = []
             matched_tool_call_ids = set()
+
+            def _is_tool_history(history) -> bool:
+                if isinstance(history, MemoryMessage):
+                    return isinstance(history, MemoryToolMessage)
+                return history.metadata.get('role') == 'tool'
+
+            def _drop_incomplete_tool_call_turn(reason: str):
+                nonlocal tool_calls_map, last_tool_calls
+                if not last_tool_calls:
+                    return
+                dropped_message = None
+                if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls"):
+                    dropped_message = messages.pop()
+                logger.warning(
+                    "Skip incomplete tool-call turn in memory replay: "
+                    f"reason={reason}, missing_tool_call_ids={last_tool_calls}, "
+                    f"matched_tool_result_ids={list(tool_calls_map.keys())}, "
+                    f"dropped_assistant_message={bool(dropped_message)}, agent={self.id()}"
+                )
+                tool_calls_map = {}
+                last_tool_calls = []
+
+            def _append_complete_tool_results():
+                nonlocal tool_calls_map, last_tool_calls
+                for tool_call_id in last_tool_calls:
+                    if tool_call_id not in tool_calls_map:
+                        _drop_incomplete_tool_call_turn(f"missing tool result for {tool_call_id}")
+                        return
+                    messages.append(tool_calls_map.get(tool_call_id))
+                    matched_tool_call_ids.add(tool_call_id)
+                tool_calls_map = {}
+                last_tool_calls = []
+
             for history in histories:
                 if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
                     # Maintain the order of tool calls
-                    for tool_call_id in last_tool_calls:
-                        if tool_call_id not in tool_calls_map:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                        messages.append(tool_calls_map.get(tool_call_id))
-                        matched_tool_call_ids.add(tool_call_id)
-                    tool_calls_map = {}
-                    last_tool_calls = []
+                    _append_complete_tool_results()
+                elif last_tool_calls and not _is_tool_history(history):
+                    _drop_incomplete_tool_call_turn("next non-tool message encountered")
 
                 if isinstance(history, MemoryMessage):
                     if isinstance(history, MemoryToolMessage):
@@ -887,9 +922,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 f"tool_call_id={history.tool_call_id}, agent={self.id()}"
                             )
                         else:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {history.tool_call_id} not found in {last_tool_calls}, "
-                                f"messages: {messages}, histories: {histories}")
+                            logger.warning(
+                                "Skip orphan tool result in memory replay: "
+                                f"tool_call_id={history.tool_call_id}, agent={self.id()}"
+                            )
                     else:
                         messages.append(history.to_openai_message())
                         if isinstance(history, MemoryAIMessage) and history.tool_calls:
@@ -908,9 +944,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 f"tool_call_id={tool_call_id}, agent={self.id()}"
                             )
                         else:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {last_tool_calls}, "
-                                f"messages: {messages}, histories: {histories}")
+                            logger.warning(
+                                "Skip orphan tool result in memory replay: "
+                                f"tool_call_id={tool_call_id}, agent={self.id()}"
+                            )
                     else:
                         if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
                             messages.append({'role': history.metadata['role'], 'content': history.content,
@@ -922,33 +959,39 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                              "tool_call_id": history.metadata.get("tool_call_id")})
                 if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
                     # Maintain the order of tool calls
-                    for tool_call_id in last_tool_calls:
-                        if tool_call_id not in tool_calls_map:
-                            raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                        messages.append(tool_calls_map.get(tool_call_id))
-                        matched_tool_call_ids.add(tool_call_id)
-                    tool_calls_map = {}
-                    last_tool_calls = []
+                    _append_complete_tool_results()
                 elif len(tool_calls_map) > len(last_tool_calls):
-                    raise AWorldRuntimeException(
-                        f"tool_calls mismatch! {len(tool_calls_map)} tool messages > {len(last_tool_calls)} tool calls: "
-                        f"tool_calls_map={tool_calls_map}, last_tool_calls={last_tool_calls}, messages={messages}, histories={histories}")
-            if len(tool_calls_map) == len(last_tool_calls):
-                for tool_call_id in last_tool_calls:
-                    if tool_call_id not in tool_calls_map:
-                        raise AWorldRuntimeException(
-                            f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
-                    messages.append(tool_calls_map.get(tool_call_id))
-                    matched_tool_call_ids.add(tool_call_id)
-                tool_calls_map = {}
-                last_tool_calls = []
+                    _drop_incomplete_tool_call_turn("more tool results than tool calls")
+            if last_tool_calls and len(tool_calls_map) == len(last_tool_calls):
+                _append_complete_tool_results()
             else:
-                raise AWorldRuntimeException(
-                    f"tool_calls mismatch! {len(tool_calls_map)} tool messages != {len(last_tool_calls)} tool calls: "
-                    f"tool_calls_map={tool_calls_map}, last_tool_calls={last_tool_calls}, messages={messages}, histories={histories}")
+                _drop_incomplete_tool_call_turn("end of history reached")
 
-        return messages
+        return self._prepend_task_input_messages(messages, message.context)
+
+    @staticmethod
+    def _prepend_task_input_messages(messages: List[Dict[str, Any]], context: Context = None) -> List[Dict[str, Any]]:
+        task_input = getattr(context, "task_input_object", None) if context is not None else None
+        task_messages = getattr(task_input, "messages", None) or []
+        restored_messages = []
+        for item in task_messages:
+            if isinstance(item, dict):
+                message = dict(item)
+            elif hasattr(item, "model_dump"):
+                message = item.model_dump()
+            else:
+                continue
+            if message.get("role") in {"user", "assistant", "tool"}:
+                restored_messages.append(message)
+        if not restored_messages:
+            return messages
+
+        insert_at = 0
+        for index, item in enumerate(messages):
+            if not isinstance(item, dict) or item.get("role") != "system":
+                break
+            insert_at = index + 1
+        return messages[:insert_at] + restored_messages + messages[insert_at:]
 
     async def init_observation(self, observation: Observation) -> Observation:
         # default use origin observation

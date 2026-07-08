@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import os
 import sys
 from types import ModuleType
@@ -51,7 +52,7 @@ def test_gateway_channels_list_contains_placeholder_channels(
     assert rows["web"]["implemented"] is False
 
 
-def test_enable_aworld_console_logging_for_gateway_reconfigures_disabled_logger(
+def test_suppress_gateway_console_logging_reconfigures_enabled_logger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeLogger:
@@ -83,15 +84,31 @@ def test_enable_aworld_console_logging_for_gateway_reconfigures_disabled_logger(
 
     import aworld.logs.util as log_util
 
-    fake_logger = FakeLogger(disable_console=True)
+    fake_logger = FakeLogger(disable_console=False)
     monkeypatch.setattr(log_util, "logger", fake_logger)
-    monkeypatch.setenv("AWORLD_DISABLE_CONSOLE_LOG", "true")
+    monkeypatch.setenv("AWORLD_DISABLE_CONSOLE_LOG", "false")
+    monkeypatch.delenv("AWORLD_GATEWAY_CONSOLE_LOG", raising=False)
 
-    gateway_cli._enable_aworld_console_logging_for_gateway()
+    gateway_cli._suppress_gateway_console_logging()
 
-    assert os.environ["AWORLD_DISABLE_CONSOLE_LOG"] == "false"
-    assert fake_logger.disable_console is False
-    assert fake_logger.calls[-1]["disable_console"] is False
+    assert os.environ["AWORLD_DISABLE_CONSOLE_LOG"] == "true"
+    assert os.environ["AWORLD_GATEWAY_CONSOLE_LOG"] == "false"
+    assert fake_logger.disable_console is True
+    assert fake_logger.calls[-1]["disable_console"] is True
+
+
+def test_configure_gateway_file_logging_can_suppress_console_propagation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("AWORLD_GATEWAY_CONSOLE_LOG", "false")
+
+    gateway_cli._configure_gateway_file_logging(base_dir=tmp_path)
+
+    assert logging.getLogger("aworld.gateway").propagate is False
+
+    monkeypatch.setenv("AWORLD_GATEWAY_CONSOLE_LOG", "true")
+    gateway_cli._configure_gateway_file_logging(base_dir=tmp_path)
 
 
 def test_configure_gateway_file_logging_writes_to_dedicated_gateway_log(
@@ -136,7 +153,7 @@ def test_get_gateway_logger_returns_named_child_logger(
     assert logger.name == f"{GATEWAY_LOGGER_NAME}.child_component"
 
 
-def test_serve_gateway_enables_console_logging_before_loading_agents(
+def test_serve_gateway_suppresses_console_logging_before_loading_agents(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -145,6 +162,7 @@ def test_serve_gateway_enables_console_logging_before_loading_agents(
 
     async def fake_load_all_agents(*, remote_backends, local_dirs, agent_files):
         observed["disable_console_env"] = os.environ.get("AWORLD_DISABLE_CONSOLE_LOG", "")
+        observed["gateway_console_env"] = os.environ.get("AWORLD_GATEWAY_CONSOLE_LOG", "")
         observed["quiet_boot_env"] = os.environ.get("AWORLD_GATEWAY_QUIET_BOOT", "")
         raise RuntimeError("stop after env check")
 
@@ -163,7 +181,8 @@ def test_serve_gateway_enables_console_logging_before_loading_agents(
             )
         )
 
-    assert observed["disable_console_env"] == "false"
+    assert observed["disable_console_env"] == "true"
+    assert observed["gateway_console_env"] == "false"
     assert observed["quiet_boot_env"] == "true"
 
 
@@ -311,11 +330,12 @@ def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
             return telegram_adapter
 
     class FakeUvicornConfig:
-        def __init__(self, *, app, host, port):
+        def __init__(self, *, app, host, port, log_level):
             calls["uvicorn_config"] = {
                 "app": app,
                 "host": host,
                 "port": port,
+                "log_level": log_level,
             }
 
     class FakeUvicornServer:
@@ -434,8 +454,9 @@ def test_serve_gateway_skips_artifact_service_when_dingding_disabled_and_workspa
             return None
 
     class FakeUvicornConfig:
-        def __init__(self, *, app, host, port):
+        def __init__(self, *, app, host, port, log_level):
             calls["uvicorn_app"] = app
+            calls["uvicorn_log_level"] = log_level
 
     class FakeUvicornServer:
         def __init__(self, config):
