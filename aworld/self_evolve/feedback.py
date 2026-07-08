@@ -8,6 +8,10 @@ _MAX_TEXT_CHARS = 240
 _MAX_LIST_ITEMS = 3
 
 _SCALAR_METRIC_KEYS = {
+    "lesson_id",
+    "lesson_type",
+    "lesson_title",
+    "lesson_summary",
     "score",
     "cost",
     "latency_ms",
@@ -157,7 +161,7 @@ def _required_behaviors(
     evidence: Mapping[str, Any],
     metrics: Mapping[str, Any],
 ) -> list[str]:
-    behaviors: list[str] = []
+    behaviors: list[str] = _string_list(metrics.get("required_behaviors"))
     has_evidence_failure = "evidence_quality" in set(failed_gates)
     has_evidence_compaction = evidence.get("evidence_compacted") is True
     has_incomplete_evidence = evidence.get("evidence_incomplete") is True
