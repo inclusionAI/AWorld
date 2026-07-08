@@ -87,12 +87,12 @@
 - [x] 4.5a Implement deterministic population defaults and ranking semantics:
   default population size, max replayed candidates, hard replay limit, ranking
   weights, tie breakers, no-op threshold, and budget-exhausted behavior.
-- [ ] 4.6 Persist non-replayed candidate strategies for audit and future runs.
-- [ ] 4.7 Add tests for population ranking, no-op output, and high-baseline
+- [x] 4.6 Persist non-replayed candidate strategies for audit and future runs.
+- [x] 4.7 Add tests for population ranking, no-op output, and high-baseline
   conservative candidate generation.
-- [ ] 4.7a Add tests for deterministic tie-breaking and candidates persisted as
+- [x] 4.7a Add tests for deterministic tie-breaking and candidates persisted as
   `not_replayed_due_to_budget`.
-- [ ] 4.8 Ensure harness diagnostics can influence candidate strategy hints but
+- [x] 4.8 Ensure harness diagnostics can influence candidate strategy hints but
   cannot be copied directly into production skill instructions.
 
 ## 5. Patch-Oriented Materialization
@@ -136,7 +136,7 @@
   fallback when equivalence cannot be established.
 - [x] 7.7 Add tests proving production skills do not expose self-evolve internal
   wording after apply.
-- [ ] 7.8 Add tests proving raw harness diagnostic labels and evidence ids are not
+- [x] 7.8 Add tests proving raw harness diagnostic labels and evidence ids are not
   leaked into runtime instruction bodies.
 - [x] 7.9 Add tests proving apply is rejected when release normalization removes a
   behavior constraint required by accepted gates.

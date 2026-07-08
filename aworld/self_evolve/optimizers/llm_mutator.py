@@ -246,13 +246,16 @@ def _candidate_strategy_record(
     addressed_lessons = _addressed_lesson_ids(request)
     preserved_success_behaviors = _preserved_success_behaviors(request)
     risk_notes = _risk_notes(request)
+    strategy_hints = _strategy_hints(request)
     return {
         "strategy_id": f"{population_strategy['name']}:{candidate_index}",
         "candidate_family": population_strategy["name"],
         "intended_behavior_delta": population_strategy["instruction"],
         "addressed_lessons": list(addressed_lessons),
+        "harness_diagnostics_considered": list(_harness_diagnostic_ids(request)),
         "preserved_success_behaviors": preserved_success_behaviors,
         "risk_notes": risk_notes,
+        "strategy_hints": strategy_hints,
         "replay_priority": _replay_priority(
             addressed_lessons=addressed_lessons,
             preserved_success_behaviors=preserved_success_behaviors,
@@ -304,12 +307,38 @@ def _preserved_success_behaviors(request: OptimizerRequest) -> list[str]:
 def _risk_notes(request: OptimizerRequest) -> list[str]:
     notes: list[str] = []
     for lesson in request.lesson_records:
-        if lesson.lesson_type in {"failure_memory", "trajectory_failure_memory"}:
+        if lesson.lesson_type in {"failure_memory", "trajectory_failure_memory", "harness_diagnostic"}:
             notes.append(lesson.summary)
         failed_gates = lesson.metrics.get("failed_gates") if isinstance(lesson.metrics, Mapping) else None
         if isinstance(failed_gates, list):
             notes.extend(str(item) for item in failed_gates[:4])
     return list(dict.fromkeys(note for note in notes if note))[:6]
+
+
+def _harness_diagnostic_ids(request: OptimizerRequest) -> tuple[str, ...]:
+    return tuple(
+        lesson.lesson_id
+        for lesson in request.lesson_records
+        if lesson.lesson_type == "harness_diagnostic" and lesson.lesson_id
+    )
+
+
+def _strategy_hints(request: OptimizerRequest) -> list[str]:
+    hints: list[str] = []
+    for lesson in request.lesson_records:
+        if lesson.lesson_type != "harness_diagnostic":
+            continue
+        metrics = lesson.metrics if isinstance(lesson.metrics, Mapping) else {}
+        diagnostic_kind = str(metrics.get("diagnostic_kind") or "").strip()
+        if diagnostic_kind == "artifact_lifecycle":
+            hints.append("improve artifact lifecycle handling without copying diagnostic labels into runtime instructions")
+        elif diagnostic_kind == "workflow":
+            hints.append("stabilize replay workflow before adding runtime behavior")
+        elif diagnostic_kind == "evaluation":
+            hints.append("make evaluator-facing evidence easier to verify without changing task-specific behavior")
+        elif diagnostic_kind:
+            hints.append(f"consider {diagnostic_kind} as a framework diagnostic, not runtime wording")
+    return list(dict.fromkeys(hints))[:6]
 
 
 def _replay_priority(

@@ -192,6 +192,49 @@ async def test_trace_reflective_llm_mutator_consumes_structured_lesson_records()
 
 
 @pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_promotes_harness_diagnostic_to_strategy_hint() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nUse artifact-backed evidence before final answers.\n",
+            "rationale": "Diagnostic-informed strategy.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="diagnostic-artifact-1",
+                lesson_type="harness_diagnostic",
+                title="Evidence quality blocked verified apply",
+                summary="Replay evidence was compacted and not artifact-backed enough.",
+                metrics={
+                    "diagnostic_kind": "artifact_lifecycle",
+                    "affected_gates": ["evidence_quality"],
+                },
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert "harness_diagnostic" in prompts[0]
+    assert "artifact_lifecycle" in prompts[0]
+    assert "strategy_hints" in prompts[0]
+    assert "improve artifact lifecycle handling" in prompts[0]
+    assert result.diagnostics["candidate_strategies"][0]["harness_diagnostics_considered"] == [
+        "diagnostic-artifact-1"
+    ]
+    assert result.diagnostics["candidate_strategies"][0]["risk_notes"]
+
+
+@pytest.mark.asyncio
 async def test_trace_reflective_llm_mutator_returns_noop_without_lesson_backed_delta() -> None:
     called = False
 
