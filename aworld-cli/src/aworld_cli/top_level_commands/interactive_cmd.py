@@ -24,6 +24,16 @@ def _register_interactive_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent-dir", type=str, action="append")
     parser.add_argument("--agent-file", type=str, action="append")
     parser.add_argument("--skill-path", type=str, action="append")
+    parser.add_argument(
+        "--evolve",
+        nargs="?",
+        const="shadow",
+        choices=("off", "offline", "shadow", "online"),
+        default=None,
+    )
+    parser.add_argument("--judge-agent", type=str)
+    parser.add_argument("--judge-agent-name", type=str)
+    parser.add_argument("--judge-backend-ref", type=str)
 
 
 def _build_interactive_parser(add_help: bool = True) -> argparse.ArgumentParser:
@@ -73,6 +83,7 @@ class InteractiveTopLevelCommand:
         from aworld_cli.main import (
             _resolve_agent_dirs,
             _run_interactive_mode,
+            _self_evolve_config_from_cli_mode,
             _show_banner,
             init_middlewares,
         )
@@ -97,6 +108,12 @@ class InteractiveTopLevelCommand:
                 local_dirs=_resolve_agent_dirs(invocation_args.agent_dir),
                 agent_files=invocation_args.agent_file,
                 session_id=None,
+                self_evolve_config=_self_evolve_config_from_cli_mode(
+                    invocation_args.evolve,
+                    judge_agent=invocation_args.judge_agent,
+                    judge_agent_name=invocation_args.judge_agent_name,
+                    judge_backend_ref=invocation_args.judge_backend_ref,
+                ),
             )
         )
         return 0

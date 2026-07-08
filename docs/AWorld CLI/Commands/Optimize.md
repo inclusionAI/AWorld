@@ -4,6 +4,16 @@
 
 Use this command to create a proposal, debug target inference, run verified replay, or drain framework-owned pending self-evolve jobs.
 
+For normal task execution with background self-evolve enabled, use the runtime flag instead:
+
+```bash
+aworld-cli --evolve
+aworld-cli --evolve=online --judge-agent ~/Documents/agent.md
+aworld-cli run --task "complete this task" --evolve=shadow
+```
+
+`--evolve` configures the selected local runtime agent for post-run self-evolve scheduling. Pair it with `--judge-agent`, `--judge-agent-name`, or `--judge-backend-ref` to configure the background evaluator. `aworld-cli optimize` remains the manual/debug entrypoint for the same framework runner.
+
 ## Basic Usage
 
 Proposal-only runs:

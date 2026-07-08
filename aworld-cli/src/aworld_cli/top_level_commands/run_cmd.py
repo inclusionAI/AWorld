@@ -23,7 +23,53 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent-dir", type=str, action="append")
     parser.add_argument("--agent-file", type=str, action="append")
     parser.add_argument("--skill-path", type=str, action="append")
+    parser.add_argument(
+        "--evolve",
+        nargs="?",
+        const="shadow",
+        choices=("off", "offline", "shadow", "online"),
+        default=None,
+    )
+    parser.add_argument("--judge-agent", type=str)
+    parser.add_argument("--judge-agent-name", type=str)
+    parser.add_argument("--judge-backend-ref", type=str)
     parser.add_argument("--emit-trajectory", action="store_true")
+
+
+def _parse_global_evolve_options(argv) -> argparse.Namespace:
+    modes = {"off", "offline", "shadow", "online"}
+    tokens = list(argv)[1:]
+    result = argparse.Namespace(
+        evolve=None,
+        judge_agent=None,
+        judge_agent_name=None,
+        judge_backend_ref=None,
+    )
+    for index, token in enumerate(tokens):
+        if token.startswith("--evolve="):
+            value = token.split("=", 1)[1].strip().lower()
+            result.evolve = value if value in modes else None
+            continue
+        if token == "--evolve":
+            next_token = tokens[index + 1].strip().lower() if index + 1 < len(tokens) else ""
+            result.evolve = next_token if next_token in modes else "shadow"
+            continue
+        if token in {"--judge-agent", "--judge-agent-name", "--judge-backend-ref"}:
+            value = tokens[index + 1] if index + 1 < len(tokens) else None
+            if token == "--judge-agent":
+                result.judge_agent = value
+            elif token == "--judge-agent-name":
+                result.judge_agent_name = value
+            else:
+                result.judge_backend_ref = value
+            continue
+        if token.startswith("--judge-agent="):
+            result.judge_agent = token.split("=", 1)[1]
+        elif token.startswith("--judge-agent-name="):
+            result.judge_agent_name = token.split("=", 1)[1]
+        elif token.startswith("--judge-backend-ref="):
+            result.judge_backend_ref = token.split("=", 1)[1]
+    return result
 
 
 class RunTopLevelCommand:
@@ -52,6 +98,7 @@ class RunTopLevelCommand:
         from aworld_cli.main import (
             _resolve_agent_dirs,
             _run_direct_mode,
+            _self_evolve_config_from_cli_mode,
             _show_banner,
             init_middlewares,
         )
@@ -68,6 +115,12 @@ class RunTopLevelCommand:
             return 1
 
         local_dirs = _resolve_agent_dirs(args.agent_dir)
+        args_evolve = getattr(args, "evolve", None)
+        global_evolve = _parse_global_evolve_options(context.argv)
+        evolve_mode = args_evolve if args_evolve is not None else global_evolve.evolve
+        judge_agent = getattr(args, "judge_agent", None) or global_evolve.judge_agent
+        judge_agent_name = getattr(args, "judge_agent_name", None) or global_evolve.judge_agent_name
+        judge_backend_ref = getattr(args, "judge_backend_ref", None) or global_evolve.judge_backend_ref
         agent_name = self._resolve_agent_name(args)
         if agent_name is None:
             return 0
@@ -87,6 +140,12 @@ class RunTopLevelCommand:
                 remote_backends=args.remote_backend,
                 local_dirs=local_dirs,
                 agent_files=args.agent_file,
+                self_evolve_config=_self_evolve_config_from_cli_mode(
+                    evolve_mode,
+                    judge_agent=judge_agent,
+                    judge_agent_name=judge_agent_name,
+                    judge_backend_ref=judge_backend_ref,
+                ),
             )
         )
         if args.emit_trajectory:
