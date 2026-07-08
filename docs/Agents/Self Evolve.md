@@ -2,7 +2,7 @@
 
 Self-evolve is a framework-owned capability for improving agent-facing harness artifacts from observed task trajectories. Phase 1 is intentionally narrow: it proposes and verifies changes to harness text and configuration surfaces, especially skills. It does not mutate AWorld framework code, runtime code, CLI code, dependency manifests, secrets, or repository product logic.
 
-The capability is disabled by default. Agents opt in through `AgentConfig.self_evolve_config`, and `aworld-cli optimize` provides an explicit manual/debug entrypoint for release operators and developers.
+The capability is disabled by default. Agents opt in through `AgentConfig.self_evolve_config`, `aworld-cli --evolve` can enable it for the current CLI runtime session, and `aworld-cli optimize` provides an explicit manual/debug entrypoint for release operators and developers.
 
 ## What It Optimizes
 
@@ -57,6 +57,22 @@ Modes:
 `online` requires `apply_policy="auto_verified"`. `auto_verified` also requires `requires_post_apply_reevaluation=True`, which is the default. Useful verification knobs include `replay_timeout_seconds`, `replay_max_steps`, `baseline_replay_repetitions`, `candidate_replay_repetitions`, `replay_candidate_limit`, `replay_stability_margin`, `judge_repetitions`, and `judge_timeout_seconds`.
 
 Self-evolve is separate from older learning switches. `meta_learning_config` stores and extracts learning knowledge, `ContextRuleConfig.optimization_config` controls context compression/optimization behavior, and `train.evolve` is a training asset. `SelfEvolveConfig` is the opt-in for this framework proposal and verification loop.
+
+## Runtime CLI Opt-In
+
+Use `--evolve` when running the main CLI agent and you want completed tasks to enqueue background self-evolve work:
+
+```bash
+aworld-cli --evolve
+aworld-cli --evolve=online --judge-agent ~/Documents/agent.md
+aworld-cli run --task "summarize this page" --evolve=shadow
+```
+
+`--evolve` is equivalent to `--evolve=shadow`: the current runtime session writes proposal artifacts only. `--evolve=online` injects `SelfEvolveConfig(mode="online", apply_policy="auto_verified")` into the selected local agent, so background jobs may apply allowlisted targets only after verified replay, evaluator gates, and post-apply runtime-loader checks pass.
+
+Use `--judge-agent`, `--judge-agent-name`, or `--judge-backend-ref` with `--evolve` to configure the evaluator used by background jobs. These selectors map to `SelfEvolveConfig.judge_config` and follow the same mutually exclusive semantics as `aworld-cli optimize`.
+
+The flag does not implement a separate optimization path. It configures the runtime agent; post-run enqueue, draining, replay, candidate generation, gates, and apply remain owned by the framework self-evolve scheduler and runner. Remote agents are not mutated by the local CLI flag.
 
 ## CLI Examples
 

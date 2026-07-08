@@ -28,6 +28,57 @@ from aworld.core.context.amni import ApplicationContext, TaskInput
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 
 
+def _safe_getattr(target, name: str, default=None):
+    try:
+        return getattr(target, name)
+    except Exception:
+        return default
+
+
+def _iter_swarm_config_agents(swarm) -> list:
+    agents = []
+    communicate_agent = _safe_getattr(swarm, "communicate_agent", None)
+    if isinstance(communicate_agent, (list, tuple)):
+        agents.extend(item for item in communicate_agent if item is not None)
+    elif communicate_agent is not None:
+        agents.append(communicate_agent)
+
+    ordered_agents = _safe_getattr(swarm, "ordered_agents", None)
+    if isinstance(ordered_agents, (list, tuple)):
+        agents.extend(item for item in ordered_agents if item is not None)
+
+    swarm_agents = _safe_getattr(swarm, "agents", None)
+    if isinstance(swarm_agents, dict):
+        agents.extend(item for item in swarm_agents.values() if item is not None)
+    elif isinstance(swarm_agents, (list, tuple)):
+        agents.extend(item for item in swarm_agents if item is not None)
+    elif swarm_agents is not None:
+        agents.append(swarm_agents)
+
+    unique = []
+    seen = set()
+    for agent in agents:
+        key = id(agent)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(agent)
+    return unique
+
+
+def _apply_self_evolve_config_to_swarm(swarm, self_evolve_config) -> None:
+    if self_evolve_config is None or swarm is None:
+        return
+    for agent in _iter_swarm_config_agents(swarm):
+        conf = getattr(agent, "conf", None)
+        if conf is None:
+            continue
+        try:
+            conf.self_evolve_config = self_evolve_config
+        except Exception:
+            continue
+
+
 class CliRuntime(BaseCliRuntime):
     """
     CLI runtime that supports agents from multiple sources.
@@ -68,6 +119,7 @@ class CliRuntime(BaseCliRuntime):
         require_same_resume_agent: bool = True,
         resume_cwd: str | None = None,
         fail_on_missing_agent: bool = False,
+        self_evolve_config=None,
     ):
         """
         Initialize CLI Runtime.
@@ -98,6 +150,7 @@ class CliRuntime(BaseCliRuntime):
         self._require_same_resume_agent = require_same_resume_agent
         self._resume_cwd = resume_cwd
         self._fail_on_missing_agent = fail_on_missing_agent
+        self._self_evolve_config = self_evolve_config
     
     def _parse_config(
         self, 
@@ -343,6 +396,8 @@ class CliRuntime(BaseCliRuntime):
                 )
                 # Get swarm with context
                 swarm = await local_agent.get_swarm(temp_context)
+
+            _apply_self_evolve_config_to_swarm(swarm, self._self_evolve_config)
             
             executor = LocalAgentExecutor(
                 swarm, 

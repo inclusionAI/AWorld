@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from aworld.config.conf import AgentConfig, SelfEvolveConfig
 from aworld_cli.models import AgentInfo
 from aworld_cli.runtime.base import BaseCliRuntime
+from aworld_cli.runtime.cli import _apply_self_evolve_config_to_swarm
 
 
 class DummyRuntime(BaseCliRuntime):
@@ -57,6 +60,23 @@ def test_runtime_refresh_skill_registry_rebuilds_runtime_view_and_resets_cache(
         "runtime_skill_count": 1,
         "source_paths": [str(tmp_path / "skills")],
     }
+
+
+def test_cli_runtime_applies_self_evolve_config_to_swarm_agent_conf() -> None:
+    root_agent = SimpleNamespace(conf=AgentConfig())
+    helper_agent = SimpleNamespace(conf=AgentConfig())
+    swarm = SimpleNamespace(
+        communicate_agent=root_agent,
+        ordered_agents=[root_agent, helper_agent],
+    )
+    config = SelfEvolveConfig(mode="online", apply_policy="auto_verified")
+
+    _apply_self_evolve_config_to_swarm(swarm, config)
+
+    assert root_agent.conf.self_evolve_config.mode == "online"
+    assert root_agent.conf.self_evolve_config.apply_policy == "auto_verified"
+    assert helper_agent.conf.self_evolve_config.mode == "online"
+    assert helper_agent.conf.self_evolve_config.apply_policy == "auto_verified"
 
 
 @pytest.mark.asyncio
