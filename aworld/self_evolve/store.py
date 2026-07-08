@@ -97,6 +97,17 @@ class FilesystemSelfEvolveStore:
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         return path
 
+    def write_harness_diagnostics(self, run_id: str, diagnostics: tuple[Any, ...]) -> Path:
+        diagnostics_dir = self.run_path(run_id) / "diagnostics"
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        path = diagnostics_dir / "harness_diagnostics.jsonl"
+        lines = [
+            json.dumps(to_json_dict(diagnostic), ensure_ascii=False, sort_keys=True)
+            for diagnostic in diagnostics
+        ]
+        path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        return path
+
     def write_judge_record(self, run_id: str, record: JudgeRecord) -> Path:
         self._validate_id(record.backend_id, "backend_id")
         judge_dir = self.run_path(run_id) / "judges"

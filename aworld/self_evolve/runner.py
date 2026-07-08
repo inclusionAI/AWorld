@@ -21,6 +21,7 @@ from aworld.self_evolve.datasets import (
     SelfEvolveEvalSourceConfig,
     build_dataset_from_source,
 )
+from aworld.self_evolve.diagnostics import extract_harness_diagnostics
 from aworld.self_evolve.evaluation import (
     AWorldTrajectoryEvaluatorBackend,
     EvaluationBackend,
@@ -267,6 +268,7 @@ class SelfEvolveRunner:
         validation_feedback: tuple[EvaluationSummary, ...] = ()
         all_candidates: list[CandidateVariant] = []
         optimizer_diagnostics: list[dict[str, object]] = []
+        optimizer_lineage_paths: list[str] = []
         iteration_reports: list[dict[str, object]] = []
         iteration_states: list[dict[str, object]] = []
         baseline_summary: EvaluationSummary | None = None
@@ -334,7 +336,8 @@ class SelfEvolveRunner:
                 all_candidates.append(candidate)
                 target.preserve_proposal(self.store, run_id, candidate)
             for lineage in optimizer_result.lineage:
-                self.store.write_optimizer_lineage(run_id, lineage)
+                lineage_path = self.store.write_optimizer_lineage(run_id, lineage)
+                optimizer_lineage_paths.append(str(lineage_path))
 
             candidate_population = tuple(
                 candidate
@@ -512,10 +515,18 @@ class SelfEvolveRunner:
             "prior_feedback_count": len(prior_feedback),
             "iterations": iteration_reports,
         }
+        if optimizer_lineage_paths:
+            report["optimizer_lineage"] = {
+                "count": len(optimizer_lineage_paths),
+                "paths": optimizer_lineage_paths,
+            }
         if target_selection_report is not None:
             report["target_selection"] = to_json_dict(target_selection_report)
         if post_apply is not None:
             report["post_apply"] = post_apply
+            release_normalization = _release_normalization_report(post_apply)
+            if release_normalization is not None:
+                report["release_normalization"] = release_normalization
         if baseline_summary is not None:
             report["baseline_metrics"] = dict(baseline_summary.metrics)
         if candidate_summary is not None:
@@ -563,6 +574,21 @@ class SelfEvolveRunner:
                 "path": str(lessons_path),
                 "count": len(lesson_records),
                 "types": _lesson_type_counts(lesson_records),
+            }
+        harness_diagnostics = extract_harness_diagnostics(
+            gate_results=gate_results,
+            summaries=(baseline_summary, candidate_summary, held_out_summary),
+            replay_result=replay_result,
+        )
+        if harness_diagnostics:
+            diagnostics_path = self.store.write_harness_diagnostics(
+                run_id,
+                harness_diagnostics,
+            )
+            report["harness_diagnostics"] = {
+                "path": str(diagnostics_path),
+                "count": len(harness_diagnostics),
+                "types": _harness_diagnostic_type_counts(harness_diagnostics),
             }
         content_quality_metrics = (
             dict(held_out_summary.metrics)
@@ -1025,6 +1051,7 @@ class SelfEvolveRunner:
             details={"candidate_id": candidate.candidate_id},
         )
         applied_candidate = candidate
+        normalization_metrics: Mapping[str, Any] = {}
         if target.identity.target_type == "skill":
             normalized_content, normalization_metrics = normalize_verified_skill_release(
                 candidate.content,
@@ -1106,7 +1133,7 @@ class SelfEvolveRunner:
             )
             result = {
                 "status": "accepted",
-                "metrics": dict(summary.metrics),
+                "metrics": {**dict(summary.metrics), **dict(normalization_metrics)},
                 "dataset_split": summary.dataset_split,
                 "backup_path": str(backup_path),
                 "journal_path": str(journal_path),
@@ -2558,6 +2585,44 @@ def _lesson_type_counts(lessons: tuple[LessonRecord, ...]) -> dict[str, int]:
     for lesson in lessons:
         counts[lesson.lesson_type] = counts.get(lesson.lesson_type, 0) + 1
     return counts
+
+
+def _harness_diagnostic_type_counts(diagnostics: tuple[object, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for diagnostic in diagnostics:
+        kind = getattr(diagnostic, "kind", None)
+        kind_value = getattr(kind, "value", kind)
+        if isinstance(kind_value, str) and kind_value:
+            counts[kind_value] = counts.get(kind_value, 0) + 1
+    return counts
+
+
+def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str, object] | None:
+    metrics = post_apply.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return None
+    pre_fingerprint = metrics.get("pre_normalization_fingerprint")
+    normalized_fingerprint = metrics.get("normalized_release_fingerprint")
+    equivalence_passed = metrics.get("normalization_equivalence_passed")
+    preserved_constraints = metrics.get("preserved_runtime_constraints")
+    if (
+        pre_fingerprint is None
+        and normalized_fingerprint is None
+        and equivalence_passed is None
+    ):
+        return None
+    return {
+        "pre_normalization_fingerprint": pre_fingerprint,
+        "normalized_release_fingerprint": normalized_fingerprint,
+        "normalization_verification_passed": equivalence_passed,
+        "preserved_runtime_constraints": (
+            list(preserved_constraints)
+            if isinstance(preserved_constraints, list)
+            else []
+        ),
+        "removed_internal_line_count": metrics.get("removed_internal_line_count"),
+        "status": post_apply.get("status"),
+    }
 
 
 def _baseline_comparison_feedback_metrics(
