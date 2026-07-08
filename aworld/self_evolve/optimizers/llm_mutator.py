@@ -22,6 +22,19 @@ class TraceReflectiveLLMMutator:
         self.mutate_text = mutate_text
 
     async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+        if not _has_lesson_backed_delta_signal(request):
+            return OptimizerResult(
+                candidates=(),
+                lineage=(),
+                diagnostics={
+                    "filtered_noop_candidates": 0,
+                    "filtered_high_baseline_regression_candidates": 0,
+                    "filtered_duplicate_candidates": 0,
+                    "candidate_strategies": (),
+                    "no_op_recommended": True,
+                    "no_op_reason": "no_lesson_backed_safe_delta",
+                },
+            )
         candidates: list[CandidateVariant] = []
         lineage: list[OptimizerLineage] = []
         filtered_noop_count = 0
@@ -29,9 +42,11 @@ class TraceReflectiveLLMMutator:
         filtered_duplicate_count = 0
         seen_content_fingerprints: set[str] = set()
         require_targeted_delta = _request_has_high_baseline_regression(request)
+        candidate_strategy_records: list[dict[str, Any]] = []
 
         for index in range(request.max_candidates):
             prompt = _build_mutation_prompt(request, candidate_index=index)
+            strategy_record = _candidate_strategy_record(request, candidate_index=index)
             output = self.mutate_text(prompt)
             if inspect.isawaitable(output):
                 output = await output
@@ -46,6 +61,7 @@ class TraceReflectiveLLMMutator:
             if require_targeted_delta and _is_weak_high_baseline_regression_candidate(
                 content,
                 current_content=request.current_content,
+                request=request,
             ):
                 filtered_high_baseline_regression_count += 1
                 continue
@@ -60,6 +76,12 @@ class TraceReflectiveLLMMutator:
                 target_fingerprint=request.target_fingerprint,
             )
             candidates.append(candidate)
+            candidate_strategy_records.append(
+                {
+                    "candidate_id": candidate_id,
+                    **strategy_record,
+                }
+            )
             lineage.append(
                 OptimizerLineage(
                     candidate_id=candidate_id,
@@ -83,15 +105,18 @@ class TraceReflectiveLLMMutator:
                     filtered_high_baseline_regression_count
                 ),
                 "filtered_duplicate_candidates": filtered_duplicate_count,
+                "candidate_strategies": candidate_strategy_records,
             },
         )
 
 
 def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -> str:
     population_strategy = _population_strategy(candidate_index)
+    candidate_strategy = _candidate_strategy_record(request, candidate_index=candidate_index)
     payload = {
         "candidate_index": candidate_index,
         "population_strategy": population_strategy,
+        "candidate_strategy": candidate_strategy,
         "target": {
             "target_type": request.target.target_type,
             "target_id": request.target.target_id,
@@ -115,6 +140,18 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "prior_feedback": [
             {"feedback_summary": normalize_feedback_summary(feedback)}
             for feedback in request.prior_feedback
+        ],
+        "lesson_records": [
+            {
+                "lesson_id": lesson.lesson_id,
+                "lesson_type": lesson.lesson_type,
+                "title": lesson.title,
+                "summary": lesson.summary,
+                "confidence": lesson.confidence,
+                "evidence_refs": list(lesson.evidence_refs[:8]),
+                "metrics": lesson.metrics,
+            }
+            for lesson in request.lesson_records
         ],
         "trainable_cases": [
             {
@@ -192,6 +229,38 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
     )
 
 
+def _has_lesson_backed_delta_signal(request: OptimizerRequest) -> bool:
+    if request.lesson_records or request.validation_feedback or request.prior_feedback:
+        return True
+    if request.trainable_cases:
+        return True
+    return any(pack.steps for pack in request.trace_packs)
+
+
+def _candidate_strategy_record(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> dict[str, Any]:
+    population_strategy = _population_strategy(candidate_index)
+    addressed_lessons = _addressed_lesson_ids(request)
+    preserved_success_behaviors = _preserved_success_behaviors(request)
+    risk_notes = _risk_notes(request)
+    return {
+        "strategy_id": f"{population_strategy['name']}:{candidate_index}",
+        "candidate_family": population_strategy["name"],
+        "intended_behavior_delta": population_strategy["instruction"],
+        "addressed_lessons": list(addressed_lessons),
+        "preserved_success_behaviors": preserved_success_behaviors,
+        "risk_notes": risk_notes,
+        "replay_priority": _replay_priority(
+            addressed_lessons=addressed_lessons,
+            preserved_success_behaviors=preserved_success_behaviors,
+            risk_notes=risk_notes,
+        ),
+    }
+
+
 def _population_strategy(candidate_index: int) -> dict[str, str]:
     strategies = (
         {
@@ -217,6 +286,43 @@ def _population_strategy(candidate_index: int) -> dict[str, str]:
         },
     )
     return strategies[candidate_index % len(strategies)]
+
+
+def _preserved_success_behaviors(request: OptimizerRequest) -> list[str]:
+    behaviors: list[str] = []
+    for lesson in request.lesson_records:
+        if lesson.lesson_type not in {"lean_solution_path", "trajectory_success_memory", "success_memory"}:
+            continue
+        if lesson.summary:
+            behaviors.append(lesson.summary)
+        tool_names = lesson.metrics.get("tool_names") if isinstance(lesson.metrics, Mapping) else None
+        if isinstance(tool_names, list) and tool_names:
+            behaviors.append("preserve tool path: " + ", ".join(str(item) for item in tool_names[:4]))
+    return list(dict.fromkeys(behaviors))[:6]
+
+
+def _risk_notes(request: OptimizerRequest) -> list[str]:
+    notes: list[str] = []
+    for lesson in request.lesson_records:
+        if lesson.lesson_type in {"failure_memory", "trajectory_failure_memory"}:
+            notes.append(lesson.summary)
+        failed_gates = lesson.metrics.get("failed_gates") if isinstance(lesson.metrics, Mapping) else None
+        if isinstance(failed_gates, list):
+            notes.extend(str(item) for item in failed_gates[:4])
+    return list(dict.fromkeys(note for note in notes if note))[:6]
+
+
+def _replay_priority(
+    *,
+    addressed_lessons: tuple[str, ...],
+    preserved_success_behaviors: list[str],
+    risk_notes: list[str],
+) -> str:
+    if addressed_lessons and preserved_success_behaviors:
+        return "high"
+    if addressed_lessons or risk_notes:
+        return "medium"
+    return "low"
 
 
 def _parse_mutator_output(output: Any) -> tuple[str, str]:
@@ -262,7 +368,11 @@ def _lesson_set_fingerprint(request: OptimizerRequest) -> str | None:
 
 
 def _addressed_lesson_ids(request: OptimizerRequest) -> tuple[str, ...]:
-    lesson_ids: list[str] = []
+    lesson_ids: list[str] = [
+        lesson.lesson_id
+        for lesson in request.lesson_records
+        if lesson.lesson_id
+    ]
     for feedback in (*request.validation_feedback, *request.prior_feedback):
         summary = normalize_feedback_summary(feedback)
         metrics = summary.get("metrics")
@@ -312,6 +422,7 @@ def _is_weak_high_baseline_regression_candidate(
     content: str,
     *,
     current_content: str,
+    request: OptimizerRequest | None = None,
 ) -> bool:
     text = content.lower()
     has_preserve = bool(
@@ -335,7 +446,7 @@ def _is_weak_high_baseline_regression_candidate(
         )
     )
     if has_preserve and has_behavior_delta and has_acceptance_check:
-        return False
+        return not _preserves_lean_solution_path(text, request)
 
     growth_ratio = len(content) / max(len(current_content), 1)
     broad_terms = (
@@ -351,7 +462,49 @@ def _is_weak_high_baseline_regression_candidate(
         "扩大",
     )
     has_broad_guidance = any(term in text for term in broad_terms)
-    return has_broad_guidance or growth_ratio > 1.4
+    return (
+        has_broad_guidance
+        or growth_ratio > 1.4
+        or not _preserves_lean_solution_path(text, request)
+    )
+
+
+def _preserves_lean_solution_path(
+    lowered_content: str,
+    request: OptimizerRequest | None,
+) -> bool:
+    if request is None:
+        return True
+    lean_lessons = [
+        lesson
+        for lesson in request.lesson_records
+        if lesson.lesson_type == "lean_solution_path"
+    ]
+    if not lean_lessons:
+        return True
+    generic_lean_markers = (
+        "lean path",
+        "lean successful path",
+        "shortest path",
+        "single artifact",
+        "one artifact",
+        "preserve successful",
+        "preserve lean",
+    )
+    if any(marker in lowered_content for marker in generic_lean_markers):
+        return True
+    tool_names = {
+        str(tool_name).strip().lower()
+        for lesson in lean_lessons
+        if isinstance(lesson.metrics, Mapping)
+        for tool_name in (
+            lesson.metrics.get("tool_names")
+            if isinstance(lesson.metrics.get("tool_names"), list)
+            else []
+        )
+        if str(tool_name).strip()
+    }
+    return bool(tool_names and any(tool_name in lowered_content for tool_name in tool_names))
 
 
 def _metric_float(value: Any) -> float | None:

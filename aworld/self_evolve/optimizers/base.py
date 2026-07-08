@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Protocol
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -21,6 +22,7 @@ class OptimizerRequest:
     trace_packs: tuple[TracePack, ...]
     validation_feedback: tuple[EvaluationSummary, ...] = ()
     prior_feedback: tuple[EvaluationSummary, ...] = ()
+    lesson_records: tuple[LessonRecord, ...] = ()
     trainable_cases: tuple[EvalCase, ...] = ()
     max_candidates: int = 1
 
@@ -34,6 +36,7 @@ class OptimizerRequest:
         trace_packs: tuple[TracePack, ...],
         validation_feedback: tuple[EvaluationSummary, ...],
         prior_feedback: tuple[EvaluationSummary, ...] = (),
+        lesson_records: tuple[LessonRecord, ...] = (),
         dataset: SelfEvolveDataset,
         max_candidates: int = 1,
     ) -> "OptimizerRequest":
@@ -45,6 +48,7 @@ class OptimizerRequest:
             trace_packs=trace_packs,
             validation_feedback=validation_feedback,
             prior_feedback=prior_feedback,
+            lesson_records=lesson_records,
             trainable_cases=tuple(
                 case for case in dataset.cases if case.case_id in trainable_ids
             ),

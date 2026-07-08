@@ -285,6 +285,14 @@ class SelfEvolveRunner:
             target.identity,
             current_run_id=run_id,
         )
+        generation_lesson_records = extract_lesson_records(
+            (),
+            target_scope={
+                "target_type": target.identity.target_type,
+                "target_id": target.identity.target_id,
+            },
+            trace_packs=trace_packs,
+        )
         rejected_candidate_ids = {
             feedback.variant_id
             for feedback in prior_feedback
@@ -310,6 +318,7 @@ class SelfEvolveRunner:
                     trace_packs=trace_packs,
                     validation_feedback=validation_feedback,
                     prior_feedback=prior_feedback,
+                    lesson_records=generation_lesson_records,
                     dataset=dataset,
                     max_candidates=_candidate_generation_limit(
                         replay_candidate_limit=self.replay_candidate_limit,
