@@ -21,6 +21,7 @@ from aworld_cli.core.skill_activation_resolver import (
     SkillResolverRequest,
 )
 from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
+from aworld_cli.executors.continuous import ContinuousExecutor
 from aworld_cli.models import AgentInfo
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
@@ -452,6 +453,9 @@ async def test_run_direct_mode_passes_requested_skill_names(
         async def _create_executor(self, _agent):
             return SimpleNamespace(console=None)
 
+        def _restore_executor_session(self, executor, current_agent_name=None):
+            return None
+
     class DummyContinuousExecutor:
         def __init__(self, agent_executor, console=None) -> None:
             self.agent_executor = agent_executor
@@ -500,6 +504,9 @@ async def test_run_direct_mode_binds_runtime_to_executor(
             captured["executor"] = executor
             return executor
 
+        def _restore_executor_session(self, executor, current_agent_name=None):
+            return None
+
     class DummyContinuousExecutor:
         def __init__(self, agent_executor, console=None) -> None:
             self.agent_executor = agent_executor
@@ -539,6 +546,9 @@ async def test_run_direct_mode_returns_replayable_trajectory_summary(
 
         async def _create_executor(self, _agent):
             return SimpleNamespace(console=None)
+
+        def _restore_executor_session(self, executor, current_agent_name=None):
+            return None
 
     class DummyContinuousExecutor:
         def __init__(self, agent_executor, console=None) -> None:
@@ -718,6 +728,91 @@ def test_run_top_level_command_prefers_task_response_trajectory(
     assert payload["trajectory_capture_mode"] == "task_response"
     assert payload["trajectory"] == full_trajectory
     assert payload["trajectory"][0]["action"]["tool_calls"][0]["name"] == "browser"
+
+
+@pytest.mark.asyncio
+async def test_run_direct_mode_prints_restored_transcript_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    test_console = Console(file=output, force_terminal=False, width=120)
+    captured: dict[str, object] = {}
+
+    class DummyExecutor(SimpleNamespace):
+        pass
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, agent_name: str) -> None:
+            captured["bound_agent"] = agent_name
+
+        async def _create_executor(self, _agent):
+            return DummyExecutor(console=None)
+
+        def _restore_executor_session(self, executor, current_agent_name=None):
+            executor._aworld_cli_restored_transcript = SimpleNamespace(
+                rendered_text="── Previous session transcript ──\nYou: old prompt\n\nAworld:\nold answer"
+            )
+
+    class DummyContinuousExecutor:
+        def __init__(self, agent_executor, console=None) -> None:
+            self.agent_executor = agent_executor
+            self.console = console
+
+        async def run_continuous(self, **kwargs) -> None:
+            captured["output_before_run"] = output.getvalue()
+
+    monkeypatch.setattr("aworld_cli._globals.console", test_console)
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr(
+        "aworld.core.scheduler.get_scheduler",
+        lambda: SimpleNamespace(),
+    )
+
+    await main_module._run_direct_mode(
+        prompt="new prompt",
+        agent_name="Aworld",
+        session_id="session_test",
+        session_mode="interactive",
+        resume_record=SimpleNamespace(session_id="session_test"),
+        session_store=SimpleNamespace(),
+    )
+
+    assert "Previous session transcript" in captured["output_before_run"]
+    assert "You: old prompt" in captured["output_before_run"]
+    assert "old answer" in captured["output_before_run"]
+
+
+@pytest.mark.asyncio
+async def test_continuous_executor_can_render_prompt_as_terminal_turn() -> None:
+    output = StringIO()
+    test_console = Console(file=output, force_terminal=False, width=120)
+
+    class DummyAgentExecutor(SimpleNamespace):
+        async def chat(self, prompt, **kwargs):
+            return "done"
+
+    executor = ContinuousExecutor(DummyAgentExecutor(session_id="session_test"), console=test_console)
+
+    await executor.run_continuous(
+        prompt="next prompt",
+        agent_name="Aworld",
+        max_runs=1,
+        show_start_banner=False,
+        show_iteration_header=False,
+        echo_prompt_as_turn=True,
+    )
+
+    rendered = output.getvalue()
+    assert "You: next prompt" in rendered
+    assert "Starting" not in rendered
+    assert "Continuous Execution" not in rendered
 
 
 @pytest.mark.asyncio

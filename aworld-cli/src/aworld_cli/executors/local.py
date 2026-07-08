@@ -119,6 +119,27 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
         self._last_task_progress_hook_at: float | None = None
 
+    def _record_cli_session_transcript_turn(
+        self,
+        *,
+        task_content: str,
+        answer: str,
+        task_id: str | None,
+    ) -> None:
+        try:
+            from aworld_cli.core.session_transcript import CliSessionTranscript
+
+            agent_name = getattr(getattr(self.swarm, "conf", None), "name", None) or "Aworld"
+            CliSessionTranscript().record_turn(
+                session_id=self.session_id,
+                user_input=task_content,
+                assistant_output=answer,
+                agent_name=agent_name,
+                task_id=task_id,
+            )
+        except Exception as exc:
+            logger.debug(f"Failed to record CLI session transcript: {exc}")
+
     def _load_hooks(self) -> Dict[str, List[ExecutorHook]]:
         """
         Load hooks from configuration.
@@ -696,6 +717,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
             if agent_conf is not None:
                 agent_conf.skill_configs = result.skill_configs
 
+    def _consume_restored_messages(self) -> list[dict[str, Any]]:
+        restored_messages = getattr(self, "_aworld_cli_restored_messages", None) or []
+        self._aworld_cli_restored_messages = []
+        return [dict(message) for message in restored_messages if isinstance(message, dict)]
+
     async def _build_task(
         self, 
         task_content: str, 
@@ -744,6 +770,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         task_content = hook_kwargs.get('task_content', task_content) or hook_kwargs.get('user_message', task_content)
         # Get updated image_urls from kwargs (FileParseHook may have added images)
         image_urls = hook_kwargs.get('image_urls', image_urls) or []
+        restored_messages = self._consume_restored_messages()
 
         # 1. Build task input
         task_input = TaskInput(
@@ -752,6 +779,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             task_id=task_id,
             task_content=task_content,
             origin_user_input=original_task_content,
+            messages=restored_messages,
             metadata={
                 "requested_skill_names": list(requested_skill_names or []),
             },
@@ -921,6 +949,21 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 image_urls=image_urls,
                 requested_skill_names=requested_skill_names,
             )
+            try:
+                from aworld_cli.core.session_store import CliSessionStore
+
+                CliSessionStore().record_turn(
+                    session_id=self.session_id,
+                    cwd=os.getcwd(),
+                    agent_name=getattr(getattr(self.swarm, "conf", None), "name", None) or "Aworld",
+                    mode=getattr(self, "_session_mode", "interactive"),
+                    prompt=task_content,
+                    task_id=getattr(task, "id", None),
+                    source_type=getattr(self, "_session_source_type", None),
+                    source_location=getattr(self, "_session_source_location", None),
+                )
+            except Exception as exc:
+                logger.debug(f"Failed to record CLI session turn: {exc}")
             self.context = getattr(task, "context", None)
             runtime = getattr(self, "_base_runtime", None)
             steering = getattr(runtime, "_steering", None) if runtime is not None else None
@@ -1801,6 +1844,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 )
                 self._publish_hud_task_finished(task.id, task_status="idle")
                 self._reset_active_steering_buffer()
+                self._record_cli_session_transcript_turn(
+                    task_content=task_content,
+                    answer=answer,
+                    task_id=task.id,
+                )
                 for _, result in task_completed_results:
                     system_message = getattr(result, "system_message", None)
                     if system_message:

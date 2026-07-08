@@ -1139,5 +1139,124 @@ class TestCommandContext:
         assert context.agent_config is None
 
 
+class TestSessionRestoreCommands:
+    def test_format_sessions_list_uses_session_store_records(self, tmp_path):
+        from aworld_cli.console import AWorldCLI
+        from aworld_cli.core.session_store import CliSessionRecord
+
+        cli = AWorldCLI()
+        output = cli._format_sessions_list(
+            [
+                CliSessionRecord(
+                    session_id="session_1",
+                    created_at="2026-01-01T00:00:00",
+                    updated_at="2026-01-01T01:00:00",
+                    cwd=str(tmp_path),
+                    agent_name="Aworld",
+                    mode="interactive",
+                    last_prompt="continue the work",
+                )
+            ],
+            current_cwd=str(tmp_path),
+        )
+
+        assert "session_1" in output
+        assert "Aworld" in output
+        assert "continue the work" in output
+        assert "Session Info" not in output
+
+    def test_restore_known_session_delegates_to_shared_core(self, monkeypatch, tmp_path):
+        from aworld_cli.console import AWorldCLI
+        from aworld_cli.core.session_store import CliSessionRecord, CliSessionStore
+
+        store = CliSessionStore(root=tmp_path)
+        record = store.upsert_session(
+            CliSessionRecord(
+                session_id="session_restore",
+                created_at="2026-01-01T00:00:00",
+                updated_at="2026-01-01T00:00:00",
+                cwd=str(tmp_path.resolve()),
+                agent_name="Aworld",
+                mode="interactive",
+            )
+        )
+
+        class FakeExecutor:
+            def __init__(self):
+                self.session_id = "old_session"
+
+        calls = {}
+
+        def fake_restore_session_to_executor(**kwargs):
+            calls.update(kwargs)
+            kwargs["executor_instance"].session_id = kwargs["record"].session_id
+            return type(
+                "Result",
+                (),
+                {
+                    "record": record,
+                    "message": "Restored to session: session_restore",
+                    "warning": None,
+                },
+            )()
+
+        monkeypatch.setattr(
+            "aworld_cli.console.restore_session_to_executor",
+            fake_restore_session_to_executor,
+        )
+
+        executor = FakeExecutor()
+        cli = AWorldCLI()
+
+        message = cli._restore_cli_session(
+            "session_restore",
+            executor_instance=executor,
+            current_agent_name="Aworld",
+            session_store=store,
+        )
+
+        assert executor.session_id == "session_restore"
+        assert calls["record"].session_id == "session_restore"
+        assert calls["executor_instance"] is executor
+        assert calls["session_store"] is store
+        assert "Restored to session" in message
+
+    def test_format_session_show_renders_record_metadata(self, tmp_path):
+        from aworld_cli.console import AWorldCLI
+        from aworld_cli.core.session_store import CliSessionRecord
+
+        cli = AWorldCLI()
+        output = cli._format_session_show(
+            CliSessionRecord(
+                session_id="session_show",
+                created_at="2026-01-01T00:00:00",
+                updated_at="2026-01-01T01:00:00",
+                cwd=str(tmp_path),
+                agent_name="Aworld",
+                mode="interactive",
+                source_type="local",
+                source_location="/agents",
+                last_prompt="continue this",
+                last_task_id="task-1",
+                turn_count=2,
+            )
+        )
+
+        assert "session_show" in output
+        assert "Aworld" in output
+        assert "/agents" in output
+        assert "continue this" in output
+
+    def test_format_resume_command_hint_uses_current_session(self):
+        from aworld_cli.console import AWorldCLI
+
+        cli = AWorldCLI()
+        executor = type("Executor", (), {"session_id": "session_hint"})()
+
+        output = cli._format_resume_command_hint(executor)
+
+        assert "aworld-cli resume session_hint" in output
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
