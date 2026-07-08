@@ -43,8 +43,8 @@ one or more related trajectory members.
   `schema_version`, `set_id`, `target`, and `members`
 - **AND** member roles SHALL be limited to `baseline`, `candidate_replay`,
   `accepted_followup`, `rejected_candidate`, and `operator_added`
-- **AND** user-authored files SHOULD normally contain only `baseline` and,
-  when explicitly needed, `operator_added` members
+- **AND** user-authored files SHALL contain only `baseline` and, when
+  explicitly needed, `operator_added` members
 - **AND** `candidate_replay`, `accepted_followup`, and `rejected_candidate`
   members SHALL be generated or imported by the self-evolve framework from
   replay/evaluator artifacts and prior run history

@@ -197,7 +197,7 @@
 - [x] 11.3 Run evaluator runtime tests to confirm existing replay/evaluator
   behavior is not regressed.
 - [x] 11.4 Run skill release visibility tests.
-- [x] 11.5 Manually verify a small trajectory-set optimize flow using at least
-  three related trajectories: original baseline, accepted-skill follow-up, and
-  a rejected candidate run.
+- [x] 11.5 Manually verify a small trajectory-set optimize flow using a
+  user-authored baseline trajectory input plus framework-owned prior accepted,
+  rejected, replay, or follow-up members imported from self-evolve run history.
 - [x] 11.6 Run strict OpenSpec validation for the trajectory-set learning change.

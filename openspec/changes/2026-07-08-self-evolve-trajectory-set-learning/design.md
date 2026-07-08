@@ -91,11 +91,12 @@ is `aworld.self_evolve.trajectory_set.v1`:
 
 Member roles are limited to `baseline`, `candidate_replay`,
 `accepted_followup`, `rejected_candidate`, and `operator_added`. User-authored
-set files should normally contain only `baseline` members, plus `operator_added`
-when an operator deliberately curates extra baseline-like evidence. The
-self-evolve framework owns `candidate_replay`, `accepted_followup`, and
+set files are accepted only for `baseline` members, plus `operator_added` when
+an operator deliberately curates extra baseline-like evidence. The self-evolve
+framework owns `candidate_replay`, `accepted_followup`, and
 `rejected_candidate` members by generating or importing them from replay,
-evaluator, and prior-run artifacts. Relative paths resolve from the
+evaluator, and prior-run artifacts. The explicit file loader rejects those
+framework-owned roles when they appear in user-authored JSON. Relative paths resolve from the
 trajectory-set file directory. Absolute paths are allowed only inside trusted
 workspace roots or `.aworld/self_evolve` artifact roots.
 
