@@ -1,67 +1,145 @@
 # Optimize
 
-## What It Does
+`aworld-cli optimize` is the phase-1 command entrypoint for manual self-evolve runs. The CLI parses the request and prints run artifacts; `aworld.self_evolve` owns target inference, candidate generation, replay, evaluator integration, gates, release checks, and apply/rollback semantics.
 
-`aworld-cli optimize` is the single phase-1 CLI entrypoint for manual self-evolve runs. It is a thin command surface: parsing happens in the CLI, while scheduling, target inference, evaluation, optimizer selection, durable artifacts, and agent opt-in semantics remain in `aworld.self_evolve`.
+Use this command to create a proposal, debug target inference, run verified replay, or drain framework-owned pending self-evolve jobs.
 
-Use it to submit an explicit harness optimization request from a dataset, trajectory, session, or batch config.
+## Basic Usage
 
-## Commands
+Proposal-only runs:
 
 ```bash
 aworld-cli optimize --target skill:demo --dataset eval.jsonl
-aworld-cli optimize --target prompt:system --dataset eval.jsonl
-aworld-cli optimize --target tool:browser --dataset eval.jsonl
+aworld-cli optimize --target skill:login --from-trajectory trajectory.log --apply proposal
+aworld-cli optimize --task "improve login retry guidance" --from-trajectory trajectory.log
 ```
 
-Trajectory and task-directed usage:
+Verified apply for an allowlisted skill target:
 
 ```bash
 aworld-cli optimize \
-  --task "fix browser login" \
-  --from-trajectory trajectory.log
-
-aworld-cli optimize \
   --target skill:login \
-  --from-session session-123
-
-aworld-cli optimize \
-  --target tool:browser \
-  --batch-config batch.yaml \
-  --iterations 3 \
-  --apply auto_verified
+  --from-trajectory trajectory.log \
+  --apply auto_verified \
+  --judge-agent judges/login_quality.md \
+  --replay-timeout 900
 ```
 
-Supported options:
+Drain pending post-run jobs:
 
-- `--agent`: agent name or id for request context.
-- `--task`: task text used by framework target inference when `--target` is omitted.
-- `--target`: explicit generic target reference such as `skill:demo`, `prompt:system`, or `tool:browser`.
-- `--dataset`: JSONL eval dataset path.
-- `--from-session`: session id/source for framework dataset construction.
-- `--from-trajectory`: trajectory log path.
-- `--batch-config`: batch config path.
-- `--iterations`: requested optimization iteration count.
-- `--apply`: `proposal` or `auto_verified`.
+```bash
+aworld-cli optimize --drain-pending
+```
+
+Resume evaluator/gates from a previous run:
+
+```bash
+aworld-cli optimize --from-run <run_id> --rerun-evaluator
+```
+
+## Data Sources
+
+Exactly one evaluation source is normally provided:
+
+- `--dataset <path>`: JSONL eval dataset. Rows may include `input`, `expected_output`, and `verification_command`.
+- `--from-trajectory <path>`: trajectory log used to build trace packs and infer failure patterns.
+- `--from-session <id>`: session-backed dataset construction.
+- `--batch-config <path>`: batch config for a larger request.
+- `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.
+
+When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. Low-confidence inferred targets are blocked for `auto_verified` apply.
+
+## Options
+
+- `--agent`: agent name or id used by replay/evaluator request context.
+- `--task`: task text used by framework target inference and dataset context.
+- `--target`: explicit target reference. Phase 1 CLI runs support `skill:<name>` end to end. Other target forms are framework-level roadmap types until their CLI adapters are implemented.
+- `--iterations`: maximum candidate optimization iterations.
+- `--apply`: `proposal` or `auto_verified`. The default is `proposal`.
+- `--judge-agent`: markdown judge agent path.
+- `--judge-agent-name`: configured custom judge agent id/name.
+- `--judge-backend-ref`: evaluator backend reference.
+- `--replay-timeout`: timeout in seconds for each replay rollout.
+- `--replay-max-runs`: maximum `aworld-cli run` iterations per replay rollout.
+- `--judge-repetitions`: successful judge samples to aggregate per evaluator call.
+- `--judge-timeout`: timeout in seconds for each judge attempt.
+- `--baseline-replay-repetitions`: number of baseline replay rollouts.
+- `--candidate-replay-repetitions`: number of candidate replay rollouts.
+- `--from-run`: reuse artifacts from a previous self-evolve run.
+- `--rerun-evaluator`: reuse replay artifacts from `--from-run` and rerun evaluator/gates only.
+- `--drain-pending`: drain pending framework-owned post-run self-evolve jobs.
 
 `--apply write` and `--apply branch` are intentionally unsupported in phase 1. Proposal artifacts are written by the framework store; direct file writes and branch management are outside the CLI contract.
 
+## Auto-Verified Defaults
+
+When `--apply auto_verified` is used and the caller does not override values, the CLI supplies stricter defaults:
+
+- `--judge-repetitions 1`
+- `--judge-timeout 120`
+- `--baseline-replay-repetitions 2`
+- `--candidate-replay-repetitions 3`
+- `--iterations 1`
+
+The CLI also enables framework replay for `auto_verified`. Skill candidates must have candidate replay evidence, evaluator evidence, deterministic or objective verification signals, passing gates, and a post-apply runtime-loader check before they can remain applied.
+
 ## Output
 
-When the framework accepts a request, the command prints the report path and the best candidate id when one is available:
+The command prints the stable artifact paths returned by the framework:
 
 ```text
 Optimize run submitted.
+Status: succeeded
 Report: .aworld/self_evolve/<run_id>/report.json
+Target selection: .aworld/self_evolve/<run_id>/target_selection.json
+Replay: .aworld/self_evolve/<run_id>/replay.json
+Evaluator report: .aworld/self_evolve/<run_id>/evaluator_report.json
 Best candidate: cand-1
 ```
 
+For rejected runs, the summary includes rejected gate names. If no candidate was produced, replay/evaluation/apply are skipped. If judge evaluation timed out after replay completed, the summary prints a resume command:
+
+```text
+Resume evaluator: aworld-cli optimize --from-run <run_id> --rerun-evaluator
+```
+
+If replay repetitions are missing, rerun full optimize with a larger `--replay-timeout`; evaluator-only resume cannot add new replay rollouts.
+
+## Report Files
+
+Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
+
+- `status`: `succeeded`, `rejected`, or `failed`.
+- `apply_policy`: `proposal` or `auto_verified`.
+- `selected_candidate_id`: selected candidate when one exists.
+- `gate_results`: low-level gate decisions.
+- `release_checklist`: grouped release checks derived from gates.
+- `content_quality_diagnostics`: non-blocking publication/content quality diagnostics when evaluator metrics provide them.
+- `replay_path`: candidate replay artifact path.
+- `evaluator_report_paths`: evaluator output artifacts.
+- `post_apply`: accepted or rolled-back apply details, backup path, journal path, runtime activation, and registry refresh status.
+
+Candidate files and diffs live under `.aworld/self_evolve/<run_id>/candidates/`. For skill candidates, proposal content is marked with `self_evolve.release_state: candidate`; verified content is marked with `self_evolve.release_state: verified` only after post-apply checks pass.
+
+## Runtime Skill Management
+
+Verified skill candidates are made visible to runtime discovery only after the framework marks them verified and the CLI activation hook enables the skill. Draft and candidate skills remain hidden.
+
+Useful commands:
+
+```bash
+aworld-cli skill list
+aworld-cli skill disable <skill-name>
+aworld-cli skill enable <skill-name>
+aworld-cli skill remove <skill-name>
+```
+
+`skill remove` can remove a runtime skill directory when it is discovered from a local runtime skill source and is not a symlink or package install. If an installed package with the same id exists, package removal takes precedence.
+
 ## Boundaries
 
-The command is not an interactive slash command and there are no target-specific subcommands. All target forms use the same generic command path.
+The CLI does not infer targets itself. `--task` without `--target` delegates target selection to framework credit assignment. If inference selects a target type without a phase-1 CLI adapter, the request is persisted as an unsupported-target result rather than applied.
 
-The CLI does not infer targets itself. `--task` without `--target` passes `infer_target=True` into the framework so credit assignment and target selection remain framework-owned.
+The CLI also does not own scheduler behavior, evaluator behavior, optimizer semantics, durable job formats, or agent opt-in configuration. Configure opt-in with `AgentConfig.self_evolve_config`, then use this command as a manual/debug entrypoint for the same framework APIs.
 
-The CLI also does not own self-evolve scheduler behavior, evaluator behavior, optimizer behavior, durable job formats, or agent opt-in configuration. Configure opt-in with `AgentConfig.self_evolve_config`, then use this command as a manual/debug entrypoint for the same framework APIs.
-
-See [Self Evolve](../../Agents/Self%20Evolve.md) for the framework safety model and configuration details.
+See [Self Evolve](../../Agents/Self%20Evolve.md) for the framework design, safety model, SDK example, and release checklist details.
