@@ -196,6 +196,8 @@ Trajectory-set runs may also include framework-owned trajectory-set and populati
 - `population/candidates.jsonl`: generated candidate strategy records, including non-replayed candidates when replay budget is exhausted.
 - `population/patches/<candidate_id>.json`: patch intent metadata before materialization.
 
+When `--include-prior-runs` is enabled, the framework imports same-target prior run reports as advisory trainable cases. These cases carry bounded status, failed gates, metric summaries, candidate ids, and report paths; they do not copy raw trajectories into optimizer prompts and they do not create new replay evidence.
+
 The CLI summary prints the most important paths, for example:
 
 ```text

@@ -39,6 +39,12 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--from-trajectory", type=str, dest="from_trajectory")
         parser.add_argument("--from-trajectory-set", type=str, dest="from_trajectory_set")
         parser.add_argument(
+            "--include-prior-runs",
+            action="store_true",
+            dest="include_prior_runs",
+            help="Include prior self-evolve runs for the same target as advisory trajectory-set members.",
+        )
+        parser.add_argument(
             "--from-run",
             type=str,
             dest="from_run",
@@ -128,6 +134,7 @@ class OptimizeTopLevelCommand:
                 from_session=getattr(args, "from_session", None),
                 from_trajectory=getattr(args, "from_trajectory", None),
                 from_trajectory_set=getattr(args, "from_trajectory_set", None),
+                include_prior_runs=getattr(args, "include_prior_runs", False),
                 from_run=getattr(args, "from_run", None),
                 rerun_evaluator=getattr(args, "rerun_evaluator", False),
                 batch_config=getattr(args, "batch_config", None),
@@ -221,6 +228,7 @@ def run_optimize_cli(
     apply: str,
     infer_target: bool,
     workspace_root: str,
+    include_prior_runs: bool = False,
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
     judge_backend_ref: str | None = None,
@@ -279,6 +287,7 @@ def run_optimize_cli(
         from_session=from_session,
         from_trajectory=from_trajectory,
         from_trajectory_set=from_trajectory_set,
+        include_prior_runs=include_prior_runs,
         from_run=from_run,
         rerun_evaluator=rerun_evaluator,
         batch_config=batch_config,

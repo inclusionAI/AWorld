@@ -17,6 +17,7 @@ from aworld.self_evolve.credit_assignment import (
     build_default_target_inventory,
 )
 from aworld.self_evolve.datasets import (
+    EvalCase,
     SelfEvolveDataset,
     SelfEvolveEvalSourceConfig,
     build_dataset_from_source,
@@ -73,6 +74,7 @@ from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget, S
 from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import (
     CandidateVariant,
+    DatasetRecipe,
     EvaluationSummary,
     GateResult,
     SelfEvolveRun,
@@ -522,6 +524,19 @@ class SelfEvolveRunner:
             "prior_feedback_count": len(prior_feedback),
             "iterations": iteration_reports,
         }
+        trajectory_set_report = _trajectory_set_report(dataset)
+        if trajectory_set_report is not None:
+            report["trajectory_set"] = trajectory_set_report
+        population_report = _population_report(
+            all_candidates=all_candidates,
+            iteration_reports=iteration_reports,
+            replay_candidate_limit=self.replay_candidate_limit,
+        )
+        if population_report is not None:
+            report["population"] = population_report
+        no_op_report = _no_op_report(gate_results, iteration_reports)
+        if no_op_report is not None:
+            report["no_op"] = no_op_report
         if optimizer_lineage_paths:
             report["optimizer_lineage"] = {
                 "count": len(optimizer_lineage_paths),
@@ -581,6 +596,11 @@ class SelfEvolveRunner:
         if lesson_records:
             lessons_path = self.store.write_lesson_records(run_id, lesson_records)
             report["lessons"] = {
+                "path": str(lessons_path),
+                "count": len(lesson_records),
+                "types": _lesson_type_counts(lesson_records),
+            }
+            report["lesson_extraction"] = {
                 "path": str(lessons_path),
                 "count": len(lesson_records),
                 "types": _lesson_type_counts(lesson_records),
@@ -1223,6 +1243,7 @@ def optimize_from_cli_request(
     from_session: str | None = None,
     from_trajectory: str | None = None,
     from_trajectory_set: str | None = None,
+    include_prior_runs: bool = False,
     batch_config: str | None = None,
     from_run: str | None = None,
     rerun_evaluator: bool = False,
@@ -1422,6 +1443,14 @@ def optimize_from_cli_request(
         target_selection_report = _explicit_target_selection_report(
             target_adapter.identity,
             trace_packs,
+        )
+
+    if include_prior_runs:
+        built_dataset = _include_prior_run_cases(
+            built_dataset,
+            store=store,
+            target=target_adapter.identity,
+            current_run_id=run_id,
         )
 
     async def _cli_default_mutation(prompt: str) -> dict[str, str]:
@@ -2088,6 +2117,183 @@ def _load_prior_rejected_feedback(
     return tuple(feedback)
 
 
+def _include_prior_run_cases(
+    dataset: SelfEvolveDataset,
+    *,
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTargetRef,
+    current_run_id: str,
+    limit: int = 12,
+) -> SelfEvolveDataset:
+    prior_cases = _prior_run_eval_cases(
+        store,
+        target,
+        current_run_id=current_run_id,
+        limit=limit,
+    )
+    if not prior_cases:
+        return dataset
+    existing_case_ids = {case.case_id for case in dataset.cases}
+    unique_prior_cases = tuple(
+        case for case in prior_cases if case.case_id not in existing_case_ids
+    )
+    if not unique_prior_cases:
+        return dataset
+    source = dict(dataset.recipe.source)
+    source["include_prior_runs"] = True
+    source["prior_run_case_count"] = len(unique_prior_cases)
+    source["prior_run_case_ids"] = [case.case_id for case in unique_prior_cases]
+    trainable_case_ids = tuple(
+        dict.fromkeys(
+            [
+                *dataset.recipe.trainable_case_ids,
+                *(case.case_id for case in unique_prior_cases),
+            ]
+        )
+    )
+    splits = {
+        key: list(value)
+        for key, value in dataset.recipe.splits.items()
+    }
+    train_split = list(splits.get("train", []))
+    train_split.extend(
+        case.case_id for case in unique_prior_cases if case.case_id not in train_split
+    )
+    splits["train"] = train_split
+    return SelfEvolveDataset(
+        cases=(*dataset.cases, *unique_prior_cases),
+        recipe=DatasetRecipe(
+            source=source,
+            split_seed=dataset.recipe.split_seed,
+            splits=splits,
+            synthetic_generation_policy=dataset.recipe.synthetic_generation_policy,
+            trainable_case_ids=trainable_case_ids,
+            held_out_case_ids=dataset.recipe.held_out_case_ids,
+        ),
+    )
+
+
+def _prior_run_eval_cases(
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTargetRef,
+    *,
+    current_run_id: str,
+    limit: int,
+) -> tuple[EvalCase, ...]:
+    root = store.artifact_root
+    if not root.exists():
+        return ()
+    cases: list[EvalCase] = []
+    report_paths = sorted(
+        root.glob("*/report.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for report_path in report_paths:
+        if report_path.parent.name == current_run_id:
+            continue
+        try:
+            report = _load_json_mapping(report_path)
+        except Exception:
+            continue
+        if not _report_matches_target(report, target):
+            continue
+        candidate_id = report.get("selected_candidate_id") or report.get("best_candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            continue
+        status = str(report.get("status") or "unknown")
+        case_id = f"prior-run:{report_path.parent.name}:{candidate_id}"
+        cases.append(
+            EvalCase(
+                case_id=case_id,
+                input=_prior_run_case_input(report, report_path=report_path),
+                expected_output=None,
+                metadata={
+                    "trajectory_set": {
+                        "set_id": "prior_self_evolve_runs",
+                        "target": {
+                            "target_type": target.target_type,
+                            "target_id": target.target_id,
+                            "path": target.path,
+                        },
+                        "member": {
+                            "member_id": case_id,
+                            "role": (
+                                "accepted_followup"
+                                if status == "succeeded"
+                                else "rejected_candidate"
+                            ),
+                            "source_run_id": str(report.get("run_id") or report_path.parent.name),
+                            "candidate_id": candidate_id,
+                        },
+                    }
+                },
+                source={
+                    "kind": "prior_self_evolve_run",
+                    "path": str(report_path),
+                    "source_run_id": str(report.get("run_id") or report_path.parent.name),
+                    "candidate_id": candidate_id,
+                    "status": status,
+                    "role": (
+                        "accepted_followup"
+                        if status == "succeeded"
+                        else "rejected_candidate"
+                    ),
+                },
+            )
+        )
+        if len(cases) >= limit:
+            break
+    return tuple(cases)
+
+
+def _prior_run_case_input(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+) -> Mapping[str, Any]:
+    gate_results = report.get("gate_results")
+    failed_gates = [
+        str(gate.get("gate_name"))
+        for gate in gate_results
+        if isinstance(gate, Mapping) and gate.get("passed") is False and gate.get("gate_name")
+    ] if isinstance(gate_results, list) else []
+    return {
+        "source": "prior_self_evolve_run",
+        "run_id": report.get("run_id") or report_path.parent.name,
+        "status": report.get("status"),
+        "selected_candidate_id": report.get("selected_candidate_id"),
+        "failed_gates": failed_gates[:12],
+        "baseline_metrics": _prior_run_metric_summary(report.get("baseline_metrics")),
+        "candidate_metrics": _prior_run_metric_summary(report.get("candidate_metrics")),
+        "acceptance_confidence": report.get("acceptance_confidence")
+        if isinstance(report.get("acceptance_confidence"), Mapping)
+        else None,
+        "report_path": str(report_path),
+    }
+
+
+def _prior_run_metric_summary(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    keys = (
+        "score",
+        "A1_groundedness",
+        "A2_completeness",
+        "B1_tool_use",
+        "B2_efficiency",
+        "evidence_compacted",
+        "evidence_incomplete",
+        "evidence_bundle_valid",
+        "latency_ms",
+    )
+    return {
+        key: value[key]
+        for key in keys
+        if isinstance(value.get(key), bool) or isinstance(value.get(key), (int, float, str))
+    }
+
+
 def _report_matches_target(
     report: Mapping[str, Any],
     target: SelfEvolveTargetRef,
@@ -2632,6 +2838,100 @@ def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str,
         ),
         "removed_internal_line_count": metrics.get("removed_internal_line_count"),
         "status": post_apply.get("status"),
+    }
+
+
+def _trajectory_set_report(dataset: SelfEvolveDataset) -> dict[str, object] | None:
+    source = dict(dataset.recipe.source)
+    has_trajectory_set_source = source.get("kind") == "trajectory_set"
+    prior_case_ids = [
+        case.case_id
+        for case in dataset.cases
+        if case.source.get("kind") == "prior_self_evolve_run"
+    ]
+    member_roles: dict[str, int] = {}
+    set_ids: set[str] = set()
+    for case in dataset.cases:
+        metadata = case.metadata.get("trajectory_set")
+        if not isinstance(metadata, Mapping):
+            continue
+        set_id = metadata.get("set_id")
+        if isinstance(set_id, str) and set_id:
+            set_ids.add(set_id)
+        member = metadata.get("member")
+        if isinstance(member, Mapping):
+            role = member.get("role")
+            if isinstance(role, str) and role:
+                member_roles[role] = member_roles.get(role, 0) + 1
+    if not has_trajectory_set_source and not prior_case_ids and not set_ids:
+        return None
+    return {
+        "source_kind": source.get("kind"),
+        "set_ids": sorted(set_ids),
+        "case_count": len(dataset.cases),
+        "member_roles": member_roles,
+        "include_prior_runs": bool(source.get("include_prior_runs")),
+        "prior_run_case_count": len(prior_case_ids),
+        "prior_run_case_ids": prior_case_ids,
+    }
+
+
+def _population_report(
+    *,
+    all_candidates: list[CandidateVariant],
+    iteration_reports: list[dict[str, object]],
+    replay_candidate_limit: int,
+) -> dict[str, object] | None:
+    if not all_candidates and not iteration_reports:
+        return None
+    replayed_candidate_ids = [
+        str(item.get("candidate_id"))
+        for item in iteration_reports
+        if isinstance(item.get("candidate_id"), str)
+    ]
+    return {
+        "generated_candidate_count": len(all_candidates),
+        "generated_candidate_ids": [candidate.candidate_id for candidate in all_candidates],
+        "replayed_candidate_count": len(replayed_candidate_ids),
+        "replayed_candidate_ids": replayed_candidate_ids,
+        "replay_candidate_limit": replay_candidate_limit,
+        "non_replayed_candidate_count": max(
+            0,
+            len(all_candidates) - len(set(replayed_candidate_ids)),
+        ),
+    }
+
+
+def _no_op_report(
+    gate_results: list[GateResult],
+    iteration_reports: list[dict[str, object]],
+) -> dict[str, object] | None:
+    no_candidate_gate = next(
+        (gate for gate in gate_results if gate.gate_name == "no_candidate"),
+        None,
+    )
+    no_candidate_iteration = next(
+        (
+            item
+            for item in iteration_reports
+            if item.get("status") == "no_candidate"
+        ),
+        None,
+    )
+    if no_candidate_gate is None and no_candidate_iteration is None:
+        return None
+    return {
+        "status": "no_candidate",
+        "reason": (
+            no_candidate_gate.reason
+            if no_candidate_gate is not None
+            else "optimizer did not produce a candidate"
+        ),
+        "iterations": [
+            item
+            for item in iteration_reports
+            if item.get("status") == "no_candidate"
+        ],
     }
 
 
