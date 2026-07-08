@@ -80,7 +80,7 @@ from aworld.self_evolve.types import (
     to_json_dict,
 )
 from aworld.skills.compat_provider import build_compat_registry
-from aworld.skills.release import mark_skill_content_verified
+from aworld.skills.release import normalize_verified_skill_release
 
 
 @dataclass(frozen=True)
@@ -1026,13 +1026,35 @@ class SelfEvolveRunner:
         )
         applied_candidate = candidate
         if target.identity.target_type == "skill":
+            normalized_content, normalization_metrics = normalize_verified_skill_release(
+                candidate.content,
+                run_id=run_id,
+                candidate_id=candidate.candidate_id,
+            )
+            if not normalization_metrics.get("normalization_equivalence_passed"):
+                self.store.update_apply_journal(
+                    journal_path,
+                    status="rejected",
+                    details={
+                        "post_apply_passed": False,
+                        "release_state": "rejected",
+                        **dict(normalization_metrics),
+                    },
+                )
+                return {
+                    "status": "rejected",
+                    "metrics": {
+                        "post_apply_passed": False,
+                        **dict(normalization_metrics),
+                    },
+                    "dataset_split": "post_apply",
+                    "backup_path": str(backup_path),
+                    "journal_path": str(journal_path),
+                    "release_state": "rejected",
+                }
             applied_candidate = replace(
                 candidate,
-                content=mark_skill_content_verified(
-                    candidate.content,
-                    run_id=run_id,
-                    candidate_id=candidate.candidate_id,
-                ),
+                content=normalized_content,
             )
         target.apply_candidate(applied_candidate.content)
         summary = self.post_apply_evaluator(applied_candidate)

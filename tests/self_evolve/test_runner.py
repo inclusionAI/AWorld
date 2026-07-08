@@ -500,6 +500,100 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
 
 
 @pytest.mark.asyncio
+async def test_runner_rejects_apply_when_release_normalization_removes_runtime_constraints(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    internal_only_candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "candidate_score exceeds baseline_score for source task ids: task_123.\n"
+        "Preserve A1_groundedness and pass evidence_quality gate.\n"
+    )
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="normalization-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="normalization-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {"content": internal_only_candidate, "rationale": "internal only"}
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True, "deterministic_signal": True},
+            dataset_split="post_apply",
+        )
+
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.5, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        post_apply_evaluator=post_apply,
+        evaluation_backend=VerifiedBackend(),
+        min_eval_cases=0,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-normalization-reject",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (store.run_path("run-normalization-reject") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    assert report["post_apply"]["status"] == "rejected"
+    assert report["post_apply"]["metrics"]["normalization_equivalence_passed"] is False
+    assert "release_normalization" in report["post_apply"]["metrics"]["evaluator_mode"]
+
+
+@pytest.mark.asyncio
 async def test_runner_refines_candidates_across_iterations_with_validation_feedback(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
