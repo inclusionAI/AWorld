@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
@@ -8,6 +9,48 @@ from aworld_cli.core.skill_toggle_manager import SkillToggleManager
 
 
 class SkillTopLevelCommand:
+    def _runtime_skill_directory_for_remove(
+        self, runtime_skills, skill_name: str
+    ) -> Path:
+        runtime_skill_configs = runtime_skills.get_all_skills()
+        skill_config = runtime_skill_configs.get(skill_name)
+        if not skill_config:
+            raise ValueError(f"Unknown installed skill entry: {skill_name}")
+
+        skill_path_value = skill_config.get("skill_path")
+        if not isinstance(skill_path_value, str) or not skill_path_value:
+            raise ValueError(f"Runtime skill has no removable path: {skill_name}")
+
+        skill_path = Path(skill_path_value).expanduser().resolve()
+        if skill_path.name != "SKILL.md" or not skill_path.is_file():
+            raise ValueError(f"Runtime skill path is not removable: {skill_path}")
+
+        skill_dir = skill_path.parent
+        if skill_dir.name != skill_name:
+            raise ValueError(
+                f"Runtime skill directory does not match skill name: {skill_path}"
+            )
+
+        source_roots = [
+            Path(source_path).expanduser().resolve()
+            for source_path in runtime_skills.source_paths
+            if "github.com" not in source_path and not source_path.startswith("git@")
+        ]
+        if skill_dir.parent not in source_roots:
+            raise ValueError(
+                f"Runtime skill path is outside removable skill sources: {skill_path}"
+            )
+        if skill_dir.is_symlink():
+            raise ValueError(f"Runtime skill directory is a symlink: {skill_dir}")
+
+        return skill_dir
+
+    def _remove_runtime_skill(self, runtime_skills, skill_name: str) -> Path:
+        skill_dir = self._runtime_skill_directory_for_remove(runtime_skills, skill_name)
+        shutil.rmtree(skill_dir)
+        SkillStateManager().enable_skill(skill_name)
+        return skill_dir
+
     def _print_runtime_skills(self, runtime_skills) -> None:
         runtime_skill_configs = runtime_skills.get_all_skills()
         state_manager = SkillStateManager()
@@ -156,7 +199,20 @@ class SkillTopLevelCommand:
                 return 0
 
             if args.skill_action == "remove":
-                manager.remove_install(args.install_id)
+                try:
+                    manager.remove_install(args.install_id)
+                except ValueError as exc:
+                    if not str(exc).startswith("Unknown installed skill entry:"):
+                        raise
+                    runtime_skills = build_runtime_skill_registry_view()
+                    removed_path = self._remove_runtime_skill(
+                        runtime_skills, args.install_id
+                    )
+                    print(
+                        f"✅ Runtime skill '{args.install_id}' removed successfully"
+                    )
+                    print(f"📍 Removed: {removed_path}")
+                    return 0
                 print(f"✅ Skill package '{args.install_id}' removed successfully")
                 return 0
 
