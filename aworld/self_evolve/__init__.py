@@ -17,6 +17,7 @@ from aworld.self_evolve.datasets import (
     load_batch_config_eval_cases,
     load_jsonl_eval_cases,
     load_session_eval_cases,
+    load_trajectory_set_eval_cases,
 )
 from aworld.self_evolve.evaluation import (
     AWorldTrajectoryEvaluatorBackend,
@@ -211,5 +212,6 @@ __all__ = [
     "build_trace_pack",
     "load_jsonl_eval_cases",
     "load_session_eval_cases",
+    "load_trajectory_set_eval_cases",
     "trace_packs_from_trajectory_log",
 ]

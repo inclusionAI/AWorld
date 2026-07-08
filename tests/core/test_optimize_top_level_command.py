@@ -592,6 +592,36 @@ def test_optimize_command_task_without_target_uses_framework_inference(
     assert calls["from_trajectory"] == "trajectory.log"
 
 
+def test_optimize_command_forwards_trajectory_set_to_framework(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory-set",
+            "trajectory-set.json",
+            "--apply",
+            "proposal",
+        ]
+    )
+
+    assert handled is True
+    assert calls["from_trajectory_set"] == "trajectory-set.json"
+    assert calls["infer_target"] is True
+
+
 def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -618,6 +648,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         dataset="eval.jsonl",
         from_session=None,
         from_trajectory=None,
+        from_trajectory_set=None,
         batch_config=None,
         iterations=3,
         apply="auto_verified",
@@ -633,6 +664,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["agent"] == "Agent"
     assert calls["target"] == "prompt:system"
     assert calls["dataset"] == "eval.jsonl"
+    assert calls["from_trajectory_set"] is None
     assert calls["iterations"] == 3
     assert calls["apply_policy"] == "auto_verified"
     assert calls["infer_target"] is False

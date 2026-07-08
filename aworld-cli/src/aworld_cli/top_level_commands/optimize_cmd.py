@@ -37,6 +37,7 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--dataset", type=str)
         parser.add_argument("--from-session", type=str, dest="from_session")
         parser.add_argument("--from-trajectory", type=str, dest="from_trajectory")
+        parser.add_argument("--from-trajectory-set", type=str, dest="from_trajectory_set")
         parser.add_argument(
             "--from-run",
             type=str,
@@ -126,6 +127,7 @@ class OptimizeTopLevelCommand:
                 dataset=getattr(args, "dataset", None),
                 from_session=getattr(args, "from_session", None),
                 from_trajectory=getattr(args, "from_trajectory", None),
+                from_trajectory_set=getattr(args, "from_trajectory_set", None),
                 from_run=getattr(args, "from_run", None),
                 rerun_evaluator=getattr(args, "rerun_evaluator", False),
                 batch_config=getattr(args, "batch_config", None),
@@ -233,6 +235,7 @@ def run_optimize_cli(
     progress_callback: Callable[[str, str], Any] | None = None,
     from_run: str | None = None,
     rerun_evaluator: bool = False,
+    from_trajectory_set: str | None = None,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
@@ -275,6 +278,7 @@ def run_optimize_cli(
         dataset=dataset,
         from_session=from_session,
         from_trajectory=from_trajectory,
+        from_trajectory_set=from_trajectory_set,
         from_run=from_run,
         rerun_evaluator=rerun_evaluator,
         batch_config=batch_config,
