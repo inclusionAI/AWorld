@@ -74,13 +74,13 @@
 
 ## 4. Candidate Population Generation
 
-- [ ] 4.1 Add a population-generation optimizer path that consumes lesson
+- [x] 4.1 Add a population-generation optimizer path that consumes lesson
   records rather than raw trajectory text alone.
-- [ ] 4.2 Generate multiple candidate strategy records with addressed lessons,
+- [x] 4.2 Generate multiple candidate strategy records with addressed lessons,
   considered harness diagnostics, preserved success behaviors, risk notes, and
   replay priority.
-- [ ] 4.3 Support no-op recommendations when no lesson-backed safe delta exists.
-- [ ] 4.4 Add high-baseline conservative-delta behavior that preserves lean
+- [x] 4.3 Support no-op recommendations when no lesson-backed safe delta exists.
+- [x] 4.4 Add high-baseline conservative-delta behavior that preserves lean
   solution paths and only proposes small verified improvements.
 - [x] 4.5 Rank candidates before replay so only a bounded subset enters the
   expensive replay/evaluation loop.

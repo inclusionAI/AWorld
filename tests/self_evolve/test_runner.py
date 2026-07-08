@@ -37,6 +37,25 @@ class EmptyOptimizer:
         )
 
 
+class CaptureOptimizer:
+    def __init__(self) -> None:
+        self.requests: list[OptimizerRequest] = []
+
+    async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+        self.requests.append(request)
+        return OptimizerResult(
+            candidates=(
+                CandidateVariant(
+                    candidate_id="candidate-1",
+                    target=request.target,
+                    content=request.current_content + "\nNew guidance.\n",
+                    rationale="captured request",
+                    target_fingerprint=request.target_fingerprint,
+                ),
+            ),
+        )
+
+
 def _write_trajectory_log(path: Path, records: list[dict]) -> None:
     path.write_text(
         "\n".join(
@@ -172,6 +191,50 @@ async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None
             "details": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_runner_passes_trace_lessons_to_candidate_generation(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    trajectory = [
+        {
+            "id": "step-a",
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "summarize page"}},
+            "action": {"content": "summary failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="lesson-task",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="lesson-task",
+    )
+    optimizer = CaptureOptimizer()
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-generation-lessons",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert len(optimizer.requests) == 1
+    lesson_types = [lesson.lesson_type for lesson in optimizer.requests[0].lesson_records]
+    assert "trajectory_failure_memory" in lesson_types
+    assert optimizer.requests[0].lesson_records[0].source_task_ids == ("lesson-task",)
 
 
 def test_iteration_validation_feedback_includes_baseline_comparison_metrics() -> None:
@@ -359,8 +422,12 @@ async def test_runner_persists_proposal_artifacts_without_mutating_skill_target(
     assert lineage["trainable_case_ids"] == ["run-task"]
     assert isinstance(lineage["content_fingerprint"], str)
     assert isinstance(lineage["semantic_fingerprint"], str)
-    assert lineage["lesson_set_fingerprint"] is None
-    assert lineage["addressed_lesson_ids"] == []
+    assert isinstance(lineage["lesson_set_fingerprint"], str)
+    assert lineage["addressed_lesson_ids"]
+    assert any(
+        lesson_id.startswith("trajectory_failure_memory-")
+        for lesson_id in lineage["addressed_lesson_ids"]
+    )
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["apply_policy"] == "proposal"
     assert report["optimizer_lineage"]["count"] == 1

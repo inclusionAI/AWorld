@@ -4,6 +4,7 @@ import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.feedback import normalize_feedback_summary
+from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
@@ -138,6 +139,89 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
     assert "evidence ledger" in prompts[0]
     assert "claim-by-claim" in prompts[0]
     assert "held-1" not in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_consumes_structured_lesson_records() -> None:
+    prompts = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nPreserve lean path and add one artifact-first check.\n",
+            "rationale": "Use lesson-backed delta.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-lean-1",
+                lesson_type="lean_solution_path",
+                title="Preserve lean successful path",
+                summary="Successful trajectory used one artifact read before final answer.",
+                evidence_refs=("optimizer-task:step-1",),
+                confidence="high",
+                metrics={"tool_names": ["read_artifact"], "step_count": 1},
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
+    result = await optimizer.propose(request)
+
+    assert "lesson_records" in prompts[0]
+    assert "lesson-lean-1" in prompts[0]
+    assert "lean_solution_path" in prompts[0]
+    assert "Successful trajectory used one artifact read" in prompts[0]
+    assert "candidate_strategy" in prompts[0]
+    assert "addressed_lessons" in prompts[0]
+    assert "preserved_success_behaviors" in prompts[0]
+    assert "risk_notes" in prompts[0]
+    assert "replay_priority" in prompts[0]
+    assert result.lineage[0].addressed_lesson_ids == ("lesson-lean-1",)
+    assert result.lineage[0].lesson_set_fingerprint is not None
+    assert result.diagnostics["candidate_strategies"][0]["addressed_lessons"] == [
+        "lesson-lean-1"
+    ]
+    assert result.diagnostics["candidate_strategies"][0]["replay_priority"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_returns_noop_without_lesson_backed_delta() -> None:
+    called = False
+
+    async def mutate(prompt: str) -> dict:
+        nonlocal called
+        called = True
+        return {
+            "content": "# Demo\n\nUnbacked change.\n",
+            "rationale": "Should not be called.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nStable guidance.\n",
+        target_fingerprint="sha256:stable",
+        trace_packs=(),
+        validation_feedback=(),
+        prior_feedback=(),
+        lesson_records=(),
+        trainable_cases=(),
+        max_candidates=3,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert called is False
+    assert result.candidates == ()
+    assert result.lineage == ()
+    assert result.diagnostics["no_op_recommended"] is True
+    assert result.diagnostics["no_op_reason"] == "no_lesson_backed_safe_delta"
 
 
 @pytest.mark.asyncio
@@ -877,6 +961,57 @@ async def test_llm_mutator_filters_weak_high_baseline_regression_candidate() -> 
 
     optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
     result = await optimizer.propose(request)
+
+    assert result.candidates == ()
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_filters_high_baseline_candidate_that_drops_lean_path() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": (
+                "# Demo\n\n"
+                "## Preserve\n"
+                "- Preserve baseline strengths and final answer quality.\n\n"
+                "## Behavior delta\n"
+                "- Add one extra verification pass before final answers.\n\n"
+                "## Acceptance check\n"
+                "- Candidate must beat baseline and be no worse than baseline.\n"
+            ),
+            "rationale": "Targeted but drops the learned lean path.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-regressed",
+                metrics={
+                    "score": 87.5,
+                    "baseline_score": 90.5,
+                    "candidate_score": 87.5,
+                    "score_delta": -3.0,
+                    "failed_gates": ["score_improvement"],
+                },
+                dataset_split="validation",
+            ),
+        ),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-lean-path",
+                lesson_type="lean_solution_path",
+                title="Preserve lean successful path",
+                summary="Successful trajectory used a single artifact read before final answer.",
+                metrics={"tool_names": ["read_artifact"], "step_count": 1},
+            ),
+        ),
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
     assert result.candidates == ()
     assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 1
