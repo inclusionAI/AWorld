@@ -296,6 +296,60 @@ def test_skill_list_cli_shows_disabled_runtime_skill_state(
     assert "youtube_search | enabled=False" in list_output
 
 
+def test_skill_remove_cli_removes_runtime_skill_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    runtime_source = tmp_path / "runtime-skills"
+    _write_skill(runtime_source, "web-content-grounding")
+    monkeypatch.setenv("SKILLS_PATH", str(runtime_source))
+
+    monkeypatch.setattr(
+        sys, "argv", ["aworld-cli", "skill", "remove", "web-content-grounding"]
+    )
+    main_module.main()
+
+    remove_output = capsys.readouterr().out
+
+    assert "Runtime skill 'web-content-grounding' removed successfully" in remove_output
+    assert (runtime_source / "web-content-grounding").exists() is False
+
+
+def test_skill_remove_cli_prefers_installed_package_over_runtime_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    runtime_source = tmp_path / "runtime-skills"
+    _write_skill(runtime_source, "web-content-grounding")
+    monkeypatch.setenv("SKILLS_PATH", str(runtime_source))
+
+    source = tmp_path / "source-skills"
+    _write_skill(source, "web-content-grounding")
+    InstalledSkillManager().install(
+        source=source,
+        mode="copy",
+        scope="global",
+        install_id="web-content-grounding",
+    )
+
+    monkeypatch.setattr(
+        sys, "argv", ["aworld-cli", "skill", "remove", "web-content-grounding"]
+    )
+    main_module.main()
+
+    remove_output = capsys.readouterr().out
+
+    assert "Skill package 'web-content-grounding' removed successfully" in remove_output
+    assert (runtime_source / "web-content-grounding").exists() is True
+    assert InstalledSkillManager().list_installs() == []
+
+
 def test_skill_install_creates_plugin_managed_skill_record(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
