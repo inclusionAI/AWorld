@@ -541,6 +541,7 @@ class SelfEvolveRunner:
             all_candidates=all_candidates,
             iteration_reports=iteration_reports,
             replay_candidate_limit=self.replay_candidate_limit,
+            optimizer_diagnostics=optimizer_diagnostics,
         )
         if population_report is not None:
             report["population"] = population_report
@@ -2899,6 +2900,7 @@ def _population_report(
     all_candidates: list[CandidateVariant],
     iteration_reports: list[dict[str, object]],
     replay_candidate_limit: int,
+    optimizer_diagnostics: list[dict[str, object]] | None = None,
 ) -> dict[str, object] | None:
     if not all_candidates and not iteration_reports:
         return None
@@ -2907,7 +2909,7 @@ def _population_report(
         for item in iteration_reports
         if isinstance(item.get("candidate_id"), str)
     ]
-    return {
+    report: dict[str, object] = {
         "generated_candidate_count": len(all_candidates),
         "generated_candidate_ids": [candidate.candidate_id for candidate in all_candidates],
         "replayed_candidate_count": len(replayed_candidate_ids),
@@ -2918,6 +2920,37 @@ def _population_report(
             len(all_candidates) - len(set(replayed_candidate_ids)),
         ),
     }
+    strategy_records = _candidate_strategy_records(optimizer_diagnostics or ())
+    if strategy_records:
+        replayed_set = set(replayed_candidate_ids)
+        non_replayed = [
+            {
+                **record,
+                "not_replayed_reason": "not_replayed_due_to_budget",
+            }
+            for record in strategy_records
+            if str(record.get("candidate_id")) not in replayed_set
+        ]
+        if non_replayed:
+            report["non_replayed_candidate_strategies"] = non_replayed
+    return report
+
+
+def _candidate_strategy_records(
+    optimizer_diagnostics: list[dict[str, object]] | tuple[dict[str, object], ...],
+) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for item in optimizer_diagnostics:
+        diagnostics = item.get("diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            continue
+        strategies = diagnostics.get("candidate_strategies")
+        if not isinstance(strategies, list):
+            continue
+        for strategy in strategies:
+            if isinstance(strategy, Mapping) and isinstance(strategy.get("candidate_id"), str):
+                records.append(dict(strategy))
+    return records
 
 
 def _no_op_report(
