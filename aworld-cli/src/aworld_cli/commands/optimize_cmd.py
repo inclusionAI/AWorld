@@ -19,6 +19,7 @@ def _usage() -> str:
     return """Usage:
   /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
   /optimize --from-trajectory <trajectory.log> --apply auto_verified --judge-agent <agent.md>
+  /optimize --from-trajectory <multi-task-trajectory.log> --include-prior-runs --apply proposal
   /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory-set <trajectory-set.json> --include-prior-runs --apply proposal
   /optimize --from-run <run-id-or-path> --rerun-evaluator --apply auto_verified --judge-agent <agent.md>
@@ -80,8 +81,8 @@ class OptimizeCommand(Command):
     @property
     def completion_items(self) -> dict[str, str]:
         return {
-            "/optimize --from-trajectory": "Run self-evolve from an AWorld trajectory log",
-            "/optimize --from-trajectory-set": "Run self-evolve from a trajectory-set file",
+            "/optimize --from-trajectory": "Run self-evolve from one or more AWorld trajectory log records",
+            "/optimize --from-trajectory-set": "Run self-evolve from an advanced explicit trajectory-set file",
             "/optimize --apply auto_verified": "Run verified replay/evaluation before applying",
             "/optimize --drain-pending": "Drain pending post-run self-evolve jobs",
         }

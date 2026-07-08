@@ -36,8 +36,24 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--target", type=str)
         parser.add_argument("--dataset", type=str)
         parser.add_argument("--from-session", type=str, dest="from_session")
-        parser.add_argument("--from-trajectory", type=str, dest="from_trajectory")
-        parser.add_argument("--from-trajectory-set", type=str, dest="from_trajectory_set")
+        parser.add_argument(
+            "--from-trajectory",
+            type=str,
+            dest="from_trajectory",
+            help=(
+                "AWorld trajectory log. Logs may contain one or more task records; "
+                "the framework auto-groups multi-record logs by inferred target."
+            ),
+        )
+        parser.add_argument(
+            "--from-trajectory-set",
+            type=str,
+            dest="from_trajectory_set",
+            help=(
+                "Advanced explicit trajectory-set JSON for callers that already "
+                "know member roles, target, and validation structure."
+            ),
+        )
         parser.add_argument(
             "--include-prior-runs",
             action="store_true",

@@ -13,11 +13,25 @@ one or more related trajectory members.
 - **AND** existing single-trajectory replay and evaluation behavior SHALL remain
   compatible.
 
+#### Scenario: Multi-record trajectory log is internally grouped
+
+- **GIVEN** a user invokes optimize with one trajectory log containing multiple
+  task trajectories
+- **WHEN** the framework builds the optimization dataset
+- **THEN** it SHALL infer target/task-family groups internally
+- **AND** candidate generation SHALL receive a target-coherent group rather than
+  unrelated task trajectories mixed together
+- **AND** the run report SHALL record selected and skipped groups for audit
+- **AND** users SHALL NOT be required to author a trajectory-set JSON file for
+  normal multi-trajectory log usage.
+
 #### Scenario: Explicit trajectory set
 
 - **GIVEN** a user invokes optimize with a trajectory-set file
 - **WHEN** the framework loads the set
-- **THEN** it SHALL validate each member's source, role, task identity, and
+- **THEN** it SHALL accept a baseline-only trajectory collection as the normal
+  explicit set form
+- **AND** it SHALL validate each member's source, role, task identity, and
   available evidence metadata
 - **AND** it SHALL reject malformed members with actionable diagnostics.
 
@@ -29,6 +43,11 @@ one or more related trajectory members.
   `schema_version`, `set_id`, `target`, and `members`
 - **AND** member roles SHALL be limited to `baseline`, `candidate_replay`,
   `accepted_followup`, `rejected_candidate`, and `operator_added`
+- **AND** user-authored files SHOULD normally contain only `baseline` and,
+  when explicitly needed, `operator_added` members
+- **AND** `candidate_replay`, `accepted_followup`, and `rejected_candidate`
+  members SHALL be generated or imported by the self-evolve framework from
+  replay/evaluator artifacts and prior run history
 - **AND** relative paths SHALL resolve from the trajectory-set file directory
 - **AND** absolute paths SHALL be accepted only when they are inside trusted
   workspace or self-evolve artifact roots

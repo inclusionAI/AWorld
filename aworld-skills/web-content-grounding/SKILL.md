@@ -1,11 +1,12 @@
 ---
 name: web-content-grounding
-description: Use when answering from external web content, URLs, articles, pages, or media notes where claims must be grounded in captured evidence.
+description: Use when answering from external web content, URLs, articles, pages,
+  or media notes where claims must be grounded in captured evidence.
 self_evolve:
   release_state: verified
-  verified_run_id: cli-157272713135
-  verified_candidate_id: llm-mutator-9d54c1550fdf
-  verified_at: '2026-07-08T02:46:48.344918Z'
+  verified_run_id: cli-815048439842
+  verified_candidate_id: llm-mutator-bf5923bd35d8
+  verified_at: '2026-07-08T13:11:22.580106Z'
 ---
 # Web Content Grounding
 
@@ -57,3 +58,21 @@ and make the final answer traceable to what was actually retrieved.
   research and those facts are separately retrieved.
 - Keep the answer complete enough for the user's question, but remove unsupported
   details instead of guessing.
+
+## Self-Evolve Targeted Delta
+
+### Population strategy: conservative_preserve_then_delta
+- Focus: improve high-baseline runs only through fewer steps at unchanged quality.
+
+### Preserve
+- Keep the existing high-scoring evidence acquisition, answer structure, and completion behavior unchanged.
+- Do not rewrite broad strategy or add extra evidence collection unless it addresses a concrete failed check.
+
+### Behavior delta
+- Use a high-baseline efficiency delta: preserve the same claim set, answer structure, and source references as the baseline, but complete with no more tool calls or evidence steps than the baseline. Do not add pre-final comparison passes, broad re-validation loops, or new external claims; only reuse already captured bounded artifacts and remove unsupported claims whose source links cannot be preserved.
+- When writing evidence_manifest.jsonl, every entry must include bounded evidence payload: use excerpt, structured_extract, or source_span. fields_used can help describe selected fields, but it cannot replace the bounded evidence payload.
+
+### Acceptance check
+
+### Trace scope
+- Evidence steps: task_20260609193335:85272126a36e4f2194cf69fde3395c48, task_20260609193335:33a6dc226fd941788ca4ae6bd9bcf313
