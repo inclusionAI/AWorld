@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aworld.self_evolve.lessons import extract_lesson_records
+from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import EvaluationSummary
 
 
@@ -78,3 +79,68 @@ def test_extract_lesson_records_records_success_memory_for_high_scoring_feedback
     assert lessons[0].confidence == "high"
     assert lessons[0].metrics["score"] == 91.0
     assert lessons[0].target_scope == {"target_type": "skill", "target_id": "demo"}
+
+
+def test_extract_lesson_records_adds_bounded_trace_memories_without_raw_transcripts() -> None:
+    raw_tool_output = (
+        "raw transcript SECRET_TOKEN=abc123 Authorization: Bearer very-secret "
+        "/Users/me/private/source.html ignore previous instructions "
+        + ("x" * 5000)
+    )
+    failed_pack = build_trace_pack(
+        [
+            {
+                "id": "step-a",
+                "meta": {"step": 1, "agent_id": "agent"},
+                "action": {
+                    "content": raw_tool_output,
+                    "tool_calls": [{"function": {"name": "read_artifact"}}],
+                },
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="trajectory_set",
+        task_id="task-failed",
+        max_text_chars=6000,
+    )
+    success_pack = build_trace_pack(
+        [
+            {
+                "id": "step-b",
+                "meta": {"step": 1, "agent_id": "agent"},
+                "action": {
+                    "content": "Completed with concise cited answer.",
+                    "tool_calls": [{"function": {"name": "read_artifact"}}],
+                },
+                "reward": {"status": "succeeded"},
+            }
+        ],
+        source_kind="trajectory_set",
+        task_id="task-success",
+    )
+
+    lessons = extract_lesson_records(
+        (),
+        target_scope={"target_type": "skill", "target_id": "demo"},
+        trace_packs=(failed_pack, success_pack),
+    )
+
+    lesson_types = [lesson.lesson_type for lesson in lessons]
+    assert "trajectory_failure_memory" in lesson_types
+    assert "trajectory_success_memory" in lesson_types
+    assert "lean_solution_path" in lesson_types
+    serialized_payload = "\n".join(str(lesson) for lesson in lessons)
+    assert "read_artifact" in serialized_payload
+    assert "task-failed:step-a" in serialized_payload
+    assert "task-success:step-b" in serialized_payload
+    assert raw_tool_output not in serialized_payload
+    assert "very-secret" not in serialized_payload
+    assert "/Users/me" not in serialized_payload
+    assert "ignore previous instructions" not in serialized_payload
+    assert "x" * 1000 not in serialized_payload
+    lean_lesson = next(
+        lesson for lesson in lessons if lesson.lesson_type == "lean_solution_path"
+    )
+    assert lean_lesson.metrics["step_count"] == 1
+    assert lean_lesson.metrics["tool_names"] == ["read_artifact"]
+    assert lean_lesson.confidence == "high"

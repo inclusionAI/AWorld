@@ -444,9 +444,15 @@ async def test_runner_writes_lesson_artifacts_from_validation_feedback(tmp_path)
     assert report["lessons"]["count"] == len(lesson_lines)
     assert report["lessons"]["types"]["failure_memory"] == 1
     assert report["lessons"]["types"]["required_runtime_behavior"] == 1
+    assert report["lessons"]["types"]["trajectory_failure_memory"] == 1
     assert lesson_lines[0]["source_task_ids"] == ["lesson-task"]
     assert "score_improvement" in lesson_lines[0]["metrics"]["failed_gates"]
     assert "artifact_first" in lesson_lines[1]["metrics"]["required_behaviors"]
+    assert any(
+        "lesson-task:step-1" in line["evidence_refs"]
+        for line in lesson_lines
+        if line["lesson_type"] == "trajectory_failure_memory"
+    )
 
 
 @pytest.mark.asyncio
@@ -637,6 +643,11 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert "/Users/me" not in updated_content
     assert "ignore previous instructions" not in updated_content
     report = json.loads((store.run_path("run-auto-verified") / "report.json").read_text(encoding="utf-8"))
+    serialized_report = json.dumps(report, ensure_ascii=False)
+    assert "SECRET_TOKEN" not in serialized_report
+    assert "super-secret" not in serialized_report
+    assert "/Users/me" not in serialized_report
+    assert "ignore previous instructions" not in serialized_report
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True

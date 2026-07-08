@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.sanitization import sanitize_metric_value, sanitize_path_ref, sanitize_text
+from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import EvaluationSummary
 
 
@@ -32,6 +33,7 @@ def extract_lesson_records(
     feedback_items: Sequence[EvaluationSummary],
     *,
     target_scope: Mapping[str, Any],
+    trace_packs: Sequence[TracePack] = (),
 ) -> tuple[LessonRecord, ...]:
     records: list[LessonRecord] = []
     for feedback in feedback_items:
@@ -90,6 +92,7 @@ def extract_lesson_records(
                     metrics=metrics,
                 )
             )
+    records.extend(_trace_lesson_records(trace_packs, target_scope=target_scope))
     return tuple(records)
 
 
@@ -196,6 +199,142 @@ def _is_success(summary: Mapping[str, Any]) -> bool:
         return False
     score = metrics.get("score", metrics.get("candidate_score"))
     return isinstance(score, (int, float)) and score >= 85.0
+
+
+def _trace_lesson_records(
+    trace_packs: Sequence[TracePack],
+    *,
+    target_scope: Mapping[str, Any],
+) -> list[LessonRecord]:
+    records: list[LessonRecord] = []
+    for pack in trace_packs:
+        if not pack.steps:
+            continue
+        source_task_ids = _source_ids(pack.task_id)
+        evidence_refs = tuple(step.evidence_id for step in pack.steps[:8])
+        metrics = _trace_metrics(pack)
+        if _trace_failed(pack):
+            records.append(
+                _record(
+                    lesson_type="trajectory_failure_memory",
+                    title="Avoid repeated trajectory failure pattern",
+                    summary=_trace_summary(
+                        pack,
+                        prefix="Trajectory ended in a failed or incomplete state",
+                    ),
+                    evidence_refs=evidence_refs,
+                    target_scope=target_scope,
+                    confidence="medium",
+                    source_run_ids=(),
+                    source_task_ids=source_task_ids,
+                    metrics=metrics,
+                )
+            )
+        elif _trace_succeeded(pack):
+            records.append(
+                _record(
+                    lesson_type="trajectory_success_memory",
+                    title="Preserve successful trajectory pattern",
+                    summary=_trace_summary(
+                        pack,
+                        prefix="Trajectory completed successfully with this bounded behavior path",
+                    ),
+                    evidence_refs=evidence_refs,
+                    target_scope=target_scope,
+                    confidence="medium",
+                    source_run_ids=(),
+                    source_task_ids=source_task_ids,
+                    metrics=metrics,
+                )
+            )
+            records.append(
+                _record(
+                    lesson_type="lean_solution_path",
+                    title="Preserve lean successful path",
+                    summary=_trace_summary(
+                        pack,
+                        prefix="Successful trajectory used a lean bounded path worth preserving",
+                    ),
+                    evidence_refs=evidence_refs,
+                    target_scope=target_scope,
+                    confidence="high",
+                    source_run_ids=(),
+                    source_task_ids=source_task_ids,
+                    metrics=metrics,
+                )
+            )
+    return records
+
+
+def _trace_metrics(pack: TracePack) -> dict[str, Any]:
+    statuses = [
+        str(step.reward.get("status"))
+        for step in pack.steps
+        if step.reward.get("status") is not None
+    ]
+    tool_names = tuple(
+        dict.fromkeys(
+            tool_name
+            for step in pack.steps
+            for tool_name in step.tool_names
+            if tool_name
+        )
+    )
+    return {
+        "trace_pack_id": sanitize_text(pack.pack_id, max_chars=160),
+        "source_kind": sanitize_text(pack.source_kind, max_chars=80),
+        "step_count": len(pack.steps),
+        "omitted_step_count": pack.omitted_step_count,
+        "statuses": [sanitize_text(status, max_chars=40) for status in statuses[:8]],
+        "tool_names": [sanitize_text(tool_name, max_chars=80) for tool_name in tool_names[:8]],
+    }
+
+
+def _trace_failed(pack: TracePack) -> bool:
+    if not pack.steps:
+        return False
+    final_status = _step_status(pack.steps[-1])
+    if final_status in {"failed", "error", "timeout", "cancelled", "rejected"}:
+        return True
+    return any(_step_status(step) in {"failed", "error", "timeout"} for step in pack.steps)
+
+
+def _trace_succeeded(pack: TracePack) -> bool:
+    if not pack.steps:
+        return False
+    return _step_status(pack.steps[-1]) in {
+        "success",
+        "succeeded",
+        "completed",
+        "finished",
+        "pass",
+        "passed",
+    }
+
+
+def _step_status(step: Any) -> str:
+    status = step.reward.get("status") if isinstance(step.reward, Mapping) else None
+    return str(status).strip().lower() if status is not None else ""
+
+
+def _trace_summary(pack: TracePack, *, prefix: str) -> str:
+    tool_names = [
+        tool_name
+        for step in pack.steps
+        for tool_name in step.tool_names
+        if tool_name
+    ]
+    tool_phrase = (
+        "tools=" + ", ".join(tuple(dict.fromkeys(tool_names))[:4])
+        if tool_names
+        else "tools=none"
+    )
+    excerpt = sanitize_text(pack.final_action_excerpt or "", max_chars=120)
+    excerpt_phrase = f"; final_excerpt={excerpt}" if excerpt else ""
+    return (
+        f"{prefix}; task_id={sanitize_text(pack.task_id, max_chars=80)}; "
+        f"steps={len(pack.steps)}; {tool_phrase}{excerpt_phrase}."
+    )
 
 
 def _source_ids(value: Any) -> tuple[str, ...]:

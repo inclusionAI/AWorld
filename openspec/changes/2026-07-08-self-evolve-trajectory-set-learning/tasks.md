@@ -46,9 +46,9 @@
 
 - [x] 3.1 Implement extraction from evaluator reports into normalized metrics,
   failed gates, evidence issues, and required behaviors.
-- [ ] 3.2 Implement extraction from trajectory evidence into bounded failure and
+- [x] 3.2 Implement extraction from trajectory evidence into bounded failure and
   success memories without copying raw trace transcripts into prompts.
-- [ ] 3.3 Implement lean solution path extraction for successful trajectories.
+- [x] 3.3 Implement lean solution path extraction for successful trajectories.
 - [x] 3.4 Ensure each lesson links to source run ids, task ids, and evidence
   refs.
 - [ ] 3.5 Add compaction rules for large tool outputs, artifact-backed evidence,
@@ -64,11 +64,11 @@
   summaries, trace packs, replay diagnostics, and prior-run lineage as inputs.
 - [x] 3.8 Persist harness diagnostics as advisory lesson memory and keep source
   evidence refs attached.
-- [ ] 3.9 Add tests for evidence compaction, incomplete evidence, replay
+- [x] 3.9 Add tests for evidence compaction, incomplete evidence, replay
   failures, high score successes, and mixed success/failure inputs.
 - [ ] 3.10 Add tests for context, workflow, tool protocol, evaluation, memory,
   permission-boundary, and artifact-lifecycle harness diagnostics.
-- [ ] 3.11 Add tests proving sensitive raw evidence and prompt-injection text are
+- [x] 3.11 Add tests proving sensitive raw evidence and prompt-injection text are
   not copied into lessons, candidate prompts, reports, or released skill
   instruction bodies.
 
