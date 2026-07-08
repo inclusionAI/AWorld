@@ -1,0 +1,250 @@
+# Self Evolve
+
+Self-evolve is a framework-owned capability for improving agent-facing harness artifacts from observed task trajectories. Phase 1 is intentionally narrow: it proposes and verifies changes to harness text and configuration surfaces, especially skills. It does not mutate AWorld framework code, runtime code, CLI code, dependency manifests, secrets, or repository product logic.
+
+The capability is disabled by default. Agents opt in through `AgentConfig.self_evolve_config`, and `aworld-cli optimize` provides an explicit manual/debug entrypoint for release operators and developers.
+
+## What It Optimizes
+
+Self-evolve works on target references rather than arbitrary files. A target records the artifact type, id, optional path, and provenance used by the framework gates.
+
+Phase 1 target support:
+
+- `skill:<name>`: available end to end for proposal runs and verified apply when the target is allowlisted.
+- `workspace-artifact:<path>`: available for proposal preservation when the path is outside protected product roots.
+- `prompt-section:<id>`, `tool-description:<id>`, and `config:<id>`: represented as target types, but treated as skeleton/roadmap targets until adapters are implemented and covered by tests.
+
+Protected areas include AWorld framework/runtime/CLI code, dependency files, package metadata, and protected built-in skills such as `app_evaluator` and `self_evolve`.
+
+## Design
+
+Self-evolve follows a proposal-first pipeline:
+
+1. Collect trajectory or evaluation evidence from a current run, trajectory log, session, JSONL dataset, or batch config.
+2. Build a dataset recipe with trainable and held-out cases. Candidate optimizers see trainable evidence only.
+3. Select a target explicitly from `--target` or infer one through framework credit assignment.
+4. Generate one or more candidate variants through a `CandidateOptimizer`.
+5. Preserve candidates and diffs under `.aworld/self_evolve/<run_id>/`.
+6. Run shape, provenance, budget, evidence, replay, evaluator, and regression gates.
+7. Keep the result as a proposal, or, for `auto_verified`, apply only after verification passes.
+8. Re-evaluate the applied artifact through the runtime loader and roll back if post-apply verification fails.
+
+This keeps the self-evolve loop outside the task response path. Post-run scheduling is best effort: a failed enqueue is logged and does not change the completed `TaskResponse`.
+
+## Configuration
+
+`SelfEvolveConfig.mode` controls whether the runner schedules self-evolve work:
+
+```python
+from aworld.config.conf import AgentConfig, SelfEvolveConfig
+
+agent_config = AgentConfig(
+    self_evolve_config=SelfEvolveConfig(
+        mode="shadow",
+        apply_policy="proposal",
+        min_eval_cases=1,
+    )
+)
+```
+
+Modes:
+
+- `off`: default; no post-run self-evolve scheduling.
+- `offline`: manual SDK/CLI runs only.
+- `shadow`: post-run jobs may be enqueued, but candidates remain proposals.
+- `online`: post-run jobs may apply allowlisted targets only after verified replay, evaluator gates, and post-apply re-evaluation.
+
+`online` requires `apply_policy="auto_verified"`. `auto_verified` also requires `requires_post_apply_reevaluation=True`, which is the default. Useful verification knobs include `replay_timeout_seconds`, `replay_max_steps`, `baseline_replay_repetitions`, `candidate_replay_repetitions`, `replay_candidate_limit`, `replay_stability_margin`, `judge_repetitions`, and `judge_timeout_seconds`.
+
+Self-evolve is separate from older learning switches. `meta_learning_config` stores and extracts learning knowledge, `ContextRuleConfig.optimization_config` controls context compression/optimization behavior, and `train.evolve` is a training asset. `SelfEvolveConfig` is the opt-in for this framework proposal and verification loop.
+
+## CLI Examples
+
+Run a proposal-only explicit skill optimization:
+
+```bash
+aworld-cli optimize \
+  --target skill:login \
+  --dataset examples/aworld_quick_start/self_evolve/toy_eval.jsonl \
+  --apply proposal
+```
+
+Infer the target from a trajectory log:
+
+```bash
+aworld-cli optimize \
+  --task "improve login retry guidance" \
+  --from-trajectory ./trajectory.log \
+  --apply proposal
+```
+
+Run verified apply for an allowlisted skill target:
+
+```bash
+aworld-cli optimize \
+  --target skill:login \
+  --from-trajectory ./trajectory.log \
+  --apply auto_verified \
+  --judge-agent ./judges/login_quality.md \
+  --replay-timeout 900 \
+  --baseline-replay-repetitions 2 \
+  --candidate-replay-repetitions 3
+```
+
+Drain pending post-run jobs from `shadow` or `online` mode:
+
+```bash
+aworld-cli optimize --drain-pending
+```
+
+Resume only the evaluator and gates after a run whose replay artifacts already exist:
+
+```bash
+aworld-cli optimize --from-run <run_id> --rerun-evaluator
+```
+
+Use `--from-run --rerun-evaluator` for judge/evaluator recovery. It cannot add missing replay repetitions; rerun full optimize with a larger `--replay-timeout` when replay itself was incomplete.
+
+## SDK Example
+
+Use the SDK path when a caller supplies a real `CandidateOptimizer` or wants direct control over the run:
+
+```python
+import asyncio
+from pathlib import Path
+
+from aworld.self_evolve import (
+    SelfEvolveRunner,
+    TraceReflectiveLLMMutator,
+)
+from aworld.self_evolve.datasets import (
+    EvalCase,
+    SelfEvolveDataset,
+    SelfEvolveEvalSourceConfig,
+    build_dataset_recipe,
+)
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.targets import SkillTextTarget
+
+
+async def mutate_text(prompt: str) -> dict[str, str]:
+    return {
+        "content": (
+            Path("aworld-skills/login/SKILL.md").read_text(encoding="utf-8")
+            + "\nWhen login fails, retry only after checking the captured error evidence.\n"
+        ),
+        "rationale": "The trajectory showed ambiguous login retry guidance.",
+    }
+
+
+cases = (
+    EvalCase(
+        case_id="login-retry-1",
+        input={"task": "debug login flakiness"},
+        expected_output={"requires_evidence": True},
+    ),
+)
+dataset = SelfEvolveDataset(
+    cases=cases,
+    recipe=build_dataset_recipe(
+        cases,
+        source_config=SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        split_seed="manual-login-proposal",
+    ),
+)
+
+runner = SelfEvolveRunner(
+    store=FilesystemSelfEvolveStore(Path.cwd()),
+    optimizer=TraceReflectiveLLMMutator(mutate_text=mutate_text),
+)
+
+result = asyncio.run(
+    runner.run_explicit_target(
+        run_id="manual-login-proposal",
+        target=SkillTextTarget("aworld-skills/login/SKILL.md"),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+)
+```
+
+Proposal runs persist candidates and reports but do not write the target file. Use `apply_policy="auto_verified"` only when an evaluation backend, replay evidence, and post-apply runtime-loader verification are available.
+
+## Run Artifacts
+
+Each run writes durable artifacts under `.aworld/self_evolve/<run_id>/`:
+
+- `run.json`: run status, selected candidate, metrics, and gate results.
+- `report.json`: release-facing summary, rejected gates, evaluator reports, replay path, release checklist, and apply status.
+- `dataset_recipe.json`: source config, split seed, trainable cases, held-out cases, and synthetic generation policy.
+- `target_selection.json`: credit-assignment decision, confidence, and target inference signals.
+- `target_provenance.json`: provenance for the selected target when available.
+- `candidates/<candidate_id>.md`: candidate content. Skill candidates are marked with `self_evolve.release_state: candidate`.
+- `candidates/<candidate_id>.diff`: unified diff against the current target, when the target adapter supports diffs.
+- `optimizer_lineage/<candidate_id>.json`: optimizer name/version, parents, trainable cases, and rationale.
+- `judges/<backend_id>.json`: judge prompt/result metadata.
+- `apply/<candidate_id>.backup.md` and `apply/<candidate_id>.journal.json`: rollback material for verified apply.
+
+The CLI summary prints the most important paths, for example:
+
+```text
+Optimize run submitted.
+Status: succeeded
+Report: .aworld/self_evolve/<run_id>/report.json
+Target selection: .aworld/self_evolve/<run_id>/target_selection.json
+Replay: .aworld/self_evolve/<run_id>/replay.json
+Evaluator report: .aworld/self_evolve/<run_id>/evaluator_report.json
+Best candidate: cand-1
+```
+
+## Release Checklist
+
+`report.json` includes a user-facing `release_checklist` built from lower-level gates. For `proposal`, failed or missing checks are diagnostic. For `auto_verified`, failed checks are blocking.
+
+Checklist groups:
+
+- Candidate shape: no-op, malformed markdown, protected path, provenance, token limit, target type, and external code-evolution checks.
+- Quality improvement: score improvement, replay stability, and replay confidence.
+- Cost and latency: replay/evaluator cost and budget regression checks.
+- Evidence integrity: evidence quality, candidate replay, and judge-only signal checks.
+- Verification: required verification and held-out verification.
+- Regression safety: global regression benchmarks and post-apply checks.
+
+`content_quality_diagnostics` is non-blocking and surfaces publication-style risks when evaluator metrics include evidence, citation, unsupported claim, redundancy, or publication risk fields.
+
+## Auto-Verified Apply
+
+`auto_verified` is intentionally stricter than proposal mode. A candidate is rejected before apply when any required gate fails, when target inference confidence is too low, when no evaluation backend exists, or when a skill apply lacks candidate replay evidence.
+
+When apply is allowed, the runner:
+
+1. Writes a backup and apply journal.
+2. Marks skill content as `self_evolve.release_state: verified` with `verified_run_id`, `verified_candidate_id`, and `verified_at`.
+3. Writes the target file through the target adapter.
+4. Runs the post-apply evaluator. The default skill evaluator verifies that the runtime loader sees the real target path and matching content.
+5. Activates the verified runtime skill and refreshes the runtime registry when hooks are available.
+6. Accepts the apply or rolls back from the backup if verification or activation fails.
+
+Generated draft skills are hidden from runtime discovery until verified. Runtime skill registries filter out `draft`, `candidate`, `rejected`, and `disabled` self-evolve release states.
+
+## Operating Guidance
+
+- Prefer `proposal` for exploration, weak evidence, new target types, or human review.
+- Use `auto_verified` only for allowlisted targets with reliable replay, evaluator, held-out, and rollback coverage.
+- Do not treat judge-only output as verified improvement.
+- Do not expose held-out cases to candidate optimizers.
+- Do not copy replay overlay instructions or framework control flow into target skills.
+- Treat a missing gate, missing replay artifact, or missing post-apply runtime-loader signal as not verified.
+- For long-lived runtimes, check `post_apply.activation` and `post_apply.refresh` before claiming future tasks will observe the applied skill without restart.
+
+## Troubleshooting
+
+- `auto_verified apply policy requires a candidate`: the optimizer produced no non-noop candidate, so replay/evaluation/apply were skipped.
+- `auto_verified self-evolve requires an evaluation backend`: pass `--judge-agent`, `--judge-agent-name`, `--judge-backend-ref`, or use a framework evaluator backend.
+- `auto_verified skill apply requires candidate replay backend`: verified apply requires replay evidence for skill candidates.
+- Judge timeout after replay completed: rerun `aworld-cli optimize --from-run <run_id> --rerun-evaluator`.
+- Missing replay repetitions or replay timeout: rerun full optimize with a higher `--replay-timeout`; evaluator-only resume cannot create new replay evidence.
+- Post-apply status is `rolled_back`: inspect `report.json` and `apply/<candidate_id>.journal.json` for the failed metric, activation error, or runtime-loader mismatch.
+
+See [Optimize](../AWorld%20CLI/Commands/Optimize.md) for the command reference. A small toy dataset is available in the repository at `examples/aworld_quick_start/self_evolve/`.

@@ -57,6 +57,10 @@ _IMAGE_SUFFIX_TO_MIME = {
     ".bmp": "image/bmp",
     ".svg": "image/svg+xml",
 }
+_MAX_JUDGE_ARTIFACT_READ_ROUNDS = 2
+_MAX_JUDGE_ARTIFACT_READ_REQUESTS = 8
+_DEFAULT_JUDGE_ARTIFACT_READ_CHARS = 4000
+_MAX_JUDGE_ARTIFACT_READ_CHARS = 20000
 
 @dataclass(frozen=True)
 class EvalCaseDef:
@@ -354,6 +358,29 @@ class AgentJudgeBackend:
             timeout_seconds=timeout_seconds,
         )
 
+    @classmethod
+    def from_agent_markdown_as_instructions(
+        cls,
+        path: str | Path,
+        *,
+        backend_id: str | None = None,
+        prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None,
+        timeout_seconds: float | None = None,
+        system_prompt_prefix: str | None = None,
+    ) -> "AgentJudgeBackend":
+        agent_markdown_path = Path(path).expanduser()
+        resolved_backend_id = backend_id or agent_markdown_path.stem
+        system_prompt = _agent_markdown_instruction_prompt(agent_markdown_path)
+        if system_prompt_prefix:
+            system_prompt = f"{system_prompt_prefix.rstrip()}\n\n{system_prompt}"
+        return cls(
+            backend_id=resolved_backend_id,
+            system_prompt=system_prompt,
+            executor=None,
+            prompt_builder=prompt_builder,
+            timeout_seconds=timeout_seconds,
+        )
+
     def is_available(self) -> bool:
         if self.executor is not None:
             return True
@@ -367,16 +394,18 @@ class AgentJudgeBackend:
         prompt_builder = self.prompt_builder or _build_default_judge_prompt
         prompt = prompt_builder(case_input, target, suite)
         executor = self.executor or _default_agent_judge_executor
-        async def _run_executor():
-            result = executor(prompt, self.system_prompt)
+        async def _run_executor(current_prompt: JudgePrompt):
+            result = executor(current_prompt, self.system_prompt)
             if inspect.isawaitable(result):
                 return await result
             return result
 
-        if self.timeout_seconds is not None:
-            task = asyncio.create_task(_run_executor())
+        async def _run_with_timeout(current_prompt: JudgePrompt):
+            if self.timeout_seconds is None:
+                return await _run_executor(current_prompt)
+            task = asyncio.create_task(_run_executor(current_prompt))
             try:
-                response = await asyncio.wait_for(task, timeout=self.timeout_seconds)
+                return await asyncio.wait_for(task, timeout=self.timeout_seconds)
             except Exception:
                 task.cancel()
                 try:
@@ -384,9 +413,17 @@ class AgentJudgeBackend:
                 except BaseException:
                     pass
                 raise
-        else:
-            response = await _run_executor()
-        payload = _coerce_judge_payload(response)
+
+        response = await _run_with_timeout(prompt)
+        prompt_for_reads = prompt
+        for _ in range(_MAX_JUDGE_ARTIFACT_READ_ROUNDS):
+            read_requests = _extract_artifact_read_requests(response)
+            if not read_requests:
+                break
+            read_results = _resolve_artifact_read_requests(prompt_for_reads, read_requests)
+            prompt_for_reads = _append_artifact_read_results_to_prompt(prompt_for_reads, read_results)
+            response = await _run_with_timeout(prompt_for_reads)
+        payload = _coerce_judge_payload(response, judge_schema=getattr(suite, "judge_schema", None))
         return JudgeExecution(backend_id=self.backend_id, payload=payload)
 
     async def judge(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> dict[str, Any]:
@@ -414,6 +451,25 @@ def _normalize_markdown_tool_list(value: Any) -> dict[str, Any]:
         if isinstance(parsed, Mapping):
             return dict(parsed)
     return {}
+
+
+def _agent_markdown_instruction_prompt(agent_markdown_path: Path) -> str:
+    from aworld.utils.skill_loader import extract_front_matter
+
+    lines = agent_markdown_path.read_text(encoding="utf-8").splitlines()
+    frontmatter, body_start = extract_front_matter(lines)
+    body = "\n".join(lines[body_start:]).strip()
+    name = _frontmatter_scalar(frontmatter.get("name"), agent_markdown_path.stem)
+    description = _frontmatter_scalar(
+        frontmatter.get("description", frontmatter.get("desc")),
+        "Trajectory evaluation judge",
+    )
+    header = (
+        f"Judge instructions loaded from {agent_markdown_path}\n"
+        f"Name: {name}\n"
+        f"Description: {description}\n\n"
+    )
+    return f"{header}{body}".strip()
 
 
 def _materialize_agent_markdown_as_skill(
@@ -1575,38 +1631,222 @@ def _build_app_evaluator_judge_prompt(
     return prompt
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
+def _extract_json_objects(text: str) -> list[dict[str, Any]]:
     stripped = text.strip()
     try:
         loaded = json.loads(stripped)
         if isinstance(loaded, dict):
-            return loaded
+            return [loaded]
     except json.JSONDecodeError:
         pass
 
-    matches = re.findall(r"\{.*\}", stripped, re.DOTALL)
-    for candidate in matches:
+    decoder = json.JSONDecoder()
+    objects: list[dict[str, Any]] = []
+    for match in re.finditer(r"\{", stripped):
         try:
-            loaded = json.loads(candidate)
-            if isinstance(loaded, dict):
-                return loaded
+            loaded, _ = decoder.raw_decode(stripped[match.start():])
         except json.JSONDecodeError:
             continue
-    raise ValueError("judge response does not contain a valid JSON object")
+        if isinstance(loaded, dict):
+            objects.append(loaded)
+    return objects
 
 
-def _coerce_judge_payload(response: Mapping[str, Any] | str) -> dict[str, Any]:
-    if isinstance(response, str):
-        response = _extract_json_object(response)
-    else:
-        response = dict(response)
-
-    if "results" in response:
-        results = response.get("results") or []
+def _candidate_judge_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    if "results" in value:
+        results = value.get("results") or []
         if not results:
             raise ValueError("judge response results array is empty")
         return dict(results[0])
-    return dict(response)
+    return dict(value)
+
+
+def _extract_json_object(
+    text: str,
+    *,
+    judge_schema: JudgeSchemaDef | None = None,
+) -> dict[str, Any]:
+    candidates = _extract_json_objects(text)
+    if judge_schema is not None and judge_schema.json_schema():
+        for candidate in candidates:
+            try:
+                return judge_schema.validate_payload(_candidate_judge_payload(candidate))
+            except Exception:
+                continue
+        if candidates:
+            raise ValueError("no JSON object matches judge schema")
+
+    for candidate in candidates:
+        if "results" in candidate:
+            return candidate
+    for candidate in candidates:
+        if "score" in candidate and "verdict" in candidate:
+            return candidate
+    for candidate in candidates:
+        if "score" in candidate and "rank" in candidate:
+            return candidate
+    if candidates:
+        return candidates[0]
+    raise ValueError("judge response does not contain a valid JSON object")
+
+
+def _coerce_judge_payload(
+    response: Mapping[str, Any] | str,
+    *,
+    judge_schema: JudgeSchemaDef | None = None,
+) -> dict[str, Any]:
+    if isinstance(response, str):
+        response = _extract_json_object(response, judge_schema=judge_schema)
+    else:
+        response = dict(response)
+
+    return _candidate_judge_payload(response)
+
+
+def _extract_artifact_read_requests(response: Mapping[str, Any] | str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]]
+    if isinstance(response, str):
+        candidates = _extract_json_objects(response)
+    elif isinstance(response, Mapping):
+        candidates = [dict(response)]
+    else:
+        return []
+    for candidate in candidates:
+        requests = candidate.get("artifact_read_requests")
+        if isinstance(requests, list):
+            return [dict(item) for item in requests if isinstance(item, Mapping)]
+    return []
+
+
+def _prompt_text(prompt: JudgePrompt) -> str:
+    return prompt[0] if isinstance(prompt, tuple) else prompt
+
+
+def _allowed_artifact_paths(prompt: JudgePrompt) -> dict[str, str]:
+    try:
+        payload = json.loads(_prompt_text(prompt))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    artifact_backed = payload.get("artifact_backed_evidence")
+    if not isinstance(artifact_backed, Mapping):
+        return {}
+    read_policy = artifact_backed.get("read_policy")
+    if isinstance(read_policy, Mapping):
+        if read_policy.get("read_only") is not True:
+            return {}
+        if read_policy.get("external_network_allowed") is True:
+            return {}
+        if read_policy.get("mutation_allowed") is True:
+            return {}
+    allowed: dict[str, str] = {}
+    for artifact in artifact_backed.get("artifacts") or []:
+        if not isinstance(artifact, Mapping):
+            continue
+        path_value = artifact.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            continue
+        expanded = Path(path_value).expanduser()
+        allowed[str(expanded.resolve(strict=False))] = str(expanded)
+    return allowed
+
+
+def _resolve_artifact_read_requests(
+    prompt: JudgePrompt,
+    read_requests: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    allowed_paths = _allowed_artifact_paths(prompt)
+    results: list[dict[str, Any]] = []
+    for index, request in enumerate(read_requests[:_MAX_JUDGE_ARTIFACT_READ_REQUESTS]):
+        path_value = request.get("path")
+        result: dict[str, Any] = {
+            "request_index": index,
+            "path": str(path_value or ""),
+        }
+        if not isinstance(path_value, str) or not path_value.strip():
+            result.update({"status": "denied", "reason": "missing_path"})
+            results.append(result)
+            continue
+        requested_path = Path(path_value).expanduser()
+        resolved_requested = str(requested_path.resolve(strict=False))
+        canonical_allowed = allowed_paths.get(resolved_requested)
+        if canonical_allowed is None:
+            result.update({"status": "denied", "reason": "path_not_in_artifact_index"})
+            results.append(result)
+            continue
+        start = _bounded_int(request.get("start"), default=0, minimum=0, maximum=10_000_000)
+        max_chars = _bounded_int(
+            request.get("max_chars"),
+            default=_DEFAULT_JUDGE_ARTIFACT_READ_CHARS,
+            minimum=1,
+            maximum=_MAX_JUDGE_ARTIFACT_READ_CHARS,
+        )
+        try:
+            text = Path(canonical_allowed).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            result.update({"status": "error", "reason": exc.__class__.__name__, "message": str(exc)})
+            results.append(result)
+            continue
+        end = min(len(text), start + max_chars)
+        result.update(
+            {
+                "status": "ok",
+                "start": start,
+                "end": end,
+                "chars_returned": max(0, end - start),
+                "total_chars": len(text),
+                "truncated": end < len(text),
+                "content": text[start:end],
+            }
+        )
+        results.append(result)
+    if len(read_requests) > _MAX_JUDGE_ARTIFACT_READ_REQUESTS:
+        results.append(
+            {
+                "status": "denied",
+                "reason": "too_many_requests",
+                "request_count": len(read_requests),
+                "max_requests": _MAX_JUDGE_ARTIFACT_READ_REQUESTS,
+            }
+        )
+    return results
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _append_artifact_read_results_to_prompt(
+    prompt: JudgePrompt,
+    read_results: list[dict[str, Any]],
+) -> JudgePrompt:
+    text = _prompt_text(prompt)
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        payload = {"original_prompt": text}
+    if not isinstance(payload, dict):
+        payload = {"original_prompt": text}
+    existing_results = payload.get("artifact_read_results")
+    if not isinstance(existing_results, list):
+        existing_results = []
+    payload["artifact_read_results"] = [
+        *[dict(item) for item in existing_results if isinstance(item, Mapping)],
+        *read_results,
+    ]
+    payload["artifact_read_followup_instruction"] = (
+        "Use artifact_read_results as read-only evidence and now return the final "
+        "single JSON object matching required_output_schema. Do not request the same artifact again."
+    )
+    updated = json.dumps(payload, ensure_ascii=False, indent=2)
+    if isinstance(prompt, tuple):
+        return updated, prompt[1]
+    return updated
 
 
 async def _default_agent_judge_executor(prompt: JudgePrompt, system_prompt: str) -> str:

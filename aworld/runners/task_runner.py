@@ -161,7 +161,16 @@ class TaskRunner(Runner):
         try:
             value = os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')
             if value:
-                for action_path, tool_path in aworld.tools.parse_local_tool_entries(value):
+                kept_entries, missing_entries = aworld.tools.prune_missing_local_tool_entries(value)
+                if missing_entries:
+                    os.environ[aworld.tools.LOCAL_TOOLS_ENV_VAR] = aworld.tools.encode_local_tool_entries(
+                        kept_entries
+                    )
+                    logger.warning(
+                        "skip stale local tool module entries: "
+                        f"{len(missing_entries)} missing, {len(kept_entries)} kept"
+                    )
+                for action_path, tool_path in kept_entries:
                     load_module_by_path(os.path.basename(tool_path).replace(".py", ""), tool_path)
                     load_module_by_path(os.path.basename(action_path).replace(".py", ""), action_path)
         except:

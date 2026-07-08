@@ -1,6 +1,25 @@
 ---
 name: media_comprehension
-description: "An intelligent assistant specialized in handling media files (images/audio/video). **Only for media file analysis**, does not handle document types.\n\n✅ Media files that can be processed:\n- Images: .jpg, .jpeg, .png, .gif, .bmp, .webp, .svg\n- Audio: .mp3, .wav, .m4a, .flac, .aac, .ogg\n- Video: .mp4, .avi, .mov, .mkv, .webm, .flv\n\n❌ Files that cannot be processed (please do not trigger this skill):\n- Documents: .pdf, .doc, .docx, .txt, .md, .rtf\n- Spreadsheets: .xlsx, .xls, .csv, .tsv\n- Presentations: .pptx, .ppt, .key\n- Code: .py, .js, .ts, .java, .cpp, .go, .rs\n- Archives: .zip, .tar, .gz, .rar, .7z\n- Executables: .exe, .bin, .app, .dmg\n- Databases: .db, .sqlite, .sql\n- Configuration files: .json, .xml, .yaml, .yml, .toml, .ini\n- Web pages: .html, .htm, .css\n\n**Trigger conditions**: When the user explicitly requests to analyze image/audio/video content, or when the file extension belongs to the aforementioned media types.". "
+description: |
+  An intelligent assistant specialized in handling media files (images/audio/video). **Only for media file analysis**, does not handle document types.
+
+  Media files that can be processed:
+  - Images: .jpg, .jpeg, .png, .gif, .bmp, .webp, .svg
+  - Audio: .mp3, .wav, .m4a, .flac, .aac, .ogg
+  - Video: .mp4, .avi, .mov, .mkv, .webm, .flv
+
+  Files that cannot be processed (please do not trigger this skill):
+  - Documents: .pdf, .doc, .docx, .txt, .md, .rtf
+  - Spreadsheets: .xlsx, .xls, .csv, .tsv
+  - Presentations: .pptx, .ppt, .key
+  - Code: .py, .js, .ts, .java, .cpp, .go, .rs
+  - Archives: .zip, .tar, .gz, .rar, .7z
+  - Executables: .exe, .bin, .app, .dmg
+  - Databases: .db, .sqlite, .sql
+  - Configuration files: .json, .xml, .yaml, .yml, .toml, .ini
+  - Web pages: .html, .htm, .css
+
+  Trigger conditions: When the user explicitly requests to analyze image/audio/video content, or when the file extension belongs to the aforementioned media types.
 tool_names: ['CAST_SEARCH']
 ---
 

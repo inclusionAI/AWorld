@@ -69,6 +69,20 @@ def test_build_runtime_skill_registry_view_merges_plugin_and_filesystem_sources(
         "---\nname: Browser Use\ndescription: Filesystem skill\n---\nUse compat skill.\n",
         encoding="utf-8",
     )
+    candidate_root = tmp_path / "compat_skills" / "candidate-skill"
+    candidate_root.mkdir(parents=True)
+    (candidate_root / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: Candidate Skill\n"
+            "description: Should not be runtime visible\n"
+            "self_evolve:\n"
+            "  release_state: candidate\n"
+            "---\n"
+            "Use unreleased candidate skill.\n"
+        ),
+        encoding="utf-8",
+    )
 
     class FakePluginManager:
         def get_runtime_plugin_roots(self):
@@ -88,6 +102,42 @@ def test_build_runtime_skill_registry_view_merges_plugin_and_filesystem_sources(
 
     assert "brainstorming" in all_skills
     assert "browser-use" in all_skills
+    assert "candidate-skill" not in all_skills
     assert str(plugin_root.resolve()) in registry_view.source_paths
     assert str(compat_root.parent.resolve()) in registry_view.source_paths
     assert str(non_skill_plugin_root.resolve()) not in registry_view.source_paths
+
+
+def test_runtime_skill_registry_never_loads_self_evolve_draft_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from aworld_cli.core.runtime_skill_registry import build_runtime_skill_registry_view
+
+    draft_root = tmp_path / ".aworld" / "self_evolve" / "drafts" / "skills"
+    draft_skill = draft_root / "draft-skill"
+    draft_skill.mkdir(parents=True)
+    (draft_skill / "SKILL.md").write_text(
+        "---\nname: Draft Skill\ndescription: Draft only\n---\nUse draft skill.\n",
+        encoding="utf-8",
+    )
+
+    class FakePluginManager:
+        def get_runtime_plugin_roots(self):
+            return []
+
+    monkeypatch.setattr(
+        "aworld_cli.core.runtime_skill_registry.PluginManager",
+        FakePluginManager,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.runtime_skill_registry.get_user_skills_paths",
+        lambda: [],
+    )
+
+    registry_view = build_runtime_skill_registry_view(
+        skill_paths=[str(draft_root)],
+        cwd=tmp_path,
+    )
+
+    assert registry_view.get_all_skills() == {}

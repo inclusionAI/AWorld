@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Mapping, Protocol
+
+from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.trace_pack import TracePack
+from aworld.self_evolve.types import (
+    CandidateVariant,
+    EvaluationSummary,
+    OptimizerLineage,
+    SelfEvolveTargetRef,
+)
+
+
+@dataclass(frozen=True)
+class OptimizerRequest:
+    target: SelfEvolveTargetRef
+    current_content: str
+    target_fingerprint: str
+    trace_packs: tuple[TracePack, ...]
+    validation_feedback: tuple[EvaluationSummary, ...] = ()
+    prior_feedback: tuple[EvaluationSummary, ...] = ()
+    trainable_cases: tuple[EvalCase, ...] = ()
+    max_candidates: int = 1
+
+    @classmethod
+    def from_dataset(
+        cls,
+        *,
+        target: SelfEvolveTargetRef,
+        current_content: str,
+        target_fingerprint: str,
+        trace_packs: tuple[TracePack, ...],
+        validation_feedback: tuple[EvaluationSummary, ...],
+        prior_feedback: tuple[EvaluationSummary, ...] = (),
+        dataset: SelfEvolveDataset,
+        max_candidates: int = 1,
+    ) -> "OptimizerRequest":
+        trainable_ids = set(dataset.recipe.trainable_case_ids)
+        return cls(
+            target=target,
+            current_content=current_content,
+            target_fingerprint=target_fingerprint,
+            trace_packs=trace_packs,
+            validation_feedback=validation_feedback,
+            prior_feedback=prior_feedback,
+            trainable_cases=tuple(
+                case for case in dataset.cases if case.case_id in trainable_ids
+            ),
+            max_candidates=max_candidates,
+        )
+
+
+@dataclass(frozen=True)
+class OptimizerResult:
+    candidates: tuple[CandidateVariant, ...]
+    lineage: tuple[OptimizerLineage, ...] = ()
+    diagnostics: Mapping[str, object] = field(default_factory=dict)
+
+
+class CandidateOptimizer(Protocol):
+    async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+        """Propose candidate variants without reading held-out eval cases."""

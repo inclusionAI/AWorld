@@ -7,6 +7,7 @@ from typing import Any
 from aworld.skills.execution_assets import build_execution_assets_config
 from aworld.skills.models import SkillContent, SkillDescriptor
 from aworld.skills.providers import SkillProvider, read_front_matter_lines
+from aworld.skills.release import extract_self_evolve_metadata, is_self_evolve_draft_path
 from aworld.utils.skill_loader import (
     evaluate_skill_requirements,
     extract_front_matter,
@@ -35,6 +36,8 @@ class FilesystemSkillProvider(SkillProvider):
                 skill_file = Path(current_root) / candidate_name
                 resolved = skill_file.resolve()
                 if resolved in seen or not resolved.is_file():
+                    continue
+                if is_self_evolve_draft_path(resolved):
                     continue
                 seen.add(resolved)
                 yield resolved
@@ -92,6 +95,7 @@ class FilesystemSkillProvider(SkillProvider):
                         "type": str(front_matter.get("type", "")),
                         "active": str(front_matter.get("active", "False")).lower() == "true",
                         "tool_list": dict(tool_list),
+                        "self_evolve": extract_self_evolve_metadata(front_matter),
                     },
                     execution_assets=build_execution_assets_config(
                         skill_file.parent,

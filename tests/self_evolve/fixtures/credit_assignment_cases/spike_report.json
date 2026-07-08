@@ -1,0 +1,66 @@
+{
+  "blocked_next_steps": [],
+  "coverage": {
+    "case_count": 9,
+    "missing_target_types": [],
+    "present_target_types": [
+      "config",
+      "no_target",
+      "prompt-section",
+      "skill",
+      "tool-description",
+      "workspace-artifact"
+    ]
+  },
+  "decision": "go",
+  "false_negatives": [],
+  "false_positives": [],
+  "metrics": {
+    "no_target_precision": 1.0,
+    "target_selection_precision": 1.0,
+    "target_selection_recall": 1.0
+  },
+  "predictions": {
+    "trajectory-log-ambiguous-no-target": {
+      "id": "deterministic_success_or_low_confidence",
+      "type": "no_target"
+    },
+    "trajectory-log-btc-monitor-artifact": {
+      "id": "btc_monitor.sh",
+      "type": "workspace-artifact"
+    },
+    "trajectory-log-cdp-config": {
+      "id": "browser_cdp_port_and_profile",
+      "type": "config"
+    },
+    "trajectory-log-health-report-success": {
+      "id": "deterministic_success_or_low_confidence",
+      "type": "no_target"
+    },
+    "trajectory-log-podcast-summary-success": {
+      "id": "deterministic_success_or_low_confidence",
+      "type": "no_target"
+    },
+    "trajectory-log-process-cleanup-success": {
+      "id": "deterministic_success_or_low_confidence",
+      "type": "no_target"
+    },
+    "trajectory-log-skill-tool-description": {
+      "id": "SKILL_tool.active_skill",
+      "type": "tool-description"
+    },
+    "trajectory-log-validation-prompt-section": {
+      "id": "result-validation-anchor-policy",
+      "type": "prompt-section"
+    },
+    "trajectory-log-x-login-skill-guidance": {
+      "id": "agent-browser-cdp-login-guidance",
+      "type": "skill"
+    }
+  },
+  "thresholds": {
+    "no_target_precision": 0.8,
+    "target_selection_precision": 0.8,
+    "target_selection_recall": 0.7
+  }
+}

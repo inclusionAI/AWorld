@@ -7,10 +7,10 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
@@ -187,6 +187,78 @@ class MetaLearningConfig(BaseConfig):
         description="Base path for storing trajectory data. Defaults to './' or TRAJ_STORAGE_BASE_PATH env var"
     )
 
+
+class SelfEvolveJudgeConfig(BaseConfig):
+    """Judge selection for framework-owned self-evolve evaluation."""
+
+    mode: Literal["trajectory", "agent_md", "custom_agent", "backend_ref", "disabled"] = "trajectory"
+    agent_path: Optional[str] = None
+    agent_id: Optional[str] = None
+    backend_ref: Optional[str] = None
+
+
+class SelfEvolveConfig(BaseConfig):
+    """Disabled-by-default self-evolve configuration for harness optimization."""
+
+    mode: Literal["off", "offline", "shadow", "online"] = "off"
+    apply_policy: Literal["proposal", "auto_verified"] = "proposal"
+    max_run_tokens: int = 500000
+    max_run_cost_usd: Optional[float] = None
+    min_eval_cases: int = 30
+    judge_repetitions: int = 3
+    judge_timeout_seconds: int = 300
+    cooldown_seconds: int = 0
+    max_iterations: int = 1
+    min_improvement: float = 0.0
+    max_background_jobs: int = 1
+    auto_apply_target_types: tuple[str, ...] = ("skill",)
+    target_types: tuple[str, ...] = (
+        "skill",
+        "prompt-section",
+        "tool-description",
+        "config",
+        "workspace-artifact",
+    )
+    eval_sources: tuple[str, ...] = (
+        "current_trajectory",
+        "trajectory_log",
+        "session",
+        "jsonl",
+        "batch_config",
+    )
+    regression_benchmarks: tuple[str, ...] = ()
+    require_deterministic_signal_for_verified: bool = True
+    requires_post_apply_reevaluation: bool = True
+    judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
+    replay_enabled: bool = True
+    replay_timeout_seconds: int = 600
+    replay_max_steps: Optional[int] = 1
+    replay_candidate_limit: int = 2
+    baseline_replay_repetitions: int = 1
+    candidate_replay_repetitions: int = 1
+    replay_stability_margin: float = 0.0
+
+    @model_validator(mode="after")
+    def validate_apply_policy(self) -> "SelfEvolveConfig":
+        if self.mode == "online" and self.apply_policy != "auto_verified":
+            raise ValueError("online self-evolve requires apply_policy='auto_verified'")
+        if self.apply_policy == "auto_verified" and not self.requires_post_apply_reevaluation:
+            raise ValueError("auto_verified self-evolve requires post-apply re-evaluation")
+        if self.replay_candidate_limit <= 0:
+            raise ValueError("replay_candidate_limit must be positive")
+        if self.baseline_replay_repetitions <= 0:
+            raise ValueError("baseline_replay_repetitions must be positive")
+        if self.candidate_replay_repetitions <= 0:
+            raise ValueError("candidate_replay_repetitions must be positive")
+        if self.judge_timeout_seconds <= 0:
+            raise ValueError("judge_timeout_seconds must be positive")
+        if self.replay_timeout_seconds <= 0:
+            raise ValueError("replay_timeout_seconds must be positive")
+        if self.replay_stability_margin < 0:
+            raise ValueError("replay_stability_margin must be non-negative")
+        return self
+
+
 class SummaryPromptConfig(BaseConfig):
     """Configuration for summary prompt templates."""
     
@@ -297,6 +369,7 @@ class AgentConfig(BaseConfig):
     # None means no limit (all parallel), positive integer limits batch size
     concurrent_batch_size: Optional[int] = None
     meta_learning_config: MetaLearningConfig = MetaLearningConfig()
+    self_evolve_config: SelfEvolveConfig = Field(default_factory=SelfEvolveConfig)
     ext: dict = {}
 
     def __init__(self, **kwargs):

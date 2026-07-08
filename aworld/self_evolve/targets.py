@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import difflib
+import hashlib
+import re
+from pathlib import Path
+from typing import Protocol
+
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
+
+
+class SelfEvolveTarget(Protocol):
+    @property
+    def identity(self) -> SelfEvolveTargetRef:
+        ...
+
+    def load_current_content(self) -> str:
+        ...
+
+    def fingerprint_current_content(self) -> str:
+        ...
+
+    def render_candidate_diff(self, candidate_content: str) -> str:
+        ...
+
+
+class SkillTextTarget:
+    def __init__(
+        self,
+        skill_path: str | Path,
+        *,
+        target_id: str | None = None,
+        allow_auto_apply: bool = False,
+    ) -> None:
+        self.path = Path(skill_path)
+        self.allow_auto_apply = allow_auto_apply
+        self._target_id = target_id or self._read_skill_name() or self.path.parent.name
+        self._rollback_content: str | None = None
+
+    @property
+    def identity(self) -> SelfEvolveTargetRef:
+        return SelfEvolveTargetRef(
+            target_type="skill",
+            target_id=self._target_id,
+            path=str(self.path),
+        )
+
+    def load_current_content(self) -> str:
+        return self.path.read_text(encoding="utf-8")
+
+    def fingerprint_current_content(self) -> str:
+        digest = hashlib.sha256(self.load_current_content().encode("utf-8")).hexdigest()
+        return f"sha256:{digest}"
+
+    def render_candidate_diff(self, candidate_content: str) -> str:
+        current_lines = self.load_current_content().splitlines(keepends=True)
+        candidate_lines = candidate_content.splitlines(keepends=True)
+        return "".join(
+            difflib.unified_diff(
+                current_lines,
+                candidate_lines,
+                fromfile=f"current/{self._target_id}/SKILL.md",
+                tofile=f"candidate/{self._target_id}/SKILL.md",
+            )
+        )
+
+    def preserve_proposal(
+        self,
+        store: FilesystemSelfEvolveStore,
+        run_id: str,
+        candidate: CandidateVariant,
+    ) -> tuple[Path, Path]:
+        proposal_path = store.write_candidate(run_id, candidate)
+        diff_path = proposal_path.with_suffix(".diff")
+        diff_path.write_text(self.render_candidate_diff(candidate.content), encoding="utf-8")
+        return proposal_path, diff_path
+
+    def apply_candidate(self, candidate_content: str) -> None:
+        if not self.allow_auto_apply:
+            raise PermissionError(f"target {self._target_id!r} is not allowlisted for auto apply")
+        self._rollback_content = self.load_current_content()
+        self.path.write_text(candidate_content, encoding="utf-8")
+
+    def rollback(self) -> None:
+        if self._rollback_content is None:
+            return
+        self.path.write_text(self._rollback_content, encoding="utf-8")
+        self._rollback_content = None
+
+    def _read_skill_name(self) -> str | None:
+        if not self.path.exists():
+            return None
+        content = self.path.read_text(encoding="utf-8")
+        match = re.search(r"^---\s*\n(.*?)\n---\s*", content, flags=re.DOTALL)
+        if match is None:
+            return None
+        name_match = re.search(r"^name:\s*([^\n]+)\s*$", match.group(1), flags=re.MULTILINE)
+        if name_match is None:
+            return None
+        return name_match.group(1).strip().strip("'\"")
+
+
+class DraftSkillTextTarget(SkillTextTarget):
+    """Skill target for a not-yet-existing self-evolve draft."""
+
+    def __init__(
+        self,
+        skill_path: str | Path,
+        *,
+        target_id: str,
+        release_path: str | Path,
+        allow_auto_apply: bool = False,
+    ) -> None:
+        super().__init__(
+            skill_path,
+            target_id=target_id,
+            allow_auto_apply=allow_auto_apply,
+        )
+        self.release_path = Path(release_path)
+        self._rollback_existed: bool | None = None
+
+    @property
+    def runtime_skill_path(self) -> Path:
+        return self.release_path
+
+    def load_current_content(self) -> str:
+        if self.path.exists():
+            return self.path.read_text(encoding="utf-8")
+        return _draft_skill_skeleton(self._target_id)
+
+    def apply_candidate(self, candidate_content: str) -> None:
+        if not self.allow_auto_apply:
+            raise PermissionError(f"target {self._target_id!r} is not allowlisted for auto apply")
+        self._rollback_existed = self.release_path.exists()
+        self._rollback_content = (
+            self.release_path.read_text(encoding="utf-8") if self._rollback_existed else None
+        )
+        self.release_path.parent.mkdir(parents=True, exist_ok=True)
+        self.release_path.write_text(candidate_content, encoding="utf-8")
+
+    def rollback(self) -> None:
+        if self._rollback_existed is None:
+            return
+        if self._rollback_existed:
+            assert self._rollback_content is not None
+            self.release_path.write_text(self._rollback_content, encoding="utf-8")
+        else:
+            self.release_path.unlink(missing_ok=True)
+            try:
+                self.release_path.parent.rmdir()
+            except OSError:
+                pass
+        self._rollback_content = None
+        self._rollback_existed = None
+
+
+def _draft_skill_skeleton(target_id: str) -> str:
+    title = " ".join(part.capitalize() for part in re.split(r"[-_]+", target_id) if part)
+    title = title or target_id
+    return (
+        "---\n"
+        f"name: {target_id}\n"
+        "description: Draft skill generated by self-evolve for trajectory-backed task handling.\n"
+        "---\n"
+        f"# {title}\n\n"
+        "Use trajectory evidence to solve the task, prefer grounded observations over prior "
+        "assumptions, and record failed tool paths before switching strategies.\n"
+    )
+
+
+class _SkeletonTextTarget:
+    target_type = "text"
+
+    def __init__(self, target_id: str, *, path: str | Path | None = None) -> None:
+        self._target_id = target_id
+        self.path = Path(path) if path is not None else None
+
+    @property
+    def identity(self) -> SelfEvolveTargetRef:
+        return SelfEvolveTargetRef(
+            target_type=self.target_type,
+            target_id=self._target_id,
+            path=str(self.path) if self.path is not None else None,
+        )
+
+    def load_current_content(self) -> str:
+        raise NotImplementedError(f"{type(self).__name__} is a phase-1 skeleton target")
+
+    def fingerprint_current_content(self) -> str:
+        raise NotImplementedError(f"{type(self).__name__} is a phase-1 skeleton target")
+
+    def render_candidate_diff(self, candidate_content: str) -> str:
+        raise NotImplementedError(f"{type(self).__name__} is a phase-1 skeleton target")
+
+
+class PromptSectionTarget(_SkeletonTextTarget):
+    target_type = "prompt-section"
+
+
+class ToolDescriptionTarget(_SkeletonTextTarget):
+    target_type = "tool-description"
+
+
+class AgentConfigTarget(_SkeletonTextTarget):
+    target_type = "config"
+
+
+class WorkspaceArtifactTarget(_SkeletonTextTarget):
+    target_type = "workspace-artifact"
+    _PROTECTED_ROOTS = {"aworld", "aworld-cli", "aworld_gateway"}
+    _PROTECTED_FILES = {"setup.py", "pyproject.toml", "requirements.txt"}
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        workspace_root: str | Path,
+        target_id: str | None = None,
+    ) -> None:
+        artifact_path = Path(path).resolve()
+        workspace_path = Path(workspace_root).resolve()
+        relative = artifact_path.relative_to(workspace_path)
+        if relative.parts and relative.parts[0] in self._PROTECTED_ROOTS:
+            raise ValueError(f"protected product path cannot be a workspace artifact target: {path}")
+        if relative.name in self._PROTECTED_FILES:
+            raise ValueError(f"protected product path cannot be a workspace artifact target: {path}")
+        super().__init__(target_id or relative.as_posix(), path=artifact_path)
+
+    def load_current_content(self) -> str:
+        if self.path is None:
+            return ""
+        return self.path.read_text(encoding="utf-8")
+
+    def fingerprint_current_content(self) -> str:
+        return "sha256:" + hashlib.sha256(self.load_current_content().encode("utf-8")).hexdigest()
+
+    def render_candidate_diff(self, candidate_content: str) -> str:
+        current_lines = self.load_current_content().splitlines(keepends=True)
+        candidate_lines = candidate_content.splitlines(keepends=True)
+        return "".join(
+            difflib.unified_diff(
+                current_lines,
+                candidate_lines,
+                fromfile=f"current/{self._target_id}",
+                tofile=f"candidate/{self._target_id}",
+            )
+        )
+
+    def preserve_proposal(
+        self,
+        store: FilesystemSelfEvolveStore,
+        run_id: str,
+        candidate: CandidateVariant,
+    ) -> tuple[Path, Path]:
+        proposal_path = store.write_candidate(run_id, candidate)
+        diff_path = proposal_path.with_suffix(".diff")
+        diff_path.write_text(self.render_candidate_diff(candidate.content), encoding="utf-8")
+        return proposal_path, diff_path

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import json
+from pathlib import Path
 import pytest
 from pydantic import BaseModel, Field
 
@@ -43,6 +45,11 @@ class DemoJudgeOutput(BaseModel):
 class AliasJudgeOutput(BaseModel):
     final_score: float = Field(alias="score")
     verdict: str
+
+
+class GenericJudgeOutput(BaseModel):
+    decision: str
+    confidence: float
 
 
 @pytest.fixture(autouse=True)
@@ -1283,6 +1290,359 @@ async def test_agent_judge_backend_parses_app_evaluator_json_payload() -> None:
 
     assert payload["score"] == pytest.approx(0.91)
     assert payload["rank"] == "Exemplary"
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_parses_fenced_json_payload() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+I checked the trajectory evidence.
+
+```json
+{
+  "score": 72.5,
+  "verdict": "Pass",
+  "veto_triggered": false
+}
+```
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(72.5)
+    assert payload["verdict"] == "Pass"
+    assert payload["veto_triggered"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_parses_json_payload_with_explanatory_text() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+Here is the evaluation. I found one unrelated example first: {"ignored": true}
+
+{
+  "score": 23.4,
+  "verdict": "Fail",
+  "veto_triggered": true,
+  "has_evidence": true
+}
+
+The candidate should not pass.
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(23.4)
+    assert payload["verdict"] == "Fail"
+    assert payload["veto_triggered"] is True
+    assert payload["has_evidence"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_prefers_complete_judge_payload_over_nested_score_objects() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+The groundedness dimension is:
+
+```json
+{
+  "score": 3,
+  "weight": 0.25,
+  "evidence": ["partial support"],
+  "rationale": "This is only a nested dimension object."
+}
+```
+
+Final report:
+
+```json
+{
+  "task_id": "case-1",
+  "score": 74.6,
+  "verdict": "Pass",
+  "veto_triggered": false,
+  "has_evidence": true,
+  "evidence_block_count": 5,
+  "A1_groundedness": 3,
+  "A2_completeness": 5,
+  "A3_relevance": 5,
+  "A4_readability": 4,
+  "B1_tool_use": 3,
+  "B2_efficiency": 3,
+  "B3_compliance": 5,
+  "B4_robustness": 4
+}
+```
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(74.6)
+    assert payload["verdict"] == "Pass"
+    assert payload["A1_groundedness"] == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_resolves_read_only_artifact_requests(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "evidence.txt"
+    artifact_path.write_text("artifact evidence content", encoding="utf-8")
+    calls: list[str] = []
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        calls.append(prompt)
+        payload = json.loads(prompt)
+        if len(calls) == 1:
+            return {
+                "artifact_read_requests": [
+                    {
+                        "path": str(artifact_path),
+                        "max_chars": 200,
+                    }
+                ]
+            }
+        assert payload["artifact_read_results"][0]["content"] == "artifact evidence content"
+        return {
+            "score": 88.0,
+            "verdict": "Pass",
+            "veto_triggered": False,
+        }
+
+    prompt = {
+        "artifact_backed_evidence": {
+            "mode": "read_only_artifact_index",
+            "read_policy": {
+                "read_only": True,
+                "external_network_allowed": False,
+                "mutation_allowed": False,
+            },
+            "artifacts": [
+                {
+                    "kind": "source_artifact",
+                    "path": str(artifact_path),
+                    "available": True,
+                }
+            ],
+        },
+        "required_output_schema": {"score": "number"},
+    }
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(88.0)
+    assert payload["verdict"] == "Pass"
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_denies_artifact_reads_outside_index(tmp_path: Path) -> None:
+    allowed_path = tmp_path / "allowed.txt"
+    denied_path = tmp_path / "denied.txt"
+    allowed_path.write_text("allowed evidence", encoding="utf-8")
+    denied_path.write_text("denied evidence", encoding="utf-8")
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        payload = json.loads(prompt)
+        if "artifact_read_results" not in payload:
+            return {"artifact_read_requests": [{"path": str(denied_path)}]}
+        result = payload["artifact_read_results"][0]
+        assert result["status"] == "denied"
+        assert result["reason"] == "path_not_in_artifact_index"
+        assert "content" not in result
+        return {"score": 10.0, "verdict": "Fail"}
+
+    prompt = {
+        "artifact_backed_evidence": {
+            "mode": "read_only_artifact_index",
+            "read_policy": {
+                "read_only": True,
+                "external_network_allowed": False,
+                "mutation_allowed": False,
+            },
+            "artifacts": [
+                {
+                    "kind": "source_artifact",
+                    "path": str(allowed_path),
+                    "available": True,
+                }
+            ],
+        },
+    }
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(10.0)
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_accumulates_multi_round_artifact_reads(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "first.txt"
+    second_path = tmp_path / "second.txt"
+    first_path.write_text("first evidence", encoding="utf-8")
+    second_path.write_text("second evidence", encoding="utf-8")
+    calls: list[dict] = []
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        payload = json.loads(prompt)
+        calls.append(payload)
+        results = payload.get("artifact_read_results") or []
+        if len(results) == 0:
+            return {"artifact_read_requests": [{"path": str(first_path)}]}
+        if len(results) == 1:
+            assert results[0]["content"] == "first evidence"
+            return {"artifact_read_requests": [{"path": str(second_path)}]}
+        assert [result["content"] for result in results] == [
+            "first evidence",
+            "second evidence",
+        ]
+        return {"score": 91.0, "verdict": "Pass"}
+
+    prompt = {
+        "artifact_backed_evidence": {
+            "mode": "read_only_artifact_index",
+            "read_policy": {
+                "read_only": True,
+                "external_network_allowed": False,
+                "mutation_allowed": False,
+            },
+            "artifacts": [
+                {"kind": "source_artifact", "path": str(first_path), "available": True},
+                {"kind": "source_artifact", "path": str(second_path), "available": True},
+            ],
+        },
+    }
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert payload["score"] == pytest.approx(91.0)
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_uses_schema_to_select_generic_json_payload() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+Intermediate calculation:
+
+```json
+{"score": 3, "weight": 0.25, "rationale": "not the payload"}
+```
+
+Final answer:
+
+```json
+{"decision": "accept", "confidence": 0.82}
+```
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    payload = await backend.judge(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(
+            suite_id="generic-json-judge",
+            judge_schema=JudgeSchemaDef(output_model=GenericJudgeOutput),
+        ),
+    )
+
+    assert payload == {"decision": "accept", "confidence": 0.82}
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_does_not_fallback_when_schema_matches_no_json_payload() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return """
+```json
+{"has_evidence": true, "evidence_block_count": 3}
+```
+"""
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    with pytest.raises(ValueError, match="no JSON object matches judge schema"):
+        await backend.judge(
+            case_input={"query": "evaluate"},
+            target={"answer": "done"},
+            suite=EvalSuiteDef(
+                suite_id="generic-json-judge",
+                judge_schema=JudgeSchemaDef(output_model=GenericJudgeOutput),
+            ),
+        )
 
 
 @pytest.mark.asyncio

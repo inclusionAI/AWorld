@@ -21,7 +21,12 @@ from aworld.core.tool.action_template import ACTION_TEMPLATE
 from aworld.core.tool.base import ToolFactory
 from aworld.core.tool.tool_template import TOOL_TEMPLATE
 from aworld.logs.util import logger
-from aworld.tools import LOCAL_TOOLS_ENV_VAR, encode_local_tool_entry
+from aworld.tools import (
+    LOCAL_TOOLS_ENV_VAR,
+    encode_local_tool_entries,
+    encode_local_tool_entry,
+    prune_missing_local_tool_entries,
+)
 
 
 GENERATED_TOOL_DIR_ENV_VAR = "AWORLD_TOOL_TMP_DIR"
@@ -235,6 +240,8 @@ def function_to_tool(
 
         # write to AWorld environ variables,
         val = os.environ.get(LOCAL_TOOLS_ENV_VAR, "")
+        kept_entries, _ = prune_missing_local_tool_entries(val)
+        val = encode_local_tool_entries(kept_entries)
         if val:
             val = val + ";"
         os.environ[LOCAL_TOOLS_ENV_VAR] = val + encode_local_tool_entry(

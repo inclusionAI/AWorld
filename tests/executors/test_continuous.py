@@ -53,3 +53,37 @@ async def test_run_iteration_uses_active_steering_in_terminal_mode(
     assert captured["active_steering_kwargs"]["agent_name"] == "Aworld"
     assert captured["active_steering_kwargs"]["executor_instance"] is fake_executor
     assert captured["chat_kwargs"]["requested_skill_names"] == ["browser-use"]
+
+
+@pytest.mark.asyncio
+async def test_run_iteration_carries_task_response_trajectory() -> None:
+    full_trajectory = [
+        {
+            "id": "step-1",
+            "state": {"messages": [{"role": "assistant", "content": "evidence"}]},
+            "action": {"content": "done", "tool_calls": [{"name": "browser"}]},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    async def fake_chat(prompt: str, **kwargs):
+        return "done"
+
+    fake_executor = SimpleNamespace(
+        chat=fake_chat,
+        session_id="sess-1",
+        last_task_response=SimpleNamespace(
+            trajectory=full_trajectory,
+            llm_calls=[{"model": "test-model"}],
+        ),
+    )
+    continuous = ContinuousExecutor(
+        fake_executor,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    result = await continuous.run_iteration(1, "hello", agent_name="Aworld")
+
+    assert result["trajectory_capture_mode"] == "task_response"
+    assert result["trajectory"] == full_trajectory
+    assert result["llm_calls"] == [{"model": "test-model"}]

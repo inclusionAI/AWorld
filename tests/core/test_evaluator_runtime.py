@@ -112,6 +112,7 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
         kind="answer",
         judge_agent=str(judge_agent),
         output=str(output),
+        judge_timeout_seconds=12.5,
     )
 
     flow = captured["flow"]
@@ -120,9 +121,37 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
     assert flow.suite.cases[0].case_id == "case-1"
     assert flow.suite.cases[0].input == {"input": "question"}
     assert flow.suite.judge_backend.backend_id == "source-agent-md"
+    assert flow.suite.judge_backend.timeout_seconds == 12.5
     assert report["source_selection"]["kind"] == "answer"
+    assert report["source_selection"]["judge_timeout_seconds"] == 12.5
     assert report["automation"]["source_kind"] == "answer"
     assert output.exists()
+
+
+def test_source_file_judge_agent_uses_direct_instruction_backend(tmp_path: Path) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text(
+        "---\nname: judge\n---\nReturn JSON only.\n",
+        encoding="utf-8",
+    )
+
+    suite = _build_source_suite(
+        kind="answer",
+        input_path=input_path,
+        judge_agent_path=judge_agent,
+        task_id=None,
+        id_field="id",
+        task_field="input",
+        answer_field="answer",
+        out_dir=str(tmp_path),
+    )
+
+    assert suite.judge_backend.backend_id == "source-agent-md"
+    assert suite.judge_backend.executor is None
+    assert "Return JSON only." in suite.judge_backend.system_prompt
+    assert "Agent loaded from" not in suite.judge_backend.system_prompt
 
 
 def test_run_evaluator_source_cli_supports_cli_judge_agent_name(
@@ -570,6 +599,46 @@ def test_trajectory_source_gate_consumes_veto_signal(tmp_path: Path) -> None:
     assert any(condition["metric_name"] == "veto_triggered" for condition in decision.failed_conditions)
 
 
+def test_trajectory_source_judge_system_prompt_prefers_artifact_backed_contract(
+    tmp_path: Path,
+) -> None:
+    task_id = "task-contract"
+    trajectory = [
+        {
+            "state": {"input": {"content": "question"}, "messages": []},
+            "meta": {"step": 1},
+            "action": {"content": "final", "is_agent_finished": "True"},
+        }
+    ]
+    input_path = tmp_path / "trajectory.log"
+    input_path.write_text(
+        repr({"task_id": task_id, "is_sub_task": False, "trajectory": json.dumps(trajectory)}) + "\n",
+        encoding="utf-8",
+    )
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text(
+        "---\nname: judge\n---\nParse TRAJECTORY_LOG yourself before scoring.\n",
+        encoding="utf-8",
+    )
+
+    suite = _build_source_suite(
+        kind="trajectory",
+        input_path=input_path,
+        judge_agent_path=judge_agent,
+        task_id=task_id,
+        id_field="id",
+        task_field="input",
+        answer_field="answer",
+        out_dir=str(tmp_path),
+    )
+
+    system_prompt = suite.judge_backend.system_prompt
+    assert system_prompt.startswith("AWorld trajectory evaluator runtime contract:")
+    assert "Prefer evidence_digest over artifact_backed_evidence" in system_prompt
+    assert "artifact_read_requests" in system_prompt
+    assert "Parse TRAJECTORY_LOG yourself before scoring" in system_prompt
+
+
 def test_aworld_trajectory_log_without_task_id_builds_task_execution_suite(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -695,6 +764,420 @@ def test_trajectory_prompt_can_use_generated_runtime_trajectory() -> None:
     assert extracted["final_answer"] == "final answer"
     assert extracted["evidence"][0]["content"] == "evidence"
     assert extracted["steps"][0]["tool_calls"] == [{"name": "search", "arguments": "{}"}]
+    runtime_context = prompt["runtime_context"]
+    assert runtime_context["trajectory_log_path"] == ""
+    assert runtime_context["task_id"] == "case-1"
+    assert runtime_context["TRAJECTORY_LOG"] == ""
+    assert runtime_context["TASK_ID"] == "case-1"
+    assert runtime_context["OUT_DIR"] == ""
+    contract = prompt["evaluation_runtime_contract"]
+    assert contract["inputs_are_complete"] is True
+    assert contract["primary_evaluation_input"] == "evidence_digest"
+    assert contract["secondary_evaluation_input"] == "artifact_backed_evidence"
+    assert contract["bounded_prompt_input"] == "extracted_trajectory"
+    assert contract["do_not_request_missing_parameters"] is True
+    assert contract["output_format"] == "single_json_object"
+    assert "Do not ask the user for TRAJECTORY_LOG" in prompt["instruction"]
+    assert "Return only one compact JSON object" in prompt["instruction"]
+    assert "Do not include analysis" in prompt["instruction"]
+    assert "Do not include markdown" in prompt["instruction"]
+    assert prompt["evidence_digest"]["mode"] == "judge_ready_evidence_digest"
+    assert prompt["evidence_digest"]["entries"][0]["evidence"]["excerpt"] == "evidence"
+
+
+def test_build_trajectory_prompt_includes_runtime_context_from_source_target() -> None:
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            case_input={"task_id": "task-1", "trajectory_log": "/tmp/trajectory.log"},
+            target={
+                "target_path": "/tmp/trajectory.log",
+                "source_out_dir": "/tmp/extracted",
+                "report_output_path": "/tmp/report.json",
+                "artifacts": {
+                    "outcome": {
+                        "extracted_path": None,
+                    }
+                },
+                "trajectory": [
+                    {
+                        "state": {"input": {"content": "question"}, "messages": []},
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {"content": "answer", "is_agent_finished": "True"},
+                    }
+                ],
+            },
+            suite=None,
+        )
+    )
+
+    runtime_context = prompt["runtime_context"]
+    assert runtime_context == {
+        "trajectory_log_path": "/tmp/trajectory.log",
+        "task_id": "task-1",
+        "out_dir": "/tmp/extracted",
+        "report_output_path": "/tmp/report.json",
+        "TRAJECTORY_LOG": "/tmp/trajectory.log",
+        "TASK_ID": "task-1",
+        "OUT_DIR": "/tmp/extracted",
+    }
+
+
+def test_trajectory_prompt_includes_canonical_evidence_bundle(tmp_path: Path) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "source-1",
+                        "artifact_path": str(tmp_path / "source.txt"),
+                        "extraction_method": "bounded_extract",
+                        "bounded_evidence": {
+                            "bounded_excerpt": "short verified evidence",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "trajectory": [
+                    {
+                        "state": {"input": {"content": "question"}, "messages": []},
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {"content": "answer", "is_agent_finished": "True"},
+                    }
+                ],
+                "artifacts": {
+                    "outcome": {
+                        "extracted_path": None,
+                    }
+                },
+                "evidence_bundle_path": str(bundle_path),
+            },
+            suite=None,
+        )
+    )
+
+    bundle = prompt["extracted_trajectory"]["evidence_bundle"]
+    assert bundle["valid"] is True
+    assert bundle["entry_count"] == 1
+    assert bundle["entries"][0]["source_id"] == "source-1"
+    assert bundle["entries"][0]["bounded_evidence"]["bounded_excerpt"] == (
+        "short verified evidence"
+    )
+    assert prompt["evidence_summary"]["canonical_bundle_entry_count"] == 1
+    assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == "evidence_digest"
+    assert prompt["evidence_digest"]["canonical_bundle_valid"] is True
+    assert prompt["evidence_digest"]["entries"][0]["evidence"]["bounded_excerpt"] == (
+        "short verified evidence"
+    )
+
+
+def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "source-1",
+                        "artifact_path": str(tmp_path / "source.txt"),
+                        "extraction_method": "bounded_extract",
+                        "bounded_evidence": {
+                            "claim_support": "compact verified evidence",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    extracted_path = tmp_path / "extracted.json"
+    extracted_path.write_text(
+        json.dumps(
+            {
+                "task_id": "case-1",
+                "question": (
+                    "summarize the source"
+                    "\n\nSelf-evolve replay evidence requirements:\n"
+                    + ("internal replay instruction " * 200)
+                ),
+                "system_prompt_excerpt": "system instructions " * 1000,
+                "steps": [
+                    {
+                        "step": index,
+                        "agent_id": "Aworld",
+                        "tool_calls": [
+                            {
+                                "name": "reader",
+                                "args": {"content": "large argument " * 1000},
+                            }
+                        ],
+                        "assistant_content": "assistant reasoning " * 1000,
+                        "is_agent_finished": index == 3,
+                    }
+                    for index in range(1, 4)
+                ],
+                "final_answer": "answer",
+                "evidence": [
+                    {
+                        "source": "state.messages",
+                        "content": "raw evidence " * 5000,
+                        "original_length": 65000,
+                        "truncated": True,
+                    }
+                    for _ in range(8)
+                ],
+                "evidence_bundle_path": str(bundle_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "summarize the source"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "artifacts": {"outcome": {"extracted_path": str(extracted_path)}},
+            },
+            suite=None,
+        )
+    )
+
+    trajectory = prompt["extracted_trajectory"]
+    evidence = trajectory["evidence"]
+    assert prompt["evidence_summary"]["bundle_first"] is True
+    assert prompt["evidence_summary"]["raw_evidence_content_suppressed"] is True
+    assert trajectory["evidence_bundle"]["valid"] is True
+    assert "Self-evolve replay evidence requirements" not in trajectory["question"]
+    assert trajectory["system_prompt_excerpt"] == ""
+    assert len(evidence) <= 3
+    assert all("content" not in item for item in evidence)
+    assert all(len(step.get("assistant_content", "")) <= 200 for step in trajectory["steps"])
+    assert all(
+        "args" not in call
+        for step in trajectory["steps"]
+        for call in step.get("tool_calls", [])
+    )
+    artifact_backed = prompt["artifact_backed_evidence"]
+    assert artifact_backed["mode"] == "read_only_artifact_index"
+    assert artifact_backed["prompt_payload_is_bounded"] is True
+    assert artifact_backed["read_policy"]["external_network_allowed"] is False
+    assert artifact_backed["read_policy"]["mutation_allowed"] is False
+    assert {
+        (artifact["kind"], artifact["path"])
+        for artifact in artifact_backed["artifacts"]
+    } >= {
+        ("extracted_trajectory_json", str(extracted_path)),
+        ("canonical_evidence_bundle", str(bundle_path)),
+        ("source_artifact", str(tmp_path / "source.txt")),
+    }
+    evidence_digest = prompt["evidence_digest"]
+    assert prompt["evaluation_runtime_contract"]["primary_evaluation_input"] == "evidence_digest"
+    assert evidence_digest["mode"] == "judge_ready_evidence_digest"
+    assert evidence_digest["canonical_bundle_valid"] is True
+    assert evidence_digest["entry_count"] == 1
+    assert evidence_digest["entries"] == [
+        {
+            "source_id": "source-1",
+            "artifact_path": str(tmp_path / "source.txt"),
+            "extraction_method": "bounded_extract",
+            "evidence": {"claim_support": "compact verified evidence"},
+        }
+    ]
+    assert evidence_digest["artifact_read_available"] is True
+    assert "raw evidence" not in json.dumps(evidence_digest, ensure_ascii=False)
+    assert prompt["evaluation_runtime_contract"]["may_use_read_only_artifact_access"] is True
+    assert prompt["evaluation_runtime_contract"]["do_not_call_external_tools"] is True
+    assert len(json.dumps(prompt, ensure_ascii=False)) < 30000
+
+
+def test_trajectory_prompt_artifact_index_lists_all_bundle_source_artifacts(
+    tmp_path: Path,
+) -> None:
+    entries = []
+    expected_paths = set()
+    for index in range(7):
+        source_path = tmp_path / f"source-{index}.txt"
+        source_path.write_text(f"source evidence {index}", encoding="utf-8")
+        expected_paths.add(str(source_path))
+        entries.append(
+            {
+                "source_id": f"source-{index}",
+                "artifact_path": str(source_path),
+                "extraction_method": "bounded_extract",
+                "bounded_evidence": {"excerpt": f"bounded evidence {index}"},
+            }
+        )
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": entries,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "trajectory": [
+                    {
+                        "state": {"input": {"content": "question"}, "messages": []},
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {"content": "answer", "is_agent_finished": "True"},
+                    }
+                ],
+                "evidence_bundle_path": str(bundle_path),
+            },
+            suite=None,
+        )
+    )
+
+    prompt_entries = prompt["extracted_trajectory"]["evidence_bundle"]["entries"]
+    source_artifact_paths = {
+        artifact["path"]
+        for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+        if artifact["kind"] == "source_artifact"
+    }
+    assert len(prompt_entries) == 5
+    assert source_artifact_paths == expected_paths
+    assert prompt["evidence_summary"]["canonical_bundle_entry_count"] == 7
+
+
+def test_trajectory_prompt_artifact_index_rejects_bundle_paths_outside_trusted_roots(
+    tmp_path: Path,
+) -> None:
+    trusted_dir = tmp_path / "trusted"
+    trusted_dir.mkdir()
+    trusted_source = trusted_dir / "source.txt"
+    trusted_source.write_text("trusted evidence", encoding="utf-8")
+    untrusted_source = tmp_path / "outside" / "secret.txt"
+    untrusted_source.parent.mkdir()
+    untrusted_source.write_text("secret evidence", encoding="utf-8")
+    bundle_path = trusted_dir / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "trusted",
+                        "artifact_path": str(trusted_source),
+                        "bounded_evidence": {"excerpt": "trusted evidence"},
+                    },
+                    {
+                        "source_id": "untrusted",
+                        "artifact_path": str(untrusted_source),
+                        "bounded_evidence": {"excerpt": "untrusted evidence"},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    extracted_path = trusted_dir / "extracted.json"
+    extracted_path.write_text(
+        json.dumps(
+            {
+                "task_id": "case-1",
+                "question": "question",
+                "steps": [{"step": 1, "is_agent_finished": True}],
+                "final_answer": "answer",
+                "evidence": [],
+                "evidence_bundle_path": str(bundle_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "artifacts": {"outcome": {"extracted_path": str(extracted_path)}},
+            },
+            suite=None,
+        )
+    )
+
+    source_artifact_paths = {
+        artifact["path"]
+        for artifact in prompt["artifact_backed_evidence"]["artifacts"]
+        if artifact["kind"] == "source_artifact"
+    }
+    assert str(trusted_source) in source_artifact_paths
+    assert str(untrusted_source) not in source_artifact_paths
+
+
+def test_trajectory_prompt_compacts_noisy_evidence_without_losing_quality_signals() -> None:
+    noisy_content = "alpha " * 2000
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "question"},
+            {
+                "case_id": "case-1",
+                "answer": "answer",
+                "trajectory": [
+                    {
+                        "state": {
+                            "input": {"content": "question"},
+                            "messages": [
+                                {
+                                    "role": "tool",
+                                    "content": noisy_content,
+                                }
+                            ],
+                        },
+                        "meta": {"step": 1, "agent_id": "Aworld"},
+                        "action": {"content": "answer", "is_agent_finished": "True"},
+                    }
+                ],
+            },
+            suite=None,
+        )
+    )
+
+    evidence = prompt["extracted_trajectory"]["evidence"][0]
+    evidence_summary = prompt["evidence_summary"]
+    assert len(evidence["content"]) < len(noisy_content)
+    assert evidence["prompt_compacted"] is True
+    assert evidence["original_length"] == len(noisy_content)
+    assert evidence["content"].startswith("alpha")
+    assert "omitted" in evidence["content"]
+    assert evidence_summary["evidence_block_count"] == 1
+    assert evidence_summary["prompt_compacted_count"] == 1
+    assert evidence_summary["total_original_chars"] == len(noisy_content)
+    assert evidence_summary["sources"] == ["state.messages"]
 
 
 def test_run_evaluator_source_cli_passes_source_fields_to_hooks(

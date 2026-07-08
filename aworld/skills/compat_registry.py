@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from aworld.logs.util import logger
+from aworld.skills.release import is_self_evolve_release_visible
 
 
 class CompatSkillRegistry:
@@ -56,6 +57,8 @@ class CompatSkillRegistry:
 
         source_skill_names: list[str] = []
         for skill_name, skill_data in loaded_skills.items():
+            if not is_self_evolve_release_visible(skill_data):
+                continue
             if skill_name in self._skills:
                 if self._conflict_strategy == "raise":
                     raise ValueError(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
@@ -22,6 +23,7 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent-dir", type=str, action="append")
     parser.add_argument("--agent-file", type=str, action="append")
     parser.add_argument("--skill-path", type=str, action="append")
+    parser.add_argument("--emit-trajectory", action="store_true")
 
 
 class RunTopLevelCommand:
@@ -70,7 +72,7 @@ class RunTopLevelCommand:
         if agent_name is None:
             return 0
 
-        asyncio.run(
+        summary = asyncio.run(
             _run_direct_mode(
                 prompt=args.task,
                 agent_name=agent_name,
@@ -87,6 +89,19 @@ class RunTopLevelCommand:
                 agent_files=args.agent_file,
             )
         )
+        if args.emit_trajectory:
+            from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+
+            print(
+                json.dumps(
+                    _trajectory_payload_from_direct_run_summary(
+                        summary,
+                        prompt=args.task,
+                        agent_name=agent_name,
+                    ),
+                    ensure_ascii=False,
+                )
+            )
         return 0
 
     def _resolve_agent_name(self, args) -> str | None:

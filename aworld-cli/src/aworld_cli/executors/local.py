@@ -931,6 +931,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             if not self.console:
                 from .._globals import console as global_console
                 self.console = global_console
+            self.last_task_response = None
 
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):
@@ -1646,6 +1647,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
                 final_task_response = outputs.response() if hasattr(outputs, "response") else None
                 if isinstance(final_task_response, TaskResponse):
+                    self.last_task_response = final_task_response
                     final_answer = _coerce_final_answer(final_task_response.answer)
                     if hook_system_message and hook_system_message not in final_answer:
                         final_answer = f"{hook_system_message}\n{final_answer}".strip()
@@ -1705,6 +1707,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 task_response = final_result[task.id]
                                 if self.console:
                                     self.console.print(f"[dim]📋 TaskResponse type: {type(task_response)}[/dim]")
+                                if isinstance(task_response, TaskResponse):
+                                    self.last_task_response = task_response
                                 
                                 # Try different ways to get the answer
                                 if hasattr(task_response, 'answer'):
