@@ -229,6 +229,7 @@ def run_optimize_cli(
     baseline_replay_repetitions: int | None = None,
     candidate_replay_repetitions: int | None = None,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
+    runtime_skill_activator: Callable[[Any], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
     from_run: str | None = None,
     rerun_evaluator: bool = False,
@@ -288,6 +289,8 @@ def run_optimize_cli(
         ),
         replay_enabled=apply == "auto_verified",
         runtime_registry_refresher=runtime_registry_refresher,
+        runtime_skill_activator=runtime_skill_activator
+        or _default_runtime_skill_activator(),
         progress_callback=progress_callback,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
@@ -296,6 +299,27 @@ def run_optimize_cli(
             candidate_replay_repetitions=candidate_replay_repetitions,
         ),
     )
+
+
+def _default_runtime_skill_activator() -> Callable[[Any], Mapping[str, Any]]:
+    def activate(candidate: Any) -> Mapping[str, Any]:
+        from aworld_cli.core.skill_state_manager import SkillStateManager
+
+        target = getattr(candidate, "target", None)
+        skill_name = getattr(target, "target_id", None)
+        if not skill_name:
+            return {"status": "skipped", "reason": "candidate target has no skill name"}
+        manager = SkillStateManager()
+        was_enabled = manager.is_enabled(str(skill_name))
+        manager.enable_skill(str(skill_name))
+        return {
+            "status": "enabled",
+            "skill_name": str(skill_name),
+            "was_enabled": was_enabled,
+            "enabled": manager.is_enabled(str(skill_name)),
+        }
+
+    return activate
 
 
 def _auto_verified_default(
