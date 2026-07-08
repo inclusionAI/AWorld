@@ -19,7 +19,7 @@
 - [x] 1.7 Define lineage memory schema with content, semantic, and lesson-set
   fingerprints.
 - [x] 1.8 Define release normalization input/output metadata.
-- [ ] 1.9 Add artifact layout documentation and report links for trajectory
+- [x] 1.9 Add artifact layout documentation and report links for trajectory
   sets, lessons, population, lineage, and normalized release content.
 - [ ] 1.10 Define evidence minimization, redaction, and untrusted-input handling
   contracts for lessons, optimizer prompts, reports, candidate content, and
@@ -124,7 +124,7 @@
 - [x] 7.1 Add release normalization pass before verified apply.
 - [x] 7.2 Remove task ids, source trajectory ids, baseline/candidate scoring
   language, and evaluator rubric details from runtime instruction bodies.
-- [ ] 7.3 Preserve release metadata in front matter or sidecar metadata.
+- [x] 7.3 Preserve release metadata in front matter or sidecar metadata.
 - [x] 7.4 Preserve runtime behavior constraints that caused gates to pass.
 - [ ] 7.5 Preserve a mapping from each release-normalized runtime constraint back
   to lesson ids, including harness diagnostics when they were converted into a
@@ -153,9 +153,9 @@
   under the existing `.aworld/self_evolve/<run_id>/` artifact layout.
 - [ ] 8.4 Add report sections for trajectory set, lesson extraction, population,
   harness diagnostics, lineage, no-op, and release normalization.
-- [ ] 8.5 Label acceptance confidence as single-trajectory, repeated
+- [x] 8.5 Label acceptance confidence as single-trajectory, repeated
   single-case replay, trajectory-set validation, or held-out validation.
-- [ ] 8.6 Ensure no-op optimize results do not report `succeeded` as if a skill
+- [x] 8.6 Ensure no-op optimize results do not report `succeeded` as if a skill
   was applied.
 - [ ] 8.7 Add tests for no-op reporting, trajectory-set reporting, and
   normalized accepted candidate reporting.
@@ -179,20 +179,20 @@
 
 - [x] 10.1 Document single-trajectory versus trajectory-set optimize modes.
 - [x] 10.2 Document trajectory-set file format and prior-run inclusion.
-- [ ] 10.3 Document lesson memory, harness diagnostics, lineage, no-op, and
+- [x] 10.3 Document lesson memory, harness diagnostics, lineage, no-op, and
   release normalization.
 - [ ] 10.4 Update built-in `self_evolve` skill guidance after framework tests
   pass.
-- [ ] 10.5 Document that domain-specific skills such as web-content grounding are
+- [x] 10.5 Document that domain-specific skills such as web-content grounding are
   examples of learned targets, not framework logic.
 
 ## 11. Verification
 
 - [x] 11.1 Run focused self-evolve unit tests.
-- [ ] 11.2 Run CLI optimize and slash command tests.
-- [ ] 11.3 Run evaluator runtime tests to confirm existing replay/evaluator
+- [x] 11.2 Run CLI optimize and slash command tests.
+- [x] 11.3 Run evaluator runtime tests to confirm existing replay/evaluator
   behavior is not regressed.
-- [ ] 11.4 Run skill release visibility tests.
+- [x] 11.4 Run skill release visibility tests.
 - [ ] 11.5 Manually verify a small trajectory-set optimize flow using at least
   three related trajectories: original baseline, accepted-skill follow-up, and
   a rejected candidate run.

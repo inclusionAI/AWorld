@@ -111,6 +111,66 @@ async def test_auto_verified_no_candidate_is_rejected(tmp_path) -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "summarize page"}},
+            "action": {"content": "summary failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-1",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="task-1",
+    )
+
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-proposal-no-candidate",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-proposal-no-candidate"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert result.run.status.value == "rejected"
+    assert report["status"] == "rejected"
+    assert report["selected_candidate_id"] is None
+    assert report["gate_results"] == [
+        {
+            "gate_name": "no_candidate",
+            "passed": False,
+            "reason": "optimizer did not produce a candidate",
+            "details": None,
+        }
+    ]
+
+
 def test_iteration_validation_feedback_includes_baseline_comparison_metrics() -> None:
     candidate = CandidateVariant(
         candidate_id="cand-1",
@@ -577,6 +637,9 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     )
     assert "Verified guidance." in report["release_normalization"]["preserved_runtime_constraints"]
     assert report["release_checklist"]["status"] == "passed"
+    assert report["acceptance_confidence"]["confidence"] == "verified"
+    assert report["acceptance_confidence"]["verification_mode"] == "held_out"
+    assert report["acceptance_confidence"]["passed"] is True
     assert {
         check["check_id"]: check["status"]
         for check in report["release_checklist"]["checks"]

@@ -117,6 +117,10 @@ Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
 - `gate_results`: low-level gate decisions.
 - `release_checklist`: grouped release checks derived from gates.
 - `content_quality_diagnostics`: non-blocking publication/content quality diagnostics when evaluator metrics provide them.
+- `optimizer_lineage`: candidate lineage artifact links, including content, semantic, and lesson-set fingerprints when available.
+- `lessons`: normalized lesson artifact links and counts.
+- `harness_diagnostics`: advisory framework diagnostic artifact links and counts.
+- `release_normalization`: normalized release fingerprint, pre-normalization fingerprint, preserved runtime constraints, and verification status.
 - `replay_path`: candidate replay artifact path.
 - `evaluator_report_paths`: evaluator output artifacts.
 - `post_apply`: accepted or rolled-back apply details, backup path, journal path, runtime activation, and registry refresh status.
