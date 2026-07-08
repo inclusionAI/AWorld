@@ -86,6 +86,17 @@ class FilesystemSelfEvolveStore:
         self._write_json(path, lineage)
         return path
 
+    def write_lesson_records(self, run_id: str, lessons: tuple[Any, ...]) -> Path:
+        lessons_dir = self.run_path(run_id) / "lessons"
+        lessons_dir.mkdir(parents=True, exist_ok=True)
+        path = lessons_dir / "lessons.jsonl"
+        lines = [
+            json.dumps(to_json_dict(lesson), ensure_ascii=False, sort_keys=True)
+            for lesson in lessons
+        ]
+        path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        return path
+
     def write_judge_record(self, run_id: str, record: JudgeRecord) -> Path:
         self._validate_id(record.backend_id, "backend_id")
         judge_dir = self.run_path(run_id) / "judges"

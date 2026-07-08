@@ -299,6 +299,88 @@ async def test_runner_persists_proposal_artifacts_without_mutating_skill_target(
 
 
 @pytest.mark.asyncio
+async def test_runner_writes_lesson_artifacts_from_validation_feedback(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve evidence handling."}},
+            "action": {"content": "Evidence was compacted."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="lesson-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="lesson-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nNew guidance.\n",
+            "rationale": "Try a bounded evidence path.",
+        }
+
+    class LessonEvaluationBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 90.0, "A1_groundedness": 5.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 60.0,
+                    "A1_groundedness": 2.0,
+                    "evidence_compacted": True,
+                    "evidence_incomplete": True,
+                    "run_id": "run-lessons",
+                    "task_id": "lesson-task",
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=LessonEvaluationBackend(),
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-lessons",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    report = json.loads((store.run_path("run-lessons") / "report.json").read_text())
+    lessons_path = Path(report["lessons"]["path"])
+    lesson_lines = [
+        json.loads(line)
+        for line in lessons_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert report["lessons"]["count"] == len(lesson_lines)
+    assert report["lessons"]["types"]["failure_memory"] == 1
+    assert report["lessons"]["types"]["required_runtime_behavior"] == 1
+    assert lesson_lines[0]["source_task_ids"] == ["lesson-task"]
+    assert "score_improvement" in lesson_lines[0]["metrics"]["failed_gates"]
+    assert "artifact_first" in lesson_lines[1]["metrics"]["required_behaviors"]
+
+
+@pytest.mark.asyncio
 async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_apply_gate(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
