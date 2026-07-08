@@ -74,6 +74,12 @@ from aworld.self_evolve.optimizers import (
     OptimizerResult,
     TraceReflectiveLLMMutator,
 )
+from aworld.self_evolve.population import (
+    CandidateStrategy,
+    PopulationBudget,
+    RankedCandidateStrategy,
+    rank_candidate_strategies,
+)
 from aworld.self_evolve.overlay import (
     SkillOverlayArtifact,
     cleanup_self_evolve_overlays,
@@ -134,6 +140,7 @@ __all__ = [
     "CandidateReplayRequest",
     "CandidateReplayResult",
     "CandidateConfidenceDecision",
+    "CandidateStrategy",
     "CandidateVariant",
     "CommandVerificationBackend",
     "CostLatencyRegressionGate",
@@ -164,12 +171,14 @@ __all__ = [
     "OptimizerRequest",
     "OptimizerResult",
     "PromptSectionGate",
+    "PopulationBudget",
     "ProtectedPathGate",
     "RequiredVerificationGate",
     "ReplayCostEstimate",
     "ReplayExecutionRequest",
     "ReplayExecutionResult",
     "ReplayVariantResult",
+    "RankedCandidateStrategy",
     "SelfEvolveRunner",
     "SelfEvolveRunnerResult",
     "SelfEvolveDataset",
@@ -214,6 +223,7 @@ __all__ = [
     "extract_lesson_records",
     "optimize_explicit_target",
     "optimize_from_cli_request",
+    "rank_candidate_strategies",
     "load_batch_config_eval_cases",
     "build_trace_pack",
     "load_jsonl_eval_cases",
