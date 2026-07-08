@@ -49,6 +49,7 @@ from aworld.self_evolve.gates import (
     TokenLimitGate,
     TrustProvenanceGate,
 )
+from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
@@ -370,6 +371,16 @@ class SelfEvolveRunner:
                     failed_duplicate_gates = [
                         gate for gate in duplicate_gates if not gate.passed
                     ]
+                    duplicate_feedback = EvaluationSummary(
+                        variant_id=skipped_candidate.candidate_id,
+                        metrics={
+                            "failed_gates": [
+                                gate.gate_name for gate in failed_duplicate_gates
+                            ],
+                            "candidate_status": "rejected",
+                        },
+                        dataset_split="validation",
+                    )
                     iteration_reports.append(
                         _iteration_report_item(
                             iteration_number=iteration_index + 1,
@@ -392,21 +403,11 @@ class SelfEvolveRunner:
                             replay_result=None,
                             replay_dataset=None,
                             gate_results=duplicate_gates,
+                            feedback=(duplicate_feedback,),
                             status="rejected",
                         )
                     )
-                    skipped_feedback.append(
-                        EvaluationSummary(
-                            variant_id=skipped_candidate.candidate_id,
-                            metrics={
-                                "failed_gates": [
-                                    gate.gate_name for gate in failed_duplicate_gates
-                                ],
-                                "candidate_status": "rejected",
-                            },
-                            dataset_split="validation",
-                        )
-                    )
+                    skipped_feedback.append(duplicate_feedback)
                 if skipped_feedback:
                     validation_feedback = tuple(skipped_feedback)
                     continue
@@ -545,6 +546,24 @@ class SelfEvolveRunner:
                 apply_policy=apply_policy,
                 gate_results=report["gate_results"],
             )
+        lesson_records = extract_lesson_records(
+            tuple(
+                feedback_item
+                for state in iteration_states
+                for feedback_item in state.get("feedback", ())
+            ),
+            target_scope={
+                "target_type": target.identity.target_type,
+                "target_id": target.identity.target_id,
+            },
+        )
+        if lesson_records:
+            lessons_path = self.store.write_lesson_records(run_id, lesson_records)
+            report["lessons"] = {
+                "path": str(lessons_path),
+                "count": len(lesson_records),
+                "types": _lesson_type_counts(lesson_records),
+            }
         content_quality_metrics = (
             dict(held_out_summary.metrics)
             if held_out_summary is not None
@@ -863,6 +882,13 @@ class SelfEvolveRunner:
             held_out_summary=held_out_summary,
             failed_gates=failed_gates,
         )
+        feedback = _iteration_validation_feedback(
+            candidate=candidate,
+            baseline_summary=baseline_summary,
+            candidate_summary=candidate_summary,
+            held_out_summary=held_out_summary,
+            failed_gates=failed_gates,
+        )
         state = _iteration_state(
             candidate=candidate,
             baseline_summary=baseline_summary,
@@ -871,14 +897,8 @@ class SelfEvolveRunner:
             replay_result=replay_result,
             replay_dataset=replay_dataset,
             gate_results=gate_results,
+            feedback=feedback,
             status=status,
-        )
-        feedback = _iteration_validation_feedback(
-            candidate=candidate,
-            baseline_summary=baseline_summary,
-            candidate_summary=candidate_summary,
-            held_out_summary=held_out_summary,
-            failed_gates=failed_gates,
         )
         return state, report_item, feedback
 
@@ -2396,6 +2416,7 @@ def _iteration_state(
     replay_result: CandidateReplayResult | None,
     replay_dataset: SelfEvolveDataset | None,
     gate_results: list[GateResult],
+    feedback: tuple[EvaluationSummary, ...],
     status: str,
 ) -> dict[str, object]:
     return {
@@ -2406,8 +2427,16 @@ def _iteration_state(
         "replay_result": replay_result,
         "replay_dataset": replay_dataset,
         "gate_results": gate_results,
+        "feedback": feedback,
         "status": status,
     }
+
+
+def _lesson_type_counts(lessons: tuple[LessonRecord, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for lesson in lessons:
+        counts[lesson.lesson_type] = counts.get(lesson.lesson_type, 0) + 1
+    return counts
 
 
 def _baseline_comparison_feedback_metrics(

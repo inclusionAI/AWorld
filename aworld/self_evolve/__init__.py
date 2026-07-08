@@ -62,6 +62,10 @@ from aworld.self_evolve.judge import (
     JudgeVerdict,
     build_judge_backend,
 )
+from aworld.self_evolve.lessons import (
+    LessonRecord,
+    extract_lesson_records,
+)
 from aworld.self_evolve.optimizers import (
     CandidateOptimizer,
     DSPyGEPAOptimizer,
@@ -150,6 +154,7 @@ __all__ = [
     "JudgeOnlySignalGate",
     "JudgeRecord",
     "JudgeVerdict",
+    "LessonRecord",
     "LLMTargetDiagnosis",
     "DSPyGEPAOptimizer",
     "DSPyMIPROOptimizer",
@@ -206,6 +211,7 @@ __all__ = [
     "determine_candidate_confidence",
     "estimate_replay_cost",
     "evaluate_baseline_and_candidate",
+    "extract_lesson_records",
     "optimize_explicit_target",
     "optimize_from_cli_request",
     "load_batch_config_eval_cases",
