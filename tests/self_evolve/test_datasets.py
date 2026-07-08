@@ -147,7 +147,24 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
             case_id="current-task",
             input={"content": "Fix generated report."},
             trace_pack=current_dataset.cases[0].trace_pack,
-            source={"kind": "current_trajectory", "task_id": "current-task"},
+            metadata={
+                "trajectory_set": {
+                    "set_id": "current_trajectory:current-task",
+                    "target": None,
+                    "member": {
+                        "member_id": "current-task",
+                        "role": "baseline",
+                        "task_id": "current-task",
+                    },
+                }
+            },
+            source={
+                "kind": "current_trajectory",
+                "task_id": "current-task",
+                "set_id": "current_trajectory:current-task",
+                "member_id": "current-task",
+                "role": "baseline",
+            },
         ),
     )
     assert current_dataset.cases[0].trace_pack.task_id == "current-task"
@@ -166,6 +183,11 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
 
     assert len(log_dataset.cases) == 2
     assert log_dataset.cases[0].trace_pack.source_kind == "trajectory_log"
+    assert log_dataset.cases[0].source["role"] == "baseline"
+    assert log_dataset.cases[0].metadata["trajectory_set"]["member"]["role"] == "baseline"
+    assert str(log_dataset.cases[0].metadata["trajectory_set"]["set_id"]).startswith(
+        "trajectory_log:"
+    )
     assert log_dataset.recipe.source["path"] == str(fixture_log)
     assert log_dataset.recipe.source["case_count"] == 2
 

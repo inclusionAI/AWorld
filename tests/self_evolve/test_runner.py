@@ -233,7 +233,8 @@ def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["target"]["target_id"] == "chosen"
     assert report["target_selection"]["diagnostics"]["target_inference"] == "bypassed"
-    assert "trajectory_set" not in report
+    assert report["trajectory_set"]["member_roles"] == {"baseline": 2}
+    assert "auto_grouping" not in report["trajectory_set"]
 
 
 @pytest.mark.asyncio
@@ -4616,6 +4617,9 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
     assert report["target"]["target_id"] == "agent-browser"
     assert report["target_selection"]["confidence"] >= 0.8
     assert report["target_selection"]["evidence_step_ids"]
+    assert report["trajectory_set"]["source_kind"] == "trajectory_log"
+    assert report["trajectory_set"]["member_roles"] == {"baseline": 1}
+    assert report["trajectory_set"]["case_count"] == 1
     assert report["candidate_ids"]
     assert report["selected_candidate_id"] == report["candidate_ids"][0]
 

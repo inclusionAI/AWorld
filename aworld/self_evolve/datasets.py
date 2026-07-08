@@ -142,8 +142,18 @@ def build_dataset_from_source(
             EvalCase(
                 case_id=trace_pack.task_id,
                 input=_trace_pack_input(trace_pack),
+                metadata=_baseline_trajectory_set_metadata(
+                    set_id=f"current_trajectory:{trace_pack.task_id}",
+                    trace_pack=trace_pack,
+                ),
                 trace_pack=trace_pack,
-                source={"kind": "current_trajectory", "task_id": trace_pack.task_id},
+                source={
+                    "kind": "current_trajectory",
+                    "task_id": trace_pack.task_id,
+                    "set_id": f"current_trajectory:{trace_pack.task_id}",
+                    "member_id": trace_pack.task_id,
+                    "role": "baseline",
+                },
             ),
         )
         cases = _filter_and_limit_cases(cases, source_config=source_config)
@@ -161,16 +171,24 @@ def build_dataset_from_source(
             raise ValueError("trajectory_log eval source requires path")
         trajectory_path = Path(source_config.path).expanduser()
         packs = trace_packs_from_trajectory_log(trajectory_path)
+        set_id = f"trajectory_log:{_file_fingerprint(trajectory_path)}"
         cases = _filter_and_limit_cases(
             (
                 EvalCase(
                     case_id=pack.task_id,
                     input=_trace_pack_input(pack),
+                    metadata=_baseline_trajectory_set_metadata(
+                        set_id=set_id,
+                        trace_pack=pack,
+                    ),
                     trace_pack=pack,
                     source={
                         "kind": "trajectory_log",
                         "path": str(trajectory_path),
                         "task_id": pack.task_id,
+                        "set_id": set_id,
+                        "member_id": pack.task_id,
+                        "role": "baseline",
                     },
                 )
                 for pack in packs
@@ -489,6 +507,24 @@ def _source_recipe(
     if source_config.session_id is not None:
         source["session_id"] = source_config.session_id
     return source
+
+
+def _baseline_trajectory_set_metadata(
+    *,
+    set_id: str,
+    trace_pack: TracePack,
+) -> Mapping[str, Any]:
+    return {
+        "trajectory_set": {
+            "set_id": set_id,
+            "target": None,
+            "member": {
+                "member_id": trace_pack.task_id,
+                "role": "baseline",
+                "task_id": trace_pack.task_id,
+            },
+        }
+    }
 
 
 def _split_case_ids(case_ids: tuple[str, ...], *, split_seed: str) -> Mapping[str, list[str]]:
