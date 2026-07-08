@@ -593,6 +593,7 @@ class SelfEvolveRunner:
                 "target_type": target.identity.target_type,
                 "target_id": target.identity.target_id,
             },
+            trace_packs=trace_packs,
         )
         if lesson_records:
             lessons_path = self.store.write_lesson_records(run_id, lesson_records)
