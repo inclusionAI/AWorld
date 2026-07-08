@@ -12,7 +12,7 @@ Proposal-only runs:
 aworld-cli optimize --target skill:demo --dataset eval.jsonl
 aworld-cli optimize --target skill:login --from-trajectory trajectory.log --apply proposal
 aworld-cli optimize --task "improve login retry guidance" --from-trajectory trajectory.log
-aworld-cli optimize --from-trajectory-set trajectory-set.json --apply proposal
+aworld-cli optimize --from-trajectory trajectory.log --include-prior-runs --apply proposal
 aworld-cli optimize --from-trajectory-set trajectory-set.json --include-prior-runs --apply proposal
 ```
 
@@ -44,8 +44,8 @@ aworld-cli optimize --from-run <run_id> --rerun-evaluator
 Exactly one evaluation source is normally provided:
 
 - `--dataset <path>`: JSONL eval dataset. Rows may include `input`, `expected_output`, and `verification_command`.
-- `--from-trajectory <path>`: trajectory log used to build trace packs and infer failure patterns.
-- `--from-trajectory-set <path>`: versioned trajectory-set JSON file containing related baseline, candidate replay, accepted follow-up, rejected candidate, or operator-added trajectories.
+- `--from-trajectory <path>`: trajectory log used to build trace packs and infer failure patterns. When the log contains multiple task trajectories, the framework automatically groups them by inferred target/task family before candidate generation so unrelated tasks do not pollute a single candidate.
+- `--from-trajectory-set <path>`: advanced explicit-control input for baseline trajectory collections. Most manual optimize workflows should use `--from-trajectory`; framework-owned accepted, rejected, and replay members are imported from self-evolve run history rather than hand-authored by users.
 - `--from-session <id>`: session-backed dataset construction.
 - `--batch-config <path>`: batch config for a larger request.
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.

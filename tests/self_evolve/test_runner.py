@@ -19,6 +19,7 @@ from aworld.self_evolve.replay import (
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
+    _auto_group_trajectory_log_dataset,
     _default_cli_skill_candidate,
     _default_post_apply_evaluator,
     _include_prior_run_cases,
@@ -84,6 +85,155 @@ def _write_trajectory_log(path: Path, records: list[dict]) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def test_auto_groups_multi_task_trajectory_log_by_inferred_target(tmp_path) -> None:
+    log_path = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        log_path,
+        [
+            {
+                "task_id": "task-alpha",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "alpha task"}},
+                        "action": {"content": "alpha failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-beta",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "beta task"}},
+                        "action": {"content": "beta failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-alpha-2",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "another alpha task"}},
+                        "action": {"content": "alpha followup failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+        ],
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path))
+    )
+    trace_packs = tuple(case.trace_pack for case in dataset.cases if case.trace_pack)
+    alpha_target = SelfEvolveTargetRef("skill", "alpha", str(tmp_path / "alpha.md"))
+    beta_target = SelfEvolveTargetRef("skill", "beta", str(tmp_path / "beta.md"))
+
+    def fake_infer(pack_group, *, workspace_root):
+        pack = pack_group[0]
+        target = beta_target if pack.task_id == "task-beta" else alpha_target
+        return (
+            TargetSelectionReport(
+                selected_target=target,
+                confidence=0.9,
+                evidence_step_ids=(f"{pack.task_id}:step-1",),
+                failure_category="skill",
+                signals=("test_signal",),
+                diagnostics={"task_id": pack.task_id},
+            ),
+            None,
+        )
+
+    grouped_dataset, grouped_trace_packs, grouping = _auto_group_trajectory_log_dataset(
+        dataset,
+        trace_packs,
+        source_config=SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path)),
+        workspace_root=tmp_path,
+        infer_target=fake_infer,
+    )
+
+    assert [case.case_id for case in grouped_dataset.cases] == [
+        "task-alpha",
+        "task-alpha-2",
+    ]
+    assert [pack.task_id for pack in grouped_trace_packs] == [
+        "task-alpha",
+        "task-alpha-2",
+    ]
+    assert grouping["selected_group_id"] == "skill:alpha"
+    assert grouping["group_count"] == 2
+    assert grouping["auto_grouped"] is True
+    assert grouped_dataset.recipe.source["auto_grouping"]["selected_case_ids"] == [
+        "task-alpha",
+        "task-alpha-2",
+    ]
+    assert grouped_dataset.recipe.source["auto_grouping"]["skipped_group_count"] == 1
+
+
+def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    skill_path = tmp_path / "aworld-skills" / "chosen" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: chosen\n---\n# Chosen\n", encoding="utf-8")
+    log_path = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        log_path,
+        [
+            {
+                "task_id": "task-one",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "first task"}},
+                        "action": {"content": "first failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-two",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "second task"}},
+                        "action": {"content": "second failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+        ],
+    )
+
+    def fail_auto_grouping(*args, **kwargs):
+        pytest.fail("explicit --target must not run inferred-target auto grouping")
+
+    monkeypatch.setattr(
+        runner_module,
+        "_auto_group_trajectory_log_dataset",
+        fail_auto_grouping,
+    )
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:chosen",
+        from_trajectory=str(log_path),
+        apply_policy="proposal",
+    )
+
+    assert report_summary["status"] == "succeeded"
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["target"]["target_id"] == "chosen"
+    assert report["target_selection"]["diagnostics"]["target_inference"] == "bypassed"
+    assert "trajectory_set" not in report
 
 
 @pytest.mark.asyncio

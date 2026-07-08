@@ -78,6 +78,14 @@ aworld-cli optimize \
   --apply proposal
 ```
 
+`--from-trajectory` is the default manual entrypoint even when the log contains
+multiple task trajectories. The framework parses the log, infers target/task
+families, and uses an internally selected coherent group for candidate
+generation, replay, and evaluation. Use `--from-trajectory-set` only when a
+caller needs explicit control over baseline trajectory collections. Framework
+owned accepted, rejected, and replay members come from self-evolve run history,
+not from user-authored set files.
+
 Run verified apply for an allowlisted skill target:
 
 ```bash

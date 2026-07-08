@@ -20,6 +20,7 @@ from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
     SelfEvolveEvalSourceConfig,
+    build_dataset_recipe,
     build_dataset_from_source,
 )
 from aworld.self_evolve.diagnostics import extract_harness_diagnostics
@@ -1436,6 +1437,18 @@ def optimize_from_cli_request(
     trace_packs = tuple(
         case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
     )
+    if (
+        infer_target
+        and target is None
+        and source_config.kind == "trajectory_log"
+        and len(trace_packs) > 1
+    ):
+        built_dataset, trace_packs, _ = _auto_group_trajectory_log_dataset(
+            built_dataset,
+            trace_packs,
+            source_config=source_config,
+            workspace_root=workspace_root,
+        )
     store = FilesystemSelfEvolveStore(workspace_root)
     target_selection_report: TargetSelectionReport | None = None
     target_provenance: TargetProvenance | None = None
@@ -3300,6 +3313,7 @@ def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str,
 def _trajectory_set_report(dataset: SelfEvolveDataset) -> dict[str, object] | None:
     source = dict(dataset.recipe.source)
     has_trajectory_set_source = source.get("kind") == "trajectory_set"
+    auto_grouping = source.get("auto_grouping")
     prior_case_ids = [
         case.case_id
         for case in dataset.cases
@@ -3319,9 +3333,9 @@ def _trajectory_set_report(dataset: SelfEvolveDataset) -> dict[str, object] | No
             role = member.get("role")
             if isinstance(role, str) and role:
                 member_roles[role] = member_roles.get(role, 0) + 1
-    if not has_trajectory_set_source and not prior_case_ids and not set_ids:
+    if not has_trajectory_set_source and not prior_case_ids and not set_ids and not auto_grouping:
         return None
-    return {
+    report: dict[str, object] = {
         "source_kind": source.get("kind"),
         "set_ids": sorted(set_ids),
         "case_count": len(dataset.cases),
@@ -3330,6 +3344,9 @@ def _trajectory_set_report(dataset: SelfEvolveDataset) -> dict[str, object] | No
         "prior_run_case_count": len(prior_case_ids),
         "prior_run_case_ids": prior_case_ids,
     }
+    if isinstance(auto_grouping, Mapping):
+        report["auto_grouping"] = dict(auto_grouping)
+    return report
 
 
 def _population_report(
@@ -4396,6 +4413,152 @@ def _infer_target_from_trace_packs(
             best_report.selected_target.target_id,
         )
     return best_report, None
+
+
+def _auto_group_trajectory_log_dataset(
+    dataset: SelfEvolveDataset,
+    trace_packs: tuple[TracePack, ...],
+    *,
+    source_config: SelfEvolveEvalSourceConfig,
+    workspace_root: str | Path,
+    infer_target: Callable[
+        [tuple[TracePack, ...]],
+        tuple[TargetSelectionReport, TargetInventoryEntry | None],
+    ]
+    | None = None,
+) -> tuple[SelfEvolveDataset, tuple[TracePack, ...], dict[str, object]]:
+    if source_config.kind != "trajectory_log" or len(trace_packs) <= 1:
+        return dataset, trace_packs, {
+            "auto_grouped": False,
+            "reason": "trajectory log has fewer than two trace packs",
+        }
+
+    infer = infer_target or (
+        lambda packs, *, workspace_root=workspace_root: _infer_target_from_trace_packs(
+            packs,
+            workspace_root=workspace_root,
+        )
+    )
+    groups: dict[str, dict[str, object]] = {}
+    for trace_pack in trace_packs:
+        report, _ = infer((trace_pack,), workspace_root=workspace_root)
+        group_id = _target_group_id(report, fallback=trace_pack.task_id)
+        group = groups.setdefault(
+            group_id,
+            {
+                "group_id": group_id,
+                "target": (
+                    to_json_dict(report.selected_target)
+                    if report.selected_target is not None
+                    else None
+                ),
+                "confidence_sum": 0.0,
+                "reports": [],
+                "case_ids": [],
+                "pack_ids": [],
+                "trace_packs": [],
+                "has_target": report.selected_target is not None,
+                "target_priority": _target_selection_priority(report),
+            },
+        )
+        group["confidence_sum"] = float(group["confidence_sum"]) + report.confidence
+        cast_reports = group["reports"]
+        if isinstance(cast_reports, list):
+            cast_reports.append(to_json_dict(report))
+        case_ids = group["case_ids"]
+        if isinstance(case_ids, list):
+            case_ids.append(trace_pack.task_id)
+        pack_ids = group["pack_ids"]
+        if isinstance(pack_ids, list):
+            pack_ids.append(trace_pack.pack_id)
+        packs = group["trace_packs"]
+        if isinstance(packs, list):
+            packs.append(trace_pack)
+
+    ranked_groups = sorted(
+        groups.values(),
+        key=lambda item: (
+            bool(item.get("has_target")),
+            _group_average_confidence(item),
+            int(item.get("target_priority") or 0),
+            len(item.get("case_ids") or ()),
+            str(item.get("group_id") or ""),
+        ),
+        reverse=True,
+    )
+    selected_group = ranked_groups[0]
+    selected_case_ids = tuple(
+        str(case_id) for case_id in selected_group.get("case_ids", ()) if case_id
+    )
+    selected_case_id_set = set(selected_case_ids)
+    selected_cases = tuple(
+        case for case in dataset.cases if case.case_id in selected_case_id_set
+    )
+    selected_trace_packs = tuple(
+        pack for pack in trace_packs if pack.task_id in selected_case_id_set
+    )
+    grouping_report = _trajectory_log_grouping_report(
+        ranked_groups,
+        selected_group_id=str(selected_group["group_id"]),
+    )
+    recipe = build_dataset_recipe(
+        selected_cases,
+        source_config=source_config,
+        split_seed=dataset.recipe.split_seed,
+        synthetic_generation_policy=dataset.recipe.synthetic_generation_policy,
+    )
+    source = dict(recipe.source)
+    source["auto_grouping"] = grouping_report
+    grouped_dataset = SelfEvolveDataset(
+        cases=selected_cases,
+        recipe=replace(recipe, source=source),
+    )
+    return grouped_dataset, selected_trace_packs, grouping_report
+
+
+def _target_group_id(report: TargetSelectionReport, *, fallback: str) -> str:
+    if report.selected_target is None:
+        return f"no_target:{fallback}"
+    return f"{report.selected_target.target_type}:{report.selected_target.target_id}"
+
+
+def _group_average_confidence(group: Mapping[str, object]) -> float:
+    case_ids = group.get("case_ids")
+    count = len(case_ids) if isinstance(case_ids, list) else 0
+    if count <= 0:
+        return 0.0
+    return float(group.get("confidence_sum") or 0.0) / count
+
+
+def _trajectory_log_grouping_report(
+    ranked_groups: list[dict[str, object]],
+    *,
+    selected_group_id: str,
+) -> dict[str, object]:
+    group_summaries: list[dict[str, object]] = []
+    for group in ranked_groups:
+        group_summaries.append(
+            {
+                "group_id": group.get("group_id"),
+                "target": group.get("target"),
+                "case_ids": list(group.get("case_ids") or ()),
+                "pack_ids": list(group.get("pack_ids") or ()),
+                "confidence": _group_average_confidence(group),
+                "selected": group.get("group_id") == selected_group_id,
+            }
+        )
+    selected_group = next(
+        group for group in group_summaries if group["group_id"] == selected_group_id
+    )
+    return {
+        "auto_grouped": True,
+        "strategy": "inferred_target",
+        "group_count": len(group_summaries),
+        "selected_group_id": selected_group_id,
+        "selected_case_ids": list(selected_group["case_ids"]),
+        "skipped_group_count": max(0, len(group_summaries) - 1),
+        "groups": group_summaries,
+    }
 
 
 def _target_selection_priority(report: TargetSelectionReport) -> int:

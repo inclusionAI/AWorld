@@ -32,10 +32,14 @@
 - [x] 2.2 Support loading a trajectory set from a framework-owned JSON file.
 - [x] 2.2a Validate malformed trajectory-set files with diagnostics that include
   member index, field name, failure reason, and repair hint.
+- [x] 2.2b Automatically group multi-record `--from-trajectory` logs by inferred
+  target/task family so users do not need to author trajectory-set JSON for
+  normal multi-trajectory usage.
 - [x] 2.3 Support including prior self-evolve runs for the same target when
   requested by framework configuration or CLI.
-- [x] 2.4 Normalize prior accepted, rejected, replay, and follow-up production
-  trajectories into set members.
+- [x] 2.4 Normalize framework-owned prior accepted, rejected, replay, and
+  follow-up production trajectories into derived set members without requiring
+  users to hand-author those roles.
 - [x] 2.5 Add tests for invalid, missing, duplicate, and mixed-source trajectory
   set members.
 - [x] 2.6 Add tests for path traversal, absolute paths outside trusted roots,
