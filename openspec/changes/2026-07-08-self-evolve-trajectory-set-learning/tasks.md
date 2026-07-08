@@ -32,7 +32,7 @@
 - [x] 2.2 Support loading a trajectory set from a framework-owned JSON file.
 - [x] 2.2a Validate malformed trajectory-set files with diagnostics that include
   member index, field name, failure reason, and repair hint.
-- [ ] 2.3 Support including prior self-evolve runs for the same target when
+- [x] 2.3 Support including prior self-evolve runs for the same target when
   requested by framework configuration or CLI.
 - [ ] 2.4 Normalize prior accepted, rejected, replay, and follow-up production
   trajectories into set members.
@@ -151,13 +151,13 @@
   after candidates are materialized.
 - [x] 8.3 Add `FilesystemSelfEvolveStore` support for writing harness diagnostics
   under the existing `.aworld/self_evolve/<run_id>/` artifact layout.
-- [ ] 8.4 Add report sections for trajectory set, lesson extraction, population,
+- [x] 8.4 Add report sections for trajectory set, lesson extraction, population,
   harness diagnostics, lineage, no-op, and release normalization.
 - [x] 8.5 Label acceptance confidence as single-trajectory, repeated
   single-case replay, trajectory-set validation, or held-out validation.
 - [x] 8.6 Ensure no-op optimize results do not report `succeeded` as if a skill
   was applied.
-- [ ] 8.7 Add tests for no-op reporting, trajectory-set reporting, and
+- [x] 8.7 Add tests for no-op reporting, trajectory-set reporting, and
   normalized accepted candidate reporting.
 - [ ] 8.8 Add tests for harness diagnostic counts, advisory diagnostics not
   promoted, and diagnostics that were converted into candidate strategy hints.
@@ -165,7 +165,7 @@
 ## 9. CLI And Slash Command
 
 - [x] 9.1 Add optional `aworld-cli optimize --from-trajectory-set` thin argument.
-- [ ] 9.2 Add optional `--include-prior-runs` thin argument if framework support
+- [x] 9.2 Add optional `--include-prior-runs` thin argument if framework support
   exists.
 - [x] 9.3 Add equivalent slash command forwarding without duplicating framework
   logic.

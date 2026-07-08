@@ -798,12 +798,16 @@ class TestOptimizeCommand:
         result = await cmd.execute(
             CommandContext(
                 cwd=str(tmp_path),
-                user_args=f"--from-trajectory-set {set_path} --apply proposal",
+                user_args=(
+                    f"--from-trajectory-set {set_path} "
+                    "--include-prior-runs --apply proposal"
+                ),
             )
         )
 
         assert calls["workspace_root"] == str(tmp_path)
         assert calls["from_trajectory_set"] == str(set_path)
+        assert calls["include_prior_runs"] is True
         assert calls["from_trajectory"] is None
         assert calls["infer_target"] is True
         assert "Status: rejected" in result

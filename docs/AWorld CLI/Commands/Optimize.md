@@ -13,6 +13,7 @@ aworld-cli optimize --target skill:demo --dataset eval.jsonl
 aworld-cli optimize --target skill:login --from-trajectory trajectory.log --apply proposal
 aworld-cli optimize --task "improve login retry guidance" --from-trajectory trajectory.log
 aworld-cli optimize --from-trajectory-set trajectory-set.json --apply proposal
+aworld-cli optimize --from-trajectory-set trajectory-set.json --include-prior-runs --apply proposal
 ```
 
 Verified apply for an allowlisted skill target:
@@ -69,6 +70,7 @@ When `--target` is omitted, the CLI sets `infer_target=True` and the framework p
 - `--candidate-replay-repetitions`: number of candidate replay rollouts.
 - `--from-run`: reuse artifacts from a previous self-evolve run.
 - `--rerun-evaluator`: reuse replay artifacts from `--from-run` and rerun evaluator/gates only.
+- `--include-prior-runs`: include prior self-evolve reports for the same target as advisory trainable cases. This does not replay old runs or expose raw trajectories; framework lesson memory still controls what feedback enters candidate generation.
 - `--drain-pending`: drain pending framework-owned post-run self-evolve jobs.
 
 `--apply write` and `--apply branch` are intentionally unsupported in phase 1. Proposal artifacts are written by the framework store; direct file writes and branch management are outside the CLI contract.

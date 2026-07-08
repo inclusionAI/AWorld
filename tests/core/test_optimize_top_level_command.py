@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 from pathlib import Path
 
@@ -612,6 +613,7 @@ def test_optimize_command_forwards_trajectory_set_to_framework(
             "optimize",
             "--from-trajectory-set",
             "trajectory-set.json",
+            "--include-prior-runs",
             "--apply",
             "proposal",
         ]
@@ -619,6 +621,7 @@ def test_optimize_command_forwards_trajectory_set_to_framework(
 
     assert handled is True
     assert calls["from_trajectory_set"] == "trajectory-set.json"
+    assert calls["include_prior_runs"] is True
     assert calls["infer_target"] is True
 
 
@@ -649,6 +652,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         from_session=None,
         from_trajectory=None,
         from_trajectory_set=None,
+        include_prior_runs=True,
         batch_config=None,
         iterations=3,
         apply="auto_verified",
@@ -665,6 +669,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["target"] == "prompt:system"
     assert calls["dataset"] == "eval.jsonl"
     assert calls["from_trajectory_set"] is None
+    assert calls["include_prior_runs"] is True
     assert calls["iterations"] == 3
     assert calls["apply_policy"] == "auto_verified"
     assert calls["infer_target"] is False
@@ -1008,3 +1013,59 @@ def test_framework_cli_request_runs_explicit_skill_target_without_cli_owned_opti
     assert report["status"] == "rejected"
     assert report["best_candidate_id"] is None
     assert skill_path.read_text(encoding="utf-8").endswith("Old guidance.\n")
+
+
+def test_framework_cli_request_can_include_prior_runs_as_trainable_cases(
+    tmp_path: Path,
+) -> None:
+    from aworld.self_evolve import optimize_from_cli_request
+
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    dataset_path = tmp_path / "eval.jsonl"
+    dataset_path.write_text('{"case_id":"case-1","input":"demo"}\n', encoding="utf-8")
+    prior_run_dir = tmp_path / ".aworld" / "self_evolve" / "prior-run"
+    prior_run_dir.mkdir(parents=True)
+    (prior_run_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "prior-run",
+                "status": "rejected",
+                "target": {"target_type": "skill", "target_id": "demo"},
+                "selected_candidate_id": "cand-old",
+                "gate_results": [
+                    {"gate_name": "score_improvement", "passed": False}
+                ],
+                "baseline_metrics": {"score": 90.0},
+                "candidate_metrics": {"score": 80.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        dataset=str(dataset_path),
+        apply_policy="proposal",
+        include_prior_runs=True,
+    )
+
+    recipe = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / report["run_id"]
+            / "dataset_recipe.json"
+        ).read_text(encoding="utf-8")
+    )
+    report_payload = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
+    prior_case_id = "prior-run:prior-run:cand-old"
+    assert recipe["source"]["include_prior_runs"] is True
+    assert recipe["source"]["prior_run_case_count"] == 1
+    assert prior_case_id in recipe["trainable_case_ids"]
+    assert prior_case_id in recipe["splits"]["train"]
+    assert report_payload["trajectory_set"]["include_prior_runs"] is True
+    assert report_payload["trajectory_set"]["prior_run_case_ids"] == [prior_case_id]

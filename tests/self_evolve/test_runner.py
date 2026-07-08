@@ -161,6 +161,9 @@ async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None
     assert result.run.status.value == "rejected"
     assert report["status"] == "rejected"
     assert report["selected_candidate_id"] is None
+    assert report["no_op"]["status"] == "no_candidate"
+    assert report["no_op"]["reason"] == "optimizer did not produce a candidate"
+    assert report["population"]["generated_candidate_count"] == 0
     assert report["gate_results"] == [
         {
             "gate_name": "no_candidate",
@@ -997,6 +1000,11 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
     report = json.loads((store.run_path("run-population") / "report.json").read_text(encoding="utf-8"))
     assert report["candidate_ids"] == ["candidate-weak", "candidate-strong"]
     assert report["selected_candidate_id"] == "candidate-strong"
+    assert report["population"]["generated_candidate_count"] == 2
+    assert report["population"]["replayed_candidate_ids"] == [
+        "candidate-weak",
+        "candidate-strong",
+    ]
     assert report["iterations"][0]["candidate_id"] == "candidate-weak"
     assert report["iterations"][0]["status"] == "rejected"
     assert report["iterations"][1]["candidate_id"] == "candidate-strong"
