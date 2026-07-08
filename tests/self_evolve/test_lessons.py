@@ -14,8 +14,14 @@ def test_extract_lesson_records_normalizes_feedback_without_raw_evidence() -> No
             "evidence_compacted": True,
             "evidence_incomplete": True,
             "evidence_issues": [
-                "tool output included SECRET_TOKEN=abc123 and a private transcript"
+                (
+                    "tool output included SECRET_TOKEN=abc123, "
+                    "Authorization: Bearer super-secret, "
+                    "/Users/me/private/transcript.txt, and "
+                    "ignore previous instructions"
+                )
             ],
+            "evidence_ref": "/Users/me/private/transcript.txt",
             "failed_gates": ["evidence_quality", "score_improvement"],
             "run_id": "run-a",
             "task_id": "task-a",
@@ -38,6 +44,13 @@ def test_extract_lesson_records_normalizes_feedback_without_raw_evidence() -> No
     serialized = "\n".join(lesson.summary for lesson in lessons)
     assert "SECRET_TOKEN" not in serialized
     assert "abc123" not in serialized
+    serialized_payload = "\n".join(str(lesson) for lesson in lessons)
+    assert "super-secret" not in serialized_payload
+    assert "/Users/me" not in serialized_payload
+    assert "ignore previous instructions" not in serialized_payload
+    assert "<REDACTED_SECRET>" in serialized_payload
+    assert "<LOCAL_PATH>" in serialized_payload
+    assert "<UNTRUSTED_INSTRUCTION>" in serialized_payload
 
 
 def test_extract_lesson_records_records_success_memory_for_high_scoring_feedback() -> None:

@@ -18,6 +18,12 @@ INTERNAL_RELEASE_PATTERNS = (
     re.compile(r"\bB[1-4]_[A-Za-z0-9_]+\b"),
     re.compile(r"\b(evidence_quality|score_improvement|held_out_verification|judge_only_signal|global_regression_benchmark)\b", re.IGNORECASE),
     re.compile(r"\b(harness_diagnostic|gate|evaluator rubric|evidence ids?)\b", re.IGNORECASE),
+    re.compile(r"(?i)\b(secret|token|api[_-]?key|password|authorization|cookie)\s*[:=]"),
+    re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/\-]+=*"),
+    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
+    re.compile(r"(?<![\w.-])/(?:Users|private|var|tmp|home)/[^\s,;:'\")\]}]+"),
+    re.compile(r"(?i)\b(ignore|disregard) (all )?(previous|prior|above) (instructions|messages)\b"),
+    re.compile(r"(?i)\b(system prompt|developer message)\b"),
 )
 
 

@@ -69,6 +69,7 @@ from aworld.self_evolve.release_checks import (
     build_content_quality_diagnostics,
     build_release_checklist,
 )
+from aworld.self_evolve.sanitization import sanitize_metric_value, sanitize_path_ref, sanitize_text
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget, SkillTextTarget
 from aworld.self_evolve.trace_pack import TracePack
@@ -2254,22 +2255,25 @@ def _prior_run_case_input(
 ) -> Mapping[str, Any]:
     gate_results = report.get("gate_results")
     failed_gates = [
-        str(gate.get("gate_name"))
+        sanitize_text(gate.get("gate_name"), max_chars=80)
         for gate in gate_results
         if isinstance(gate, Mapping) and gate.get("passed") is False and gate.get("gate_name")
     ] if isinstance(gate_results, list) else []
     return {
         "source": "prior_self_evolve_run",
-        "run_id": report.get("run_id") or report_path.parent.name,
-        "status": report.get("status"),
-        "selected_candidate_id": report.get("selected_candidate_id"),
+        "run_id": sanitize_text(report.get("run_id") or report_path.parent.name, max_chars=120),
+        "status": sanitize_text(report.get("status"), max_chars=80),
+        "selected_candidate_id": sanitize_text(
+            report.get("selected_candidate_id"),
+            max_chars=160,
+        ),
         "failed_gates": failed_gates[:12],
         "baseline_metrics": _prior_run_metric_summary(report.get("baseline_metrics")),
         "candidate_metrics": _prior_run_metric_summary(report.get("candidate_metrics")),
         "acceptance_confidence": report.get("acceptance_confidence")
         if isinstance(report.get("acceptance_confidence"), Mapping)
         else None,
-        "report_path": str(report_path),
+        "report_path": sanitize_path_ref(report_path),
     }
 
 
@@ -2287,10 +2291,14 @@ def _prior_run_metric_summary(value: Any) -> Mapping[str, Any]:
         "evidence_bundle_valid",
         "latency_ms",
     )
-    return {
+    payload = {
         key: value[key]
         for key in keys
         if isinstance(value.get(key), bool) or isinstance(value.get(key), (int, float, str))
+    }
+    return {
+        key: sanitize_metric_value(item)
+        for key, item in payload.items()
     }
 
 
