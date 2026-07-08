@@ -49,3 +49,30 @@ def test_builtin_self_evolve_plan_reference_exists_and_defines_boundaries() -> N
     assert "Available" in plan
     assert "Conditional" in plan
     assert "Roadmap" in plan
+
+
+def test_verified_self_evolve_runtime_skill_hides_internal_context() -> None:
+    skills_root = resolve_repo_aworld_skills_path()
+    assert skills_root is not None
+
+    skill_path = Path(skills_root) / "web-content-grounding" / "SKILL.md"
+    skill_text = skill_path.read_text(encoding="utf-8")
+    _, runtime_body = skill_text.split("---", 2)[1:]
+
+    forbidden_runtime_terms = [
+        "Self-Evolve Targeted Delta",
+        "Population strategy",
+        "candidate_score",
+        "baseline_score",
+        "A1_groundedness",
+        "A2_completeness",
+        "Trace scope",
+        "Source task ids",
+    ]
+    for term in forbidden_runtime_terms:
+        assert term not in runtime_body
+
+    assert "self_evolve:" in skill_text
+    assert "release_state: verified" in skill_text
+    assert "bounded evidence" in runtime_body
+    assert "compacted" in runtime_body
