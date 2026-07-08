@@ -192,6 +192,84 @@ async def test_trace_reflective_llm_mutator_consumes_structured_lesson_records()
 
 
 @pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_materializes_patch_intent_candidate() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "replace_section",
+                        "heading": "Guidance",
+                        "content": "Use bounded evidence before final answers.\n",
+                    }
+                ]
+            },
+            "rationale": "Patch only the relevant runtime guidance section.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="---\nname: demo\n---\n# Demo\n\n## Guidance\n\nOld rule.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-evidence",
+                lesson_type="required_runtime_behavior",
+                title="Preserve evidence behavior",
+                summary="Use bounded evidence.",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert "Use bounded evidence before final answers." in result.candidates[0].content
+    assert "Old rule." not in result.candidates[0].content
+    assert result.diagnostics["candidate_strategies"][0]["materialization"] == "patch_intent"
+
+
+@pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_rejects_invalid_patch_intent_before_candidate() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "append_section",
+                        "heading": "Bad",
+                        "content": "Read /Users/me/private/token.txt",
+                    }
+                ]
+            },
+            "rationale": "Invalid protected reference.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="---\nname: demo\n---\n# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-evidence",
+                lesson_type="required_runtime_behavior",
+                title="Preserve evidence behavior",
+                summary="Use bounded evidence.",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert result.candidates == ()
+    assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
+
+
+@pytest.mark.asyncio
 async def test_trace_reflective_llm_mutator_promotes_harness_diagnostic_to_strategy_hint() -> None:
     prompts = []
 

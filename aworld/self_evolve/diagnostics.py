@@ -84,6 +84,39 @@ def extract_harness_diagnostics(
                 source_refs=_summary_refs(summaries),
             )
         )
+    if _has_context_diagnostic(summaries):
+        diagnostics.append(
+            _diagnostic(
+                kind=HarnessDiagnosticKind.CONTEXT,
+                title="Evaluation context was incomplete or over budget",
+                summary="Trajectory or evidence context exceeded bounded evaluation limits or was missing from the evaluator input.",
+                affected_gates=failed_gate_names,
+                metrics=_context_metrics(summaries),
+                source_refs=_summary_refs(summaries),
+            )
+        )
+    if _has_tool_protocol_diagnostic(summaries, replay_result=replay_result):
+        diagnostics.append(
+            _diagnostic(
+                kind=HarnessDiagnosticKind.TOOL_PROTOCOL,
+                title="Tool protocol signals require candidate strategy repair",
+                summary="Replay or evaluation reported invalid, compacted, or schema-incompatible tool interaction signals.",
+                affected_gates=failed_gate_names,
+                metrics=_tool_protocol_metrics(summaries, replay_result=replay_result),
+                source_refs=_summary_refs(summaries),
+            )
+        )
+    if _has_evaluator_inconsistency(summaries):
+        diagnostics.append(
+            _diagnostic(
+                kind=HarnessDiagnosticKind.EVALUATION,
+                title="Judge evaluation was inconsistent or incomplete",
+                summary="Judge attempts failed or produced too few successful structured evaluations for a stable decision.",
+                affected_gates=failed_gate_names,
+                metrics=_evaluation_consistency_metrics(summaries),
+                source_refs=_summary_refs(summaries),
+            )
+        )
     if "duplicate_rejected_candidate" in failed_gate_names:
         diagnostics.append(
             _diagnostic(
@@ -188,6 +221,180 @@ def _replay_metrics(replay_result: CandidateReplayResult | None) -> dict[str, An
             replay_result.candidate.metrics.get("successful_repetition_count")
         ),
     }
+
+
+def _has_context_diagnostic(summaries: Sequence[EvaluationSummary | None]) -> bool:
+    return any(
+        _summary_bool(summary, key)
+        for summary in summaries
+        for key in (
+            "context_window_exceeded",
+            "trajectory_context_missing",
+            "evidence_context_truncated",
+            "prompt_context_over_budget",
+        )
+    )
+
+
+def _context_metrics(summaries: Sequence[EvaluationSummary | None]) -> dict[str, Any]:
+    keys = (
+        "context_window_exceeded",
+        "trajectory_context_missing",
+        "evidence_context_truncated",
+        "prompt_context_over_budget",
+        "trajectory_token_count",
+        "evidence_token_count",
+    )
+    return _summary_metric_subset(summaries, keys)
+
+
+def _has_tool_protocol_diagnostic(
+    summaries: Sequence[EvaluationSummary | None],
+    *,
+    replay_result: CandidateReplayResult | None,
+) -> bool:
+    text = " ".join(
+        _summary_string_items(
+            summaries,
+            keys=(
+                "replay_failure_types",
+                "replay_failure_reasons",
+                "tool_failure_types",
+                "tool_failure_reasons",
+            ),
+        )
+    ).lower()
+    if replay_result is not None:
+        for variant in (replay_result.baseline, replay_result.candidate):
+            text += " " + " ".join(
+                str(item)
+                for key in ("replay_failure_types", "replay_failure_reasons")
+                for item in _as_string_list(variant.metrics.get(key))
+            ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "invalid_tool",
+            "tool_argument",
+            "schema",
+            "compacted_tool",
+            "tool output compacted",
+        )
+    )
+
+
+def _tool_protocol_metrics(
+    summaries: Sequence[EvaluationSummary | None],
+    *,
+    replay_result: CandidateReplayResult | None,
+) -> dict[str, Any]:
+    payload = _summary_metric_subset(
+        summaries,
+        (
+            "replay_failure_types",
+            "replay_failure_reasons",
+            "tool_failure_types",
+            "tool_failure_reasons",
+        ),
+    )
+    if replay_result is not None:
+        payload.update(_replay_metrics(replay_result))
+    return payload
+
+
+def _has_evaluator_inconsistency(
+    summaries: Sequence[EvaluationSummary | None],
+) -> bool:
+    for summary in summaries:
+        if summary is None:
+            continue
+        failure_count = _metric_int(summary.metrics.get("judge_failure_count"))
+        success_count = _metric_int(summary.metrics.get("judge_success_count"))
+        if failure_count is not None and failure_count > 0:
+            return True
+        if success_count == 0 and summary.metrics.get("judge_failures"):
+            return True
+        if _summary_bool(summary, "evaluator_inconsistent"):
+            return True
+    return False
+
+
+def _evaluation_consistency_metrics(
+    summaries: Sequence[EvaluationSummary | None],
+) -> dict[str, Any]:
+    return _summary_metric_subset(
+        summaries,
+        (
+            "judge_failure_count",
+            "judge_success_count",
+            "judge_attempt_count",
+            "judge_failures",
+            "evaluator_inconsistent",
+        ),
+    )
+
+
+def _summary_metric_subset(
+    summaries: Sequence[EvaluationSummary | None],
+    keys: Sequence[str],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for summary in summaries:
+        if summary is None:
+            continue
+        for key in keys:
+            value = summary.metrics.get(key)
+            if value is None:
+                continue
+            if isinstance(value, bool) or isinstance(value, (int, float, str)):
+                payload.setdefault(key, _sanitize_diagnostic_value(value))
+            elif isinstance(value, list):
+                payload.setdefault(
+                    key,
+                    [_sanitize_diagnostic_value(item) for item in value[:3]],
+                )
+    return payload
+
+
+def _summary_bool(summary: EvaluationSummary | None, key: str) -> bool:
+    return summary is not None and summary.metrics.get(key) is True
+
+
+def _summary_string_items(
+    summaries: Sequence[EvaluationSummary | None],
+    *,
+    keys: Sequence[str],
+) -> list[str]:
+    values: list[str] = []
+    for summary in summaries:
+        if summary is None:
+            continue
+        for key in keys:
+            values.extend(_as_string_list(summary.metrics.get(key)))
+    return values
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if isinstance(value, str) and value:
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    return []
+
+
+def _sanitize_diagnostic_value(value: Any) -> Any:
+    if isinstance(value, str):
+        from aworld.self_evolve.sanitization import sanitize_text
+
+        return sanitize_text(value, max_chars=160)
+    if isinstance(value, bool) or isinstance(value, (int, float)) or value is None:
+        return value
+    if isinstance(value, Mapping):
+        return {
+            str(key): _sanitize_diagnostic_value(item)
+            for key, item in list(value.items())[:8]
+        }
+    return str(value)[:160]
 
 
 def _gate_failure_details(

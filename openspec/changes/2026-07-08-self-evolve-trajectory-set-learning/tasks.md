@@ -34,7 +34,7 @@
   member index, field name, failure reason, and repair hint.
 - [x] 2.3 Support including prior self-evolve runs for the same target when
   requested by framework configuration or CLI.
-- [ ] 2.4 Normalize prior accepted, rejected, replay, and follow-up production
+- [x] 2.4 Normalize prior accepted, rejected, replay, and follow-up production
   trajectories into set members.
 - [x] 2.5 Add tests for invalid, missing, duplicate, and mixed-source trajectory
   set members.
@@ -51,12 +51,12 @@
 - [x] 3.3 Implement lean solution path extraction for successful trajectories.
 - [x] 3.4 Ensure each lesson links to source run ids, task ids, and evidence
   refs.
-- [ ] 3.5 Add compaction rules for large tool outputs, artifact-backed evidence,
+- [x] 3.5 Add compaction rules for large tool outputs, artifact-backed evidence,
   and replay diagnostics.
 - [x] 3.5a Add redaction rules for secret-like tokens, authorization headers,
   cookies, private local paths, personal identifiers, and prompt-injection-like
   evidence.
-- [ ] 3.6 Extract harness diagnostics from evidence gaps, artifact lifecycle
+- [x] 3.6 Extract harness diagnostics from evidence gaps, artifact lifecycle
   issues, replay setup problems, tool protocol issues, evaluator inconsistencies,
   repeated rejected variants, and protected-path attempts.
 - [x] 3.7 Implement `extract_harness_diagnostics(...)` under
@@ -66,7 +66,7 @@
   evidence refs attached.
 - [x] 3.9 Add tests for evidence compaction, incomplete evidence, replay
   failures, high score successes, and mixed success/failure inputs.
-- [ ] 3.10 Add tests for context, workflow, tool protocol, evaluation, memory,
+- [x] 3.10 Add tests for context, workflow, tool protocol, evaluation, memory,
   permission-boundary, and artifact-lifecycle harness diagnostics.
 - [x] 3.11 Add tests proving sensitive raw evidence and prompt-injection text are
   not copied into lessons, candidate prompts, reports, or released skill
@@ -97,26 +97,26 @@
 
 ## 5. Patch-Oriented Materialization
 
-- [ ] 5.1 Add patch intent application for local skill edits.
-- [ ] 5.2 Materialize patch candidates into full `SKILL.md` content before
+- [x] 5.1 Add patch intent application for local skill edits.
+- [x] 5.2 Materialize patch candidates into full `SKILL.md` content before
   existing candidate replay.
-- [ ] 5.3 Validate front matter, reference links, protected files, and skill
+- [x] 5.3 Validate front matter, reference links, protected files, and skill
   size after patch application.
-- [ ] 5.4 Reject or repair invalid patch outputs without entering replay.
-- [ ] 5.5 Add tests for minimal patch application, invalid references,
+- [x] 5.4 Reject or repair invalid patch outputs without entering replay.
+- [x] 5.5 Add tests for minimal patch application, invalid references,
   protected-file edits, and whole-file rewrite prevention.
 
 ## 6. Lineage And Lesson Memory
 
-- [ ] 6.1 Persist lineage records for generated, replayed, rejected, and
+- [x] 6.1 Persist lineage records for generated, replayed, rejected, and
   accepted candidates.
-- [ ] 6.2 Import prior single-run reports into lineage memory lazily for a
+- [x] 6.2 Import prior single-run reports into lineage memory lazily for a
   target.
 - [x] 6.3 Use exact content fingerprints to avoid exact duplicate candidates.
-- [ ] 6.4 Use semantic and lesson-set fingerprints to avoid repeated weak
+- [x] 6.4 Use semantic and lesson-set fingerprints to avoid repeated weak
   variants while allowing materially different candidates.
 - [x] 6.5 Feed prior rejected/accepted lessons into future population generation.
-- [ ] 6.6 Add tests for repeated optimize on the same trajectory and for new
+- [x] 6.6 Add tests for repeated optimize on the same trajectory and for new
   candidates that reuse old lessons without matching old rejected behavior.
 
 ## 7. Release Normalization
@@ -126,7 +126,7 @@
   language, and evaluator rubric details from runtime instruction bodies.
 - [x] 7.3 Preserve release metadata in front matter or sidecar metadata.
 - [x] 7.4 Preserve runtime behavior constraints that caused gates to pass.
-- [ ] 7.5 Preserve a mapping from each release-normalized runtime constraint back
+- [x] 7.5 Preserve a mapping from each release-normalized runtime constraint back
   to lesson ids, including harness diagnostics when they were converted into a
   runtime-safe behavior delta.
 - [x] 7.6 Make post-apply verification compare runtime-loaded content against
@@ -146,7 +146,7 @@
 
 ## 8. Runner, Gates, And Reports
 
-- [ ] 8.1 Integrate trajectory-set learning before existing replay selection.
+- [x] 8.1 Integrate trajectory-set learning before existing replay selection.
 - [x] 8.2 Ensure existing replay/evaluator/gate/apply loop is reused unchanged
   after candidates are materialized.
 - [x] 8.3 Add `FilesystemSelfEvolveStore` support for writing harness diagnostics
@@ -159,7 +159,7 @@
   was applied.
 - [x] 8.7 Add tests for no-op reporting, trajectory-set reporting, and
   normalized accepted candidate reporting.
-- [ ] 8.8 Add tests for harness diagnostic counts, advisory diagnostics not
+- [x] 8.8 Add tests for harness diagnostic counts, advisory diagnostics not
   promoted, and diagnostics that were converted into candidate strategy hints.
 
 ## 9. CLI And Slash Command
@@ -169,7 +169,7 @@
   exists.
 - [x] 9.3 Add equivalent slash command forwarding without duplicating framework
   logic.
-- [ ] 9.4 Display progress for trajectory-set loading, lesson extraction,
+- [x] 9.4 Display progress for trajectory-set loading, lesson extraction,
   population generation, candidate replay, evaluation, and release
   normalization.
 - [x] 9.5 Add CLI tests proving arguments are forwarded to framework APIs and
@@ -181,7 +181,7 @@
 - [x] 10.2 Document trajectory-set file format and prior-run inclusion.
 - [x] 10.3 Document lesson memory, harness diagnostics, lineage, no-op, and
   release normalization.
-- [ ] 10.4 Update built-in `self_evolve` skill guidance after framework tests
+- [x] 10.4 Update built-in `self_evolve` skill guidance after framework tests
   pass.
 - [x] 10.5 Document that domain-specific skills such as web-content grounding are
   examples of learned targets, not framework logic.
@@ -193,7 +193,7 @@
 - [x] 11.3 Run evaluator runtime tests to confirm existing replay/evaluator
   behavior is not regressed.
 - [x] 11.4 Run skill release visibility tests.
-- [ ] 11.5 Manually verify a small trajectory-set optimize flow using at least
+- [x] 11.5 Manually verify a small trajectory-set optimize flow using at least
   three related trajectories: original baseline, accepted-skill follow-up, and
   a rejected candidate run.
 - [x] 11.6 Run strict OpenSpec validation for the trajectory-set learning change.

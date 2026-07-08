@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from aworld.self_evolve.datasets import SelfEvolveEvalSourceConfig, build_dataset_from_source
+from aworld.self_evolve.datasets import (
+    EvalCase,
+    SelfEvolveDataset,
+    SelfEvolveEvalSourceConfig,
+    build_dataset_from_source,
+)
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.replay import (
@@ -16,6 +21,7 @@ from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     _default_cli_skill_candidate,
     _default_post_apply_evaluator,
+    _include_prior_run_cases,
     _iteration_validation_feedback,
     _summary_with_replay_evidence_metrics,
     optimize_explicit_target,
@@ -25,7 +31,14 @@ from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
-from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult, SelfEvolveTargetRef
+from aworld.self_evolve.types import (
+    CandidateVariant,
+    EvaluationSummary,
+    GateResult,
+    DatasetRecipe,
+    OptimizerLineage,
+    SelfEvolveTargetRef,
+)
 
 
 class EmptyOptimizer:
@@ -604,6 +617,7 @@ async def test_runner_writes_harness_diagnostics_without_raw_evidence(tmp_path) 
     assert result.run.status.value == "rejected"
     assert report["harness_diagnostics"]["count"] == len(diagnostics)
     assert report["harness_diagnostics"]["types"]["artifact_lifecycle"] == 1
+    assert report["harness_diagnostics"]["promotion_statuses"]["advisory"] == 1
     assert diagnostics[0]["promotion_status"] == "advisory"
     assert diagnostics[0]["affected_gates"] == ["evidence_quality"]
     assert diagnostics[0]["metrics"]["evidence_compacted"] is True
@@ -730,6 +744,13 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         "sha256:"
     )
     assert "Verified guidance." in report["release_normalization"]["preserved_runtime_constraints"]
+    assert report["release_normalization"]["runtime_constraint_lesson_map"] == [
+        {
+            "constraint": "Verified guidance.",
+            "lesson_ids": report["post_apply"]["metrics"]["addressed_lesson_ids"],
+        }
+    ]
+    assert report["post_apply"]["metrics"]["addressed_lesson_ids"]
     assert report["release_checklist"]["status"] == "passed"
     assert report["acceptance_confidence"]["confidence"] == "verified"
     assert report["acceptance_confidence"]["verification_mode"] == "held_out"
@@ -1531,6 +1552,473 @@ async def test_runner_filters_prior_duplicate_candidates_before_replay_populatio
 
 
 @pytest.mark.asyncio
+async def test_runner_filters_prior_semantic_lesson_duplicate_candidates_before_replay(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-semantic-run"
+    lineage_dir = historical_dir / "optimizer_lineage"
+    lineage_dir.mkdir(parents=True)
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-semantic-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-old-semantic",
+                        "status": "rejected",
+                        "failed_gates": ["score_improvement"],
+                    }
+                ],
+                "optimizer_lineage": {
+                    "count": 1,
+                    "paths": [str(lineage_dir / "candidate-old-semantic.json")],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (lineage_dir / "candidate-old-semantic.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": "candidate-old-semantic",
+                "optimizer_name": "test",
+                "optimizer_version": "1",
+                "semantic_fingerprint": "semantic-same",
+                "lesson_set_fingerprint": "lesson-set-same",
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve candidate generation."}},
+            "action": {"content": "Prior candidates repeated semantically."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="semantic-filter-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="semantic-filter-task",
+    )
+    semantic_duplicate = CandidateVariant(
+        candidate_id="candidate-new-semantic",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nSame semantic weak variant with different words.\n",
+        rationale="semantic duplicate",
+        target_fingerprint="fingerprint",
+    )
+    fresh_candidate = CandidateVariant(
+        candidate_id="candidate-fresh-semantic",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nFresh semantic candidate.\n",
+        rationale="fresh",
+        target_fingerprint="fingerprint",
+    )
+
+    class SemanticOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(semantic_duplicate, fresh_candidate),
+                lineage=(
+                    OptimizerLineage(
+                        candidate_id=semantic_duplicate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-same",
+                        lesson_set_fingerprint="lesson-set-same",
+                    ),
+                    OptimizerLineage(
+                        candidate_id=fresh_candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-fresh",
+                        lesson_set_fingerprint="lesson-set-same",
+                    ),
+                ),
+            )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.candidate_ids.append(candidate.candidate_id)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate is not None else 0.2,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SemanticOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+        min_eval_cases=0,
+    ).run_explicit_target(
+        run_id="run-filter-semantic-duplicates",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert replay_backend.candidate_ids == ["candidate-fresh-semantic"]
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-filter-semantic-duplicates"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["optimizer_diagnostics"]["filtered_semantic_lesson_duplicate_candidates"] == 1
+    assert report["iterations"][0]["candidate_id"] == "candidate-fresh-semantic"
+
+
+@pytest.mark.asyncio
+async def test_runner_lazily_imports_prior_report_lineage_for_semantic_filter(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-legacy-run"
+    historical_dir.mkdir(parents=True)
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-legacy-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "selected_candidate_id": "candidate-old-legacy",
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-old-legacy",
+                        "status": "rejected",
+                        "failed_gates": ["score_improvement"],
+                        "semantic_fingerprint": "semantic-legacy",
+                        "lesson_set_fingerprint": "lesson-set-legacy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve candidate generation."}},
+            "action": {"content": "Prior candidates repeated semantically."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="legacy-lineage-filter-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="legacy-lineage-filter-task",
+    )
+    legacy_duplicate = CandidateVariant(
+        candidate_id="candidate-new-legacy",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nSame legacy semantic candidate.\n",
+        rationale="legacy duplicate",
+        target_fingerprint="fingerprint",
+    )
+    fresh_candidate = CandidateVariant(
+        candidate_id="candidate-fresh-legacy",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nFresh legacy candidate.\n",
+        rationale="fresh",
+        target_fingerprint="fingerprint",
+    )
+
+    class LegacyOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(legacy_duplicate, fresh_candidate),
+                lineage=(
+                    OptimizerLineage(
+                        candidate_id=legacy_duplicate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-legacy",
+                        lesson_set_fingerprint="lesson-set-legacy",
+                    ),
+                    OptimizerLineage(
+                        candidate_id=fresh_candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-fresh-legacy",
+                        lesson_set_fingerprint="lesson-set-legacy",
+                    ),
+                ),
+            )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.candidate_ids.append(candidate.candidate_id)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate is not None else 0.2,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=LegacyOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+        min_eval_cases=0,
+    ).run_explicit_target(
+        run_id="run-import-legacy-lineage",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert replay_backend.candidate_ids == ["candidate-fresh-legacy"]
+    imported_path = historical_dir / "optimizer_lineage" / "candidate-old-legacy.json"
+    assert imported_path.exists()
+    imported = json.loads(imported_path.read_text(encoding="utf-8"))
+    assert imported["optimizer_name"] == "prior-report-import"
+    assert imported["semantic_fingerprint"] == "semantic-legacy"
+    assert imported["lesson_set_fingerprint"] == "lesson-set-legacy"
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candidates(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve quality."}},
+            "action": {"content": "Need a better strategy."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="lineage-lifecycle-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="lineage-lifecycle-task",
+    )
+    weak_candidate = CandidateVariant(
+        candidate_id="candidate-weak-lineage",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nWeak candidate.\n",
+        rationale="weak",
+        target_fingerprint="fingerprint",
+    )
+    strong_candidate = CandidateVariant(
+        candidate_id="candidate-strong-lineage",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nStrong candidate.\n",
+        rationale="strong",
+        target_fingerprint="fingerprint",
+    )
+
+    class LifecycleOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(weak_candidate, strong_candidate),
+                lineage=(
+                    OptimizerLineage(
+                        candidate_id=weak_candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-weak",
+                        lesson_set_fingerprint="lesson-set",
+                    ),
+                    OptimizerLineage(
+                        candidate_id=strong_candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-strong",
+                        lesson_set_fingerprint="lesson-set",
+                    ),
+                ),
+            )
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                score = 0.5
+            elif request.candidate.candidate_id == weak_candidate.candidate_id:
+                score = 0.4
+            else:
+                score = 0.9
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": score,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    def post_apply_evaluator(candidate: CandidateVariant) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=LifecycleOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+        replay_candidate_limit=2,
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+        min_eval_cases=0,
+        post_apply_evaluator=post_apply_evaluator,
+    ).run_explicit_target(
+        run_id="run-lineage-lifecycle",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    lineage_dir = (
+        tmp_path / ".aworld" / "self_evolve" / "run-lineage-lifecycle" / "optimizer_lineage"
+    )
+    weak_lineage = json.loads(
+        (lineage_dir / "candidate-weak-lineage.json").read_text(encoding="utf-8")
+    )
+    strong_lineage = json.loads(
+        (lineage_dir / "candidate-strong-lineage.json").read_text(encoding="utf-8")
+    )
+    assert weak_lineage["lifecycle_status"] == "rejected"
+    assert weak_lineage["replayed"] is True
+    assert "score_improvement" in weak_lineage["failed_gates"]
+    assert strong_lineage["lifecycle_status"] == "accepted"
+    assert strong_lineage["replayed"] is True
+    assert strong_lineage["post_apply_status"] == "accepted"
+
+
+@pytest.mark.asyncio
 async def test_runner_reports_gate_results_when_all_candidates_are_rejected(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -1659,9 +2147,19 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
 
     class Backend:
         async def evaluate_variant(self, request):
+            score = 0.9 if request.candidate is not None else 0.2
             return EvaluationSummary(
                 variant_id=request.variant_id,
-                metrics={"score": 0.5},
+                metrics={
+                    "score": score,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
                 dataset_split=request.dataset_split,
             )
 
@@ -1673,15 +2171,22 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
                     variant_id="baseline",
                     status="succeeded",
                     trajectory=[{"action": {"content": "baseline"}}],
-                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
                 ),
                 candidate=ReplayVariantResult(
                     variant_id=candidate.candidate_id,
                     status="succeeded",
                     trajectory=[{"action": {"content": "candidate"}}],
-                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
                 ),
             )
+
+    def post_apply(candidate: CandidateVariant) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
 
     events: list[tuple[str, str]] = []
     runner = SelfEvolveRunner(
@@ -1691,6 +2196,9 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
         min_eval_cases=0,
         replay_enabled=True,
         candidate_replay_backend=ReplayBackend(),
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+        post_apply_evaluator=post_apply,
         progress_callback=lambda stage, message: events.append((stage, message)),
     )
 
@@ -1703,12 +2211,16 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
     )
 
     stages = [stage for stage, _ in events]
-    assert stages[:4] == [
+    assert stages[:6] == [
         "start",
+        "trajectory_set_loading",
         "candidate_generation",
+        "population_generation",
         "candidate_replay",
         "evaluation",
     ]
+    assert "lesson_extraction" in stages
+    assert "release_normalization" in stages
     assert stages[-1] == "completed"
 
 
@@ -1881,6 +2393,208 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
     assert report["iterations"][0]["status"] == "rejected"
     assert report["iterations"][0]["failed_gates"] == ["duplicate_rejected_candidate"]
     assert report["iterations"][1]["status"] == "accepted"
+
+
+def test_include_prior_run_cases_normalizes_accepted_rejected_and_replay_refs(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path))
+    for run_id, status, candidate_id in (
+        ("accepted-run", "succeeded", "candidate-good"),
+        ("rejected-run", "rejected", "candidate-bad"),
+    ):
+        run_dir = store.run_path(run_id)
+        run_dir.mkdir(parents=True)
+        (run_dir / "report.json").write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "target": {
+                        "target_type": "skill",
+                        "target_id": "demo",
+                        "path": str(skill_path),
+                    },
+                    "status": status,
+                    "selected_candidate_id": candidate_id,
+                    "replay_path": str(run_dir / "replay" / candidate_id),
+                    "evaluator_report_paths": [
+                        str(run_dir / "evaluator" / candidate_id / "report.json")
+                    ],
+                    "post_apply": (
+                        {"status": "accepted", "release_state": "verified"}
+                        if status == "succeeded"
+                        else None
+                    ),
+                    "gate_results": [
+                        {
+                            "gate_name": "score_improvement",
+                            "passed": status == "succeeded",
+                        }
+                    ],
+                    "candidate_metrics": {"score": 90.0 if status == "succeeded" else 40.0},
+                }
+            ),
+            encoding="utf-8",
+        )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=[
+            {
+                "meta": {"step": 1, "agent_id": "agent"},
+                "state": {"input": {"content": "Improve."}},
+                "action": {"content": "Baseline."},
+            }
+        ],
+        task_id="current-task",
+    )
+
+    updated = _include_prior_run_cases(
+        dataset,
+        store=store,
+        target=target,
+        current_run_id="new-run",
+    )
+
+    prior_cases = [
+        case for case in updated.cases if case.source.get("kind") == "prior_self_evolve_run"
+    ]
+    assert {case.source["role"] for case in prior_cases} == {
+        "accepted_followup",
+        "rejected_candidate",
+    }
+    assert all(case.case_id in updated.recipe.trainable_case_ids for case in prior_cases)
+    accepted_case = next(
+        case for case in prior_cases if case.source["role"] == "accepted_followup"
+    )
+    rejected_case = next(
+        case for case in prior_cases if case.source["role"] == "rejected_candidate"
+    )
+    assert accepted_case.input["post_apply_status"] == "accepted"
+    assert accepted_case.input["replay_path"].startswith("<LOCAL_PATH>/")
+    assert accepted_case.input["replay_path"].endswith("/candidate-good")
+    assert accepted_case.input["evaluator_report_paths"][0].startswith("<LOCAL_PATH>/")
+    assert accepted_case.input["evaluator_report_paths"][0].endswith(
+        "/candidate-good/report.json"
+    )
+    assert rejected_case.input["failed_gates"] == ["score_improvement"]
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_trajectory_set_learning_before_replay_selection(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trace_pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent"},
+                "state": {"input": {"content": "Train case."}},
+                "action": {"content": "Failure evidence."},
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="trajectory_set",
+        task_id="train-case",
+    )
+    train_case = EvalCase(
+        case_id="train-case",
+        input={"task": "train"},
+        trace_pack=trace_pack,
+        metadata={"trajectory_set": {"member": {"role": "baseline"}}},
+        source={"kind": "trajectory_set", "role": "baseline"},
+    )
+    held_out_case = EvalCase(
+        case_id="held-out-case",
+        input={"task": "held out"},
+        metadata={"trajectory_set": {"member": {"role": "accepted_followup"}}},
+        source={"kind": "trajectory_set", "role": "accepted_followup"},
+    )
+    dataset = SelfEvolveDataset(
+        cases=(train_case, held_out_case),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "path": "set.json", "case_count": 2},
+            split_seed="trajectory-set-learning",
+            splits={
+                "train": ["train-case"],
+                "validation": [],
+                "held_out": ["held-out-case"],
+            },
+            trainable_case_ids=("train-case",),
+            held_out_case_ids=("held-out-case",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-trajectory-set",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nTrajectory-set guidance.\n",
+        rationale="trajectory-set learning",
+        target_fingerprint="fingerprint",
+    )
+    events: list[str] = []
+
+    class CapturingOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            events.append("optimizer")
+            self.requests.append(request)
+            return OptimizerResult(candidates=(candidate,))
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            events.append("replay")
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+            )
+
+    optimizer = CapturingOptimizer()
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-trajectory-set-learning",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert events == ["optimizer", "replay"]
+    assert [case.case_id for case in optimizer.requests[0].trainable_cases] == [
+        "train-case"
+    ]
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-trajectory-set-learning"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["trajectory_set"]["source_kind"] == "trajectory_set"
+    assert report["trajectory_set"]["member_roles"] == {
+        "accepted_followup": 1,
+        "baseline": 1,
+    }
 
 
 @pytest.mark.asyncio

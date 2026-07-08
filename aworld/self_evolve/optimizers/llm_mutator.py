@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping
 
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.types import CandidateVariant, OptimizerLineage
 
 
@@ -40,6 +41,7 @@ class TraceReflectiveLLMMutator:
         filtered_noop_count = 0
         filtered_high_baseline_regression_count = 0
         filtered_duplicate_count = 0
+        filtered_invalid_patch_count = 0
         seen_content_fingerprints: set[str] = set()
         require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
@@ -50,7 +52,14 @@ class TraceReflectiveLLMMutator:
             output = self.mutate_text(prompt)
             if inspect.isawaitable(output):
                 output = await output
-            content, rationale = _parse_mutator_output(output)
+            try:
+                content, rationale, materialization = _materialize_mutator_output(
+                    output,
+                    request=request,
+                )
+            except ValueError:
+                filtered_invalid_patch_count += 1
+                continue
             if content == request.current_content:
                 filtered_noop_count += 1
                 continue
@@ -79,6 +88,7 @@ class TraceReflectiveLLMMutator:
             candidate_strategy_records.append(
                 {
                     "candidate_id": candidate_id,
+                    "materialization": materialization,
                     **strategy_record,
                 }
             )
@@ -105,6 +115,7 @@ class TraceReflectiveLLMMutator:
                     filtered_high_baseline_regression_count
                 ),
                 "filtered_duplicate_candidates": filtered_duplicate_count,
+                "filtered_invalid_patch_candidates": filtered_invalid_patch_count,
                 "candidate_strategies": candidate_strategy_records,
             },
         )
@@ -354,18 +365,29 @@ def _replay_priority(
     return "low"
 
 
-def _parse_mutator_output(output: Any) -> tuple[str, str]:
+def _materialize_mutator_output(
+    output: Any,
+    *,
+    request: OptimizerRequest,
+) -> tuple[str, str, str]:
     if isinstance(output, Mapping):
         content = output.get("content")
+        patch_intent = output.get("patch_intent")
         rationale = output.get("rationale", "")
     else:
         content = output
+        patch_intent = None
         rationale = ""
+    if isinstance(patch_intent, Mapping):
+        content = apply_skill_patch_intent(request.current_content, patch_intent)
+        materialization = "patch_intent"
+    else:
+        materialization = "full_content"
     if not isinstance(content, str) or not content:
         raise ValueError("mutator output must include non-empty content")
     if not isinstance(rationale, str):
         rationale = ""
-    return content, rationale
+    return content, rationale, materialization
 
 
 def _candidate_id(request: OptimizerRequest, content: str, *, index: int) -> str:

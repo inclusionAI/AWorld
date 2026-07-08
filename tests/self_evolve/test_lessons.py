@@ -81,6 +81,60 @@ def test_extract_lesson_records_records_success_memory_for_high_scoring_feedback
     assert lessons[0].target_scope == {"target_type": "skill", "target_id": "demo"}
 
 
+def test_extract_lesson_records_compacts_artifact_and_replay_diagnostics() -> None:
+    raw_reason = (
+        "evidence_quality_failed with raw transcript SECRET_TOKEN=abc123 "
+        "from /Users/me/private/source.html " + ("x" * 2000)
+    )
+    feedback = EvaluationSummary(
+        variant_id="candidate-artifact",
+        dataset_split="validation",
+        metrics={
+            "score": 45.0,
+            "failed_gates": ["evidence_quality"],
+            "evidence_compacted": True,
+            "evidence_incomplete": True,
+            "evidence_bundle_valid": True,
+            "evidence_bundle_entry_count": 3,
+            "evidence_manifest_entry_count": 3,
+            "evidence_manifest_invalid_entry_count": 1,
+            "replay_evidence_manifest_invalid_entry_count": 1,
+            "replay_failure_types": ["evidence_quality_failed"],
+            "replay_failure_reasons": [raw_reason],
+            "evidence_bundle_path": "/Users/me/private/evidence_bundle.json",
+        },
+    )
+
+    lessons = extract_lesson_records(
+        (feedback,),
+        target_scope={"target_type": "skill", "target_id": "demo"},
+    )
+
+    compaction = lessons[0].metrics["evidence_compaction"]
+    assert {
+        key: value
+        for key, value in compaction.items()
+        if key != "replay_failure_reasons"
+    } == {
+        "raw_evidence_compacted": True,
+        "raw_evidence_incomplete": True,
+        "bundle_valid": True,
+        "bundle_entry_count": 3,
+        "manifest_entry_count": 3,
+        "manifest_invalid_entry_count": 1,
+        "replay_manifest_invalid_entry_count": 1,
+        "replay_failure_types": ["evidence_quality_failed"],
+    }
+    assert len(compaction["replay_failure_reasons"]) == 1
+    assert "<REDACTED_SECRET>" in compaction["replay_failure_reasons"][0]
+    assert "<LOCAL_PATH>" in compaction["replay_failure_reasons"][0]
+    assert len(compaction["replay_failure_reasons"][0]) <= 96
+    serialized_payload = "\n".join(str(lesson) for lesson in lessons)
+    assert "SECRET_TOKEN" not in serialized_payload
+    assert "/Users/me" not in serialized_payload
+    assert "x" * 100 not in serialized_payload
+
+
 def test_extract_lesson_records_adds_bounded_trace_memories_without_raw_transcripts() -> None:
     raw_tool_output = (
         "raw transcript SECRET_TOKEN=abc123 Authorization: Bearer very-secret "

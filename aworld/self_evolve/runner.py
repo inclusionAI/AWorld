@@ -214,6 +214,14 @@ class SelfEvolveRunner:
             "start",
             f"Starting self-evolve run {run_id}",
         )
+        _emit_progress(
+            self.progress_callback,
+            "trajectory_set_loading",
+            (
+                "Loaded self-evolve trajectory set "
+                f"with {len(dataset.cases)} case(s)"
+            ),
+        )
 
         run = SelfEvolveRun(run_id=run_id, target=target.identity, status=SelfEvolveRunStatus.RUNNING)
         self.store.create_run(run)
@@ -272,6 +280,7 @@ class SelfEvolveRunner:
         all_candidates: list[CandidateVariant] = []
         optimizer_diagnostics: list[dict[str, object]] = []
         optimizer_lineage_paths: list[str] = []
+        optimizer_lineage_paths_by_candidate: dict[str, str] = {}
         iteration_reports: list[dict[str, object]] = []
         iteration_states: list[dict[str, object]] = []
         baseline_summary: EvaluationSummary | None = None
@@ -303,6 +312,13 @@ class SelfEvolveRunner:
             for feedback in prior_feedback
             if feedback.metrics.get("candidate_status") == "accepted"
         }
+        rejected_semantic_lesson_fingerprints = (
+            _load_prior_rejected_semantic_lesson_fingerprints(
+                self.store,
+                target.identity,
+                current_run_id=run_id,
+            )
+        )
 
         for iteration_index in range(self.max_iterations):
             _emit_progress(
@@ -332,6 +348,14 @@ class SelfEvolveRunner:
                 rejected_candidate_ids=rejected_candidate_ids,
                 accepted_candidate_ids=accepted_candidate_ids,
             )
+            current_lineage_fingerprints = _lineage_semantic_lesson_fingerprints(
+                optimizer_result.lineage
+            )
+            filtered_semantic_lesson_duplicates = _semantic_lesson_duplicate_count(
+                optimizer_result.candidates,
+                lineage_fingerprints=current_lineage_fingerprints,
+                rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
+            )
             optimizer_diagnostics.append(
                 {
                     "iteration": iteration_index + 1,
@@ -341,6 +365,9 @@ class SelfEvolveRunner:
                     "diagnostics": {
                         **dict(optimizer_result.diagnostics),
                         "filtered_known_duplicate_candidates": filtered_known_duplicates,
+                        "filtered_semantic_lesson_duplicate_candidates": (
+                            filtered_semantic_lesson_duplicates
+                        ),
                     },
                 }
             )
@@ -350,13 +377,30 @@ class SelfEvolveRunner:
             for lineage in optimizer_result.lineage:
                 lineage_path = self.store.write_optimizer_lineage(run_id, lineage)
                 optimizer_lineage_paths.append(str(lineage_path))
+                optimizer_lineage_paths_by_candidate[lineage.candidate_id] = str(
+                    lineage_path
+                )
 
             candidate_population = tuple(
                 candidate
                 for candidate in optimizer_result.candidates
                 if candidate.candidate_id not in rejected_candidate_ids
                 and candidate.candidate_id not in accepted_candidate_ids
+                and not _is_semantic_lesson_duplicate(
+                    candidate.candidate_id,
+                    lineage_fingerprints=current_lineage_fingerprints,
+                    rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
+                )
             )[: max(1, self.replay_candidate_limit)]
+            _emit_progress(
+                self.progress_callback,
+                "population_generation",
+                (
+                    "Prepared candidate population "
+                    f"({len(candidate_population)} replay candidate(s), "
+                    f"{len(optimizer_result.candidates)} generated)"
+                ),
+            )
             if not candidate_population:
                 skipped_feedback: list[EvaluationSummary] = []
                 skipped_duplicates = [
@@ -507,9 +551,28 @@ class SelfEvolveRunner:
             if failed_gates:
                 final_status = SelfEvolveRunStatus.REJECTED
             else:
-                post_apply = await self._apply_auto_verified(run_id, target, selected_candidate)
+                post_apply = await self._apply_auto_verified(
+                    run_id,
+                    target,
+                    selected_candidate,
+                    addressed_lesson_ids=_lineage_addressed_lesson_ids(
+                        optimizer_lineage_paths_by_candidate.get(
+                            selected_candidate.candidate_id
+                        )
+                    ),
+                )
                 if post_apply["status"] != "accepted":
                     final_status = SelfEvolveRunStatus.REJECTED
+
+        if optimizer_lineage_paths_by_candidate:
+            _persist_lineage_lifecycle(
+                optimizer_lineage_paths_by_candidate,
+                iteration_states=iteration_states,
+                selected_candidate_id=(
+                    selected_candidate.candidate_id if selected_candidate is not None else None
+                ),
+                post_apply=post_apply,
+            )
 
         report = {
             "run_id": run_id,
@@ -593,6 +656,11 @@ class SelfEvolveRunner:
                 apply_policy=apply_policy,
                 gate_results=report["gate_results"],
             )
+        _emit_progress(
+            self.progress_callback,
+            "lesson_extraction",
+            "Extracting lesson memory and harness diagnostics",
+        )
         lesson_records = extract_lesson_records(
             tuple(
                 feedback_item
@@ -631,6 +699,9 @@ class SelfEvolveRunner:
                 "path": str(diagnostics_path),
                 "count": len(harness_diagnostics),
                 "types": _harness_diagnostic_type_counts(harness_diagnostics),
+                "promotion_statuses": _harness_diagnostic_promotion_counts(
+                    harness_diagnostics
+                ),
             }
         content_quality_metrics = (
             dict(held_out_summary.metrics)
@@ -1073,6 +1144,7 @@ class SelfEvolveRunner:
         run_id: str,
         target: SelfEvolveTarget,
         candidate: CandidateVariant,
+        addressed_lesson_ids: tuple[str, ...] = (),
     ) -> dict[str, object]:
         if self.post_apply_evaluator is None:
             raise ValueError("auto_verified apply policy requires post_apply_evaluator")
@@ -1095,10 +1167,19 @@ class SelfEvolveRunner:
         applied_candidate = candidate
         normalization_metrics: Mapping[str, Any] = {}
         if target.identity.target_type == "skill":
+            _emit_progress(
+                self.progress_callback,
+                "release_normalization",
+                "Normalizing verified skill content before apply",
+            )
             normalized_content, normalization_metrics = normalize_verified_skill_release(
                 candidate.content,
                 run_id=run_id,
                 candidate_id=candidate.candidate_id,
+            )
+            normalization_metrics = _with_release_lesson_mapping(
+                normalization_metrics,
+                addressed_lesson_ids=addressed_lesson_ids,
             )
             if not normalization_metrics.get("normalization_equivalence_passed"):
                 self.store.update_apply_journal(
@@ -1325,6 +1406,11 @@ def optimize_from_cli_request(
     ):
         raise ValueError("an eval source is required")
 
+    _emit_progress(
+        progress_callback,
+        "trajectory_set_loading",
+        "Loading self-evolve trajectory source",
+    )
     source_config = (
         SelfEvolveEvalSourceConfig(kind="current_trajectory")
         if current_trajectory is not None
@@ -1341,6 +1427,11 @@ def optimize_from_cli_request(
         source_config,
         current_trajectory=current_trajectory,
         task_id=task,
+    )
+    _emit_progress(
+        progress_callback,
+        "trajectory_set_loading",
+        f"Loaded self-evolve trajectory source with {len(built_dataset.cases)} case(s)",
     )
     trace_packs = tuple(
         case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
@@ -2129,6 +2220,303 @@ def _load_prior_rejected_feedback(
     return tuple(feedback)
 
 
+def _load_prior_rejected_semantic_lesson_fingerprints(
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTargetRef,
+    *,
+    current_run_id: str,
+    limit: int = 64,
+) -> set[tuple[str, str]]:
+    root = store.artifact_root
+    if not root.exists():
+        return set()
+    fingerprints: set[tuple[str, str]] = set()
+    report_paths = sorted(
+        root.glob("*/report.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for report_path in report_paths:
+        if report_path.parent.name == current_run_id:
+            continue
+        try:
+            report = _load_json_mapping(report_path)
+        except Exception:
+            continue
+        if not _report_matches_target(report, target):
+            continue
+        rejected_ids = _rejected_candidate_ids_from_report(report)
+        if not rejected_ids and str(report.get("status")) != "rejected":
+            continue
+        for lineage in _lineage_records_from_report(
+            report,
+            report_path=report_path,
+            import_missing=True,
+        ):
+            candidate_id = lineage.get("candidate_id")
+            if rejected_ids and candidate_id not in rejected_ids:
+                continue
+            semantic = lineage.get("semantic_fingerprint")
+            lesson_set = lineage.get("lesson_set_fingerprint")
+            if isinstance(semantic, str) and isinstance(lesson_set, str):
+                fingerprints.add((semantic, lesson_set))
+                if len(fingerprints) >= limit:
+                    return fingerprints
+    return fingerprints
+
+
+def _rejected_candidate_ids_from_report(report: Mapping[str, Any]) -> set[str]:
+    rejected: set[str] = set()
+    iterations = report.get("iterations")
+    if isinstance(iterations, list):
+        for item in iterations:
+            if not isinstance(item, Mapping):
+                continue
+            if item.get("status") != "rejected":
+                continue
+            candidate_id = item.get("candidate_id")
+            if isinstance(candidate_id, str) and candidate_id:
+                rejected.add(candidate_id)
+    selected = report.get("selected_candidate_id")
+    if str(report.get("status")) == "rejected" and isinstance(selected, str) and selected:
+        rejected.add(selected)
+    return rejected
+
+
+def _lineage_records_from_report(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+    import_missing: bool = False,
+) -> tuple[Mapping[str, Any], ...]:
+    run_root = report_path.parent.resolve()
+    lineage_paths: list[Path] = []
+    optimizer_lineage = report.get("optimizer_lineage")
+    if isinstance(optimizer_lineage, Mapping):
+        raw_paths = optimizer_lineage.get("paths")
+        if isinstance(raw_paths, list):
+            for raw_path in raw_paths:
+                if isinstance(raw_path, str) and raw_path:
+                    lineage_paths.append(Path(raw_path))
+    default_dir = run_root / "optimizer_lineage"
+    if default_dir.exists():
+        lineage_paths.extend(default_dir.glob("*.json"))
+
+    records: list[Mapping[str, Any]] = []
+    seen_paths: set[Path] = set()
+    for lineage_path in lineage_paths:
+        candidate_path = lineage_path
+        if not candidate_path.is_absolute():
+            candidate_path = run_root / candidate_path
+        try:
+            resolved = candidate_path.resolve()
+        except OSError:
+            continue
+        if resolved in seen_paths or not _path_is_relative_to(resolved, run_root):
+            continue
+        seen_paths.add(resolved)
+        try:
+            payload = _load_json_mapping(resolved)
+        except Exception:
+            continue
+        records.append(payload)
+    if import_missing:
+        records.extend(
+            _lazy_import_lineage_records_from_report(
+                report,
+                report_path=report_path,
+                existing_candidate_ids={
+                    str(record.get("candidate_id"))
+                    for record in records
+                    if isinstance(record.get("candidate_id"), str)
+                },
+            )
+        )
+    return tuple(records)
+
+
+def _lazy_import_lineage_records_from_report(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+    existing_candidate_ids: set[str],
+) -> tuple[Mapping[str, Any], ...]:
+    run_root = report_path.parent.resolve()
+    lineage_dir = run_root / "optimizer_lineage"
+    records: list[Mapping[str, Any]] = []
+    for iteration in _lineage_importable_iterations(report):
+        candidate_id = iteration.get("candidate_id")
+        semantic = iteration.get("semantic_fingerprint")
+        lesson_set = iteration.get("lesson_set_fingerprint")
+        if not (
+            isinstance(candidate_id, str)
+            and candidate_id
+            and isinstance(semantic, str)
+            and semantic
+            and isinstance(lesson_set, str)
+            and lesson_set
+        ):
+            continue
+        if candidate_id in existing_candidate_ids:
+            continue
+        file_stem = _safe_lineage_file_stem(candidate_id)
+        if file_stem is None:
+            continue
+        payload: dict[str, Any] = {
+            "candidate_id": candidate_id,
+            "optimizer_name": "prior-report-import",
+            "optimizer_version": "1",
+            "semantic_fingerprint": semantic,
+            "lesson_set_fingerprint": lesson_set,
+            "rationale": "Imported lazily from prior self-evolve report.",
+        }
+        trainable_case_ids = iteration.get("trainable_case_ids")
+        if isinstance(trainable_case_ids, list):
+            payload["trainable_case_ids"] = [
+                str(case_id) for case_id in trainable_case_ids if case_id
+            ]
+        addressed_lesson_ids = iteration.get("addressed_lesson_ids")
+        if isinstance(addressed_lesson_ids, list):
+            payload["addressed_lesson_ids"] = [
+                str(lesson_id) for lesson_id in addressed_lesson_ids if lesson_id
+            ]
+        try:
+            lineage_dir.mkdir(parents=True, exist_ok=True)
+            lineage_path = lineage_dir / f"{file_stem}.json"
+            if not lineage_path.exists():
+                lineage_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+        except OSError:
+            pass
+        existing_candidate_ids.add(candidate_id)
+        records.append(payload)
+    return tuple(records)
+
+
+def _lineage_importable_iterations(
+    report: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    iterations = report.get("iterations")
+    if not isinstance(iterations, list):
+        return ()
+    records: list[Mapping[str, Any]] = []
+    for item in iterations:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("status") != "rejected":
+            continue
+        records.append(item)
+    return tuple(records)
+
+
+def _safe_lineage_file_stem(candidate_id: str) -> str | None:
+    safe_chars = []
+    for char in candidate_id:
+        if char.isalnum() or char in ("-", "_", "."):
+            safe_chars.append(char)
+        else:
+            safe_chars.append("_")
+    stem = "".join(safe_chars).strip("._")
+    if not stem:
+        return None
+    return stem[:120]
+
+
+def _persist_lineage_lifecycle(
+    lineage_paths_by_candidate: Mapping[str, str],
+    *,
+    iteration_states: list[dict[str, object]],
+    selected_candidate_id: str | None,
+    post_apply: Mapping[str, object] | None,
+) -> None:
+    states_by_candidate: dict[str, dict[str, object]] = {}
+    for state in iteration_states:
+        candidate = state.get("candidate")
+        candidate_id = getattr(candidate, "candidate_id", None)
+        if isinstance(candidate_id, str) and candidate_id:
+            states_by_candidate[candidate_id] = state
+
+    for candidate_id, raw_path in lineage_paths_by_candidate.items():
+        path = Path(raw_path)
+        try:
+            payload = dict(_load_json_mapping(path))
+        except Exception:
+            continue
+        state = states_by_candidate.get(candidate_id)
+        if state is None:
+            payload.setdefault("lifecycle_status", "generated")
+            payload.setdefault("replayed", False)
+        else:
+            status = state.get("status")
+            payload["lifecycle_status"] = str(status or "generated")
+            payload["replayed"] = state.get("replay_result") is not None
+            gate_results = state.get("gate_results")
+            if isinstance(gate_results, list):
+                payload["failed_gates"] = [
+                    gate.gate_name
+                    for gate in gate_results
+                    if isinstance(gate, GateResult) and not gate.passed
+                ]
+            replay_result = state.get("replay_result")
+            if isinstance(replay_result, CandidateReplayResult):
+                payload["baseline_replay_status"] = replay_result.baseline.status
+                payload["candidate_replay_status"] = replay_result.candidate.status
+            candidate_summary = state.get("candidate_summary")
+            if isinstance(candidate_summary, EvaluationSummary):
+                payload["candidate_score"] = candidate_summary.metrics.get("score")
+        if candidate_id == selected_candidate_id and post_apply is not None:
+            payload["post_apply_status"] = post_apply.get("status")
+            payload["release_state"] = post_apply.get("release_state")
+            if post_apply.get("status") == "accepted":
+                payload["lifecycle_status"] = "accepted"
+        try:
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            continue
+
+
+def _lineage_addressed_lesson_ids(raw_path: str | None) -> tuple[str, ...]:
+    if not raw_path:
+        return ()
+    try:
+        payload = _load_json_mapping(Path(raw_path))
+    except Exception:
+        return ()
+    value = payload.get("addressed_lesson_ids")
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value if item)
+
+
+def _with_release_lesson_mapping(
+    normalization_metrics: Mapping[str, Any],
+    *,
+    addressed_lesson_ids: tuple[str, ...],
+) -> Mapping[str, Any]:
+    if not addressed_lesson_ids:
+        return normalization_metrics
+    metrics = dict(normalization_metrics)
+    metrics["addressed_lesson_ids"] = list(addressed_lesson_ids)
+    preserved_constraints = metrics.get("preserved_runtime_constraints")
+    if isinstance(preserved_constraints, list):
+        metrics["runtime_constraint_lesson_map"] = [
+            {
+                "constraint": str(constraint),
+                "lesson_ids": list(addressed_lesson_ids),
+            }
+            for constraint in preserved_constraints
+            if str(constraint).strip()
+        ]
+    return metrics
+
+
 def _include_prior_run_cases(
     dataset: SelfEvolveDataset,
     *,
@@ -2270,6 +2658,7 @@ def _prior_run_case_input(
         for gate in gate_results
         if isinstance(gate, Mapping) and gate.get("passed") is False and gate.get("gate_name")
     ] if isinstance(gate_results, list) else []
+    post_apply = report.get("post_apply")
     return {
         "source": "prior_self_evolve_run",
         "run_id": sanitize_text(report.get("run_id") or report_path.parent.name, max_chars=120),
@@ -2279,6 +2668,20 @@ def _prior_run_case_input(
             max_chars=160,
         ),
         "failed_gates": failed_gates[:12],
+        "replay_path": sanitize_path_ref(report.get("replay_path")),
+        "evaluator_report_paths": _sanitized_path_list(
+            report.get("evaluator_report_paths")
+        ),
+        "post_apply_status": (
+            sanitize_text(post_apply.get("status"), max_chars=80)
+            if isinstance(post_apply, Mapping)
+            else None
+        ),
+        "post_apply_release_state": (
+            sanitize_text(post_apply.get("release_state"), max_chars=80)
+            if isinstance(post_apply, Mapping)
+            else None
+        ),
         "baseline_metrics": _prior_run_metric_summary(report.get("baseline_metrics")),
         "candidate_metrics": _prior_run_metric_summary(report.get("candidate_metrics")),
         "acceptance_confidence": report.get("acceptance_confidence")
@@ -2286,6 +2689,16 @@ def _prior_run_case_input(
         else None,
         "report_path": sanitize_path_ref(report_path),
     }
+
+
+def _sanitized_path_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        sanitize_path_ref(item)
+        for item in value[:8]
+        if isinstance(item, str) and item
+    ]
 
 
 def _prior_run_metric_summary(value: Any) -> Mapping[str, Any]:
@@ -2832,6 +3245,18 @@ def _harness_diagnostic_type_counts(diagnostics: tuple[object, ...]) -> dict[str
     return counts
 
 
+def _harness_diagnostic_promotion_counts(
+    diagnostics: tuple[object, ...],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for diagnostic in diagnostics:
+        status = getattr(diagnostic, "promotion_status", None)
+        status_value = getattr(status, "value", status)
+        if isinstance(status_value, str) and status_value:
+            counts[status_value] = counts.get(status_value, 0) + 1
+    return counts
+
+
 def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str, object] | None:
     metrics = post_apply.get("metrics")
     if not isinstance(metrics, Mapping):
@@ -2840,6 +3265,8 @@ def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str,
     normalized_fingerprint = metrics.get("normalized_release_fingerprint")
     equivalence_passed = metrics.get("normalization_equivalence_passed")
     preserved_constraints = metrics.get("preserved_runtime_constraints")
+    runtime_constraint_lesson_map = metrics.get("runtime_constraint_lesson_map")
+    addressed_lesson_ids = metrics.get("addressed_lesson_ids")
     if (
         pre_fingerprint is None
         and normalized_fingerprint is None
@@ -2853,6 +3280,16 @@ def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str,
         "preserved_runtime_constraints": (
             list(preserved_constraints)
             if isinstance(preserved_constraints, list)
+            else []
+        ),
+        "runtime_constraint_lesson_map": (
+            list(runtime_constraint_lesson_map)
+            if isinstance(runtime_constraint_lesson_map, list)
+            else []
+        ),
+        "addressed_lesson_ids": (
+            list(addressed_lesson_ids)
+            if isinstance(addressed_lesson_ids, list)
             else []
         ),
         "removed_internal_line_count": metrics.get("removed_internal_line_count"),
@@ -3085,6 +3522,46 @@ def _known_duplicate_candidate_count(
         if candidate.candidate_id in rejected_candidate_ids
         or candidate.candidate_id in accepted_candidate_ids
     )
+
+
+def _lineage_semantic_lesson_fingerprints(
+    lineage_items: tuple[OptimizerLineage, ...],
+) -> dict[str, tuple[str, str]]:
+    fingerprints: dict[str, tuple[str, str]] = {}
+    for lineage in lineage_items:
+        if lineage.semantic_fingerprint and lineage.lesson_set_fingerprint:
+            fingerprints[lineage.candidate_id] = (
+                lineage.semantic_fingerprint,
+                lineage.lesson_set_fingerprint,
+            )
+    return fingerprints
+
+
+def _semantic_lesson_duplicate_count(
+    candidates: tuple[CandidateVariant, ...],
+    *,
+    lineage_fingerprints: Mapping[str, tuple[str, str]],
+    rejected_semantic_lesson_fingerprints: set[tuple[str, str]],
+) -> int:
+    return sum(
+        1
+        for candidate in candidates
+        if _is_semantic_lesson_duplicate(
+            candidate.candidate_id,
+            lineage_fingerprints=lineage_fingerprints,
+            rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
+        )
+    )
+
+
+def _is_semantic_lesson_duplicate(
+    candidate_id: str,
+    *,
+    lineage_fingerprints: Mapping[str, tuple[str, str]],
+    rejected_semantic_lesson_fingerprints: set[tuple[str, str]],
+) -> bool:
+    fingerprint = lineage_fingerprints.get(candidate_id)
+    return fingerprint is not None and fingerprint in rejected_semantic_lesson_fingerprints
 
 
 def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
