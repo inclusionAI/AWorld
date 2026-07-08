@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.types import EvaluationSummary
 
 _MAX_TEXT_CHARS = 240
@@ -609,6 +610,4 @@ def _compact_value(value: Any) -> Any:
 
 
 def _clip_text(value: str) -> str:
-    if len(value) <= _MAX_TEXT_CHARS:
-        return value
-    return value[: _MAX_TEXT_CHARS - 1].rstrip() + "…"
+    return sanitize_text(value, max_chars=_MAX_TEXT_CHARS)

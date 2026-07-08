@@ -21,7 +21,7 @@
 - [x] 1.8 Define release normalization input/output metadata.
 - [x] 1.9 Add artifact layout documentation and report links for trajectory
   sets, lessons, population, lineage, and normalized release content.
-- [ ] 1.10 Define evidence minimization, redaction, and untrusted-input handling
+- [x] 1.10 Define evidence minimization, redaction, and untrusted-input handling
   contracts for lessons, optimizer prompts, reports, candidate content, and
   released skill content.
 
@@ -53,7 +53,7 @@
   refs.
 - [ ] 3.5 Add compaction rules for large tool outputs, artifact-backed evidence,
   and replay diagnostics.
-- [ ] 3.5a Add redaction rules for secret-like tokens, authorization headers,
+- [x] 3.5a Add redaction rules for secret-like tokens, authorization headers,
   cookies, private local paths, personal identifiers, and prompt-injection-like
   evidence.
 - [ ] 3.6 Extract harness diagnostics from evidence gaps, artifact lifecycle

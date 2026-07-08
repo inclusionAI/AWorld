@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from aworld.self_evolve.feedback import normalize_feedback_summary
+from aworld.self_evolve.sanitization import sanitize_metric_value, sanitize_path_ref, sanitize_text
 from aworld.self_evolve.types import EvaluationSummary
 
 
-_SECRET_PATTERNS = (
-    re.compile(r"(?i)(secret|token|api[_-]?key|password|authorization|cookie)\s*[:=]\s*\S+"),
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
-)
 _MAX_SUMMARY_CHARS = 240
 
 
@@ -109,7 +105,11 @@ def _record(
     source_task_ids: tuple[str, ...],
     metrics: Mapping[str, Any],
 ) -> LessonRecord:
-    clean_summary = _redact(_truncate(summary))
+    clean_summary = sanitize_text(summary, max_chars=_MAX_SUMMARY_CHARS)
+    clean_metrics = {
+        str(key): sanitize_metric_value(value)
+        for key, value in metrics.items()
+    }
     payload = {
         "lesson_type": lesson_type,
         "title": title,
@@ -117,7 +117,7 @@ def _record(
         "target_scope": dict(target_scope),
         "source_run_ids": source_run_ids,
         "source_task_ids": source_task_ids,
-        "metrics": metrics,
+        "metrics": clean_metrics,
     }
     digest = hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -132,7 +132,7 @@ def _record(
         confidence=confidence,
         source_run_ids=source_run_ids,
         source_task_ids=source_task_ids,
-        metrics=dict(metrics),
+        metrics=clean_metrics,
     )
 
 
@@ -150,7 +150,7 @@ def _lesson_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
             "B2_efficiency",
         ):
             if key in metrics:
-                payload[key] = metrics[key]
+                payload[key] = sanitize_metric_value(metrics[key])
     if isinstance(evidence, Mapping):
         for key in (
             "evidence_compacted",
@@ -160,10 +160,19 @@ def _lesson_metrics(summary: Mapping[str, Any]) -> dict[str, Any]:
             "veto_triggered",
         ):
             if key in evidence:
-                payload[key] = evidence[key]
+                payload[key] = sanitize_metric_value(evidence[key])
+        issues = evidence.get("issues")
+        if isinstance(issues, list):
+            payload["evidence_issues"] = [
+                sanitize_text(issue, max_chars=160)
+                for issue in issues[:3]
+                if str(issue).strip()
+            ]
     failed_gates = summary.get("failed_gates")
     if isinstance(failed_gates, list):
-        payload["failed_gates"] = [str(item) for item in failed_gates[:8]]
+        payload["failed_gates"] = [
+            sanitize_text(item, max_chars=80) for item in failed_gates[:8]
+        ]
     return payload
 
 
@@ -202,20 +211,7 @@ def _evidence_refs(feedback: EvaluationSummary) -> tuple[str, ...]:
     for key in ("evidence_ref", "evidence_refs", "report_path"):
         value = feedback.metrics.get(key)
         if isinstance(value, str) and value:
-            refs.append(value)
+            refs.append(sanitize_path_ref(value))
         elif isinstance(value, list):
-            refs.extend(str(item) for item in value if isinstance(item, str) and item)
+            refs.extend(sanitize_path_ref(item) for item in value if isinstance(item, str) and item)
     return tuple(refs[:8])
-
-
-def _truncate(value: str) -> str:
-    if len(value) <= _MAX_SUMMARY_CHARS:
-        return value
-    return value[: _MAX_SUMMARY_CHARS - 3] + "..."
-
-
-def _redact(value: str) -> str:
-    redacted = value
-    for pattern in _SECRET_PATTERNS:
-        redacted = pattern.sub("[REDACTED]", redacted)
-    return redacted
