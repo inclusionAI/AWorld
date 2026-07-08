@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping, Protocol
 
 
 _SCALAR_TYPES = (str, int, float, bool, type(None))
+_MAX_EVIDENCE_CONTENT_CHARS = 30000
 
 
 def _is_serializable_value(value: Any) -> bool:
@@ -192,6 +193,106 @@ def _tool_calls_from_action(action: Mapping[str, Any]) -> list[dict[str, Any]]:
     return calls
 
 
+def _stringify_evidence_content(value: Any) -> tuple[str, bool, int]:
+    if isinstance(value, str):
+        content = value
+    elif _is_serializable_value(value):
+        content = json.dumps(value, ensure_ascii=False)
+    else:
+        content = str(value)
+    original_length = len(content)
+    if original_length <= _MAX_EVIDENCE_CONTENT_CHARS:
+        return content, False, original_length
+    head_size = _MAX_EVIDENCE_CONTENT_CHARS // 2
+    tail_size = _MAX_EVIDENCE_CONTENT_CHARS - head_size
+    omitted = original_length - _MAX_EVIDENCE_CONTENT_CHARS
+    compacted = (
+        f"{content[:head_size]}\n"
+        f"... [truncated {omitted} chars from tool evidence] ...\n"
+        f"{content[-tail_size:]}"
+    )
+    return compacted, True, original_length
+
+
+def _evidence_record(
+    *,
+    source: str,
+    content: Any,
+    step: Any = None,
+    msg_index: int | None = None,
+    action_name: Any = None,
+    tool_name: Any = None,
+) -> dict[str, Any]:
+    text, truncated, original_length = _stringify_evidence_content(content)
+    record: dict[str, Any] = {
+        "source": source,
+        "content": text,
+    }
+    if step is not None:
+        record["step"] = step
+    if msg_index is not None:
+        record["msg_index"] = msg_index
+    if action_name:
+        record["action_name"] = action_name
+    if tool_name:
+        record["tool_name"] = tool_name
+    if truncated:
+        record["truncated"] = True
+        record["original_length"] = original_length
+    return record
+
+
+def _action_result_evidence(item: Mapping[str, Any]) -> list[dict[str, Any]]:
+    meta = item.get("meta", {}) if isinstance(item.get("meta"), Mapping) else {}
+    state = item.get("state", {}) if isinstance(item.get("state"), Mapping) else {}
+    state_input = state.get("input", {}) if isinstance(state.get("input"), Mapping) else {}
+    action_results = state_input.get("action_result") or []
+    if not isinstance(action_results, list):
+        return []
+    evidence = []
+    for result in action_results:
+        if not isinstance(result, Mapping):
+            continue
+        content = result.get("content")
+        if content in (None, ""):
+            continue
+        evidence.append(
+            _evidence_record(
+                source="state.input.action_result",
+                step=meta.get("step"),
+                action_name=result.get("action_name"),
+                tool_name=result.get("tool_name"),
+                content=content,
+            )
+        )
+    return evidence
+
+
+def _tool_message_evidence(final_messages: Iterable[Any]) -> list[dict[str, Any]]:
+    return [
+        _evidence_record(
+            source="state.messages",
+            msg_index=index,
+            content=message.get("content"),
+        )
+        for index, message in enumerate(final_messages)
+        if isinstance(message, Mapping) and message.get("role") == "tool" and message.get("content") not in (None, "")
+    ]
+
+
+def _dedupe_evidence(evidence: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in evidence:
+        content = str(item.get("content") or "")
+        key = (str(item.get("source") or ""), content)
+        if not content or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(dict(item))
+    return deduped
+
+
 def extract_aworld_trajectory_payload(
     trajectory: Iterable[Mapping[str, Any]],
     *,
@@ -213,6 +314,7 @@ def extract_aworld_trajectory_payload(
 
     steps = []
     final_answer = None
+    evidence_records: list[dict[str, Any]] = []
     for item in trajectory:
         if not isinstance(item, Mapping):
             continue
@@ -232,17 +334,14 @@ def extract_aworld_trajectory_payload(
         )
         if finished and content:
             final_answer = content
+        evidence_records.extend(_action_result_evidence(item))
 
     final_messages = []
     if trajectory and isinstance(trajectory[-1], Mapping):
         final_state = trajectory[-1].get("state", {})
         if isinstance(final_state, Mapping):
             final_messages = final_state.get("messages", []) or []
-    evidence = [
-        {"msg_index": index, "content": str(message.get("content") or "")}
-        for index, message in enumerate(final_messages)
-        if isinstance(message, Mapping) and message.get("role") == "tool"
-    ]
+    evidence_records.extend(_tool_message_evidence(final_messages))
 
     return {
         "task_id": task_id,
@@ -252,7 +351,7 @@ def extract_aworld_trajectory_payload(
         "system_prompt_excerpt": system_prompt[:8000],
         "steps": steps,
         "final_answer": final_answer,
-        "evidence": evidence,
+        "evidence": _dedupe_evidence(evidence_records),
     }
 
 
@@ -266,11 +365,15 @@ def _parse_aworld_trajectory_log_line(line: str) -> Mapping[str, Any]:
 
 def _extract_aworld_trajectory_record_payload(record: Mapping[str, Any], *, task_id: str) -> dict[str, Any]:
     trajectory = json.loads(record["trajectory"])
-    return extract_aworld_trajectory_payload(
+    payload = extract_aworld_trajectory_payload(
         trajectory,
         task_id=task_id,
         is_sub_task=record.get("is_sub_task"),
     )
+    evidence_bundle_path = record.get("evidence_bundle_path")
+    if isinstance(evidence_bundle_path, str) and evidence_bundle_path.strip():
+        payload["evidence_bundle_path"] = evidence_bundle_path
+    return payload
 
 
 def iter_aworld_trajectory_records(log_path: str | Path) -> Iterable[tuple[str, dict[str, Any]]]:

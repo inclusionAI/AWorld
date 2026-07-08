@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from aworld.skills.compat_registry import CompatSkillRegistry
+from aworld.skills.release import is_self_evolve_release_visible
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import get_plugin_skills_dir
 
@@ -180,6 +181,8 @@ def collect_plugin_and_user_skills(
 
     all_skills: Dict[str, Any] = {}
     for skill_name, skill_config in registry.get_all_skills().items():
+        if not is_self_evolve_release_visible(skill_config):
+            continue
         aworld_meta = skill_config.get("aworld_metadata")
         if aworld_meta is None:
             all_skills[skill_name] = skill_config

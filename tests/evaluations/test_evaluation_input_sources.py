@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from aworld.evaluations.sources import (
     AWorldTrajectoryLogSource,
+    EvalSourceRecord,
     JsonlTaskSource,
     JsonlTaskAnswerSource,
     create_source_eval_suite,
@@ -173,6 +174,133 @@ async def test_trajectory_log_source_replays_rollout_state_with_standard_metrics
     assert result["metadata"]["standard_metrics"]["n_tool_calls"] == 1
 
 
+def test_trajectory_log_source_extracts_action_result_tool_evidence(tmp_path: Path) -> None:
+    task_id = "task-action-result"
+    trajectory = [
+        {
+            "state": {
+                "input": {"content": "question"},
+                "messages": [{"role": "system", "content": "system prompt"}],
+            },
+            "meta": {"step": 1, "pre_agent": "runner", "agent_id": "agent"},
+            "action": {
+                "tool_calls": [{"function": {"name": "terminal", "arguments": "{\"cmd\":\"curl\"}"}}],
+                "is_agent_finished": "False",
+            },
+        },
+        {
+            "state": {
+                "input": {
+                    "content": "tool result transport payload",
+                    "action_result": [
+                        {
+                            "action_name": "mcp_execute_command",
+                            "tool_name": "terminal",
+                            "content": "parsed source evidence from webpage",
+                        }
+                    ],
+                },
+                "messages": [{"role": "assistant", "content": "using evidence"}],
+            },
+            "meta": {"step": 2, "pre_agent": "async_mcp", "agent_id": "agent"},
+            "action": {"content": "final answer", "is_agent_finished": "True"},
+        },
+    ]
+    log_path = tmp_path / "trajectory.log"
+    log_path.write_text(
+        repr({"task_id": task_id, "is_sub_task": False, "trajectory": json.dumps(trajectory)}) + "\n",
+        encoding="utf-8",
+    )
+
+    record = next(iter(AWorldTrajectoryLogSource(path=log_path, task_ids=[task_id]).iter_records()))
+
+    assert record.raw_payload["evidence"] == [
+        {
+            "source": "state.input.action_result",
+            "step": 2,
+            "action_name": "mcp_execute_command",
+            "tool_name": "terminal",
+            "content": "parsed source evidence from webpage",
+        }
+    ]
+
+
+def test_trajectory_log_source_preserves_evidence_bundle_path(tmp_path: Path) -> None:
+    task_id = "task-bundle"
+    bundle_path = tmp_path / "evidence_bundle.json"
+    trajectory = [
+        {
+            "state": {"input": {"content": "question"}, "messages": []},
+            "meta": {"step": 1, "pre_agent": "runner", "agent_id": "agent"},
+            "action": {"content": "answer", "is_agent_finished": "True"},
+        }
+    ]
+    log_path = tmp_path / "trajectory.log"
+    log_path.write_text(
+        repr(
+            {
+                "task_id": task_id,
+                "is_sub_task": False,
+                "trajectory": json.dumps(trajectory),
+                "evidence_bundle_path": str(bundle_path),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    record = next(iter(AWorldTrajectoryLogSource(path=log_path, task_ids=[task_id]).iter_records()))
+
+    assert record.raw_payload["evidence_bundle_path"] == str(bundle_path)
+
+
+def test_trajectory_log_state_adapter_counts_valid_evidence_bundle_as_evidence(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "source-1",
+                        "artifact_path": str(tmp_path / "source.txt"),
+                        "bounded_evidence": {"excerpt": "source evidence"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    record = EvalSourceRecord(
+        case_id="case-bundle-only",
+        input={"task_id": "case-bundle-only"},
+        answer="answer",
+        raw_payload={
+            "task_id": "case-bundle-only",
+            "question": "question",
+            "steps": [{"step": 1, "is_agent_finished": True}],
+            "final_answer": "answer",
+            "evidence": [],
+            "evidence_bundle_path": str(bundle_path),
+        },
+    )
+
+    state = TrajectoryLogStateAdapter(extraction_dir=tmp_path).adapt(
+        record=record,
+        case=record.to_case(),
+        target={},
+    )
+
+    assert state.outcome["evidence_blocks"] == 1
+    assert state.outcome["raw_evidence_blocks"] == 0
+    assert state.outcome["canonical_evidence_bundle_valid"] is True
+    assert state.outcome["canonical_evidence_bundle_entries"] == 1
+
+
 def test_judge_schema_normalizer_runs_before_typed_validation() -> None:
     schema = JudgeSchemaDef(
         output_model=_ScoreJudgeOutput,
@@ -250,9 +378,23 @@ def test_trajectory_judge_schema_normalizes_dimensions_report() -> None:
                 "B4_robustness": {"score": 3},
             },
             "veto_triggered": False,
+            "has_evidence": True,
+            "evidence_block_count": 2,
+            "evidence_compacted": False,
+            "evidence_incomplete": False,
+            "evidence_quality": {
+                "has_evidence": True,
+                "evidence_block_count": 2,
+                "evidence_compacted": False,
+                "evidence_incomplete": False,
+            },
         }
     )
 
     assert payload["score"] == 76
     assert payload["A1_groundedness"] == 4
     assert payload["B2_efficiency"] == 2
+    assert payload["has_evidence"] is True
+    assert payload["evidence_block_count"] == 2
+    assert payload["evidence_compacted"] is False
+    assert payload["evidence_quality"]["evidence_block_count"] == 2

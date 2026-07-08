@@ -10,10 +10,10 @@ docs = "docs"
 black_keys = ["Index", "docs_zh", "DESIGN_SYSTEM"]
 black_values = ["index.md"]
 file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Hitl"],
-                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Runtime", "Memory", "Trace", "Parallel Subagents"],
+                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Self Evolve", "Runtime", "Memory", "Trace", "Parallel Subagents"],
                  "Runtime": ["Overview", "Custom Runner", "Hooks", "Ralph Runner"],
                  "AWorld CLI": ["Overview", "Installation", "Configuration", "Commands", "Hooks", "Plugins", "Recipes"],
-                 "Commands": ["Overview", "Memory", "Cron", "Plugins", "Gateway", "Parallel Tasks"],
+                 "Commands": ["Overview", "Memory", "Cron", "Plugins", "Evaluator", "Optimize", "Gateway", "Parallel Tasks"],
                  "Hooks": ["Overview", "Examples"],
                  "Plugins": ["Overview", "Plugin Sdk", "Goal Session"],
                  "Recipes": ["Overview", "Deep Search", "Mini App Build", "Video Creation"],
