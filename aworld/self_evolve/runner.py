@@ -1143,6 +1143,7 @@ def optimize_from_cli_request(
     dataset: str | None = None,
     from_session: str | None = None,
     from_trajectory: str | None = None,
+    from_trajectory_set: str | None = None,
     batch_config: str | None = None,
     from_run: str | None = None,
     rerun_evaluator: bool = False,
@@ -1205,6 +1206,7 @@ def optimize_from_cli_request(
         not dataset
         and not from_session
         and not from_trajectory
+        and not from_trajectory_set
         and not batch_config
         and not from_run
         and current_trajectory is None
@@ -1218,6 +1220,7 @@ def optimize_from_cli_request(
             dataset=dataset,
             from_session=from_session,
             from_trajectory=from_trajectory,
+            from_trajectory_set=from_trajectory_set,
             batch_config=batch_config,
             workspace_root=workspace_root,
         )
@@ -1244,6 +1247,7 @@ def optimize_from_cli_request(
                 dataset,
                 from_session,
                 from_trajectory,
+                from_trajectory_set,
                 batch_config,
                 iterations,
             )
@@ -1269,6 +1273,7 @@ def optimize_from_cli_request(
             dataset,
             from_session,
             from_trajectory,
+            from_trajectory_set,
             batch_config,
             iterations,
         )
@@ -1323,6 +1328,7 @@ def optimize_from_cli_request(
             dataset,
             from_session,
             from_trajectory,
+            from_trajectory_set,
             batch_config,
             iterations,
         )
@@ -3497,12 +3503,13 @@ def _cli_run_id(
     dataset: str | None,
     from_session: str | None,
     from_trajectory: str | None,
+    from_trajectory_set: str | None,
     batch_config: str | None,
     iterations: int | None,
 ) -> str:
     return (
         "cli-"
-        f"{abs(hash((target_key, dataset, from_session, from_trajectory, batch_config, iterations))) % 10**12:012d}"
+        f"{abs(hash((target_key, dataset, from_session, from_trajectory, from_trajectory_set, batch_config, iterations))) % 10**12:012d}"
     )
 
 
@@ -3511,6 +3518,7 @@ def _source_config_from_cli_request(
     dataset: str | None,
     from_session: str | None,
     from_trajectory: str | None,
+    from_trajectory_set: str | None,
     batch_config: str | None,
     workspace_root: str | Path,
 ) -> SelfEvolveEvalSourceConfig:
@@ -3518,6 +3526,8 @@ def _source_config_from_cli_request(
         return SelfEvolveEvalSourceConfig(kind="jsonl", path=dataset)
     if from_trajectory:
         return SelfEvolveEvalSourceConfig(kind="trajectory_log", path=from_trajectory)
+    if from_trajectory_set:
+        return SelfEvolveEvalSourceConfig(kind="trajectory_set", path=from_trajectory_set)
     if from_session:
         return SelfEvolveEvalSourceConfig(
             kind="session",

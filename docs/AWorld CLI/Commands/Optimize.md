@@ -12,6 +12,7 @@ Proposal-only runs:
 aworld-cli optimize --target skill:demo --dataset eval.jsonl
 aworld-cli optimize --target skill:login --from-trajectory trajectory.log --apply proposal
 aworld-cli optimize --task "improve login retry guidance" --from-trajectory trajectory.log
+aworld-cli optimize --from-trajectory-set trajectory-set.json --apply proposal
 ```
 
 Verified apply for an allowlisted skill target:
@@ -43,6 +44,7 @@ Exactly one evaluation source is normally provided:
 
 - `--dataset <path>`: JSONL eval dataset. Rows may include `input`, `expected_output`, and `verification_command`.
 - `--from-trajectory <path>`: trajectory log used to build trace packs and infer failure patterns.
+- `--from-trajectory-set <path>`: versioned trajectory-set JSON file containing related baseline, candidate replay, accepted follow-up, rejected candidate, or operator-added trajectories.
 - `--from-session <id>`: session-backed dataset construction.
 - `--batch-config <path>`: batch config for a larger request.
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.

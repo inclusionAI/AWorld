@@ -170,6 +170,98 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
     assert log_dataset.recipe.source["case_count"] == 2
 
 
+def test_build_dataset_from_trajectory_set_v1_contract(tmp_path) -> None:
+    trajectory_path = tmp_path / "trajectories" / "baseline.log"
+    trajectory_path.parent.mkdir()
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Summarize a page with evidence."}},
+            "action": {"content": "I will gather bounded evidence."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trajectory_path.write_text(
+        repr(
+            {
+                "task_id": "task-a",
+                "is_sub_task": False,
+                "trajectory": json.dumps(trajectory),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    set_path = tmp_path / "trajectory_set.json"
+    set_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.trajectory_set.v1",
+                "set_id": "set-a",
+                "target": {"target_type": "skill", "target_id": "demo"},
+                "members": [
+                    {
+                        "member_id": "baseline-a",
+                        "role": "baseline",
+                        "trajectory_path": "trajectories/baseline.log",
+                        "task_id": "task-a",
+                        "task_input_digest": "sha256:abc",
+                        "evidence_bundle_path": "evidence/bundle.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_set", path=str(set_path)),
+        split_seed="seed-set",
+    )
+
+    assert [case.case_id for case in dataset.cases] == ["task-a"]
+    assert dataset.cases[0].trace_pack is not None
+    assert dataset.cases[0].trace_pack.task_id == "task-a"
+    assert dataset.cases[0].source["kind"] == "trajectory_set"
+    assert dataset.cases[0].source["set_id"] == "set-a"
+    assert dataset.cases[0].source["member_id"] == "baseline-a"
+    assert dataset.cases[0].source["role"] == "baseline"
+    assert dataset.cases[0].metadata["trajectory_set"]["target"]["target_id"] == "demo"
+    assert dataset.recipe.source["kind"] == "trajectory_set"
+    assert dataset.recipe.source["path"] == str(set_path)
+
+
+def test_build_dataset_from_trajectory_set_rejects_untrusted_absolute_path(tmp_path) -> None:
+    outside = tmp_path.parent / "outside.log"
+    outside.write_text("", encoding="utf-8")
+    set_path = tmp_path / "trajectory_set.json"
+    set_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.trajectory_set.v1",
+                "set_id": "set-a",
+                "target": {"target_type": "skill", "target_id": "demo"},
+                "members": [
+                    {
+                        "member_id": "bad",
+                        "role": "baseline",
+                        "trajectory_path": str(outside),
+                        "task_id": "task-a",
+                        "task_input_digest": "sha256:abc",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="members\\[0\\]\\.trajectory_path"):
+        build_dataset_from_source(
+            SelfEvolveEvalSourceConfig(kind="trajectory_set", path=str(set_path)),
+            split_seed="seed-set",
+        )
+
+
 def test_build_dataset_from_user_documents_trajectory_log_seed(monkeypatch, tmp_path) -> None:
     home = tmp_path / "home"
     log_path = home / "Documents" / "logs" / "trajectory.log"

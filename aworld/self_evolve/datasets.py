@@ -17,10 +17,21 @@ from aworld.self_evolve.types import DatasetRecipe
 SUPPORTED_SOURCE_KINDS = {
     "current_trajectory",
     "trajectory_log",
+    "trajectory_set",
     "session",
     "jsonl",
     "batch_config",
 }
+
+TRAJECTORY_SET_SCHEMA_VERSION = "aworld.self_evolve.trajectory_set.v1"
+TRAJECTORY_SET_MEMBER_ROLES = {
+    "baseline",
+    "candidate_replay",
+    "accepted_followup",
+    "rejected_candidate",
+    "operator_added",
+}
+TRAJECTORY_SET_MAX_MEMBERS = 100
 
 
 @dataclass(frozen=True)
@@ -171,6 +182,22 @@ def build_dataset_from_source(
             ),
         )
 
+    if source_config.kind == "trajectory_set":
+        if source_config.path is None:
+            raise ValueError("trajectory_set eval source requires path")
+        cases = _filter_and_limit_cases(
+            load_trajectory_set_eval_cases(Path(source_config.path).expanduser()),
+            source_config=source_config,
+        )
+        return SelfEvolveDataset(
+            cases=cases,
+            recipe=build_dataset_recipe(
+                cases,
+                source_config=source_config,
+                split_seed=split_seed,
+            ),
+        )
+
     if source_config.kind == "session":
         if source_config.path is None or source_config.session_id is None:
             raise ValueError("session eval source requires path and session_id")
@@ -294,6 +321,110 @@ def load_session_eval_cases(
     return cases
 
 
+def load_trajectory_set_eval_cases(path: str | Path) -> list[EvalCase]:
+    set_path = Path(path).expanduser().resolve()
+    payload = json.loads(set_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("trajectory set must be a JSON object")
+    schema_version = payload.get("schema_version")
+    if schema_version != TRAJECTORY_SET_SCHEMA_VERSION:
+        raise ValueError(
+            "schema_version must be "
+            f"{TRAJECTORY_SET_SCHEMA_VERSION!r}, got {schema_version!r}"
+        )
+    set_id = _required_string(payload, "set_id")
+    target = _required_mapping(payload, "target")
+    _required_string(target, "target_type", prefix="target.")
+    _required_string(target, "target_id", prefix="target.")
+    members_value = payload.get("members")
+    if not isinstance(members_value, list):
+        raise ValueError("members must be a list")
+    if len(members_value) > TRAJECTORY_SET_MAX_MEMBERS:
+        raise ValueError(
+            f"members exceeds maximum of {TRAJECTORY_SET_MAX_MEMBERS}: "
+            f"{len(members_value)}"
+        )
+
+    cases: list[EvalCase] = []
+    seen_keys: set[tuple[Any, ...]] = set()
+    for index, member_value in enumerate(members_value):
+        if not isinstance(member_value, Mapping):
+            raise ValueError(f"members[{index}] must be an object")
+        member = member_value
+        member_id = _required_string(member, "member_id", prefix=f"members[{index}].")
+        role = _required_string(member, "role", prefix=f"members[{index}].")
+        if role not in TRAJECTORY_SET_MEMBER_ROLES:
+            raise ValueError(
+                f"members[{index}].role must be one of "
+                f"{sorted(TRAJECTORY_SET_MEMBER_ROLES)}, got {role!r}"
+            )
+        task_id = _required_string(member, "task_id", prefix=f"members[{index}].")
+        task_input_digest = _required_string(
+            member,
+            "task_input_digest",
+            prefix=f"members[{index}].",
+        )
+        duplicate_key = (
+            task_input_digest,
+            role,
+            _string_or_none(member.get("candidate_id")),
+            _string_or_none(member.get("source_run_id")),
+        )
+        if duplicate_key in seen_keys:
+            raise ValueError(
+                f"members[{index}] duplicates task_input_digest/role/"
+                "candidate_id/source_run_id from an earlier member"
+            )
+        seen_keys.add(duplicate_key)
+        trajectory_path = _resolve_trajectory_set_member_path(
+            member.get("trajectory_path"),
+            set_path=set_path,
+            field=f"members[{index}].trajectory_path",
+        )
+        packs = trace_packs_from_trajectory_log(trajectory_path)
+        matching_pack = next((pack for pack in packs if pack.task_id == task_id), None)
+        if matching_pack is None:
+            raise ValueError(
+                f"members[{index}].task_id {task_id!r} was not found in "
+                f"{trajectory_path}"
+            )
+        source = {
+            "kind": "trajectory_set",
+            "path": str(set_path),
+            "set_id": set_id,
+            "member_id": member_id,
+            "role": role,
+            "trajectory_path": str(trajectory_path),
+            "task_id": task_id,
+            "task_input_digest": task_input_digest,
+        }
+        for key in (
+            "source_run_id",
+            "candidate_id",
+            "evidence_bundle_path",
+            "evaluator_report_path",
+        ):
+            value = _string_or_none(member.get(key))
+            if value:
+                source[key] = value
+        cases.append(
+            EvalCase(
+                case_id=task_id,
+                input=_trace_pack_input(matching_pack),
+                metadata={
+                    "trajectory_set": {
+                        "set_id": set_id,
+                        "target": dict(target),
+                        "member": dict(member),
+                    }
+                },
+                trace_pack=matching_pack,
+                source=source,
+            )
+        )
+    return cases
+
+
 def _filter_and_limit_cases(
     cases: Iterable[EvalCase],
     *,
@@ -408,6 +539,58 @@ def _load_config_mapping(path: Path) -> Mapping[str, Any]:
     if not isinstance(payload, Mapping):
         raise ValueError(f"batch config must be an object: {path}")
     return payload
+
+
+def _resolve_trajectory_set_member_path(
+    value: Any,
+    *,
+    set_path: Path,
+    field: str,
+) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} is required")
+    raw_path = Path(value).expanduser()
+    resolved = (
+        raw_path
+        if raw_path.is_absolute()
+        else set_path.parent / raw_path
+    ).resolve()
+    trusted_roots = (
+        set_path.parent.resolve(),
+        (set_path.parent / ".aworld" / "self_evolve").resolve(),
+    )
+    if not any(_is_relative_to(resolved, root) for root in trusted_roots):
+        raise ValueError(f"{field} must resolve inside a trusted trajectory-set root")
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{field} does not exist: {resolved}")
+    return resolved
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _required_string(
+    payload: Mapping[str, Any],
+    key: str,
+    *,
+    prefix: str = "",
+) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{prefix}{key} is required")
+    return value
+
+
+def _required_mapping(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    value = payload.get(key)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key} is required")
+    return value
 
 
 def _case_id(payload: Mapping[str, Any], *, resolved_path: Path, line_number: int) -> str:

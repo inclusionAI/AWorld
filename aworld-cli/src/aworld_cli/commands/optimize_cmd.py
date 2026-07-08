@@ -19,6 +19,7 @@ def _usage() -> str:
     return """Usage:
   /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
   /optimize --from-trajectory <trajectory.log> --apply auto_verified --judge-agent <agent.md>
+  /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
   /optimize --from-run <run-id-or-path> --rerun-evaluator --apply auto_verified --judge-agent <agent.md>
   /optimize --target skill:<name> --dataset <eval.jsonl> --apply proposal
   /optimize --drain-pending
@@ -26,6 +27,7 @@ def _usage() -> str:
 Examples:
   /optimize --from-trajectory ~/Documents/task.log --apply proposal
   /optimize --from-trajectory ~/Documents/task.log --apply auto_verified --judge-agent ~/Documents/agent.md
+  /optimize --from-trajectory-set ./trajectory-set.json --apply auto_verified --judge-agent ~/Documents/agent.md
   /optimize --from-run cli-123456789012 --rerun-evaluator --apply auto_verified --judge-agent ~/Documents/agent.md
   /optimize --target skill:media_comprehension --dataset ./eval.jsonl --apply proposal
 """
@@ -39,6 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset")
     parser.add_argument("--from-session", dest="from_session")
     parser.add_argument("--from-trajectory", dest="from_trajectory")
+    parser.add_argument("--from-trajectory-set", dest="from_trajectory_set")
     parser.add_argument("--from-run", dest="from_run")
     parser.add_argument("--rerun-evaluator", action="store_true", dest="rerun_evaluator")
     parser.add_argument("--batch-config", dest="batch_config")
@@ -76,6 +79,7 @@ class OptimizeCommand(Command):
     def completion_items(self) -> dict[str, str]:
         return {
             "/optimize --from-trajectory": "Run self-evolve from an AWorld trajectory log",
+            "/optimize --from-trajectory-set": "Run self-evolve from a trajectory-set file",
             "/optimize --apply auto_verified": "Run verified replay/evaluation before applying",
             "/optimize --drain-pending": "Drain pending post-run self-evolve jobs",
         }
@@ -123,6 +127,7 @@ class OptimizeCommand(Command):
                 dataset=args.dataset,
                 from_session=args.from_session,
                 from_trajectory=args.from_trajectory,
+                from_trajectory_set=args.from_trajectory_set,
                 from_run=args.from_run,
                 rerun_evaluator=args.rerun_evaluator,
                 batch_config=args.batch_config,
