@@ -477,20 +477,27 @@ class SelfEvolveRunner:
                     reason="auto_verified apply policy requires a candidate",
                 )
             )
+        else:
+            gate_results.append(
+                GateResult(
+                    gate_name="no_candidate",
+                    passed=False,
+                    reason="optimizer did not produce a candidate",
+                )
+            )
 
         post_apply: dict[str, object] | None = None
         final_status = SelfEvolveRunStatus.SUCCEEDED
-        if apply_policy == "auto_verified":
-            if selected_candidate is None:
+        if selected_candidate is None:
+            final_status = SelfEvolveRunStatus.REJECTED
+        elif apply_policy == "auto_verified":
+            failed_gates = [gate for gate in gate_results if not gate.passed]
+            if failed_gates:
                 final_status = SelfEvolveRunStatus.REJECTED
             else:
-                failed_gates = [gate for gate in gate_results if not gate.passed]
-                if failed_gates:
+                post_apply = await self._apply_auto_verified(run_id, target, selected_candidate)
+                if post_apply["status"] != "accepted":
                     final_status = SelfEvolveRunStatus.REJECTED
-                else:
-                    post_apply = await self._apply_auto_verified(run_id, target, selected_candidate)
-                    if post_apply["status"] != "accepted":
-                        final_status = SelfEvolveRunStatus.REJECTED
 
         report = {
             "run_id": run_id,
@@ -553,6 +560,9 @@ class SelfEvolveRunner:
                 }
                 for gate_result in gate_results
             ]
+            acceptance_confidence = _acceptance_confidence_report(gate_results)
+            if acceptance_confidence is not None:
+                report["acceptance_confidence"] = acceptance_confidence
             report["release_checklist"] = build_release_checklist(
                 apply_policy=apply_policy,
                 gate_results=report["gate_results"],
@@ -2623,6 +2633,30 @@ def _release_normalization_report(post_apply: Mapping[str, object]) -> dict[str,
         "removed_internal_line_count": metrics.get("removed_internal_line_count"),
         "status": post_apply.get("status"),
     }
+
+
+def _acceptance_confidence_report(gate_results: list[GateResult]) -> dict[str, object] | None:
+    for gate in gate_results:
+        if gate.gate_name != "held_out_verification" or not isinstance(gate.details, Mapping):
+            continue
+        details = gate.details
+        verification_mode = details.get("verification_mode")
+        verification_split = details.get("verification_split")
+        if not isinstance(verification_mode, str) and isinstance(verification_split, str):
+            verification_mode = verification_split
+        if not isinstance(verification_mode, str):
+            verification_mode = "unknown"
+        return {
+            "confidence": details.get("confidence"),
+            "verification_mode": verification_mode,
+            "verification_split": verification_split,
+            "held_out_case_count": details.get("held_out_case_count"),
+            "min_eval_cases": details.get("min_eval_cases"),
+            "baseline_replay_count": details.get("baseline_replay_count"),
+            "candidate_replay_count": details.get("candidate_replay_count"),
+            "passed": gate.passed,
+        }
+    return None
 
 
 def _baseline_comparison_feedback_metrics(

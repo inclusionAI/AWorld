@@ -182,9 +182,19 @@ Each run writes durable artifacts under `.aworld/self_evolve/<run_id>/`:
 - `target_provenance.json`: provenance for the selected target when available.
 - `candidates/<candidate_id>.md`: candidate content. Skill candidates are marked with `self_evolve.release_state: candidate`.
 - `candidates/<candidate_id>.diff`: unified diff against the current target, when the target adapter supports diffs.
-- `optimizer_lineage/<candidate_id>.json`: optimizer name/version, parents, trainable cases, and rationale.
+- `optimizer_lineage/<candidate_id>.json`: optimizer name/version, parents, trainable cases, content fingerprint, semantic fingerprint, lesson-set fingerprint, addressed lesson ids, and rationale.
+- `lessons/lessons.jsonl`: normalized failure memories, success memories, and required runtime behavior records extracted from evaluation feedback.
+- `diagnostics/harness_diagnostics.jsonl`: advisory framework diagnostics for replay, evidence, evaluator, memory, permission-boundary, and artifact-lifecycle issues. These records are intentionally separate from runtime skill instructions.
 - `judges/<backend_id>.json`: judge prompt/result metadata.
 - `apply/<candidate_id>.backup.md` and `apply/<candidate_id>.journal.json`: rollback material for verified apply.
+- `release_normalization` in `report.json`: pre-normalization fingerprint, normalized release fingerprint, preserved runtime constraints, removed internal line count, and normalization verification status.
+
+Trajectory-set runs may also include framework-owned trajectory-set and population artifacts:
+
+- `trajectory_set/set.json`: validated copy or normalized representation of the trajectory-set input.
+- `trajectory_set/members/<member_id>.json`: bounded member metadata and source references.
+- `population/candidates.jsonl`: generated candidate strategy records, including non-replayed candidates when replay budget is exhausted.
+- `population/patches/<candidate_id>.json`: patch intent metadata before materialization.
 
 The CLI summary prints the most important paths, for example:
 
@@ -227,6 +237,10 @@ When apply is allowed, the runner:
 6. Accepts the apply or rolls back from the backup if verification or activation fails.
 
 Generated draft skills are hidden from runtime discovery until verified. Runtime skill registries filter out `draft`, `candidate`, `rejected`, and `disabled` self-evolve release states.
+
+Accepted production skills should contain only runtime-executable behavior rules. Candidate-only context such as trajectory ids, evaluator scores, gate names, raw harness diagnostic labels, and evidence ids belongs in run artifacts, not in `aworld-skills/.../SKILL.md`.
+
+Domain-specific learned skills, such as a grounding or media-comprehension skill produced by a run, are target artifacts. They are examples of what self-evolve can improve, not framework-owned self-evolve logic.
 
 ## Operating Guidance
 

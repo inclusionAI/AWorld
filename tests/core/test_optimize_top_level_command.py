@@ -1005,6 +1005,6 @@ def test_framework_cli_request_runs_explicit_skill_target_without_cli_owned_opti
     )
 
     assert Path(report["report_path"]).exists()
-    assert report["status"] == "succeeded"
+    assert report["status"] == "rejected"
     assert report["best_candidate_id"] is None
     assert skill_path.read_text(encoding="utf-8").endswith("Old guidance.\n")
