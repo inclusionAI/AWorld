@@ -82,9 +82,10 @@ aworld-cli optimize \
 multiple task trajectories. The framework parses the log, infers target/task
 families, and uses an internally selected coherent group for candidate
 generation, replay, and evaluation. Use `--from-trajectory-set` only when a
-caller needs explicit control over baseline trajectory collections. Framework
-owned accepted, rejected, and replay members come from self-evolve run history,
-not from user-authored set files.
+caller needs explicit control over baseline trajectory collections.
+User-authored set files may contain `baseline` and `operator_added` members
+only. Framework-owned accepted, rejected, and replay members come from
+self-evolve run history, not from user-authored set files.
 
 Run verified apply for an allowlisted skill target:
 

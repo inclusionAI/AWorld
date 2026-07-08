@@ -262,6 +262,66 @@ def test_build_dataset_from_trajectory_set_rejects_untrusted_absolute_path(tmp_p
         )
 
 
+def test_build_dataset_from_trajectory_set_rejects_user_authored_derived_roles(
+    tmp_path,
+) -> None:
+    trajectory_path = tmp_path / "trajectories" / "rejected.log"
+    trajectory_path.parent.mkdir()
+    trajectory_path.write_text(
+        repr(
+            {
+                "task_id": "task-rejected",
+                "is_sub_task": False,
+                "trajectory": json.dumps(
+                    [
+                        {
+                            "meta": {"step": 1},
+                            "state": {"input": {"content": "task"}},
+                            "action": {"content": "rejected candidate trajectory"},
+                            "reward": {"status": "failed"},
+                        }
+                    ]
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    set_path = tmp_path / "trajectory_set.json"
+    set_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.trajectory_set.v1",
+                "set_id": "set-a",
+                "target": {"target_type": "skill", "target_id": "demo"},
+                "members": [
+                    {
+                        "member_id": "rejected-a",
+                        "role": "rejected_candidate",
+                        "trajectory_path": "trajectories/rejected.log",
+                        "task_id": "task-rejected",
+                        "task_input_digest": "sha256:abc",
+                        "candidate_id": "candidate-a",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "members\\[0\\]\\.role rejected_candidate is framework-owned; "
+            "use baseline/operator_added in user-authored trajectory-set files"
+        ),
+    ):
+        build_dataset_from_source(
+            SelfEvolveEvalSourceConfig(kind="trajectory_set", path=str(set_path)),
+            split_seed="seed-set",
+        )
+
+
 def test_build_dataset_from_user_documents_trajectory_log_seed(monkeypatch, tmp_path) -> None:
     home = tmp_path / "home"
     log_path = home / "Documents" / "logs" / "trajectory.log"

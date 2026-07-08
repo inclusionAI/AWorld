@@ -31,6 +31,10 @@ TRAJECTORY_SET_MEMBER_ROLES = {
     "rejected_candidate",
     "operator_added",
 }
+USER_AUTHORED_TRAJECTORY_SET_MEMBER_ROLES = {
+    "baseline",
+    "operator_added",
+}
 TRAJECTORY_SET_MAX_MEMBERS = 100
 
 
@@ -357,6 +361,11 @@ def load_trajectory_set_eval_cases(path: str | Path) -> list[EvalCase]:
             raise ValueError(
                 f"members[{index}].role must be one of "
                 f"{sorted(TRAJECTORY_SET_MEMBER_ROLES)}, got {role!r}"
+            )
+        if role not in USER_AUTHORED_TRAJECTORY_SET_MEMBER_ROLES:
+            raise ValueError(
+                f"members[{index}].role {role} is framework-owned; "
+                "use baseline/operator_added in user-authored trajectory-set files"
             )
         task_id = _required_string(member, "task_id", prefix=f"members[{index}].")
         task_input_digest = _required_string(
