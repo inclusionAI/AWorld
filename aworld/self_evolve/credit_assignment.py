@@ -127,6 +127,14 @@ class TrajectoryCreditAssigner:
             )
 
         entry = self.inventory.find(signal.target_type, signal.target_id)
+        if entry is None and "browser_runtime_issue" in signals:
+            skill_report = self._assign_from_skill_inventory(
+                trace_pack,
+                serialized=serialized,
+                existing_signals=signals,
+            )
+            if skill_report is not None:
+                return skill_report
         if entry is None:
             return TargetSelectionReport(
                 selected_target=None,
@@ -243,7 +251,10 @@ class TrajectoryCreditAssigner:
         for entry in self.inventory.entries:
             if entry.target.target_type != "skill" or entry.provenance.protected:
                 continue
-            aliases = _skill_match_aliases(entry)
+            aliases = _dedupe(
+                _skill_match_aliases(entry)
+                + _tool_anchored_skill_aliases(entry, trace_pack)
+            )
             matched_aliases = tuple(alias for alias in aliases if alias in serialized)
             if matched_aliases:
                 matches.append((len(matched_aliases), entry, matched_aliases))
@@ -458,6 +469,15 @@ def _deterministic_signal(serialized: str) -> _Signal:
             signals=("result_validation_mismatch",),
             keywords=("result validation mismatch", "anchors"),
         )
+    if _looks_like_browser_runtime_issue(serialized):
+        return _Signal(
+            target_type="skill",
+            target_id="agent-browser",
+            failure_category="skill",
+            confidence=0.9,
+            signals=("browser_runtime_issue",),
+            keywords=("browser", "chrome", "cdp", "login", "profile", "session"),
+        )
     if "skill_tool" in serialized or "active_skill" in serialized:
         return _Signal(
             target_type="tool-description",
@@ -484,6 +504,24 @@ def _deterministic_signal(serialized: str) -> _Signal:
         signals=("low_confidence",),
         keywords=(),
         reason="deterministic signals did not identify a supported self-evolve target",
+    )
+
+
+def _looks_like_browser_runtime_issue(serialized: str) -> bool:
+    browser_markers = ("browser", "chrome", "cdp", "devtools", "playwright")
+    runtime_markers = (
+        "logged out",
+        "logged-out",
+        "not logged in",
+        "login",
+        "profile",
+        "session",
+        "cookie",
+        "cookies",
+        "connect_over_cdp",
+    )
+    return any(marker in serialized for marker in browser_markers) and any(
+        marker in serialized for marker in runtime_markers
     )
 
 
@@ -549,12 +587,34 @@ def _skill_match_aliases(entry: TargetInventoryEntry) -> tuple[str, ...]:
         if not lowered:
             continue
         normalized.append(lowered)
-        normalized.extend(
-            token
-            for token in re.findall(r"[a-z0-9]+", lowered)
-            if len(token) >= 5 and token not in _WEAK_SKILL_ALIAS_TOKENS
-        )
     return tuple(dict.fromkeys(normalized))
+
+
+def _tool_anchored_skill_aliases(
+    entry: TargetInventoryEntry,
+    trace_pack: TracePack,
+) -> tuple[str, ...]:
+    tool_text = " ".join(
+        tool_name.lower()
+        for step in trace_pack.steps
+        for tool_name in step.tool_names
+    )
+    if not tool_text:
+        return ()
+
+    aliases = [entry.target.target_id]
+    aliases.extend(alias for alias in entry.aliases[:2] if alias)
+    anchored: list[str] = []
+    for alias in aliases:
+        lowered = alias.strip().lower()
+        for token in re.findall(r"[a-z0-9]+", lowered):
+            if (
+                len(token) >= 5
+                and token not in _WEAK_SKILL_ALIAS_TOKENS
+                and token in tool_text
+            ):
+                anchored.append(token)
+    return tuple(dict.fromkeys(anchored))
 
 
 def _skill_frontmatter(path: Path) -> dict[str, str]:
