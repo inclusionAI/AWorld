@@ -24,6 +24,7 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _include_prior_run_cases,
     _iteration_validation_feedback,
+    _rank_candidate_population,
     _summary_with_replay_evidence_metrics,
     optimize_explicit_target,
     optimize_from_cli_request,
@@ -399,6 +400,122 @@ async def test_runner_passes_trace_lessons_to_candidate_generation(tmp_path) -> 
     lesson_types = [lesson.lesson_type for lesson in optimizer.requests[0].lesson_records]
     assert "trajectory_failure_memory" in lesson_types
     assert optimizer.requests[0].lesson_records[0].source_task_ids == ("lesson-task",)
+
+
+@pytest.mark.asyncio
+async def test_runner_passes_prior_rejected_feedback_as_generation_lessons(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.write_report(
+        "prior-rejected",
+        {
+            "run_id": "prior-rejected",
+            "status": "rejected",
+            "target": {
+                "target_type": "skill",
+                "target_id": "demo",
+                "path": str(skill_path),
+            },
+            "iterations": [
+                {
+                    "candidate_id": "candidate-old",
+                    "status": "rejected",
+                    "failed_gates": ["score_improvement", "evidence_quality"],
+                    "baseline_metrics": {"score": 91.0, "B2_efficiency": 4.5},
+                    "candidate_metrics": {
+                        "score": 84.0,
+                        "B2_efficiency": 2.0,
+                        "evidence_compacted": True,
+                    },
+                }
+            ],
+        },
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve current task."}},
+            "action": {"content": "Need a safer delta."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="current-task",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="current-task",
+    )
+    optimizer = CaptureOptimizer()
+
+    await SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-prior-lessons",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    lesson_types = [lesson.lesson_type for lesson in optimizer.requests[0].lesson_records]
+    assert "failure_memory" in lesson_types
+    prior_lesson = next(
+        lesson
+        for lesson in optimizer.requests[0].lesson_records
+        if lesson.lesson_type == "failure_memory"
+    )
+    assert "score_improvement" in prior_lesson.summary
+    assert prior_lesson.metrics["candidate_score"] == 84.0
+
+
+def test_rank_candidate_population_prefers_lesson_backed_small_deltas() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    broad_candidate = CandidateVariant(
+        candidate_id="candidate-broad",
+        target=target,
+        content="# Demo\n\n" + "Broad guidance.\n" * 80,
+        rationale="broad",
+    )
+    small_candidate = CandidateVariant(
+        candidate_id="candidate-small",
+        target=target,
+        content="# Demo\n\nSmall lesson-backed delta.\n",
+        rationale="small",
+    )
+
+    ranked = _rank_candidate_population(
+        (broad_candidate, small_candidate),
+        optimizer_diagnostics={
+            "candidate_strategies": [
+                {
+                    "candidate_id": "candidate-broad",
+                    "replay_priority": "medium",
+                    "addressed_lessons": ["lesson-1"],
+                    "preserved_success_behaviors": [],
+                },
+                {
+                    "candidate_id": "candidate-small",
+                    "replay_priority": "high",
+                    "addressed_lessons": ["lesson-1"],
+                    "preserved_success_behaviors": ["preserve lean path"],
+                },
+            ]
+        },
+        current_content="# Demo\n",
+    )
+
+    assert [candidate.candidate_id for candidate in ranked] == [
+        "candidate-small",
+        "candidate-broad",
+    ]
 
 
 def test_iteration_validation_feedback_includes_baseline_comparison_metrics() -> None:

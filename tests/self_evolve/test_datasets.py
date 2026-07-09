@@ -10,6 +10,7 @@ from aworld.self_evolve.datasets import (
     SelfEvolveEvalSourceConfig,
     build_dataset_from_source,
     build_dataset_recipe,
+    is_framework_meta_trace_pack,
     load_jsonl_eval_cases,
 )
 
@@ -190,6 +191,69 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
     )
     assert log_dataset.recipe.source["path"] == str(fixture_log)
     assert log_dataset.recipe.source["case_count"] == 2
+
+
+def test_trajectory_log_filters_framework_meta_trajectories_from_baseline_set(tmp_path) -> None:
+    trajectory_log = tmp_path / "trajectory.log"
+    user_trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Summarize this page."}},
+            "action": {"content": "I gathered source evidence and answered."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    framework_trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "trajectory-evaluator-agent-md"},
+            "state": {
+                "input": {
+                    "evaluation_runtime_contract": {
+                        "trajectory_log_path": ".aworld/self_evolve/evaluator/run/trajectory.log",
+                        "report_output_path": ".aworld/self_evolve/evaluator/run/report.json",
+                    },
+                    "artifact_backed_evidence": {"bundle_path": "evidence_bundle.json"},
+                    "do_not_call_external_tools": True,
+                }
+            },
+            "action": {"content": "Judge artifact-backed evidence only."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trajectory_log.write_text(
+        "\n".join(
+            repr(
+                {
+                    "task_id": task_id,
+                    "is_sub_task": False,
+                    "trajectory": json.dumps(trajectory),
+                }
+            )
+            for task_id, trajectory in (
+                ("user-task", user_trajectory),
+                ("framework-eval-task", framework_trajectory),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(trajectory_log))
+    )
+
+    assert [case.case_id for case in dataset.cases] == ["user-task"]
+    source = dataset.recipe.source
+    assert source["case_count"] == 1
+    assert source["framework_meta_trajectory_filter"] == {
+        "strategy": "exclude_framework_generated_from_user_baseline_set",
+        "filtered_case_count": 1,
+        "filtered_case_ids": ["framework-eval-task"],
+    }
+    all_packs = [
+        case.trace_pack for case in dataset.cases if case.trace_pack is not None
+    ]
+    assert not any(is_framework_meta_trace_pack(pack) for pack in all_packs)
 
 
 def test_build_dataset_from_trajectory_set_v1_contract(tmp_path) -> None:
