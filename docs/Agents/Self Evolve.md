@@ -89,14 +89,22 @@ Example CLI config shape:
 {
   "models": {
     "judge": {
-      "provider": "anthropic",
-      "model": "claude-sonnet",
-      "api_key_env": "ANTHROPIC_API_KEY",
-      "temperature": 0.1
+      "PROVIDER": "anthropic",
+      "MODEL": "claude-sonnet",
+      "BASE_URL": "<provider-api-base-url>",
+      "api_key_env": "JUDGE_API_KEY",
+      "TEMPERATURE": 0.1
     }
   }
 }
 ```
+
+The profile loader also accepts lower-case and AWorld-native aliases:
+`provider`/`llm_provider`, `model`/`llm_model_name`, `base_url`/`llm_base_url`,
+and `api_key`/`key`/`token` for literal secrets or
+`api_key_env`/`key_env`/`token_env` for environment-variable names.
+Use `api_key_env` instead of `api_key` when you prefer keeping secrets in `.env`
+or process environment variables.
 
 The flag does not implement a separate optimization path. It configures the runtime agent; post-run enqueue, draining, replay, candidate generation, gates, and apply remain owned by the framework self-evolve scheduler and runner. Remote agents are not mutated by the local CLI flag.
 

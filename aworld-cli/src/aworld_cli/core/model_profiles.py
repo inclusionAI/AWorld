@@ -63,22 +63,51 @@ def _profile_from_env() -> dict[str, Any] | None:
 
 
 def _model_config_from_profile(profile: Mapping[str, Any]) -> ModelConfig | None:
-    model_name = (
-        profile.get("llm_model_name")
-        or profile.get("model")
-        or profile.get("model_name")
+    model_name = _profile_value(
+        profile,
+        "llm_model_name",
+        "model",
+        "model_name",
+        "LLM_MODEL_NAME",
+        "MODEL",
     )
-    provider = profile.get("llm_provider") or profile.get("provider")
-    api_key = profile.get("llm_api_key") or profile.get("api_key")
-    api_key_env = profile.get("api_key_env")
+    provider = _profile_value(profile, "llm_provider", "provider", "LLM_PROVIDER", "PROVIDER")
+    api_key = _profile_value(
+        profile,
+        "llm_api_key",
+        "api_key",
+        "key",
+        "token",
+        "LLM_API_KEY",
+        "API_KEY",
+        "KEY",
+        "TOKEN",
+    )
+    api_key_env = _profile_value(
+        profile,
+        "llm_api_key_env",
+        "api_key_env",
+        "key_env",
+        "token_env",
+        "LLM_API_KEY_ENV",
+        "API_KEY_ENV",
+        "KEY_ENV",
+        "TOKEN_ENV",
+    )
     if not api_key and api_key_env:
         api_key = os.environ.get(str(api_key_env))
     if not api_key and provider:
         provider_key = str(provider).strip().upper()
         api_key = os.environ.get(f"{provider_key}_API_KEY")
-    base_url = profile.get("llm_base_url") or profile.get("base_url")
-    temperature = profile.get("llm_temperature", profile.get("temperature"))
-    params = profile.get("params")
+    base_url = _profile_value(profile, "llm_base_url", "base_url", "LLM_BASE_URL", "BASE_URL")
+    temperature = _profile_value(
+        profile,
+        "llm_temperature",
+        "temperature",
+        "LLM_TEMPERATURE",
+        "TEMPERATURE",
+    )
+    params = _profile_value(profile, "params", "PARAMS")
 
     if not model_name:
         return None
@@ -94,3 +123,18 @@ def _model_config_from_profile(profile: Mapping[str, Any]) -> ModelConfig | None
     if isinstance(params, Mapping):
         kwargs["params"] = dict(params)
     return ModelConfig(**kwargs)
+
+
+def _profile_value(profile: Mapping[str, Any], *keys: str) -> Any:
+    lower_key_values = {
+        str(key).lower(): value
+        for key, value in profile.items()
+        if isinstance(key, str)
+    }
+    for key in keys:
+        if key in profile and profile[key] not in (None, ""):
+            return profile[key]
+        value = lower_key_values.get(key.lower())
+        if value not in (None, ""):
+            return value
+    return None
