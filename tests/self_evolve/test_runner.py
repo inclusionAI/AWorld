@@ -169,11 +169,91 @@ def test_auto_groups_multi_task_trajectory_log_by_inferred_target(tmp_path) -> N
     assert grouping["selected_group_id"] == "skill:alpha"
     assert grouping["group_count"] == 2
     assert grouping["auto_grouped"] is True
+    assert grouping["low_dataset_support"] is False
     assert grouped_dataset.recipe.source["auto_grouping"]["selected_case_ids"] == [
         "task-alpha",
         "task-alpha-2",
     ]
     assert grouped_dataset.recipe.source["auto_grouping"]["skipped_group_count"] == 1
+
+
+def test_auto_group_prefers_larger_group_when_confidence_ties_by_bucket(tmp_path) -> None:
+    log_path = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        log_path,
+        [
+            {
+                "task_id": "task-singleton",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "singleton task"}},
+                        "action": {"content": "singleton failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-cluster-1",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "cluster task"}},
+                        "action": {"content": "cluster failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-cluster-2",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "cluster followup"}},
+                        "action": {"content": "cluster followup failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+        ],
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path))
+    )
+    trace_packs = tuple(case.trace_pack for case in dataset.cases if case.trace_pack)
+    singleton_target = SelfEvolveTargetRef("skill", "singleton", str(tmp_path / "singleton.md"))
+    cluster_target = SelfEvolveTargetRef("skill", "cluster", str(tmp_path / "cluster.md"))
+
+    def fake_infer(pack_group, *, workspace_root):
+        pack = pack_group[0]
+        is_singleton = pack.task_id == "task-singleton"
+        return (
+            TargetSelectionReport(
+                selected_target=singleton_target if is_singleton else cluster_target,
+                confidence=0.9 if is_singleton else 0.8999999999999999,
+                evidence_step_ids=(f"{pack.task_id}:step-1",),
+                failure_category="skill",
+                signals=("test_signal",),
+                diagnostics={"task_id": pack.task_id},
+            ),
+            None,
+        )
+
+    grouped_dataset, _, grouping = _auto_group_trajectory_log_dataset(
+        dataset,
+        trace_packs,
+        source_config=SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path)),
+        workspace_root=tmp_path,
+        infer_target=fake_infer,
+    )
+
+    assert grouping["selected_group_id"] == "skill:cluster"
+    assert grouping["low_dataset_support"] is False
+    assert grouping["selected_case_count"] == 2
+    assert [case.case_id for case in grouped_dataset.cases] == [
+        "task-cluster-1",
+        "task-cluster-2",
+    ]
 
 
 def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
@@ -3570,6 +3650,119 @@ async def test_runner_auto_verified_rejects_skill_candidate_when_replay_backend_
         gate["gate_name"] == "candidate_replay"
         and gate["passed"] is False
         and gate["reason"] == "auto_verified skill apply requires candidate replay backend"
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_when_replay_dataset_has_only_framework_tasks(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "trajectory-evaluator-agent-md"},
+            "state": {
+                "input": {
+                    "content": (
+                        "evaluation_runtime_contract: do_not_call_external_tools=true "
+                        f"trajectory_log_path={tmp_path}/.aworld/self_evolve/evaluator/run/trajectory.log"
+                    )
+                }
+            },
+            "action": {"content": "judge evaluation output"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="trajectory_log",
+        task_id="framework-evaluator-case",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="framework-evaluator-case",
+                input={
+                    "content": (
+                        "evaluation_runtime_contract: do_not_call_external_tools=true "
+                        f"trajectory_log_path={tmp_path}/.aworld/self_evolve/evaluator/run/trajectory.log"
+                    )
+                },
+                metadata={"framework_meta_trajectory": True},
+                trace_pack=trace_pack,
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["framework-evaluator-case"], "validation": [], "held_out": []},
+        ),
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+            "rationale": "Candidate requires replay.",
+        }
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            pytest.fail("framework-generated evaluation tasks must not be replayed")
+
+    async def post_apply(candidate):
+        pytest.fail("auto_verified must not apply without a replayable user task")
+
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=VerifiedBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-framework-only-replay",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-framework-only-replay"
+            / "report.json"
+        ).read_text()
+    )
+    assert any(
+        gate["gate_name"] == "candidate_replay"
+        and gate["passed"] is False
+        and "requires at least one user task eval case" in gate["reason"]
         for gate in report["gate_results"]
     )
 

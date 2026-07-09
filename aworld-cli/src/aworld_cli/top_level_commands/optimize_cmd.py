@@ -189,6 +189,8 @@ def render_optimize_summary(report: Any) -> str:
     selected_candidate_id = _read_report_value(report, "selected_candidate_id")
     failed_gate_names = _failed_gate_names(_read_report_value(report, "gate_results"))
     run_id = _read_report_value(report, "run_id")
+    grouping_summary = _target_grouping_summary(report)
+    replay_failure_summary = _replay_failure_summary(report)
 
     lines = ["Optimize run submitted."]
     if status:
@@ -207,8 +209,12 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Best candidate: {best_candidate_id}")
     elif selected_candidate_id:
         lines.append(f"Selected candidate: {selected_candidate_id}")
+    if grouping_summary:
+        lines.append(f"Target grouping: {grouping_summary}")
     if status == "rejected" and failed_gate_names:
         lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
+    if status == "rejected" and replay_failure_summary:
+        lines.append(f"Replay failures: {replay_failure_summary}")
     if status == "rejected" and _has_no_candidate(report):
         lines.append(
             "No candidate generated: optimizer produced no non-noop candidate, "
@@ -443,6 +449,71 @@ def _read_report_value(report: Any, key: str) -> Any:
     if isinstance(report, Mapping):
         return report.get(key)
     return getattr(report, key, None)
+
+
+def _target_grouping_summary(report: Any) -> str | None:
+    trajectory_set = _read_report_value(report, "trajectory_set")
+    if not isinstance(trajectory_set, Mapping):
+        return None
+    grouping = trajectory_set.get("auto_grouping")
+    if not isinstance(grouping, Mapping) or not grouping.get("auto_grouped"):
+        return None
+    selected = grouping.get("selected_group_id")
+    selected_count = grouping.get("selected_case_count")
+    group_count = grouping.get("group_count")
+    largest_count = grouping.get("largest_group_case_count")
+    if not selected:
+        return None
+    summary = f"{selected} ({selected_count or 0} case(s), {group_count or 0} group(s))"
+    if grouping.get("low_dataset_support"):
+        summary += f"; low dataset support, largest group has {largest_count or 0} case(s)"
+    return summary
+
+
+def _replay_failure_summary(report: Any) -> str | None:
+    parts: list[str] = []
+    for label, key in (
+        ("baseline", "baseline_metrics"),
+        ("candidate", "candidate_metrics"),
+        ("held_out", "held_out_metrics"),
+    ):
+        metrics = _read_report_value(report, key)
+        summary = _metrics_replay_failure_summary(metrics)
+        if summary:
+            parts.append(f"{label}: {summary}")
+    return "; ".join(parts) if parts else None
+
+
+def _metrics_replay_failure_summary(metrics: Any) -> str | None:
+    if not isinstance(metrics, Mapping):
+        return None
+    failed_count = _int_or_none(
+        metrics.get("failed_repetition_count")
+        or metrics.get("replay_failed_repetition_count")
+    )
+    reasons = _string_list(
+        metrics.get("replay_failure_reasons")
+        or metrics.get("replay_failure_types")
+    )
+    if failed_count is None or failed_count <= 0:
+        return None
+    if reasons:
+        return f"{failed_count} failed repetition(s): {', '.join(reasons[:4])}"
+    return f"{failed_count} failed repetition(s)"
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value if item]
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
 
 
 def _failed_gate_names(gate_results: Any) -> list[str]:

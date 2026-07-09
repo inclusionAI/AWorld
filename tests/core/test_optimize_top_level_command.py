@@ -355,8 +355,36 @@ def test_render_optimize_summary_warns_when_replay_success_count_is_insufficient
     )
 
     assert "Rejected gates: held_out_verification" in summary
+    assert "Replay failures: candidate: 2 failed repetition(s): TimeoutExpired" in summary
     assert "Replay recovery:" in summary
     assert "Resume evaluator:" not in summary
+
+
+def test_render_optimize_summary_shows_target_grouping_low_support() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "selected_candidate_id": "cand-selected",
+            "trajectory_set": {
+                "auto_grouping": {
+                    "auto_grouped": True,
+                    "selected_group_id": "skill:video_script_review",
+                    "selected_case_count": 1,
+                    "largest_group_case_count": 36,
+                    "group_count": 3,
+                    "low_dataset_support": True,
+                }
+            },
+            "gate_results": [
+                {"gate_name": "score_improvement", "passed": False},
+            ],
+        }
+    )
+
+    assert (
+        "Target grouping: skill:video_script_review (1 case(s), 3 group(s)); "
+        "low dataset support, largest group has 36 case(s)"
+    ) in summary
 
 
 def test_render_optimize_summary_explains_no_candidate_rejection() -> None:
