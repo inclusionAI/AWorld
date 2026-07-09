@@ -256,6 +256,66 @@ def test_trajectory_log_filters_framework_meta_trajectories_from_baseline_set(tm
     assert not any(is_framework_meta_trace_pack(pack) for pack in all_packs)
 
 
+def test_trajectory_log_does_not_fallback_to_framework_meta_only_baseline_set(
+    tmp_path,
+) -> None:
+    trajectory_log = tmp_path / "trajectory.log"
+    framework_trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "trajectory-evaluator-agent-md"},
+            "state": {
+                "input": {
+                    "content": json.dumps(
+                        {
+                            "case": {
+                                "task_id": "replay-1",
+                                "trajectory_log": str(
+                                    tmp_path
+                                    / ".aworld"
+                                    / "self_evolve"
+                                    / "evaluator"
+                                    / "run"
+                                    / "trajectory.log"
+                                ),
+                            },
+                            "evaluation_runtime_contract": {
+                                "do_not_call_external_tools": True,
+                                "primary_evaluation_input": "evidence_digest",
+                            },
+                            "report_output_path": str(tmp_path / "report.json"),
+                        }
+                    )
+                }
+            },
+            "action": {"content": '{"score": 90, "verdict": "Pass"}'},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trajectory_log.write_text(
+        repr(
+            {
+                "task_id": "framework-eval-task",
+                "is_sub_task": False,
+                "trajectory": json.dumps(framework_trajectory),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(trajectory_log))
+    )
+
+    assert dataset.cases == ()
+    assert dataset.recipe.source["case_count"] == 0
+    assert dataset.recipe.source["framework_meta_trajectory_filter"] == {
+        "strategy": "exclude_framework_generated_from_user_baseline_set",
+        "filtered_case_count": 1,
+        "filtered_case_ids": ["framework-eval-task"],
+    }
+
+
 def test_build_dataset_from_trajectory_set_v1_contract(tmp_path) -> None:
     trajectory_path = tmp_path / "trajectories" / "baseline.log"
     trajectory_path.parent.mkdir()
