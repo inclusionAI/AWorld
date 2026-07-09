@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -440,6 +443,7 @@ class AWorldCliReplayExecutor:
             trajectory=trajectory,
             artifact_dir=artifact_dir,
             evidence_manifest=evidence_manifest,
+            workspace_root=Path(request.workspace_root),
         )
         metrics = {
             "returncode": completed.returncode,
@@ -696,6 +700,7 @@ def _replay_evidence_metrics(
     trajectory: list[Mapping[str, Any]],
     artifact_dir: Path | None = None,
     evidence_manifest: Path | None = None,
+    workspace_root: Path | None = None,
 ) -> dict[str, Any]:
     signal_text = "\n".join(
         text
@@ -725,6 +730,7 @@ def _replay_evidence_metrics(
     manifest_metrics = _evidence_manifest_metrics(
         artifact_dir=artifact_dir,
         evidence_manifest=evidence_manifest,
+        workspace_root=workspace_root,
     )
     manifest_valid = manifest_metrics.get("evidence_manifest_valid") is True
     manifest_invalid_count = manifest_metrics.get("evidence_manifest_invalid_entry_count")
@@ -743,6 +749,7 @@ def _evidence_manifest_metrics(
     *,
     artifact_dir: Path | None,
     evidence_manifest: Path | None,
+    workspace_root: Path | None = None,
 ) -> dict[str, Any]:
     if evidence_manifest is None:
         return {}
@@ -756,6 +763,7 @@ def _evidence_manifest_metrics(
         return metrics
     entries: list[Mapping[str, Any]] = []
     invalid_reasons: list[str] = []
+    archived_entry_count = 0
     for line_number, line in enumerate(
         evidence_manifest.read_text(encoding="utf-8", errors="replace").splitlines(),
         start=1,
@@ -771,6 +779,14 @@ def _evidence_manifest_metrics(
         if not isinstance(entry, Mapping):
             invalid_reasons.append(f"line {line_number}: entry is not an object")
             continue
+        archived_entry = _archive_workspace_manifest_artifact(
+            entry,
+            artifact_dir=artifact_dir,
+            workspace_root=workspace_root,
+        )
+        if archived_entry is not entry:
+            archived_entry_count += 1
+            entry = archived_entry
         reason = _invalid_evidence_manifest_entry_reason(
             entry,
             artifact_dir=artifact_dir,
@@ -781,6 +797,8 @@ def _evidence_manifest_metrics(
         entries.append(_canonical_evidence_entry(entry, artifact_dir=artifact_dir))
     metrics["evidence_manifest_entry_count"] = len(entries)
     metrics["evidence_manifest_valid"] = bool(entries)
+    if archived_entry_count:
+        metrics["evidence_manifest_archived_entry_count"] = archived_entry_count
     if invalid_reasons:
         metrics["evidence_manifest_invalid_entry_count"] = len(invalid_reasons)
     if invalid_reasons:
@@ -873,7 +891,7 @@ def _invalid_evidence_manifest_entry_reason(
         try:
             artifact_path.resolve().relative_to(artifact_dir.resolve())
         except ValueError:
-            return "artifact_path is outside replay artifact directory"
+            return "artifact_path is outside trusted replay/workspace directories"
     if not _has_manifest_evidence_payload(entry) and not _synthetic_bounded_artifact_excerpt(
         artifact_path
     ):
@@ -886,6 +904,51 @@ def _manifest_artifact_path(entry: Mapping[str, Any], *, artifact_dir: Path | No
     if not artifact_path.is_absolute() and artifact_dir is not None:
         artifact_path = artifact_dir / artifact_path
     return artifact_path
+
+
+def _archive_workspace_manifest_artifact(
+    entry: Mapping[str, Any],
+    *,
+    artifact_dir: Path | None,
+    workspace_root: Path | None,
+) -> Mapping[str, Any]:
+    if artifact_dir is None or workspace_root is None:
+        return entry
+    artifact_path = _manifest_artifact_path(entry, artifact_dir=artifact_dir)
+    try:
+        resolved_artifact = artifact_path.resolve()
+    except OSError:
+        return entry
+    try:
+        resolved_artifact.relative_to(artifact_dir.resolve())
+        return entry
+    except ValueError:
+        pass
+
+    if not artifact_path.exists() or not artifact_path.is_file():
+        return entry
+
+    try:
+        workspace_relative = resolved_artifact.relative_to(workspace_root.resolve())
+    except ValueError:
+        return entry
+
+    archive_dir = artifact_dir / "workspace_evidence"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(str(resolved_artifact).encode("utf-8")).hexdigest()[:12]
+    safe_name = "__".join(_safe_artifact_path_part(part) for part in workspace_relative.parts)
+    archived_path = archive_dir / f"{digest}__{safe_name}"
+    if not archived_path.exists():
+        shutil.copy2(resolved_artifact, archived_path)
+
+    normalized = dict(entry)
+    normalized["artifact_path"] = str(archived_path)
+    return normalized
+
+
+def _safe_artifact_path_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    return safe or "artifact"
 
 
 def _synthetic_bounded_artifact_excerpt(artifact_path: Path) -> dict[str, Any] | None:
