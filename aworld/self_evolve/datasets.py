@@ -173,7 +173,7 @@ def build_dataset_from_source(
         packs = trace_packs_from_trajectory_log(trajectory_path)
         framework_packs = tuple(pack for pack in packs if is_framework_meta_trace_pack(pack))
         user_packs = tuple(pack for pack in packs if not is_framework_meta_trace_pack(pack))
-        effective_packs = user_packs if user_packs else tuple(packs)
+        effective_packs = user_packs if framework_packs else tuple(packs)
         set_id = f"trajectory_log:{_file_fingerprint(trajectory_path)}"
         cases = _filter_and_limit_cases(
             (
@@ -213,7 +213,7 @@ def build_dataset_from_source(
                 split_seed=split_seed,
             ),
         )
-        if framework_packs and user_packs:
+        if framework_packs:
             source = dict(dataset.recipe.source)
             source["framework_meta_trajectory_filter"] = {
                 "strategy": "exclude_framework_generated_from_user_baseline_set",
