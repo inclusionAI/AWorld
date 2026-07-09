@@ -47,6 +47,7 @@ class EvaluatorTopLevelCommand:
         parser.add_argument("--judge-agent", type=str)
         parser.add_argument("--judge-agent-name", type=str)
         parser.add_argument("--judge-backend-ref", type=str)
+        parser.add_argument("--judge-model-profile", type=str)
         parser.add_argument("--out-dir", type=str)
         parser.add_argument("--task-id", type=str)
         parser.add_argument("--agent", type=str)
@@ -93,6 +94,7 @@ class EvaluatorTopLevelCommand:
                     task_field=args.task_field,
                     answer_field=args.answer_field,
                     interactive_approval=args.interactive_approval,
+                    judge_model_profile=args.judge_model_profile,
                 )
             except (FileNotFoundError, ValueError, KeyError) as exc:
                 print(f"Evaluator error: {exc}")

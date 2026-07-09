@@ -78,6 +78,7 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--judge-agent", type=str, dest="judge_agent")
         parser.add_argument("--judge-agent-name", type=str, dest="judge_agent_name")
         parser.add_argument("--judge-backend-ref", type=str, dest="judge_backend_ref")
+        parser.add_argument("--judge-model-profile", type=str, dest="judge_model_profile")
         parser.add_argument(
             "--replay-timeout",
             type=int,
@@ -161,6 +162,7 @@ class OptimizeTopLevelCommand:
                 judge_agent=getattr(args, "judge_agent", None),
                 judge_agent_name=getattr(args, "judge_agent_name", None),
                 judge_backend_ref=getattr(args, "judge_backend_ref", None),
+                judge_model_profile=getattr(args, "judge_model_profile", None),
                 judge_repetitions=getattr(args, "judge_repetitions", None),
                 judge_timeout_seconds=getattr(args, "judge_timeout_seconds", None),
                 replay_timeout_seconds=getattr(args, "replay_timeout_seconds", None),
@@ -248,6 +250,7 @@ def run_optimize_cli(
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
     judge_backend_ref: str | None = None,
+    judge_model_profile: str | None = None,
     judge_repetitions: int | None = None,
     judge_timeout_seconds: int | None = None,
     replay_timeout_seconds: int | None = None,
@@ -292,6 +295,7 @@ def run_optimize_cli(
         judge_agent=judge_agent,
         judge_agent_name=judge_agent_name,
         judge_backend_ref=judge_backend_ref,
+        judge_model_profile=judge_model_profile,
     )
     if progress_callback is not None:
         progress_callback("prepare", "Preparing self-evolve optimize request")
@@ -415,6 +419,7 @@ def _judge_config_from_cli(
     judge_agent: str | None,
     judge_agent_name: str | None,
     judge_backend_ref: str | None,
+    judge_model_profile: str | None = None,
 ) -> Any:
     selector_count = sum(bool(value) for value in (judge_agent, judge_agent_name, judge_backend_ref))
     if selector_count > 1:
@@ -422,15 +427,15 @@ def _judge_config_from_cli(
     if judge_agent:
         from aworld.config.conf import SelfEvolveJudgeConfig
 
-        return SelfEvolveJudgeConfig(mode="agent_md", agent_path=judge_agent)
+        return SelfEvolveJudgeConfig(mode="agent_md", agent_path=judge_agent, model_profile=judge_model_profile)
     if judge_agent_name:
         from aworld.config.conf import SelfEvolveJudgeConfig
 
-        return SelfEvolveJudgeConfig(mode="custom_agent", agent_id=judge_agent_name)
+        return SelfEvolveJudgeConfig(mode="custom_agent", agent_id=judge_agent_name, model_profile=judge_model_profile)
     if judge_backend_ref:
         from aworld.config.conf import SelfEvolveJudgeConfig
 
-        return SelfEvolveJudgeConfig(mode="backend_ref", backend_ref=judge_backend_ref)
+        return SelfEvolveJudgeConfig(mode="backend_ref", backend_ref=judge_backend_ref, model_profile=judge_model_profile)
     return None
 
 

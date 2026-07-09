@@ -221,6 +221,7 @@ class AWorldTrajectoryEvaluatorBackend:
         judge_agent: str | None = None,
         judge_agent_name: str | None = None,
         judge_backend_ref: str | None = None,
+        judge_model_profile: str | None = None,
         agent: str | None = None,
         run_evaluator_source: Callable[..., Any] | None = None,
         judge_repetitions: int = 1,
@@ -237,6 +238,7 @@ class AWorldTrajectoryEvaluatorBackend:
         self.judge_agent = judge_agent
         self.judge_agent_name = judge_agent_name
         self.judge_backend_ref = judge_backend_ref
+        self.judge_model_profile = judge_model_profile
         self.agent = agent
         self.run_evaluator_source = run_evaluator_source
         if judge_repetitions <= 0:
@@ -284,6 +286,7 @@ class AWorldTrajectoryEvaluatorBackend:
             "judge_agent": self.judge_agent,
             "judge_agent_name": self.judge_agent_name,
             "judge_backend_ref": self.judge_backend_ref,
+            "judge_model_profile": self.judge_model_profile,
             "out_dir": str(eval_dir / "extracted"),
             "output": str(report_path),
             "task_id": task_id,

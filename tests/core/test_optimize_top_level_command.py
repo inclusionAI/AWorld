@@ -203,6 +203,8 @@ def test_optimize_command_passes_judge_agent_selector(
             "auto_verified",
             "--judge-agent",
             "agent.md",
+            "--judge-model-profile",
+            "judge",
         ]
     )
 
@@ -210,6 +212,7 @@ def test_optimize_command_passes_judge_agent_selector(
     assert calls["judge_agent"] == "agent.md"
     assert calls["judge_agent_name"] is None
     assert calls["judge_backend_ref"] is None
+    assert calls["judge_model_profile"] == "judge"
 
 
 def test_optimize_command_passes_replay_runtime_limits(
@@ -661,6 +664,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         judge_agent="agent.md",
         judge_agent_name=None,
         judge_backend_ref=None,
+        judge_model_profile="judge",
     )
 
     assert report["report_path"].endswith("report.json")
@@ -675,6 +679,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["infer_target"] is False
     assert calls["judge_config"].mode == "agent_md"
     assert calls["judge_config"].agent_path == "agent.md"
+    assert calls["judge_config"].model_profile == "judge"
 
 
 def test_run_optimize_cli_forwards_runtime_registry_refresher(
@@ -822,10 +827,12 @@ def test_run_optimize_cli_maps_judge_backend_ref_to_framework_config(
         judge_agent=None,
         judge_agent_name=None,
         judge_backend_ref="pkg.module:build_judge",
+        judge_model_profile="judge",
     )
 
     assert calls["judge_config"].mode == "backend_ref"
     assert calls["judge_config"].backend_ref == "pkg.module:build_judge"
+    assert calls["judge_config"].model_profile == "judge"
 
 
 def test_run_optimize_cli_leaves_target_inference_to_framework(

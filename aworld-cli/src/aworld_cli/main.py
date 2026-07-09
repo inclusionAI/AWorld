@@ -239,6 +239,7 @@ def _judge_config_from_cli_selectors(
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
     judge_backend_ref: str | None = None,
+    judge_model_profile: str | None = None,
 ):
     selector_count = sum(
         bool(value) for value in (judge_agent, judge_agent_name, judge_backend_ref)
@@ -251,10 +252,22 @@ def _judge_config_from_cli_selectors(
     from aworld.config.conf import SelfEvolveJudgeConfig
 
     if judge_agent:
-        return SelfEvolveJudgeConfig(mode="agent_md", agent_path=judge_agent)
+        return SelfEvolveJudgeConfig(
+            mode="agent_md",
+            agent_path=judge_agent,
+            model_profile=judge_model_profile,
+        )
     if judge_agent_name:
-        return SelfEvolveJudgeConfig(mode="custom_agent", agent_id=judge_agent_name)
-    return SelfEvolveJudgeConfig(mode="backend_ref", backend_ref=judge_backend_ref)
+        return SelfEvolveJudgeConfig(
+            mode="custom_agent",
+            agent_id=judge_agent_name,
+            model_profile=judge_model_profile,
+        )
+    return SelfEvolveJudgeConfig(
+        mode="backend_ref",
+        backend_ref=judge_backend_ref,
+        model_profile=judge_model_profile,
+    )
 
 
 def _self_evolve_config_from_cli_mode(
@@ -263,6 +276,7 @@ def _self_evolve_config_from_cli_mode(
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
     judge_backend_ref: str | None = None,
+    judge_model_profile: str | None = None,
 ):
     if mode is None:
         return None
@@ -271,6 +285,7 @@ def _self_evolve_config_from_cli_mode(
         judge_agent=judge_agent,
         judge_agent_name=judge_agent_name,
         judge_backend_ref=judge_backend_ref,
+        judge_model_profile=judge_model_profile,
     )
     if normalized in {"off", "offline"}:
         from aworld.config.conf import SelfEvolveConfig
@@ -679,6 +694,7 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--judge-agent", type=str, help="self-evolve judge agent markdown path used with --evolve." if zh else "Self-evolve judge agent markdown path used with --evolve.")
     parser.add_argument("--judge-agent-name", type=str, help="self-evolve judge agent name used with --evolve." if zh else "Self-evolve judge agent name used with --evolve.")
     parser.add_argument("--judge-backend-ref", type=str, help="self-evolve judge backend reference used with --evolve." if zh else "Self-evolve judge backend reference used with --evolve.")
+    parser.add_argument("--judge-model-profile", type=str, help="model profile for the self-evolve judge used with --evolve." if zh else "Model profile for the self-evolve judge used with --evolve.")
     parser.add_argument("--config", action="store_true", help="启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。" if zh else "Launch interactive global configuration editor (model provider, API key, etc.) and exit.")
     return parser
 
@@ -755,6 +771,7 @@ _GLOBAL_OPTIONS_WITH_VALUES = {
     "--judge-agent",
     "--judge-agent-name",
     "--judge-backend-ref",
+    "--judge-model-profile",
     "--http-host",
     "--http-port",
     "--mcp-name",
@@ -901,6 +918,7 @@ def main():
             judge_agent=args.judge_agent,
             judge_agent_name=args.judge_agent_name,
             judge_backend_ref=args.judge_backend_ref,
+            judge_model_profile=args.judge_model_profile,
         ),
     ))
 

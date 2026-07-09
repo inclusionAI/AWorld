@@ -1704,6 +1704,7 @@ def _evaluation_backend_from_judge_config(
         return AWorldTrajectoryEvaluatorBackend(
             workspace_root=workspace_root,
             judge_agent=config.agent_path,
+            judge_model_profile=config.model_profile,
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         )
@@ -1713,6 +1714,7 @@ def _evaluation_backend_from_judge_config(
         return AWorldTrajectoryEvaluatorBackend(
             workspace_root=workspace_root,
             judge_agent_name=config.agent_id,
+            judge_model_profile=config.model_profile,
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         )
@@ -1722,6 +1724,7 @@ def _evaluation_backend_from_judge_config(
         return AWorldTrajectoryEvaluatorBackend(
             workspace_root=workspace_root,
             judge_backend_ref=config.backend_ref,
+            judge_model_profile=config.model_profile,
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         )

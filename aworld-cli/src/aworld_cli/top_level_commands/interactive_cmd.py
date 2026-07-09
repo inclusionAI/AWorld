@@ -34,6 +34,7 @@ def _register_interactive_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--judge-agent", type=str)
     parser.add_argument("--judge-agent-name", type=str)
     parser.add_argument("--judge-backend-ref", type=str)
+    parser.add_argument("--judge-model-profile", type=str)
 
 
 def _build_interactive_parser(add_help: bool = True) -> argparse.ArgumentParser:
@@ -113,6 +114,7 @@ class InteractiveTopLevelCommand:
                     judge_agent=invocation_args.judge_agent,
                     judge_agent_name=invocation_args.judge_agent_name,
                     judge_backend_ref=invocation_args.judge_backend_ref,
+                    judge_model_profile=invocation_args.judge_model_profile,
                 ),
             )
         )

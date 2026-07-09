@@ -66,8 +66,7 @@ def test_cli_runtime_applies_self_evolve_config_to_swarm_agent_conf() -> None:
     root_agent = SimpleNamespace(conf=AgentConfig())
     helper_agent = SimpleNamespace(conf=AgentConfig())
     swarm = SimpleNamespace(
-        communicate_agent=root_agent,
-        ordered_agents=[root_agent, helper_agent],
+        topology=[root_agent, helper_agent],
     )
     config = SelfEvolveConfig(mode="online", apply_policy="auto_verified")
 
@@ -77,6 +76,37 @@ def test_cli_runtime_applies_self_evolve_config_to_swarm_agent_conf() -> None:
     assert root_agent.conf.self_evolve_config.apply_policy == "auto_verified"
     assert helper_agent.conf.self_evolve_config.mode == "online"
     assert helper_agent.conf.self_evolve_config.apply_policy == "auto_verified"
+
+
+def test_cli_runtime_does_not_initialize_swarm_when_applying_self_evolve_config() -> None:
+    root_agent = SimpleNamespace(conf=AgentConfig())
+
+    class UninitializedSwarm:
+        def __init__(self) -> None:
+            self.topology = [root_agent]
+            self.register_agents = []
+            self._communicate_agent = None
+            self.agent_graph = None
+            self.builder = None
+
+        @property
+        def ordered_agents(self):
+            raise AssertionError("ordered_agents should not be read before task reset")
+
+        @property
+        def agents(self):
+            raise AssertionError("agents should not be read before task reset")
+
+        @property
+        def communicate_agent(self):
+            raise AssertionError("communicate_agent property should not be read before task reset")
+
+    config = SelfEvolveConfig(mode="shadow", apply_policy="proposal")
+
+    _apply_self_evolve_config_to_swarm(UninitializedSwarm(), config)
+
+    assert root_agent.conf.self_evolve_config.mode == "shadow"
+    assert root_agent.conf.self_evolve_config.apply_policy == "proposal"
 
 
 @pytest.mark.asyncio

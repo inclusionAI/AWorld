@@ -426,9 +426,18 @@ def test_main_accepts_evolve_modes() -> None:
     assert parser.parse_args(["--evolve"]).evolve == "shadow"
     assert parser.parse_args(["--evolve=online"]).evolve == "online"
     assert parser.parse_args(["--evolve", "off"]).evolve == "off"
-    parsed = parser.parse_args(["--evolve=online", "--judge-agent", "agent.md"])
+    parsed = parser.parse_args(
+        [
+            "--evolve=online",
+            "--judge-agent",
+            "agent.md",
+            "--judge-model-profile",
+            "judge",
+        ]
+    )
     assert parsed.evolve == "online"
     assert parsed.judge_agent == "agent.md"
+    assert parsed.judge_model_profile == "judge"
 
 
 def test_cli_evolve_mode_maps_to_self_evolve_config() -> None:
@@ -448,12 +457,14 @@ def test_cli_evolve_mode_maps_judge_agent_to_config() -> None:
     config = main_module._self_evolve_config_from_cli_mode(
         "online",
         judge_agent="agent.md",
+        judge_model_profile="judge",
     )
 
     assert config.mode == "online"
     assert config.apply_policy == "auto_verified"
     assert config.judge_config.mode == "agent_md"
     assert config.judge_config.agent_path == "agent.md"
+    assert config.judge_config.model_profile == "judge"
 
 
 def test_skill_command_is_registered_via_plugin_registry() -> None:
@@ -780,6 +791,8 @@ def test_run_top_level_command_dispatches_global_evolve_mode(
             "--evolve=online",
             "--judge-agent",
             "agent.md",
+            "--judge-model-profile",
+            "judge",
             "run",
             "--task",
             "Replay this task",
@@ -793,6 +806,7 @@ def test_run_top_level_command_dispatches_global_evolve_mode(
     assert config.apply_policy == "auto_verified"
     assert config.judge_config.mode == "agent_md"
     assert config.judge_config.agent_path == "agent.md"
+    assert config.judge_config.model_profile == "judge"
 
 
 def test_run_top_level_command_prefers_task_response_trajectory(

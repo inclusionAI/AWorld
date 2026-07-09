@@ -195,6 +195,7 @@ class SelfEvolveJudgeConfig(BaseConfig):
     agent_path: Optional[str] = None
     agent_id: Optional[str] = None
     backend_ref: Optional[str] = None
+    model_profile: Optional[str] = None
 
 
 class SelfEvolveConfig(BaseConfig):

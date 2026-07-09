@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 import aworld.evaluations.substrate as substrate_module
+from aworld.config.conf import ModelConfig
 from aworld.evaluations.manifests import get_declared_eval_suite_schema
 from aworld.evaluations.report import EvaluatorReport
 from aworld_cli.evaluator_runtime import (
@@ -126,6 +127,95 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
     assert report["source_selection"]["judge_timeout_seconds"] == 12.5
     assert report["automation"]["source_kind"] == "answer"
     assert output.exists()
+
+
+def test_run_evaluator_source_cli_uses_judge_model_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    captured = {}
+
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        lambda profile: ModelConfig(
+            llm_provider="anthropic",
+            llm_model_name=f"{profile}-model",
+            llm_api_key="profile-key",
+        ),
+    )
+
+    async def fake_run_evaluation_flow(flow):
+        captured["backend"] = flow.suite.judge_backend
+        return {
+            "report_version": 1,
+            "suite_id": "answer-source-evaluator",
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="answer",
+        judge_agent=str(judge_agent),
+        judge_model_profile="judge",
+    )
+
+    model_config = captured["backend"].model_config
+    assert model_config.llm_provider == "anthropic"
+    assert model_config.llm_model_name == "judge-model"
+    assert report["source_selection"]["judge_model_profile"] == "judge"
+
+
+def test_run_evaluator_source_cli_uses_agent_markdown_model_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text(
+        "---\nname: judge\nmodel_profile: judge\n---\nJudge.\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        lambda profile: ModelConfig(
+            llm_provider="openai",
+            llm_model_name=f"{profile}-model",
+            llm_api_key="profile-key",
+        ),
+    )
+
+    async def fake_run_evaluation_flow(flow):
+        captured["backend"] = flow.suite.judge_backend
+        return {
+            "report_version": 1,
+            "suite_id": "answer-source-evaluator",
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    run_evaluator_source_cli(
+        input=str(input_path),
+        kind="answer",
+        judge_agent=str(judge_agent),
+    )
+
+    assert captured["backend"].model_config.llm_model_name == "judge-model"
 
 
 def test_source_file_judge_agent_uses_direct_instruction_backend(tmp_path: Path) -> None:

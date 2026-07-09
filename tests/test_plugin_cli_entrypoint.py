@@ -327,6 +327,8 @@ def test_interactive_command_dispatches_evolve_mode(monkeypatch):
             "--evolve=online",
             "--judge-agent",
             "agent.md",
+            "--judge-model-profile",
+            "judge",
             "interactive",
             "--agent",
             "Aworld",
@@ -339,6 +341,7 @@ def test_interactive_command_dispatches_evolve_mode(monkeypatch):
     assert config.apply_policy == "auto_verified"
     assert config.judge_config.mode == "agent_md"
     assert config.judge_config.agent_path == "agent.md"
+    assert config.judge_config.model_profile == "judge"
 
 
 def test_interactive_command_dispatches_with_bootstrap_and_global_options(

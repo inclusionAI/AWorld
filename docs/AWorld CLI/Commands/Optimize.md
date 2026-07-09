@@ -8,11 +8,11 @@ For normal task execution with background self-evolve enabled, use the runtime f
 
 ```bash
 aworld-cli --evolve
-aworld-cli --evolve=online --judge-agent ~/Documents/agent.md
+aworld-cli --evolve=online --judge-agent ~/Documents/agent.md --judge-model-profile judge
 aworld-cli run --task "complete this task" --evolve=shadow
 ```
 
-`--evolve` configures the selected local runtime agent for post-run self-evolve scheduling. Pair it with `--judge-agent`, `--judge-agent-name`, or `--judge-backend-ref` to configure the background evaluator. `aworld-cli optimize` remains the manual/debug entrypoint for the same framework runner.
+`--evolve` configures the selected local runtime agent for post-run self-evolve scheduling. Pair it with `--judge-agent`, `--judge-agent-name`, or `--judge-backend-ref` to configure the background evaluator. Use `--judge-model-profile` when the evaluator should use a different named model profile from the main task agent. `aworld-cli optimize` remains the manual/debug entrypoint for the same framework runner.
 
 ## Basic Usage
 
@@ -34,6 +34,7 @@ aworld-cli optimize \
   --from-trajectory trajectory.log \
   --apply auto_verified \
   --judge-agent judges/login_quality.md \
+  --judge-model-profile judge \
   --replay-timeout 900
 ```
 
@@ -72,6 +73,7 @@ When `--target` is omitted, the CLI sets `infer_target=True` and the framework p
 - `--judge-agent`: markdown judge agent path.
 - `--judge-agent-name`: configured custom judge agent id/name.
 - `--judge-backend-ref`: evaluator backend reference.
+- `--judge-model-profile`: named model profile for the judge. This is useful when the task agent uses the default `.env` model but the evaluator needs a separate model. For `--judge-agent <agent.md>`, the same profile can also be declared in markdown front matter as `model_profile: judge`; the CLI option takes precedence.
 - `--replay-timeout`: timeout in seconds for each replay rollout.
 - `--replay-max-runs`: maximum `aworld-cli run` iterations per replay rollout.
 - `--judge-repetitions`: successful judge samples to aggregate per evaluator call.
