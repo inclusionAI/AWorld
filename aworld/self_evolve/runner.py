@@ -296,7 +296,7 @@ class SelfEvolveRunner:
             current_run_id=run_id,
         )
         generation_lesson_records = extract_lesson_records(
-            (),
+            prior_feedback,
             target_scope={
                 "target_type": target.identity.target_type,
                 "target_id": target.identity.target_id,
@@ -327,6 +327,16 @@ class SelfEvolveRunner:
                 "candidate_generation",
                 f"Generating candidate iteration {iteration_index + 1}/{self.max_iterations}",
             )
+            iteration_lesson_records = generation_lesson_records
+            if validation_feedback:
+                iteration_lesson_records = extract_lesson_records(
+                    (*prior_feedback, *validation_feedback),
+                    target_scope={
+                        "target_type": target.identity.target_type,
+                        "target_id": target.identity.target_id,
+                    },
+                    trace_packs=trace_packs,
+                )
             optimizer_result = await self.optimizer.propose(
                 OptimizerRequest.from_dataset(
                     target=target.identity,
@@ -335,7 +345,7 @@ class SelfEvolveRunner:
                     trace_packs=trace_packs,
                     validation_feedback=validation_feedback,
                     prior_feedback=prior_feedback,
-                    lesson_records=generation_lesson_records,
+                    lesson_records=iteration_lesson_records,
                     dataset=dataset,
                     max_candidates=_candidate_generation_limit(
                         replay_candidate_limit=self.replay_candidate_limit,
@@ -382,16 +392,20 @@ class SelfEvolveRunner:
                     lineage_path
                 )
 
-            candidate_population = tuple(
-                candidate
-                for candidate in optimizer_result.candidates
-                if candidate.candidate_id not in rejected_candidate_ids
-                and candidate.candidate_id not in accepted_candidate_ids
-                and not _is_semantic_lesson_duplicate(
-                    candidate.candidate_id,
-                    lineage_fingerprints=current_lineage_fingerprints,
-                    rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
-                )
+            candidate_population = _rank_candidate_population(
+                tuple(
+                    candidate
+                    for candidate in optimizer_result.candidates
+                    if candidate.candidate_id not in rejected_candidate_ids
+                    and candidate.candidate_id not in accepted_candidate_ids
+                    and not _is_semantic_lesson_duplicate(
+                        candidate.candidate_id,
+                        lineage_fingerprints=current_lineage_fingerprints,
+                        rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
+                    )
+                ),
+                optimizer_diagnostics=optimizer_result.diagnostics,
+                current_content=target.load_current_content(),
             )[: max(1, self.replay_candidate_limit)]
             _emit_progress(
                 self.progress_callback,
@@ -3408,6 +3422,69 @@ def _candidate_strategy_records(
             if isinstance(strategy, Mapping) and isinstance(strategy.get("candidate_id"), str):
                 records.append(dict(strategy))
     return records
+
+
+def _rank_candidate_population(
+    candidates: tuple[CandidateVariant, ...],
+    *,
+    optimizer_diagnostics: Mapping[str, object],
+    current_content: str,
+) -> tuple[CandidateVariant, ...]:
+    if len(candidates) <= 1:
+        return candidates
+    strategy_by_candidate = {
+        str(record.get("candidate_id")): record
+        for record in _candidate_strategy_records(
+            ({"diagnostics": optimizer_diagnostics},)
+        )
+        if isinstance(record.get("candidate_id"), str)
+    }
+    if not strategy_by_candidate:
+        return candidates
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: _candidate_population_rank_key(
+                candidate,
+                strategy=strategy_by_candidate.get(candidate.candidate_id) or {},
+                current_content=current_content,
+            ),
+        )
+    )
+
+
+def _candidate_population_rank_key(
+    candidate: CandidateVariant,
+    *,
+    strategy: Mapping[str, object],
+    current_content: str,
+) -> tuple[int, int, int, int, str]:
+    priority_rank = {"high": 0, "medium": 1, "low": 2}.get(
+        str(strategy.get("replay_priority") or "low"),
+        2,
+    )
+    addressed_count = _sequence_length(strategy.get("addressed_lessons"))
+    preserve_count = _sequence_length(strategy.get("preserved_success_behaviors"))
+    char_growth = max(0, len(candidate.content) - len(current_content))
+    line_growth = max(
+        0,
+        len(candidate.content.splitlines()) - len(current_content.splitlines()),
+    )
+    # Prefer candidates that explicitly address lessons and preserve successful
+    # behavior, then keep replay cost bounded by favoring smaller deltas.
+    return (
+        priority_rank,
+        -addressed_count,
+        -preserve_count,
+        char_growth + (line_growth * 80),
+        candidate.candidate_id,
+    )
+
+
+def _sequence_length(value: object) -> int:
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    return 0
 
 
 def _no_op_report(

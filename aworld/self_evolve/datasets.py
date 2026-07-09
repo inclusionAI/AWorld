@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -171,16 +171,26 @@ def build_dataset_from_source(
             raise ValueError("trajectory_log eval source requires path")
         trajectory_path = Path(source_config.path).expanduser()
         packs = trace_packs_from_trajectory_log(trajectory_path)
+        framework_packs = tuple(pack for pack in packs if is_framework_meta_trace_pack(pack))
+        user_packs = tuple(pack for pack in packs if not is_framework_meta_trace_pack(pack))
+        effective_packs = user_packs if user_packs else tuple(packs)
         set_id = f"trajectory_log:{_file_fingerprint(trajectory_path)}"
         cases = _filter_and_limit_cases(
             (
                 EvalCase(
                     case_id=pack.task_id,
                     input=_trace_pack_input(pack),
-                    metadata=_baseline_trajectory_set_metadata(
-                        set_id=set_id,
-                        trace_pack=pack,
-                    ),
+                    metadata={
+                        **_baseline_trajectory_set_metadata(
+                            set_id=set_id,
+                            trace_pack=pack,
+                        ),
+                        **(
+                            {"framework_meta_trajectory": True}
+                            if is_framework_meta_trace_pack(pack)
+                            else {}
+                        ),
+                    },
                     trace_pack=pack,
                     source={
                         "kind": "trajectory_log",
@@ -191,11 +201,11 @@ def build_dataset_from_source(
                         "role": "baseline",
                     },
                 )
-                for pack in packs
+                for pack in effective_packs
             ),
             source_config=source_config,
         )
-        return SelfEvolveDataset(
+        dataset = SelfEvolveDataset(
             cases=cases,
             recipe=build_dataset_recipe(
                 cases,
@@ -203,6 +213,15 @@ def build_dataset_from_source(
                 split_seed=split_seed,
             ),
         )
+        if framework_packs and user_packs:
+            source = dict(dataset.recipe.source)
+            source["framework_meta_trajectory_filter"] = {
+                "strategy": "exclude_framework_generated_from_user_baseline_set",
+                "filtered_case_count": len(framework_packs),
+                "filtered_case_ids": [pack.task_id for pack in framework_packs],
+            }
+            dataset = replace(dataset, recipe=replace(dataset.recipe, source=source))
+        return dataset
 
     if source_config.kind == "trajectory_set":
         if source_config.path is None:
@@ -525,6 +544,63 @@ def _baseline_trajectory_set_metadata(
             },
         }
     }
+
+
+def is_framework_meta_trace_pack(trace_pack: TracePack) -> bool:
+    """Return true for framework/evaluator trajectories embedded in user logs.
+
+    These traces are useful diagnostics, but they are not user task baselines. Keeping
+    them in ordinary trajectory-log grouping can pollute target inference with
+    evaluator/runtime-contract prompts.
+    """
+    haystack = "\n".join(_trace_pack_text_fragments(trace_pack)).lower()
+    if not haystack:
+        return False
+    strong_markers = (
+        "evaluation_runtime_contract",
+        "artifact_backed_evidence",
+        "do_not_call_external_tools",
+        "report_output_path",
+        "trajectory_log_path",
+        "aworld_self_evolve_replay_artifact_dir",
+        ".aworld/self_evolve/evaluator",
+        ".aworld/self_evolve/cli-",
+    )
+    marker_count = sum(1 for marker in strong_markers if marker in haystack)
+    if marker_count >= 1 and (
+        "self-evolve" in haystack
+        or "self_evolve" in haystack
+        or "trajectory-evaluator" in haystack
+        or "judge" in haystack
+    ):
+        return True
+    return marker_count >= 2
+
+
+def _trace_pack_text_fragments(trace_pack: TracePack) -> list[str]:
+    fragments: list[str] = [trace_pack.pack_id, trace_pack.task_id]
+    for step in trace_pack.steps:
+        fragments.extend(_value_text_fragments(step.state))
+        fragments.extend(_value_text_fragments(step.action))
+        fragments.extend(_value_text_fragments(step.reward))
+    return fragments
+
+
+def _value_text_fragments(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        fragments: list[str] = []
+        for key, item in value.items():
+            fragments.append(str(key))
+            fragments.extend(_value_text_fragments(item))
+        return fragments
+    if isinstance(value, list):
+        fragments = []
+        for item in value:
+            fragments.extend(_value_text_fragments(item))
+        return fragments
+    return []
 
 
 def _split_case_ids(case_ids: tuple[str, ...], *, split_seed: str) -> Mapping[str, list[str]]:
