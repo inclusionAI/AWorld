@@ -1009,6 +1009,10 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST"] == str(
         tmp_path / "artifacts" / "evidence_manifest.jsonl"
     )
+    assert captured["kwargs"]["env"]["AWORLD_LOG_PATH"] == str(
+        tmp_path / "artifacts" / "logs"
+    )
+    assert captured["kwargs"]["env"]["AWORLD_TRAJECTORY_LOG_DISABLED"] == "1"
     assert "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR" in task_text
     assert str(tmp_path / "artifacts") in task_text
     assert str(tmp_path / "artifacts" / "evidence_manifest.jsonl") in task_text

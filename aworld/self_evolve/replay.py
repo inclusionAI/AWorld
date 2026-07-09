@@ -416,6 +416,8 @@ class AWorldCliReplayExecutor:
                     "AWORLD_SELF_EVOLVE_AUTO_DRAIN": "0",
                     "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(artifact_dir),
                     "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
+                    "AWORLD_LOG_PATH": str(artifact_dir / "logs"),
+                    "AWORLD_TRAJECTORY_LOG_DISABLED": "1",
                 },
             )
         except subprocess.TimeoutExpired as exc:

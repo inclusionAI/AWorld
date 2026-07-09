@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import subprocess
 import time
 import statistics
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
@@ -293,6 +295,7 @@ class AWorldTrajectoryEvaluatorBackend:
             "agent": self.agent,
             "judge_timeout_seconds": self.judge_timeout_seconds,
         }
+        runtime_log_path = eval_dir / "logs"
         reports: list[Mapping[str, Any]] = []
         failures: list[Mapping[str, Any]] = []
         max_attempts = self.judge_repetitions + self.judge_failure_retries
@@ -312,6 +315,7 @@ class AWorldTrajectoryEvaluatorBackend:
                 report = await self._run_evaluator_source_with_timeout(
                     runner,
                     runner_kwargs=runner_kwargs,
+                    log_path=runtime_log_path,
                 )
             except asyncio.TimeoutError:
                 failures.append(
@@ -404,8 +408,13 @@ class AWorldTrajectoryEvaluatorBackend:
         runner: Callable[..., Any],
         *,
         runner_kwargs: Mapping[str, Any],
+        log_path: Path,
     ) -> Mapping[str, Any]:
-        call = self._run_evaluator_source(runner, runner_kwargs=runner_kwargs)
+        call = self._run_evaluator_source(
+            runner,
+            runner_kwargs=runner_kwargs,
+            log_path=log_path,
+        )
         if self.judge_timeout_seconds is None or self.run_evaluator_source is None:
             return await call
         return await asyncio.wait_for(call, timeout=self.judge_timeout_seconds)
@@ -415,16 +424,37 @@ class AWorldTrajectoryEvaluatorBackend:
         runner: Callable[..., Any],
         *,
         runner_kwargs: Mapping[str, Any],
+        log_path: Path,
     ) -> Mapping[str, Any]:
-        if self.run_evaluator_source is None:
-            report = await asyncio.to_thread(runner, **runner_kwargs)
-        else:
-            report = runner(**runner_kwargs)
-            if inspect.isawaitable(report):
-                report = await report
+        with _self_evolve_runtime_log_env(log_path):
+            if self.run_evaluator_source is None:
+                report = await asyncio.to_thread(runner, **runner_kwargs)
+            else:
+                report = runner(**runner_kwargs)
+                if inspect.isawaitable(report):
+                    report = await report
         if not isinstance(report, Mapping):
             raise ValueError("AWorld trajectory evaluator report must be a mapping")
         return report
+
+
+@contextmanager
+def _self_evolve_runtime_log_env(log_path: Path):
+    previous_log_path = os.environ.get("AWORLD_LOG_PATH")
+    previous_disabled = os.environ.get("AWORLD_TRAJECTORY_LOG_DISABLED")
+    os.environ["AWORLD_LOG_PATH"] = str(log_path)
+    os.environ["AWORLD_TRAJECTORY_LOG_DISABLED"] = "1"
+    try:
+        yield
+    finally:
+        if previous_log_path is None:
+            os.environ.pop("AWORLD_LOG_PATH", None)
+        else:
+            os.environ["AWORLD_LOG_PATH"] = previous_log_path
+        if previous_disabled is None:
+            os.environ.pop("AWORLD_TRAJECTORY_LOG_DISABLED", None)
+        else:
+            os.environ["AWORLD_TRAJECTORY_LOG_DISABLED"] = previous_disabled
 
 
 async def evaluate_baseline_and_candidate(
