@@ -1201,7 +1201,7 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
 
 
 @pytest.mark.asyncio
-async def test_aworld_cli_replay_executor_rejects_manifest_artifact_outside_replay_dir(
+async def test_aworld_cli_replay_executor_archives_workspace_manifest_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1222,7 +1222,98 @@ async def test_aworld_cli_replay_executor_rejects_manifest_artifact_outside_repl
     ]
 
     def fake_run(command, **kwargs):
-        artifact_dir = tmp_path / "artifacts"
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        artifact_dir = workspace_root / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        output_path = workspace_root / "x_ai_daily_extra.json"
+        output_path.write_text(
+            json.dumps({"meta": {"count": 1}, "tweets": [{"text": "AI news"}]}),
+            encoding="utf-8",
+        )
+        (artifact_dir / "evidence_manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "source_id": "workspace_output",
+                    "artifact_path": str(output_path),
+                    "extraction_method": "task_output_json",
+                    "fields_used": ["content"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Tool output compacted for context reuse.\n"
+            + json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path / "workspace"),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "workspace" / "skills"),
+            artifact_dir=str(tmp_path / "workspace" / "artifacts"),
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.failure is None
+    assert result.metrics["evidence_manifest_entry_count"] == 1
+    assert result.metrics["evidence_manifest_archived_entry_count"] == 1
+    assert "evidence_manifest_invalid_entry_count" not in result.metrics
+
+    bundle = json.loads(
+        (tmp_path / "workspace" / "artifacts" / "evidence_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    archived_path = Path(bundle["entries"][0]["artifact_path"])
+    assert archived_path.is_relative_to(tmp_path / "workspace" / "artifacts")
+    assert archived_path.exists()
+    assert bundle["entries"][0]["bounded_evidence"]["source"] == "artifact_preview"
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_rejects_untrusted_manifest_artifact_outside_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "Tool output compacted for context reuse.",
+                    }
+                ]
+            },
+            "action": {"content": "Replay completed.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        artifact_dir = workspace_root / "artifacts"
         artifact_dir.mkdir(parents=True)
         outside_path = tmp_path / "outside.txt"
         outside_path.write_text("secret should not be allowlisted", encoding="utf-8")
@@ -1259,11 +1350,11 @@ async def test_aworld_cli_replay_executor_rejects_manifest_artifact_outside_repl
             variant_id="candidate",
             task_id="task-1",
             candidate_id="cand-1",
-            workspace_root=str(tmp_path),
+            workspace_root=str(tmp_path / "workspace"),
             task_input={"content": "Replay this task"},
             task_text="Replay this task",
-            skill_root=str(tmp_path / "skills"),
-            artifact_dir=str(tmp_path / "artifacts"),
+            skill_root=str(tmp_path / "workspace" / "skills"),
+            artifact_dir=str(tmp_path / "workspace" / "artifacts"),
         )
     )
 
@@ -1272,7 +1363,7 @@ async def test_aworld_cli_replay_executor_rejects_manifest_artifact_outside_repl
     assert result.metrics["evidence_manifest_entry_count"] == 0
     assert result.metrics["evidence_manifest_invalid_entry_count"] == 1
     assert result.metrics["evidence_manifest_invalid_reasons"] == [
-        "line 1: artifact_path is outside replay artifact directory"
+        "line 1: artifact_path is outside trusted replay/workspace directories"
     ]
 
 
