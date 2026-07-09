@@ -64,13 +64,39 @@ Use `--evolve` when running the main CLI agent and you want completed tasks to e
 
 ```bash
 aworld-cli --evolve
-aworld-cli --evolve=online --judge-agent ~/Documents/agent.md
+aworld-cli --evolve=online --judge-agent ~/Documents/agent.md --judge-model-profile judge
 aworld-cli run --task "summarize this page" --evolve=shadow
 ```
 
 `--evolve` is equivalent to `--evolve=shadow`: the current runtime session writes proposal artifacts only. `--evolve=online` injects `SelfEvolveConfig(mode="online", apply_policy="auto_verified")` into the selected local agent, so background jobs may apply allowlisted targets only after verified replay, evaluator gates, and post-apply runtime-loader checks pass.
 
 Use `--judge-agent`, `--judge-agent-name`, or `--judge-backend-ref` with `--evolve` to configure the evaluator used by background jobs. These selectors map to `SelfEvolveConfig.judge_config` and follow the same mutually exclusive semantics as `aworld-cli optimize`.
+
+Use `--judge-model-profile <name>` when the judge should run on a different named model profile from the main CLI agent. For markdown judges, `agent.md` may also declare the profile in front matter:
+
+```markdown
+---
+name: trajectory-evaluator
+model_profile: judge
+---
+```
+
+The profile is resolved by the CLI model profile loader and does not change the main task agent's `.env` model settings. An explicit `--judge-model-profile` value takes precedence over the markdown front matter.
+
+Example CLI config shape:
+
+```json
+{
+  "models": {
+    "judge": {
+      "provider": "anthropic",
+      "model": "claude-sonnet",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "temperature": 0.1
+    }
+  }
+}
+```
 
 The flag does not implement a separate optimization path. It configures the runtime agent; post-run enqueue, draining, replay, candidate generation, gates, and apply remain owned by the framework self-evolve scheduler and runner. Remote agents are not mutated by the local CLI flag.
 

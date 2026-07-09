@@ -35,25 +35,41 @@ def _safe_getattr(target, name: str, default=None):
         return default
 
 
+def _append_agent_like(items: list, candidate) -> None:
+    if candidate is None:
+        return
+    if isinstance(candidate, (list, tuple, set)):
+        for item in candidate:
+            _append_agent_like(items, item)
+        return
+    if isinstance(candidate, dict):
+        for item in candidate.values():
+            _append_agent_like(items, item)
+        return
+    if getattr(candidate, "conf", None) is not None:
+        items.append(candidate)
+
+
 def _iter_swarm_config_agents(swarm) -> list:
     agents = []
-    communicate_agent = _safe_getattr(swarm, "communicate_agent", None)
-    if isinstance(communicate_agent, (list, tuple)):
-        agents.extend(item for item in communicate_agent if item is not None)
-    elif communicate_agent is not None:
-        agents.append(communicate_agent)
+    # Do not access Swarm.agents or Swarm.ordered_agents here: those properties
+    # lazily reset uninitialized swarms before the real task/context/tools exist.
+    swarm_state = getattr(swarm, "__dict__", {}) if swarm is not None else {}
+    if isinstance(swarm_state, dict):
+        _append_agent_like(agents, swarm_state.get("_communicate_agent"))
+        _append_agent_like(agents, swarm_state.get("topology"))
+        _append_agent_like(agents, swarm_state.get("register_agents"))
+        agent_graph = swarm_state.get("agent_graph")
+        if agent_graph is not None:
+            _append_agent_like(agents, getattr(agent_graph, "root_agent", None))
+            _append_agent_like(agents, getattr(agent_graph, "ordered_agents", None))
+            _append_agent_like(agents, getattr(agent_graph, "agents", None))
+        builder = swarm_state.get("builder")
+        if builder is not None:
+            _append_agent_like(agents, getattr(builder, "root_agent", None))
 
-    ordered_agents = _safe_getattr(swarm, "ordered_agents", None)
-    if isinstance(ordered_agents, (list, tuple)):
-        agents.extend(item for item in ordered_agents if item is not None)
-
-    swarm_agents = _safe_getattr(swarm, "agents", None)
-    if isinstance(swarm_agents, dict):
-        agents.extend(item for item in swarm_agents.values() if item is not None)
-    elif isinstance(swarm_agents, (list, tuple)):
-        agents.extend(item for item in swarm_agents if item is not None)
-    elif swarm_agents is not None:
-        agents.append(swarm_agents)
+    if not agents:
+        _append_agent_like(agents, swarm)
 
     unique = []
     seen = set()

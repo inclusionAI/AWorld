@@ -328,6 +328,7 @@ class AgentJudgeBackend:
     executor: JudgeExecutor | None = None
     prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None
     timeout_seconds: float | None = None
+    model_config: Any | None = None
 
     @classmethod
     def from_agent_markdown(
@@ -337,6 +338,7 @@ class AgentJudgeBackend:
         backend_id: str | None = None,
         prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None,
         timeout_seconds: float | None = None,
+        model_config: Any | None = None,
     ) -> "AgentJudgeBackend":
         agent_markdown_path = Path(path).expanduser()
         resolved_backend_id = backend_id or agent_markdown_path.stem
@@ -356,6 +358,7 @@ class AgentJudgeBackend:
             executor=_executor,
             prompt_builder=prompt_builder,
             timeout_seconds=timeout_seconds,
+            model_config=model_config,
         )
 
     @classmethod
@@ -367,6 +370,7 @@ class AgentJudgeBackend:
         prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None,
         timeout_seconds: float | None = None,
         system_prompt_prefix: str | None = None,
+        model_config: Any | None = None,
     ) -> "AgentJudgeBackend":
         agent_markdown_path = Path(path).expanduser()
         resolved_backend_id = backend_id or agent_markdown_path.stem
@@ -379,11 +383,21 @@ class AgentJudgeBackend:
             executor=None,
             prompt_builder=prompt_builder,
             timeout_seconds=timeout_seconds,
+            model_config=model_config,
         )
 
     def is_available(self) -> bool:
         if self.executor is not None:
             return True
+        if self.model_config is not None:
+            model_name = getattr(self.model_config, "llm_model_name", None)
+            api_key = getattr(self.model_config, "llm_api_key", None)
+            provider = getattr(self.model_config, "llm_provider", None) or "openai"
+            if not api_key:
+                api_key = os.getenv("LLM_API_KEY")
+            if not api_key and provider:
+                api_key = os.getenv(f"{str(provider).strip().upper()}_API_KEY")
+            return bool(model_name and api_key)
         model_name = os.getenv("LLM_MODEL_NAME")
         api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
         return bool(model_name and api_key)
@@ -393,9 +407,17 @@ class AgentJudgeBackend:
             raise RuntimeError(f"judge backend '{self.backend_id}' is not available")
         prompt_builder = self.prompt_builder or _build_default_judge_prompt
         prompt = prompt_builder(case_input, target, suite)
-        executor = self.executor or _default_agent_judge_executor
+        executor = self.executor
+
         async def _run_executor(current_prompt: JudgePrompt):
-            result = executor(current_prompt, self.system_prompt)
+            if executor is None:
+                result = _default_agent_judge_executor(
+                    current_prompt,
+                    self.system_prompt,
+                    model_config=self.model_config,
+                )
+            else:
+                result = executor(current_prompt, self.system_prompt)
             if inspect.isawaitable(result):
                 return await result
             return result
@@ -1849,15 +1871,34 @@ def _append_artifact_read_results_to_prompt(
     return updated
 
 
-async def _default_agent_judge_executor(prompt: JudgePrompt, system_prompt: str) -> str:
+async def _default_agent_judge_executor(
+    prompt: JudgePrompt,
+    system_prompt: str,
+    *,
+    model_config: Any | None = None,
+) -> str:
     from aworld.agents.llm_agent import Agent
     from aworld.config.conf import AgentConfig
     from aworld.core.common import Observation
     from aworld.core.context.base import Context
     from aworld.utils.run_util import exec_agent
 
-    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-    model_name = os.getenv("LLM_MODEL_NAME")
+    if model_config is not None:
+        provider = getattr(model_config, "llm_provider", None) or "openai"
+        api_key = getattr(model_config, "llm_api_key", None)
+        if not api_key:
+            api_key = os.getenv("LLM_API_KEY")
+        if not api_key and provider:
+            api_key = os.getenv(f"{str(provider).strip().upper()}_API_KEY")
+        model_name = getattr(model_config, "llm_model_name", None)
+        base_url = getattr(model_config, "llm_base_url", None)
+        temperature = getattr(model_config, "llm_temperature", 0.1)
+    else:
+        provider = os.getenv("LLM_PROVIDER", "openai")
+        api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+        model_name = os.getenv("LLM_MODEL_NAME")
+        base_url = os.getenv("LLM_BASE_URL")
+        temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
     if not api_key or not model_name:
         raise RuntimeError("LLM_MODEL_NAME and LLM_API_KEY/OPENAI_API_KEY are required for agent judge backend")
 
@@ -1871,10 +1912,10 @@ async def _default_agent_judge_executor(prompt: JudgePrompt, system_prompt: str)
     agent = Agent(
         name="evaluation_judge",
         conf=AgentConfig(
-            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+            llm_provider=provider,
             llm_model_name=model_name,
-            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
-            llm_base_url=os.getenv("LLM_BASE_URL"),
+            llm_temperature=temperature,
+            llm_base_url=base_url,
             llm_api_key=api_key,
         ),
         system_prompt=system_prompt,

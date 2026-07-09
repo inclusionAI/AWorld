@@ -33,6 +33,7 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--judge-agent", type=str)
     parser.add_argument("--judge-agent-name", type=str)
     parser.add_argument("--judge-backend-ref", type=str)
+    parser.add_argument("--judge-model-profile", type=str)
     parser.add_argument("--emit-trajectory", action="store_true")
 
 
@@ -44,6 +45,7 @@ def _parse_global_evolve_options(argv) -> argparse.Namespace:
         judge_agent=None,
         judge_agent_name=None,
         judge_backend_ref=None,
+        judge_model_profile=None,
     )
     for index, token in enumerate(tokens):
         if token.startswith("--evolve="):
@@ -54,14 +56,16 @@ def _parse_global_evolve_options(argv) -> argparse.Namespace:
             next_token = tokens[index + 1].strip().lower() if index + 1 < len(tokens) else ""
             result.evolve = next_token if next_token in modes else "shadow"
             continue
-        if token in {"--judge-agent", "--judge-agent-name", "--judge-backend-ref"}:
+        if token in {"--judge-agent", "--judge-agent-name", "--judge-backend-ref", "--judge-model-profile"}:
             value = tokens[index + 1] if index + 1 < len(tokens) else None
             if token == "--judge-agent":
                 result.judge_agent = value
             elif token == "--judge-agent-name":
                 result.judge_agent_name = value
-            else:
+            elif token == "--judge-backend-ref":
                 result.judge_backend_ref = value
+            else:
+                result.judge_model_profile = value
             continue
         if token.startswith("--judge-agent="):
             result.judge_agent = token.split("=", 1)[1]
@@ -69,6 +73,8 @@ def _parse_global_evolve_options(argv) -> argparse.Namespace:
             result.judge_agent_name = token.split("=", 1)[1]
         elif token.startswith("--judge-backend-ref="):
             result.judge_backend_ref = token.split("=", 1)[1]
+        elif token.startswith("--judge-model-profile="):
+            result.judge_model_profile = token.split("=", 1)[1]
     return result
 
 
@@ -121,6 +127,7 @@ class RunTopLevelCommand:
         judge_agent = getattr(args, "judge_agent", None) or global_evolve.judge_agent
         judge_agent_name = getattr(args, "judge_agent_name", None) or global_evolve.judge_agent_name
         judge_backend_ref = getattr(args, "judge_backend_ref", None) or global_evolve.judge_backend_ref
+        judge_model_profile = getattr(args, "judge_model_profile", None) or global_evolve.judge_model_profile
         agent_name = self._resolve_agent_name(args)
         if agent_name is None:
             return 0
@@ -145,6 +152,7 @@ class RunTopLevelCommand:
                     judge_agent=judge_agent,
                     judge_agent_name=judge_agent_name,
                     judge_backend_ref=judge_backend_ref,
+                    judge_model_profile=judge_model_profile,
                 ),
             )
         )
