@@ -354,9 +354,11 @@ def _build_cli_agent_judge_backend(
     backend_id: str,
     prompt_builder,
     judge_timeout_seconds: float | None = None,
+    judge_model_profile: str | None = None,
     system_prompt_prefix: str | None = None,
 ):
     executor_cache: dict[str, Any] = {}
+    model_config = _resolve_named_judge_model_config(judge_model_profile)
 
     async def _executor(prompt, system_prompt):
         if isinstance(prompt, tuple):
@@ -364,6 +366,7 @@ def _build_cli_agent_judge_backend(
         executor = executor_cache.get("executor")
         if executor is None:
             executor = await _load_cli_agent_executor(agent_name)
+            _apply_model_config_to_local_executor(executor, model_config)
             executor_cache["executor"] = executor
         swarm = getattr(executor, "swarm", None)
         if swarm is not None:
@@ -420,6 +423,7 @@ def _resolve_source_judge_backend(
             backend_id=f"{named_backend_prefix}:{resolved_name}",
             prompt_builder=prompt_builder,
             judge_timeout_seconds=judge_timeout_seconds,
+            judge_model_profile=judge_model_profile,
             system_prompt_prefix=(
                 _TRAJECTORY_JUDGE_SYSTEM_CONTRACT
                 if file_backend_id == "trajectory-evaluator-agent-md"
@@ -444,6 +448,45 @@ def _resolve_judge_model_config(
     from aworld_cli.core.model_profiles import resolve_model_profile
 
     return resolve_model_profile(profile)
+
+
+def _resolve_named_judge_model_config(judge_model_profile: str | None):
+    profile = (judge_model_profile or "").strip()
+    if not profile:
+        return None
+    from aworld_cli.core.model_profiles import resolve_model_profile
+
+    return resolve_model_profile(profile)
+
+
+def _apply_model_config_to_local_executor(executor: Any, model_config: Any | None) -> None:
+    if model_config is None or executor is None:
+        return
+    agents: list[Any] = []
+    swarm = getattr(executor, "swarm", None)
+    if swarm is not None:
+        try:
+            from aworld_cli.runtime.cli import _iter_swarm_config_agents
+
+            agents.extend(_iter_swarm_config_agents(swarm))
+        except Exception:
+            pass
+    if getattr(executor, "conf", None) is not None:
+        agents.append(executor)
+
+    seen: set[int] = set()
+    for agent in agents:
+        key = id(agent)
+        if key in seen:
+            continue
+        seen.add(key)
+        conf = getattr(agent, "conf", None)
+        if conf is None:
+            continue
+        try:
+            conf.llm_config = model_config
+        except Exception:
+            continue
 
 
 def _agent_markdown_model_profile(path: Path) -> str | None:
