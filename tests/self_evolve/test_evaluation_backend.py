@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 
 import pytest
@@ -425,6 +426,71 @@ async def test_aworld_trajectory_evaluator_backend_runs_default_source_runtime_o
 
     assert summary.metrics["score"] == 82.0
     assert summary.metrics["evaluator_gate_passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_isolates_runtime_log_path(
+    tmp_path, monkeypatch
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    monkeypatch.setenv("AWORLD_LOG_PATH", str(tmp_path / "original-logs"))
+    captured: dict[str, str | None] = {}
+
+    def source_runtime(**kwargs):
+        import os
+
+        captured["aworld_log_path"] = os.environ.get("AWORLD_LOG_PATH")
+        captured["trajectory_log_disabled"] = os.environ.get(
+            "AWORLD_TRAJECTORY_LOG_DISABLED"
+        )
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 82.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 82.0},
+        }
+
+    monkeypatch.setattr(
+        evaluation_module,
+        "_load_run_evaluator_source_cli",
+        lambda: source_runtime,
+    )
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(
+            variant_id="candidate",
+            candidate=None,
+            dataset=dataset,
+            dataset_split="validation",
+            artifact_namespace="run-1",
+        )
+    )
+
+    expected_log_path = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "evaluator"
+        / "run-1"
+        / "candidate"
+        / "validation"
+        / "logs"
+    )
+    assert summary.metrics["score"] == 82.0
+    assert captured["aworld_log_path"] == str(expected_log_path)
+    assert captured["trajectory_log_disabled"] == "1"
+    assert os.environ["AWORLD_LOG_PATH"] == str(tmp_path / "original-logs")
+    assert "AWORLD_TRAJECTORY_LOG_DISABLED" not in os.environ
 
 
 @pytest.mark.asyncio
