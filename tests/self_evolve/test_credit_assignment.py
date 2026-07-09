@@ -237,6 +237,59 @@ def test_credit_assigner_selects_installed_skill_by_generic_trajectory_evidence(
     assert "skill_alias_match:web-navigator" in report.signals
 
 
+def test_credit_assigner_does_not_select_skill_from_description_tokens_only(
+    tmp_path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "video_script_writting",
+        description=(
+            "Standard operating procedure for AI video production using diffusion "
+            "and script templates."
+        ),
+    )
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {
+                    "input": {
+                        "content": (
+                            "Collect AI tweets from X via CDP, then write a daily "
+                            "digest. The feed may include posts about diffusion models."
+                        )
+                    },
+                    "messages": [],
+                },
+                "action": {
+                    "content": "I will create a scraper script for the X feed.",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "mcp",
+                                "arguments": "{\"command\":\"python scrape_x.py\"}",
+                            }
+                        }
+                    ],
+                    "is_agent_finished": False,
+                },
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="x-digest-task",
+    )
+    assigner = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    )
+
+    report = assigner.assign(pack)
+
+    assert report.selected_target is None
+    assert report.failure_category == "no_target"
+    assert "skill_alias_match:video_script_writting" not in report.signals
+
+
 def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> None:
     _write_skill(
         tmp_path,
