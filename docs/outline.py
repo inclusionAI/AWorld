@@ -181,6 +181,10 @@ if __name__ == '__main__':
     }
 
     index_content = [
+        "---",
+        "hide:",
+        "  - navigation",
+        "---",
         "# Welcome to AWorld's Documentation",
         "Use the sections below to navigate the current English user documentation.",
     ]
@@ -190,7 +194,7 @@ if __name__ == '__main__':
             if entry:
                 index_content.append(f"- [{k}]({entry})")
 
-    index_text = "\n\n".join(index_content) + "\n"
+    index_text = "\n".join(index_content[:4]) + "\n\n" + "\n\n".join(index_content[4:]) + "\n"
     with open("index.md", 'w') as index_file:
         index_file.write(index_text)
     with open(os.path.join(docs, "index.md"), 'w') as index_file:
