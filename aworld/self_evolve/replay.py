@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from aworld.logs.util import logger
-from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.datasets import (
+    EvalCase,
+    SelfEvolveDataset,
+    is_framework_meta_trace_pack,
+)
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
 _EVIDENCE_RETRY_LIMIT = 1
@@ -505,7 +509,7 @@ def build_replay_request(
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
-    case = dataset.cases[0]
+    case = _select_replay_case(dataset)
     return CandidateReplayRequest(
         run_id=run_id,
         task_id=case.case_id,
@@ -525,6 +529,61 @@ def build_replay_request(
         max_cost_usd=max_cost_usd,
         baseline_repetitions=baseline_repetitions,
         candidate_repetitions=candidate_repetitions,
+    )
+
+
+def _select_replay_case(dataset: SelfEvolveDataset) -> EvalCase:
+    for case in dataset.cases:
+        if _is_replayable_user_task_case(case):
+            return case
+    raise ValueError(
+        "candidate replay requires at least one user task eval case; "
+        "framework-generated evaluation contracts are not replayable"
+    )
+
+
+def _is_replayable_user_task_case(case: EvalCase) -> bool:
+    if _mapping_bool(case.metadata, "framework_meta_trajectory"):
+        return False
+    if _mapping_bool(case.source, "framework_meta_trajectory"):
+        return False
+    if _mapping_bool(case.source, "framework_generated"):
+        return False
+    if case.trace_pack is not None and is_framework_meta_trace_pack(case.trace_pack):
+        return False
+    return not _looks_like_framework_generated_task_input(case.input)
+
+
+def _mapping_bool(value: Mapping[str, Any], key: str) -> bool:
+    return value.get(key) is True
+
+
+_FRAMEWORK_GENERATED_TASK_MARKERS = (
+    "evaluation_runtime_contract",
+    "artifact_backed_evidence",
+    "do_not_call_external_tools",
+    "report_output_path",
+    "trajectory_log_path",
+    "aworld_self_evolve_replay_artifact_dir",
+    "aworld_self_evolve_evidence_manifest",
+    ".aworld/self_evolve/evaluator",
+)
+
+
+def _looks_like_framework_generated_task_input(task_input: Any) -> bool:
+    haystack = _task_text(task_input).lower()
+    if not haystack:
+        return False
+    marker_count = sum(
+        1 for marker in _FRAMEWORK_GENERATED_TASK_MARKERS if marker in haystack
+    )
+    if marker_count >= 2:
+        return True
+    return marker_count >= 1 and (
+        "self-evolve" in haystack
+        or "self_evolve" in haystack
+        or "trajectory-evaluator" in haystack
+        or "judge" in haystack
     )
 
 

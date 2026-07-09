@@ -18,6 +18,7 @@ from aworld.self_evolve.replay import (
     ReplayExecutionResult,
     ReplayVariantResult,
     build_paired_replay_dataset,
+    build_replay_request,
     load_candidate_replay_result,
 )
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef
@@ -148,6 +149,88 @@ def test_paired_replay_dataset_maps_baseline_and_candidate_trajectories() -> Non
     assert paired.cases[0].metadata["variant_trajectories"]["baseline"] == baseline_trajectory
     assert paired.cases[0].metadata["variant_trajectories"]["cand-1"] == candidate_trajectory
     assert paired.cases[0].metadata["replay"]["candidate"]["metrics"]["latency_ms"] == 120.0
+
+
+def test_build_replay_request_skips_framework_generated_eval_cases(tmp_path: Path) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="framework-evaluator-case",
+                input={
+                    "content": json.dumps(
+                        {
+                            "evaluation_runtime_contract": {
+                                "do_not_call_external_tools": True,
+                                "trajectory_log_path": str(
+                                    tmp_path
+                                    / ".aworld"
+                                    / "self_evolve"
+                                    / "evaluator"
+                                    / "old-run"
+                                    / "trajectory.log"
+                                ),
+                            },
+                            "report_output_path": str(tmp_path / "report.json"),
+                        }
+                    )
+                },
+                metadata={"framework_meta_trajectory": True},
+            ),
+            EvalCase(
+                case_id="user-task",
+                input={"content": "Summarize the referenced page with grounded citations."},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["framework-evaluator-case", "user-task"], "validation": [], "held_out": []},
+        ),
+    )
+
+    request = build_replay_request(
+        run_id="run-1",
+        workspace_root=tmp_path,
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=dataset,
+    )
+
+    assert request.task_id == "user-task"
+    assert request.task_input == {"content": "Summarize the referenced page with grounded citations."}
+
+
+def test_build_replay_request_rejects_framework_only_dataset(tmp_path: Path) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="framework-evaluator-case",
+                input={
+                    "content": (
+                        "evaluation_runtime_contract: do_not_call_external_tools=true "
+                        f"trajectory_log_path={tmp_path}/.aworld/self_evolve/evaluator/run/trajectory.log"
+                    )
+                },
+                metadata={"framework_meta_trajectory": True},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["framework-evaluator-case"], "validation": [], "held_out": []},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="user task eval case"):
+        build_replay_request(
+            run_id="run-1",
+            workspace_root=tmp_path,
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+            candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
+            overlay_skill_root=tmp_path / "overlay-skills",
+            dataset=dataset,
+        )
 
 
 def test_paired_replay_dataset_expands_repetition_trajectories_into_eval_cases() -> None:

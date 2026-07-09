@@ -1107,21 +1107,32 @@ class SelfEvolveRunner:
             target_skill_path=target.identity.path,
             baseline_skill_roots=getattr(target, "baseline_skill_roots", ()),
         )
-        request = build_replay_request(
-            run_id=run_id,
-            workspace_root=self.store.workspace_root,
-            target=target.identity,
-            candidate=selected_candidate,
-            overlay_skill_root=overlay.shadow_root,
-            dataset=dataset,
-            agent=self.replay_agent,
-            timeout_seconds=self.replay_timeout_seconds,
-            max_steps=self.replay_max_steps,
-            max_tokens=self.max_run_tokens,
-            baseline_repetitions=self.baseline_replay_repetitions,
-            candidate_repetitions=self.candidate_replay_repetitions,
-            baseline_replay_dir=baseline_replay_dir,
-        )
+        try:
+            request = build_replay_request(
+                run_id=run_id,
+                workspace_root=self.store.workspace_root,
+                target=target.identity,
+                candidate=selected_candidate,
+                overlay_skill_root=overlay.shadow_root,
+                dataset=dataset,
+                agent=self.replay_agent,
+                timeout_seconds=self.replay_timeout_seconds,
+                max_steps=self.replay_max_steps,
+                max_tokens=self.max_run_tokens,
+                baseline_repetitions=self.baseline_replay_repetitions,
+                candidate_repetitions=self.candidate_replay_repetitions,
+                baseline_replay_dir=baseline_replay_dir,
+            )
+        except ValueError as exc:
+            return (
+                None,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason=str(exc),
+                ),
+            )
         replay_result = await self.candidate_replay_backend.replay_candidate(
             request,
             candidate=selected_candidate,
@@ -4559,9 +4570,10 @@ def _auto_group_trajectory_log_dataset(
         groups.values(),
         key=lambda item: (
             bool(item.get("has_target")),
-            _group_average_confidence(item),
-            int(item.get("target_priority") or 0),
+            _group_confidence_bucket(item),
             len(item.get("case_ids") or ()),
+            int(item.get("target_priority") or 0),
+            _group_average_confidence(item),
             str(item.get("group_id") or ""),
         ),
         reverse=True,
@@ -4610,6 +4622,10 @@ def _group_average_confidence(group: Mapping[str, object]) -> float:
     return float(group.get("confidence_sum") or 0.0) / count
 
 
+def _group_confidence_bucket(group: Mapping[str, object]) -> float:
+    return round(_group_average_confidence(group), 2)
+
+
 def _trajectory_log_grouping_report(
     ranked_groups: list[dict[str, object]],
     *,
@@ -4630,12 +4646,21 @@ def _trajectory_log_grouping_report(
     selected_group = next(
         group for group in group_summaries if group["group_id"] == selected_group_id
     )
+    largest_group_size = max(
+        (len(group.get("case_ids") or ()) for group in group_summaries),
+        default=0,
+    )
+    selected_case_count = len(selected_group.get("case_ids") or ())
+    low_dataset_support = selected_case_count <= 1 and largest_group_size > selected_case_count
     return {
         "auto_grouped": True,
         "strategy": "inferred_target",
         "group_count": len(group_summaries),
         "selected_group_id": selected_group_id,
         "selected_case_ids": list(selected_group["case_ids"]),
+        "selected_case_count": selected_case_count,
+        "largest_group_case_count": largest_group_size,
+        "low_dataset_support": low_dataset_support,
         "skipped_group_count": max(0, len(group_summaries) - 1),
         "groups": group_summaries,
     }
