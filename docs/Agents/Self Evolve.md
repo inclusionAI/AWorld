@@ -81,7 +81,7 @@ model_profile: judge
 ---
 ```
 
-The profile is resolved by the CLI model profile loader and does not change the main task agent's `.env` model settings. An explicit `--judge-model-profile` value takes precedence over the markdown front matter.
+The profile is resolved by the CLI model profile loader and does not change the main task agent's `.env` model settings. An explicit `--judge-model-profile` value takes precedence over the markdown front matter. For `--judge-agent-name`, the profile is applied to local named judge agents whose runtime config is accessible; remote or opaque executors keep their own model configuration.
 
 Example CLI config shape:
 

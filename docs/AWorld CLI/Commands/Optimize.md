@@ -73,7 +73,7 @@ When `--target` is omitted, the CLI sets `infer_target=True` and the framework p
 - `--judge-agent`: markdown judge agent path.
 - `--judge-agent-name`: configured custom judge agent id/name.
 - `--judge-backend-ref`: evaluator backend reference.
-- `--judge-model-profile`: named model profile for the judge. This is useful when the task agent uses the default `.env` model but the evaluator needs a separate model. For `--judge-agent <agent.md>`, the same profile can also be declared in markdown front matter as `model_profile: judge`; the CLI option takes precedence.
+- `--judge-model-profile`: named model profile for the judge. This is useful when the task agent uses the default `.env` model but the evaluator needs a separate model. It applies to markdown judges and local named judge agents. For `--judge-agent <agent.md>`, the same profile can also be declared in markdown front matter as `model_profile: judge`; the CLI option takes precedence.
 - `--replay-timeout`: timeout in seconds for each replay rollout.
 - `--replay-max-runs`: maximum `aworld-cli run` iterations per replay rollout.
 - `--judge-repetitions`: successful judge samples to aggregate per evaluator call.

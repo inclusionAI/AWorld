@@ -299,6 +299,75 @@ def test_run_evaluator_source_cli_supports_cli_judge_agent_name(
     assert report["source_selection"]["judge_agent"] is None
 
 
+def test_run_evaluator_source_cli_applies_model_profile_to_cli_judge_agent_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    captured = {}
+    judge_conf = SimpleNamespace(llm_config=None)
+    judge_agent = SimpleNamespace(conf=judge_conf)
+    judge_swarm = SimpleNamespace(_communicate_agent=judge_agent)
+
+    class FakeExecutor:
+        swarm = judge_swarm
+
+    async def fake_load_cli_agent_executor(agent_name):
+        captured["agent_name"] = agent_name
+        return FakeExecutor()
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._load_cli_agent_executor",
+        fake_load_cli_agent_executor,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        lambda profile: ModelConfig(
+            llm_provider="anthropic",
+            llm_model_name=f"{profile}-model",
+            llm_api_key="profile-key",
+        ),
+    )
+
+    async def fake_run_evaluation_flow(flow):
+        captured["flow"] = flow
+        await flow.suite.judge_backend.execute(
+            flow.suite.cases[0].input,
+            {"answer": "existing"},
+            flow.suite,
+        )
+        return {
+            "report_version": 1,
+            "suite_id": "answer-source-evaluator",
+            "judge_backend": {"backend_id": flow.suite.judge_backend.backend_id},
+            "summary": {"answer-source-evaluator": {"score": {"mean": 91}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 91},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    async def fake_runner_run(**kwargs):
+        return SimpleNamespace(answer='{"score": 91, "verdict": "Pass", "veto_triggered": false}')
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.Runners.run", fake_runner_run)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="answer",
+        judge_agent_name="JudgeTeam",
+        judge_model_profile="judge",
+        output=str(tmp_path / "report.json"),
+    )
+
+    assert captured["agent_name"] == "JudgeTeam"
+    assert judge_conf.llm_config.llm_provider == "anthropic"
+    assert judge_conf.llm_config.llm_model_name == "judge-model"
+    assert judge_conf.llm_config.llm_api_key == "profile-key"
+    assert report["source_selection"]["judge_model_profile"] == "judge"
+
+
 def test_run_evaluator_source_cli_supports_judge_backend_ref(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
