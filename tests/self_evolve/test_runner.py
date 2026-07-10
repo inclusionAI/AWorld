@@ -421,10 +421,13 @@ async def test_auto_verified_no_candidate_is_rejected(tmp_path) -> None:
     assert report["iterations"][0]["status"] == "no_candidate"
     assert report["gate_results"] == [
         {
-            "gate_name": "auto_verified_evaluation",
+            "gate_name": "candidate_generation",
             "passed": False,
-            "reason": "auto_verified apply policy requires a candidate",
-            "details": None,
+            "reason": "optimizer did not produce a replayable candidate",
+            "details": {
+                "generated_candidate_count": 0,
+                "iterations": 1,
+            },
         }
     ]
 
