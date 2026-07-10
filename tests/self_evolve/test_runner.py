@@ -1152,13 +1152,101 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
     )
 
     stages = [stage for stage, _ in events]
-    assert stages[:4] == [
+    assert stages[:5] == [
         "start",
         "candidate_generation",
+        "replay_cost",
         "candidate_replay",
         "evaluation",
     ]
     assert stages[-1] == "completed"
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-progress"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["replay_cost"]["total_replay_count"] == 2
+    assert report["replay_cost"]["judge_call_count"] == 3
+    assert report["replay_cost"]["replay_timeout_seconds"] == 600
+    assert report["replay_cost"]["judge_failure_retries"] == 2
+    assert report["replay_cost"]["estimated_worst_case_wall_clock_seconds"] == 2700
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_failed_preflight_gate_before_replay_or_evaluation(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(current_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix demo guidance."}},
+            "action": {"content": "demo failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="preflight-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="preflight-task",
+    )
+    noop_candidate = CandidateVariant(
+        candidate_id="candidate-noop",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content=current_content,
+        rationale="No changes.",
+        target_fingerprint="fingerprint",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(noop_candidate,))
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            pytest.fail("preflight-rejected candidates must not start replay")
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            pytest.fail("preflight-rejected candidates must not start evaluation")
+
+    result = await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+    ).run_explicit_target(
+        run_id="run-preflight-rejected",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-preflight-rejected"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["iterations"][0]["status"] == "rejected"
+    assert report["iterations"][0]["failed_gates"] == ["noop_candidate"]
+    assert "replay" not in report
 
 
 @pytest.mark.asyncio
