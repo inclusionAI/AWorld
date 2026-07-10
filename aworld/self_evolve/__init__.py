@@ -68,6 +68,10 @@ from aworld.self_evolve.judge import (
     JudgeVerdict,
     build_judge_backend,
 )
+from aworld.self_evolve.lifecycle import (
+    SelfEvolveArtifactRetentionPolicy,
+    cleanup_self_evolve_artifacts,
+)
 from aworld.self_evolve.lessons import (
     LessonRecord,
     extract_lesson_records,
@@ -194,6 +198,7 @@ __all__ = [
     "SelfEvolveRunnerResult",
     "SelfEvolveDataset",
     "SelfEvolveEvalSourceConfig",
+    "SelfEvolveArtifactRetentionPolicy",
     "SelfEvolveEnqueueResult",
     "SelfEvolveJobWorker",
     "SelfEvolveRun",
@@ -225,6 +230,7 @@ __all__ = [
     "build_paired_replay_dataset",
     "build_replay_request",
     "cleanup_self_evolve_overlays",
+    "cleanup_self_evolve_artifacts",
     "create_candidate_skill_overlay",
     "drain_pending_self_evolve_jobs",
     "drain_pending_self_evolve_jobs_async",
