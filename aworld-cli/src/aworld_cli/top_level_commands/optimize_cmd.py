@@ -80,6 +80,18 @@ class OptimizeTopLevelCommand:
             help="Timeout in seconds for each self-evolve judge attempt.",
         )
         parser.add_argument(
+            "--judge-failure-retries",
+            type=int,
+            dest="judge_failure_retries",
+            help="Number of failed judge attempts to retry before degrading.",
+        )
+        parser.add_argument(
+            "--judge-concurrency",
+            type=int,
+            dest="judge_concurrency",
+            help="Bounded concurrency for independent self-evolve evaluator calls.",
+        )
+        parser.add_argument(
             "--baseline-replay-repetitions",
             type=int,
             dest="baseline_replay_repetitions",
@@ -90,6 +102,25 @@ class OptimizeTopLevelCommand:
             type=int,
             dest="candidate_replay_repetitions",
             help="Number of candidate replay rollouts to aggregate.",
+        )
+        parser.add_argument(
+            "--replay-concurrency",
+            type=int,
+            dest="replay_concurrency",
+            help="Bounded concurrency for independent self-evolve replay subprocesses.",
+        )
+        parser.add_argument(
+            "--max-optimize-seconds",
+            "--wall-clock-budget",
+            type=int,
+            dest="max_optimize_seconds",
+            help="Best-effort wall-clock budget in seconds for one optimize run.",
+        )
+        parser.add_argument(
+            "--fast-verified",
+            action="store_true",
+            dest="fast_verified",
+            help="Use lower non-explicit auto_verified runtime caps for exploratory verification.",
         )
         parser.add_argument(
             "--drain-pending",
@@ -138,8 +169,13 @@ class OptimizeTopLevelCommand:
                 judge_backend_ref=getattr(args, "judge_backend_ref", None),
                 judge_repetitions=getattr(args, "judge_repetitions", None),
                 judge_timeout_seconds=getattr(args, "judge_timeout_seconds", None),
+                judge_failure_retries=getattr(args, "judge_failure_retries", None),
+                judge_concurrency=getattr(args, "judge_concurrency", None),
                 replay_timeout_seconds=getattr(args, "replay_timeout_seconds", None),
                 replay_max_steps=getattr(args, "replay_max_steps", None),
+                replay_concurrency=getattr(args, "replay_concurrency", None),
+                max_optimize_seconds=getattr(args, "max_optimize_seconds", None),
+                fast_verified=getattr(args, "fast_verified", False),
                 baseline_replay_repetitions=getattr(args, "baseline_replay_repetitions", None),
                 candidate_replay_repetitions=getattr(args, "candidate_replay_repetitions", None),
                 progress_callback=_print_optimize_progress,
@@ -224,8 +260,13 @@ def run_optimize_cli(
     judge_backend_ref: str | None = None,
     judge_repetitions: int | None = None,
     judge_timeout_seconds: int | None = None,
+    judge_failure_retries: int | None = None,
+    judge_concurrency: int | None = None,
     replay_timeout_seconds: int | None = None,
     replay_max_steps: int | None = None,
+    replay_concurrency: int | None = None,
+    max_optimize_seconds: int | None = None,
+    fast_verified: bool = False,
     baseline_replay_repetitions: int | None = None,
     candidate_replay_repetitions: int | None = None,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
@@ -235,6 +276,19 @@ def run_optimize_cli(
     rerun_evaluator: bool = False,
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
+
+    if fast_verified and apply == "auto_verified":
+        if judge_failure_retries is None:
+            judge_failure_retries = 0
+        if replay_concurrency is None:
+            replay_concurrency = 2
+        if candidate_replay_repetitions is None:
+            candidate_replay_repetitions = 1
+        if max_optimize_seconds is None:
+            max_optimize_seconds = 900
+        replay_candidate_limit = 1
+    else:
+        replay_candidate_limit = None
 
     judge_repetitions = _auto_verified_default(
         apply,
@@ -295,8 +349,15 @@ def run_optimize_cli(
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
+            replay_concurrency=replay_concurrency,
+            replay_candidate_limit=replay_candidate_limit,
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
+        ),
+        **_runtime_bound_options(
+            judge_failure_retries=judge_failure_retries,
+            judge_concurrency=judge_concurrency,
+            max_optimize_seconds=max_optimize_seconds,
         ),
     )
 
@@ -353,6 +414,8 @@ def _replay_options(
     *,
     replay_timeout_seconds: int | None,
     replay_max_steps: int | None,
+    replay_concurrency: int | None,
+    replay_candidate_limit: int | None,
     baseline_replay_repetitions: int | None,
     candidate_replay_repetitions: int | None,
 ) -> dict[str, int]:
@@ -361,10 +424,30 @@ def _replay_options(
         options["replay_timeout_seconds"] = replay_timeout_seconds
     if replay_max_steps is not None:
         options["replay_max_steps"] = replay_max_steps
+    if replay_concurrency is not None:
+        options["replay_concurrency"] = replay_concurrency
+    if replay_candidate_limit is not None:
+        options["replay_candidate_limit"] = replay_candidate_limit
     if baseline_replay_repetitions is not None:
         options["baseline_replay_repetitions"] = baseline_replay_repetitions
     if candidate_replay_repetitions is not None:
         options["candidate_replay_repetitions"] = candidate_replay_repetitions
+    return options
+
+
+def _runtime_bound_options(
+    *,
+    judge_failure_retries: int | None,
+    judge_concurrency: int | None,
+    max_optimize_seconds: int | None,
+) -> dict[str, int]:
+    options: dict[str, int] = {}
+    if judge_failure_retries is not None:
+        options["judge_failure_retries"] = judge_failure_retries
+    if judge_concurrency is not None:
+        options["judge_concurrency"] = judge_concurrency
+    if max_optimize_seconds is not None:
+        options["max_optimize_seconds"] = max_optimize_seconds
     return options
 
 
