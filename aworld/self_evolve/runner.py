@@ -540,20 +540,28 @@ class SelfEvolveRunner:
             replay_result = selected_state["replay_result"]  # type: ignore[assignment]
             replay_dataset = selected_state["replay_dataset"]  # type: ignore[assignment]
             gate_results = list(selected_state["gate_results"])  # type: ignore[arg-type]
-        elif apply_policy == "auto_verified":
-            gate_results.append(
-                GateResult(
-                    gate_name="auto_verified_evaluation",
-                    passed=False,
-                    reason="auto_verified apply policy requires a candidate",
-                )
-            )
         else:
             gate_results.append(
                 GateResult(
-                    gate_name="no_candidate",
+                    gate_name=(
+                        "candidate_generation"
+                        if apply_policy == "auto_verified"
+                        else "no_candidate"
+                    ),
                     passed=False,
-                    reason="optimizer did not produce a candidate",
+                    reason=(
+                        "optimizer did not produce a replayable candidate"
+                        if apply_policy == "auto_verified"
+                        else "optimizer did not produce a candidate"
+                    ),
+                    details=(
+                        {
+                            "generated_candidate_count": len(all_candidates),
+                            "iterations": len(optimizer_diagnostics),
+                        }
+                        if apply_policy == "auto_verified"
+                        else None
+                    ),
                 )
             )
 

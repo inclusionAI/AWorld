@@ -475,7 +475,11 @@ def _is_weak_high_baseline_regression_candidate(
     current_content: str,
     request: OptimizerRequest | None = None,
 ) -> bool:
-    text = content.lower()
+    retained_delta = _retained_baseline_delta(
+        content,
+        current_content=current_content,
+    )
+    text = (retained_delta if retained_delta is not None else content).lower()
     has_preserve = bool(
         re.search(
             r"\b(preserve|keep|unchanged|baseline strengths|baseline behavior|保留|保持|不变)\b",
@@ -497,7 +501,10 @@ def _is_weak_high_baseline_regression_candidate(
         )
     )
     if has_preserve and has_behavior_delta and has_acceptance_check:
-        return not _preserves_lean_solution_path(text, request)
+        return not (
+            retained_delta is not None
+            or _preserves_lean_solution_path(text, request)
+        )
 
     growth_ratio = len(content) / max(len(current_content), 1)
     broad_terms = (
@@ -513,11 +520,25 @@ def _is_weak_high_baseline_regression_candidate(
         "扩大",
     )
     has_broad_guidance = any(term in text for term in broad_terms)
+    if retained_delta is not None:
+        max_delta_chars = min(4_000, max(1_200, int(len(current_content) * 0.4)))
+        return has_broad_guidance or len(retained_delta) > max_delta_chars
     return (
         has_broad_guidance
         or growth_ratio > 1.4
         or not _preserves_lean_solution_path(text, request)
     )
+
+
+def _retained_baseline_delta(
+    content: str,
+    *,
+    current_content: str,
+) -> str | None:
+    baseline = current_content.rstrip()
+    if not baseline or not content.startswith(baseline):
+        return None
+    return content[len(baseline) :].strip()
 
 
 def _preserves_lean_solution_path(

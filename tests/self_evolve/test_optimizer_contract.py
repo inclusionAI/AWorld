@@ -1139,6 +1139,60 @@ async def test_llm_mutator_filters_high_baseline_candidate_that_drops_lean_path(
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_accepts_runtime_delta_that_retains_high_baseline_content() -> None:
+    current_content = (
+        "# Demo\n\n"
+        "Use the established runtime workflow and keep successful output behavior stable.\n"
+        "Prefer bounded operations, preserve task context, and finish with a concise answer.\n"
+        "Keep existing commands and examples available to the runtime agent.\n"
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": (
+                current_content
+                + "\n## Runtime Behavior Delta\n\n"
+                "- When the first evidence path is incomplete, switch once to a bounded "
+                "alternative and stop after sufficient evidence is available.\n"
+            ),
+            "rationale": "Runtime-only delta that preserves the full baseline skill.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-regressed",
+                metrics={
+                    "baseline_score": 91.0,
+                    "candidate_score": 89.0,
+                    "score_delta": -2.0,
+                    "failed_gates": ["score_improvement"],
+                },
+                dataset_split="validation",
+            ),
+        ),
+        lesson_records=(
+            LessonRecord(
+                lesson_id="lesson-lean-path",
+                lesson_type="lean_solution_path",
+                title="Preserve lean successful path",
+                summary="Successful trajectory used a bounded tool path.",
+                metrics={"tool_names": ["runtime_tool_not_named_in_skill"]},
+            ),
+        ),
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 0
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_accepts_targeted_high_baseline_delta_candidate() -> None:
     async def mutate(prompt: str) -> dict:
         return {
