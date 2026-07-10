@@ -663,6 +663,123 @@ async def test_aworld_trajectory_evaluator_backend_deduplicates_replay_variant_t
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_isolates_validation_and_held_out_members(
+    tmp_path,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="train-task",
+                input="Train task",
+                metadata={
+                    "variant_trajectories": {
+                        "cand-1": [{"action": {"content": "train candidate"}}]
+                    }
+                },
+            ),
+            EvalCase(
+                case_id="held-task",
+                input="Held-out task",
+                metadata={
+                    "variant_trajectories": {
+                        "cand-1": [{"action": {"content": "held candidate"}}]
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={
+                "train": ["train-task"],
+                "validation": [],
+                "held_out": ["held-task"],
+            },
+            trainable_case_ids=("train-task",),
+            held_out_case_ids=("held-task",),
+        ),
+    )
+    seen_task_ids: list[list[str]] = []
+
+    def fake_run_evaluator_source(**kwargs):
+        import ast
+
+        seen_task_ids.append(
+            [
+                ast.literal_eval(line)["task_id"]
+                for line in open(kwargs["input"], encoding="utf-8")
+                if line.strip()
+            ]
+        )
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 80.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 80.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=fake_run_evaluator_source,
+    )
+
+    for split in ("validation", "held_out"):
+        await backend.evaluate_variant(
+            EvaluationRequest(
+                variant_id="cand-1",
+                candidate=_candidate("cand-1"),
+                dataset=dataset,
+                dataset_split=split,
+            )
+        )
+
+    assert seen_task_ids == [["train-task"], ["held-task"]]
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_skips_empty_held_out_split(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="train-task",
+                input="Train task",
+                metadata={
+                    "variant_trajectories": {
+                        "cand-1": [{"action": {"content": "candidate"}}]
+                    }
+                },
+            ),
+        )
+    )
+    calls = []
+
+    def fake_run_evaluator_source(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("empty held-out split must not invoke evaluator")
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=fake_run_evaluator_source,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(
+            variant_id="cand-1",
+            candidate=_candidate("cand-1"),
+            dataset=dataset,
+            dataset_split="held_out",
+        )
+    )
+
+    assert calls == []
+    assert summary.metrics["score"] == 0.0
+    assert summary.metrics["evaluator_gate_passed"] is False
+    assert summary.metrics["evaluation_case_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_scopes_artifacts_by_namespace(tmp_path) -> None:
     dataset = _dataset(
         (
@@ -1023,6 +1140,55 @@ def test_candidate_confidence_requires_sufficient_held_out_and_deterministic_sig
     assert verified.confidence == "verified"
     assert verified.reason == "held-out deterministic evaluation is sufficient"
     assert verified.verification_split == "held_out"
+
+
+def test_candidate_confidence_counts_independent_held_out_members_not_repetitions() -> None:
+    replay_dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=f"held-task__replay_{index}", input="held")
+            for index in range(1, 4)
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "paired_replay": True,
+                "held_out_member_count": 1,
+            },
+            split_seed="seed",
+            splits={
+                "train": [],
+                "validation": [],
+                "held_out": [
+                    "held-task__replay_1",
+                    "held-task__replay_2",
+                    "held-task__replay_3",
+                ],
+            },
+            held_out_case_ids=(
+                "held-task__replay_1",
+                "held-task__replay_2",
+                "held-task__replay_3",
+            ),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=2,
+    )
+
+    assert decision.confidence == "limited"
+    assert decision.held_out_case_count == 1
 
 
 def test_candidate_confidence_accepts_stable_single_case_replay() -> None:

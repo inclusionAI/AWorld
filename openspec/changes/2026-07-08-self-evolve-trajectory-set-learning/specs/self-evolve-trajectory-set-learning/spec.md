@@ -64,6 +64,21 @@ one or more related trajectory members.
   follow-up production run summaries into the trajectory set
 - **AND** it SHALL preserve source run ids for audit.
 
+#### Scenario: Each trajectory-set member receives independent paired replay
+
+- **GIVEN** a target-coherent trajectory set contains multiple replayable task
+  members
+- **WHEN** candidate replay runs
+- **THEN** the framework SHALL execute baseline and candidate repetitions for
+  every replayable member using that member's task input
+- **AND** replay artifacts SHALL be isolated and addressable by member case id
+- **AND** one member's replay trajectory SHALL NOT be attached to or evaluated
+  as another member's trajectory
+- **AND** validation and held-out evaluation SHALL consume only members assigned
+  to the corresponding split
+- **AND** repeated executions of one member SHALL NOT be counted as independent
+  held-out members.
+
 ### Requirement: Lesson Extraction
 
 AWorld self-evolve SHALL convert trajectory-set evidence into normalized lesson
@@ -233,6 +248,20 @@ intents before replay.
 - **GIVEN** a candidate only needs a small behavior delta
 - **WHEN** the framework materializes the candidate
 - **THEN** it SHOULD prefer localized edits over a full skill rewrite.
+
+#### Scenario: Candidate body is runtime-only before replay
+
+- **GIVEN** lessons, trace packs, evaluator feedback, and lineage contain task
+  ids, evidence ids, gate names, scores, or framework diagnostics
+- **WHEN** a skill candidate is materialized for overlay replay
+- **THEN** the candidate body SHALL contain only bounded runtime-executable
+  behavior rules
+- **AND** internal provenance SHALL remain in lessons, lineage, diagnostics, and
+  reports
+- **AND** the framework SHALL produce a no-op candidate when no lesson supports
+  an actionable runtime behavior delta
+- **AND** replay SHALL evaluate the runtime-only candidate rather than a larger
+  internal candidate that would later be normalized into different content.
 
 ### Requirement: Lineage And Lesson Memory
 

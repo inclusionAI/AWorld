@@ -643,6 +643,444 @@ async def test_aworld_cli_candidate_replay_backend_allows_partial_repetition_suc
 
 
 @pytest.mark.asyncio
+async def test_multi_member_replay_executes_and_maps_each_member_independently(
+    tmp_path: Path,
+) -> None:
+    calls: list[ReplayExecutionRequest] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {
+                        "content": f"{request.task_id}:{request.variant_id}"
+                    },
+                    "reward": {"status": "ok"},
+                }
+            ],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={
+                "train": ["task-a"],
+                "validation": [],
+                "held_out": ["task-b"],
+            },
+            trainable_case_ids=("task-a",),
+            held_out_case_ids=("task-b",),
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="cand-1",
+    )
+    request = build_replay_request(
+        run_id="run-members",
+        workspace_root=tmp_path,
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=dataset,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert [(call.task_id, call.variant_id) for call in calls] == [
+        ("task-a", "baseline"),
+        ("task-a", "cand-1"),
+        ("task-b", "baseline"),
+        ("task-b", "cand-1"),
+    ]
+    assert [member.case_id for member in result.member_results] == [
+        "task-a",
+        "task-b",
+    ]
+    assert len({Path(call.artifact_dir) for call in calls}) == 4
+    assert len({Path(call.artifact_dir).parent for call in calls}) == 2
+
+    paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=result,
+        candidate=candidate,
+    )
+
+    assert [case.case_id for case in paired.cases] == ["task-a", "task-b"]
+    for case in paired.cases:
+        variants = case.metadata["variant_trajectories"]
+        assert variants["baseline"][0]["action"]["content"] == (
+            f"{case.case_id}:baseline"
+        )
+        assert variants["cand-1"][0]["action"]["content"] == (
+            f"{case.case_id}:cand-1"
+        )
+    assert paired.recipe.splits == {
+        "train": ["task-a"],
+        "validation": [],
+        "held_out": ["task-b"],
+    }
+    assert paired.recipe.trainable_case_ids == ("task-a",)
+    assert paired.recipe.held_out_case_ids == ("task-b",)
+
+
+@pytest.mark.asyncio
+async def test_multi_member_replay_reports_failed_case_without_masking_it(
+    tmp_path: Path,
+) -> None:
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        if request.task_id == "task-b" and request.variant_id == "cand-1":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={"type": "TaskFailure", "reason": "task-b failed"},
+            )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.task_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-member-failure",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=dataset,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(request, candidate=candidate, dataset=dataset)
+
+    assert result.succeeded is False
+    assert result.candidate.status == "failed"
+    assert result.candidate.metrics["successful_member_count"] == 1
+    assert result.candidate.metrics["failed_member_count"] == 1
+    assert result.candidate.metrics["member_failures"] == [
+        {
+            "case_id": "task-b",
+            "failure": {"type": "TaskFailure", "reason": "task-b failed"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_load_candidate_replay_result_restores_multi_member_mapping(
+    tmp_path: Path,
+) -> None:
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {
+                        "content": f"{request.task_id}:{request.variant_id}"
+                    },
+                }
+            ],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": ["task-b"]},
+            trainable_case_ids=("task-a",),
+            held_out_case_ids=("task-b",),
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-load-members",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=dataset,
+        baseline_repetitions=2,
+        candidate_repetitions=2,
+    )
+    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-load-members"
+        / "replay"
+        / "cand-1"
+    )
+
+    loaded = load_candidate_replay_result(replay_dir)
+
+    assert loaded.succeeded is True
+    assert [member.case_id for member in loaded.member_results] == [
+        "task-a",
+        "task-b",
+    ]
+    assert all(
+        len(member.baseline.repetition_results) == 2
+        and len(member.candidate.repetition_results) == 2
+        for member in loaded.member_results
+    )
+    paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=loaded,
+        candidate=candidate,
+    )
+    assert {
+        case.case_id.split("__replay_", 1)[0]: case.metadata[
+            "variant_trajectories"
+        ]["cand-1"][0]["action"]["content"].split(":", 1)[0]
+        for case in paired.cases
+    } == {"task-a": "task-a", "task-b": "task-b"}
+
+
+@pytest.mark.asyncio
+async def test_multi_member_replay_reuses_each_members_baseline(
+    tmp_path: Path,
+) -> None:
+    calls: list[ReplayExecutionRequest] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"], "validation": [], "held_out": []},
+        ),
+    )
+    first_candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nFirst.\n",
+        candidate_id="cand-1",
+    )
+    first_request = build_replay_request(
+        run_id="run-reuse-members",
+        workspace_root=tmp_path,
+        target=first_candidate.target,
+        candidate=first_candidate,
+        overlay_skill_root=tmp_path / "overlay-1",
+        dataset=dataset,
+    )
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    await backend.replay_candidate(
+        first_request,
+        candidate=first_candidate,
+        dataset=dataset,
+    )
+    calls.clear()
+    second_candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nSecond.\n",
+        candidate_id="cand-2",
+    )
+    members_root = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-reuse-members"
+        / "replay"
+        / "cand-1"
+        / "members"
+    )
+    second_request = build_replay_request(
+        run_id="run-reuse-members",
+        workspace_root=tmp_path,
+        target=second_candidate.target,
+        candidate=second_candidate,
+        overlay_skill_root=tmp_path / "overlay-2",
+        dataset=dataset,
+        baseline_replay_dir=members_root,
+    )
+
+    result = await backend.replay_candidate(
+        second_request,
+        candidate=second_candidate,
+        dataset=dataset,
+    )
+
+    assert result.succeeded is True
+    assert [(call.task_id, call.variant_id) for call in calls] == [
+        ("task-a", "cand-2"),
+        ("task-b", "cand-2"),
+    ]
+    assert all(member.baseline.succeeded for member in result.member_results)
+    second_replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-reuse-members"
+        / "replay"
+        / "cand-2"
+    )
+    loaded = load_candidate_replay_result(second_replay_dir)
+    assert loaded.succeeded is True
+    assert [member.case_id for member in loaded.member_results] == [
+        "task-a",
+        "task-b",
+    ]
+    assert all(member.baseline.succeeded for member in loaded.member_results)
+
+
+@pytest.mark.asyncio
+async def test_multi_member_replay_paths_do_not_collide_after_sanitization(
+    tmp_path: Path,
+) -> None:
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.task_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task/a", input="Task A"),
+            EvalCase(case_id="task?a", input="Task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task/a", "task?a"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-collision",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-collision"
+        / "replay"
+        / "cand-1"
+    )
+
+    loaded = load_candidate_replay_result(replay_dir)
+
+    assert [member.case_id for member in loaded.member_results] == ["task/a", "task?a"]
+    assert [
+        member.candidate.trajectory[0]["action"]["content"]
+        for member in loaded.member_results
+    ] == ["task/a", "task?a"]
+
+
+@pytest.mark.asyncio
+async def test_replay_excludes_framework_advisory_members_from_paired_dataset(
+    tmp_path: Path,
+) -> None:
+    calls: list[ReplayExecutionRequest] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.task_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="user-task", input="Replay user task"),
+            EvalCase(
+                case_id="prior-run-summary",
+                input={"status": "rejected"},
+                source={"kind": "prior_self_evolve_run", "framework_generated": True},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={
+                "train": ["user-task", "prior-run-summary"],
+                "validation": [],
+                "held_out": [],
+            },
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-advisory",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=result,
+        candidate=candidate,
+    )
+
+    assert [(call.task_id, call.variant_id) for call in calls] == [
+        ("user-task", "baseline"),
+        ("user-task", "cand-1"),
+    ]
+    assert [member.case_id for member in result.member_results] == ["user-task"]
+    assert [case.case_id for case in paired.cases] == ["user-task"]
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_candidate_replay_backend_aggregates_evidence_metrics(
     tmp_path: Path,
 ) -> None:

@@ -201,3 +201,19 @@
   user-authored baseline trajectory input plus framework-owned prior accepted,
   rejected, replay, or follow-up members imported from self-evolve run history.
 - [x] 11.6 Run strict OpenSpec validation for the trajectory-set learning change.
+
+## 12. Member Replay And Runtime Candidate Follow-Up
+
+- [x] 12.1 Execute paired baseline/candidate replay independently for each
+  replayable trajectory-set member.
+- [x] 12.2 Persist and restore member-scoped replay manifests, including reused
+  baseline artifacts for candidate populations.
+- [x] 12.3 Map only each member's own trajectories into evaluator cases and
+  preserve train/validation/held-out split membership.
+- [x] 12.4 Count independent held-out members separately from replay
+  repetitions and skip evaluator calls for empty splits.
+- [x] 12.5 Materialize bounded runtime behavior deltas without task ids,
+  evidence ids, gate names, scores, or prior feedback text in candidate bodies.
+- [x] 12.6 Add tests for member isolation, partial failure diagnostics, stored
+  replay recovery, path collisions, split isolation, and runtime-only
+  candidates.
