@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import os
@@ -271,10 +272,10 @@ class AWorldTrajectoryEvaluatorBackend:
         )
         eval_dir.mkdir(parents=True, exist_ok=True)
         log_path = eval_dir / "trajectory.log"
-        records = [
-            _aworld_trajectory_record(case, request=request)
-            for case in request.dataset.cases
-        ]
+        records = _aworld_trajectory_records_for_request(request)
+        original_case_count = len(request.dataset.cases)
+        effective_case_count = len(records)
+        deduplicated_case_count = max(0, original_case_count - effective_case_count)
         log_path.write_text(
             "\n".join(repr(record) for record in records) + "\n",
             encoding="utf-8",
@@ -302,7 +303,8 @@ class AWorldTrajectoryEvaluatorBackend:
         logger.info(
             "self_evolve.evaluator.start "
             f"variant_id={request.variant_id} split={request.dataset_split} "
-            f"cases={len(request.dataset.cases)} repetitions={self.judge_repetitions} "
+            f"cases={original_case_count} effective_cases={effective_case_count} "
+            f"repetitions={self.judge_repetitions} "
             f"max_attempts={max_attempts} namespace={request.artifact_namespace or '-'}"
         )
         for attempt_index in range(1, max_attempts + 1):
@@ -375,8 +377,14 @@ class AWorldTrajectoryEvaluatorBackend:
         if reports:
             metrics = _aggregate_aworld_evaluator_metrics(
                 reports,
-                case_count=len(request.dataset.cases),
+                case_count=effective_case_count,
                 input_path=log_path,
+            )
+            metrics.update(
+                _aworld_evaluator_case_count_metrics(
+                    original_case_count=original_case_count,
+                    effective_case_count=effective_case_count,
+                )
             )
             metrics["judge_attempt_count"] = len(reports) + len(failures)
             metrics["judge_success_count"] = len(reports)
@@ -387,9 +395,15 @@ class AWorldTrajectoryEvaluatorBackend:
         else:
             metrics = _failed_aworld_evaluator_metrics(
                 failures=failures,
-                case_count=len(request.dataset.cases),
+                case_count=effective_case_count,
                 input_path=log_path,
                 judge_repetitions=self.judge_repetitions,
+            )
+            metrics.update(
+                _aworld_evaluator_case_count_metrics(
+                    original_case_count=original_case_count,
+                    effective_case_count=effective_case_count,
+                )
             )
         logger.info(
             "self_evolve.evaluator.end "
@@ -728,6 +742,22 @@ def _load_run_evaluator_source_cli() -> Callable[..., Any]:
     return run_evaluator_source_cli
 
 
+def _aworld_trajectory_records_for_request(
+    request: EvaluationRequest,
+) -> list[Mapping[str, Any]]:
+    records: list[Mapping[str, Any]] = []
+    seen_replay_fingerprints: set[str] = set()
+    for case in request.dataset.cases:
+        record = _aworld_trajectory_record(case, request=request)
+        if _case_uses_replay_variant(case):
+            fingerprint = _aworld_trajectory_record_fingerprint(record)
+            if fingerprint in seen_replay_fingerprints:
+                continue
+            seen_replay_fingerprints.add(fingerprint)
+        records.append(record)
+    return records
+
+
 def _aworld_trajectory_record(
     case: Any,
     *,
@@ -743,6 +773,28 @@ def _aworld_trajectory_record(
     if evidence_bundle_path:
         record["evidence_bundle_path"] = evidence_bundle_path
     return record
+
+
+def _case_uses_replay_variant(case: Any) -> bool:
+    metadata = case.metadata if isinstance(case.metadata, Mapping) else {}
+    return any(
+        key in metadata
+        for key in (
+            "variant_trajectories",
+            "baseline_trajectory",
+            "candidate_trajectory",
+            "replay",
+        )
+    )
+
+
+def _aworld_trajectory_record_fingerprint(record: Mapping[str, Any]) -> str:
+    payload = {
+        "trajectory": record.get("trajectory"),
+        "evidence_bundle_path": record.get("evidence_bundle_path"),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _evidence_bundle_path_for_variant(case: Any, *, request: EvaluationRequest) -> str | None:
@@ -869,6 +921,18 @@ def _aworld_evaluator_metrics(
     if isinstance(report_path, str):
         metrics["report_path"] = report_path
     return metrics
+
+
+def _aworld_evaluator_case_count_metrics(
+    *,
+    original_case_count: int,
+    effective_case_count: int,
+) -> dict[str, int]:
+    return {
+        "original_case_count": original_case_count,
+        "effective_case_count": effective_case_count,
+        "deduplicated_case_count": max(0, original_case_count - effective_case_count),
+    }
 
 
 def _aggregate_aworld_evaluator_metrics(

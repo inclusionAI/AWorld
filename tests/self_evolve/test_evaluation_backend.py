@@ -600,6 +600,69 @@ async def test_aworld_trajectory_evaluator_backend_compares_variant_trajectories
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_deduplicates_replay_variant_trajectories(
+    tmp_path,
+) -> None:
+    shared_baseline = [{"action": {"content": "Baseline replay."}}]
+    candidate_a = [{"action": {"content": "Candidate replay A."}}]
+    candidate_b = [{"action": {"content": "Candidate replay B."}}]
+    cases = []
+    for index, candidate_trajectory in enumerate(
+        (candidate_a, candidate_a, candidate_b, candidate_b),
+        start=1,
+    ):
+        cases.append(
+            EvalCase(
+                case_id=f"task-{index}",
+                input={"content": "Complete task."},
+                metadata={
+                    "variant_trajectories": {
+                        "baseline": shared_baseline,
+                        "cand-1": candidate_trajectory,
+                    },
+                    "replay": {"baseline": {}, "cand-1": {}},
+                },
+            )
+        )
+    dataset = _dataset(tuple(cases))
+    line_counts = []
+
+    def fake_run_evaluator_source(**kwargs):
+        raw_lines = [
+            line
+            for line in open(kwargs["input"], encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
+        line_counts.append(len(raw_lines))
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 80.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 80.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=fake_run_evaluator_source,
+    )
+
+    baseline, candidate = await evaluate_baseline_and_candidate(
+        backend,
+        dataset=dataset,
+        candidate=_candidate("cand-1"),
+    )
+
+    assert line_counts == [1, 2]
+    assert baseline.metrics["original_case_count"] == 4
+    assert baseline.metrics["effective_case_count"] == 1
+    assert baseline.metrics["deduplicated_case_count"] == 3
+    assert baseline.metrics["command_case_count"] == 1
+    assert candidate.metrics["original_case_count"] == 4
+    assert candidate.metrics["effective_case_count"] == 2
+    assert candidate.metrics["deduplicated_case_count"] == 2
+    assert candidate.metrics["command_case_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_scopes_artifacts_by_namespace(tmp_path) -> None:
     dataset = _dataset(
         (
