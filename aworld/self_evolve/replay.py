@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
@@ -68,6 +68,21 @@ class CandidateReplayResult:
     request: CandidateReplayRequest
     baseline: ReplayVariantResult
     candidate: ReplayVariantResult
+    member_results: tuple["CandidateReplayMemberResult", ...] = ()
+
+    @property
+    def succeeded(self) -> bool:
+        if self.member_results:
+            return all(member.succeeded for member in self.member_results)
+        return self.baseline.succeeded and self.candidate.succeeded
+
+
+@dataclass(frozen=True)
+class CandidateReplayMemberResult:
+    case_id: str
+    request: CandidateReplayRequest
+    baseline: ReplayVariantResult
+    candidate: ReplayVariantResult
 
     @property
     def succeeded(self) -> bool:
@@ -90,6 +105,65 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
     root = Path(replay_dir).expanduser()
     request_payload = _load_json_object(root / "request.json")
     request = _candidate_replay_request_from_mapping(request_payload)
+    member_manifest_path = root / "members" / "manifest.json"
+    if member_manifest_path.exists():
+        member_manifest = _load_json_object(member_manifest_path)
+        raw_members = member_manifest.get("members")
+        if not isinstance(raw_members, list):
+            raise ValueError("stored member replay manifest is missing members")
+        member_results: list[CandidateReplayMemberResult] = []
+        for raw_member in raw_members:
+            if not isinstance(raw_member, Mapping):
+                raise ValueError("stored member replay entry must be an object")
+            case_id = str(raw_member.get("case_id") or "")
+            relative_path = str(raw_member.get("path") or "")
+            if not case_id or not relative_path:
+                raise ValueError("stored member replay entry is missing case_id or path")
+            if relative_path != _member_artifact_name(case_id):
+                raise ValueError("stored member replay path does not match case_id")
+            member_root = root / "members" / relative_path
+            member_request = _candidate_replay_request_from_mapping(
+                _load_json_object(member_root / "request.json")
+            )
+            member_results.append(
+                CandidateReplayMemberResult(
+                    case_id=case_id,
+                    request=member_request,
+                    baseline=_load_variant_result_from_dir(
+                        (
+                            Path(member_request.baseline_replay_dir)
+                            if member_request.baseline_replay_dir
+                            else member_root / "baseline"
+                        ),
+                        base_variant_id="baseline",
+                    ),
+                    candidate=_load_variant_result_from_dir(
+                        member_root / _safe_path(request.candidate_id),
+                        base_variant_id=request.candidate_id,
+                    ),
+                )
+            )
+        members = tuple(member_results)
+        baseline = _aggregate_member_variant_results(
+            base_variant_id="baseline",
+            members=members,
+            select=lambda member: member.baseline,
+            artifact_dir=root / "baseline",
+            persist=False,
+        )
+        candidate = _aggregate_member_variant_results(
+            base_variant_id=request.candidate_id,
+            members=members,
+            select=lambda member: member.candidate,
+            artifact_dir=root / _safe_path(request.candidate_id),
+            persist=False,
+        )
+        return CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=candidate,
+            member_results=members,
+        )
     baseline = _load_variant_result_from_dir(root / "baseline", base_variant_id="baseline")
     candidate = _load_variant_result_from_dir(
         root / _safe_path(request.candidate_id),
@@ -157,6 +231,14 @@ class AWorldCliCandidateReplayBackend:
         )
         replay_dir.mkdir(parents=True, exist_ok=True)
         _write_json(replay_dir / "request.json", request)
+        replay_cases = tuple(
+            case for case in dataset.cases if _is_replayable_user_task_case(case)
+        )
+        if not replay_cases:
+            raise ValueError(
+                "candidate replay requires at least one user task eval case; "
+                "framework-generated evaluation contracts are not replayable"
+            )
         logger.info(
             "self_evolve.replay.start "
             f"run_id={request.run_id} task_id={request.task_id} "
@@ -165,6 +247,85 @@ class AWorldCliCandidateReplayBackend:
             f"candidate_repetitions={request.candidate_repetitions}"
         )
 
+        if len(replay_cases) == 1 and len(dataset.cases) == 1:
+            member = await self._replay_member(
+                request,
+                candidate=candidate,
+                replay_dir=replay_dir,
+            )
+            baseline = member.baseline
+            candidate_result = member.candidate
+            member_results: tuple[CandidateReplayMemberResult, ...] = ()
+        else:
+            members_root = replay_dir / "members"
+            member_items: list[CandidateReplayMemberResult] = []
+            for case in replay_cases:
+                member_request = replace(
+                    request,
+                    task_id=case.case_id,
+                    task_input=case.input,
+                    baseline_replay_dir=_member_baseline_replay_dir(
+                        request.baseline_replay_dir,
+                        case.case_id,
+                    ),
+                )
+                member_dir = members_root / _member_artifact_name(case.case_id)
+                member_dir.mkdir(parents=True, exist_ok=True)
+                _write_json(member_dir / "request.json", member_request)
+                member_items.append(
+                    await self._replay_member(
+                        member_request,
+                        candidate=candidate,
+                        replay_dir=member_dir,
+                    )
+                )
+            member_results = tuple(member_items)
+            _write_json(
+                members_root / "manifest.json",
+                {
+                    "schema_version": "aworld.self_evolve.member_replay.v1",
+                    "members": [
+                        {
+                            "case_id": member.case_id,
+                            "path": _member_artifact_name(member.case_id),
+                            "succeeded": member.succeeded,
+                        }
+                        for member in member_results
+                    ],
+                },
+            )
+            baseline = _aggregate_member_variant_results(
+                base_variant_id="baseline",
+                members=member_results,
+                select=lambda member: member.baseline,
+                artifact_dir=replay_dir / "baseline",
+            )
+            candidate_result = _aggregate_member_variant_results(
+                base_variant_id=candidate.candidate_id,
+                members=member_results,
+                select=lambda member: member.candidate,
+                artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
+            )
+        logger.info(
+            "self_evolve.replay.end "
+            f"run_id={request.run_id} task_id={request.task_id} "
+            f"candidate_id={candidate.candidate_id} "
+            f"baseline_status={baseline.status} candidate_status={candidate_result.status}"
+        )
+        return CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=candidate_result,
+            member_results=member_results,
+        )
+
+    async def _replay_member(
+        self,
+        request: CandidateReplayRequest,
+        *,
+        candidate: CandidateVariant,
+        replay_dir: Path,
+    ) -> CandidateReplayMemberResult:
         if request.baseline_replay_dir:
             baseline = _load_variant_result_from_dir(
                 Path(request.baseline_replay_dir),
@@ -191,13 +352,8 @@ class AWorldCliCandidateReplayBackend:
             artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
             repetitions=request.candidate_repetitions,
         )
-        logger.info(
-            "self_evolve.replay.end "
-            f"run_id={request.run_id} task_id={request.task_id} "
-            f"candidate_id={candidate.candidate_id} "
-            f"baseline_status={baseline.status} candidate_status={candidate_result.status}"
-        )
-        return CandidateReplayResult(
+        return CandidateReplayMemberResult(
+            case_id=request.task_id,
             request=request,
             baseline=baseline,
             candidate=candidate_result,
@@ -597,6 +753,32 @@ def _infer_baseline_skill_root(request: CandidateReplayRequest) -> str | None:
     if request.baseline_skill_root:
         return request.baseline_skill_root
     return _infer_baseline_skill_root_from_target(request.target)
+
+
+def _member_baseline_replay_dir(
+    baseline_replay_dir: str | None,
+    case_id: str,
+) -> str | None:
+    if baseline_replay_dir is None:
+        return None
+    root = Path(baseline_replay_dir)
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        return baseline_replay_dir
+    manifest = _load_json_object(manifest_path)
+    members = manifest.get("members")
+    if not isinstance(members, list):
+        return None
+    for member in members:
+        if not isinstance(member, Mapping) or member.get("case_id") != case_id:
+            continue
+        relative_path = member.get("path")
+        if (
+            isinstance(relative_path, str)
+            and relative_path == _member_artifact_name(case_id)
+        ):
+            return str(root / relative_path / "baseline")
+    return None
 
 
 def _infer_baseline_skill_root_from_target(target: SelfEvolveTargetRef) -> str | None:
@@ -1090,11 +1272,18 @@ def _safe_path(value: str) -> str:
     return safe or "default"
 
 
+def _member_artifact_name(case_id: str) -> str:
+    prefix = _safe_path(case_id)[:80]
+    digest = hashlib.sha256(case_id.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}-{digest}"
+
+
 def _aggregate_variant_results(
     *,
     base_variant_id: str,
     results: list[ReplayVariantResult],
     artifact_dir: Path,
+    persist: bool = True,
 ) -> ReplayVariantResult:
     if not results:
         raise ValueError("cannot aggregate empty replay results")
@@ -1182,8 +1371,10 @@ def _aggregate_variant_results(
                 if result.failure is not None
             ],
         }
-        _write_json(artifact_dir / "failure.json", failure)
-    _write_json(artifact_dir / "aggregate_metrics.json", metrics)
+        if persist:
+            _write_json(artifact_dir / "failure.json", failure)
+    if persist:
+        _write_json(artifact_dir / "aggregate_metrics.json", metrics)
     return ReplayVariantResult(
         variant_id=base_variant_id,
         status=status,
@@ -1193,6 +1384,63 @@ def _aggregate_variant_results(
         stderr_path=selected.stderr_path,
         failure=failure,
         repetition_results=tuple(results),
+    )
+
+
+def _aggregate_member_variant_results(
+    *,
+    base_variant_id: str,
+    members: Sequence[CandidateReplayMemberResult],
+    select: Callable[[CandidateReplayMemberResult], ReplayVariantResult],
+    artifact_dir: Path,
+    persist: bool = True,
+) -> ReplayVariantResult:
+    member_variants = [select(member) for member in members]
+    repetition_results = [
+        repetition
+        for variant in member_variants
+        for repetition in (
+            variant.repetition_results if variant.repetition_results else (variant,)
+        )
+    ]
+    aggregated = _aggregate_variant_results(
+        base_variant_id=base_variant_id,
+        results=repetition_results,
+        artifact_dir=artifact_dir,
+        persist=persist,
+    )
+    failed_members = [
+        {
+            "case_id": member.case_id,
+            "failure": select(member).failure,
+        }
+        for member in members
+        if not select(member).succeeded
+    ]
+    all_members_succeeded = not failed_members
+    metrics = {
+        **dict(aggregated.metrics),
+        "member_count": len(members),
+        "successful_member_count": len(members) - len(failed_members),
+        "failed_member_count": len(failed_members),
+    }
+    if failed_members:
+        metrics["member_failures"] = failed_members
+    if persist:
+        _write_json(artifact_dir / "aggregate_metrics.json", metrics)
+    failure = None
+    if not all_members_succeeded:
+        failure = {
+            "reason": "one or more trajectory-set members failed replay",
+            "members": failed_members,
+        }
+        if persist:
+            _write_json(artifact_dir / "failure.json", failure)
+    return replace(
+        aggregated,
+        status="succeeded" if all_members_succeeded else "failed",
+        metrics=metrics,
+        failure=failure,
     )
 
 
@@ -1383,10 +1631,25 @@ def build_paired_replay_dataset(
     if not replay_result.baseline.succeeded:
         raise ValueError("baseline replay did not succeed")
 
+    member_results = {
+        member.case_id: member for member in replay_result.member_results
+    }
     cases: list[EvalCase] = []
+    source_to_replay_case_ids: dict[str, list[str]] = {}
     for case in dataset.cases:
-        baseline_results = _evaluation_repetition_results(replay_result.baseline)
-        candidate_results = _evaluation_repetition_results(replay_result.candidate)
+        if member_results:
+            member_result = member_results.get(case.case_id)
+            if member_result is None:
+                continue
+            baseline_variant = member_result.baseline
+            candidate_variant = member_result.candidate
+            replay_request = member_result.request
+        else:
+            baseline_variant = replay_result.baseline
+            candidate_variant = replay_result.candidate
+            replay_request = replay_result.request
+        baseline_results = _evaluation_repetition_results(baseline_variant)
+        candidate_results = _evaluation_repetition_results(candidate_variant)
         replay_case_count = max(len(baseline_results), len(candidate_results))
         for index in range(replay_case_count):
             baseline_result = baseline_results[index % len(baseline_results)]
@@ -1398,29 +1661,29 @@ def build_paired_replay_dataset(
             }
             metadata["replay"] = {
                 "request": {
-                    "run_id": replay_result.request.run_id,
-                    "task_id": replay_result.request.task_id,
-                    "candidate_id": replay_result.request.candidate_id,
-                    "overlay_skill_root": replay_result.request.overlay_skill_root,
+                    "run_id": replay_request.run_id,
+                    "task_id": replay_request.task_id,
+                    "candidate_id": replay_request.candidate_id,
+                    "overlay_skill_root": replay_request.overlay_skill_root,
                 },
                 "baseline": {
-                    "status": replay_result.baseline.status,
+                    "status": baseline_variant.status,
                     "metrics": _evaluation_replay_metrics(
-                        aggregate_metrics=replay_result.baseline.metrics,
+                        aggregate_metrics=baseline_variant.metrics,
                         repetition_metrics=baseline_result.metrics,
                     ),
-                    "aggregate_metrics": dict(replay_result.baseline.metrics),
-                    "failure": replay_result.baseline.failure,
+                    "aggregate_metrics": dict(baseline_variant.metrics),
+                    "failure": baseline_variant.failure,
                     "variant_id": baseline_result.variant_id,
                 },
                 "candidate": {
-                    "status": replay_result.candidate.status,
+                    "status": candidate_variant.status,
                     "metrics": _evaluation_replay_metrics(
-                        aggregate_metrics=replay_result.candidate.metrics,
+                        aggregate_metrics=candidate_variant.metrics,
                         repetition_metrics=candidate_result.metrics,
                     ),
-                    "aggregate_metrics": dict(replay_result.candidate.metrics),
-                    "failure": replay_result.candidate.failure,
+                    "aggregate_metrics": dict(candidate_variant.metrics),
+                    "failure": candidate_variant.failure,
                     "variant_id": candidate_result.variant_id,
                 },
                 "repetition_index": index + 1,
@@ -1431,6 +1694,7 @@ def build_paired_replay_dataset(
                 if replay_case_count == 1
                 else f"{case.case_id}__replay_{index + 1}"
             )
+            source_to_replay_case_ids.setdefault(case.case_id, []).append(case_id)
             cases.append(
                 EvalCase(
                     case_id=case_id,
@@ -1444,6 +1708,35 @@ def build_paired_replay_dataset(
             )
 
     case_ids = [case.case_id for case in cases]
+    split_case_ids = {
+        split_name: [
+            replay_case_id
+            for source_case_id in source_case_ids
+            for replay_case_id in source_to_replay_case_ids.get(source_case_id, ())
+        ]
+        for split_name, source_case_ids in dataset.recipe.splits.items()
+    }
+    source_trainable_case_ids = (
+        dataset.recipe.trainable_case_ids
+        or tuple(dataset.recipe.splits.get("train", ()))
+    )
+    source_held_out_case_ids = (
+        dataset.recipe.held_out_case_ids
+        or tuple(dataset.recipe.splits.get("held_out", ()))
+    )
+    trainable_case_ids = tuple(
+        replay_case_id
+        for source_case_id in source_trainable_case_ids
+        for replay_case_id in source_to_replay_case_ids.get(source_case_id, ())
+    )
+    held_out_case_ids = tuple(
+        replay_case_id
+        for source_case_id in source_held_out_case_ids
+        for replay_case_id in source_to_replay_case_ids.get(source_case_id, ())
+    )
+    held_out_member_count = sum(
+        1 for case_id in source_held_out_case_ids if case_id in source_to_replay_case_ids
+    )
 
     return SelfEvolveDataset(
         cases=tuple(cases),
@@ -1454,12 +1747,22 @@ def build_paired_replay_dataset(
                 "candidate_id": candidate.candidate_id,
                 "original_case_count": len(dataset.cases),
                 "replay_case_count": len(cases),
+                "member_replay_count": len(member_results) or 1,
+                "held_out_member_count": held_out_member_count,
             },
             split_seed=dataset.recipe.split_seed,
-            splits={"train": case_ids, "validation": [], "held_out": []},
+            splits=(
+                split_case_ids
+                if any(split_case_ids.values())
+                else {"train": case_ids, "validation": [], "held_out": []}
+            ),
             synthetic_generation_policy=dataset.recipe.synthetic_generation_policy,
-            trainable_case_ids=tuple(case_ids),
-            held_out_case_ids=dataset.recipe.held_out_case_ids,
+            trainable_case_ids=(
+                trainable_case_ids
+                if source_trainable_case_ids or source_held_out_case_ids
+                else tuple(case_ids)
+            ),
+            held_out_case_ids=held_out_case_ids,
         ),
     )
 

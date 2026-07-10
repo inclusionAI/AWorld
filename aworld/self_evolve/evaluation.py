@@ -77,7 +77,7 @@ class CommandVerificationBackend:
         started_at = time.monotonic()
         case_results: list[Mapping[str, Any]] = []
 
-        for case in request.dataset.cases:
+        for case in _evaluation_cases_for_split(request):
             command = case.verification_command
             if not command:
                 continue
@@ -152,7 +152,7 @@ class TrajectoryQualityBackend:
         completed_case_count = 0
         total_step_count = 0
 
-        for case in request.dataset.cases:
+        for case in _evaluation_cases_for_split(request):
             if case.trace_pack is None:
                 continue
             case_count += 1
@@ -195,7 +195,14 @@ class SkillCandidateOverlayBackend:
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         candidate = request.candidate
         candidate_changed = bool(
-            candidate is not None and "Self-Evolve Trace Guidance" in candidate.content
+            candidate is not None
+            and any(
+                heading in candidate.content
+                for heading in (
+                    "## Runtime Behavior Delta",
+                    "## Self-Evolve Trace Guidance",
+                )
+            )
         )
         score = 0.8 if candidate_changed else 0.5
         return EvaluationSummary(
@@ -273,16 +280,38 @@ class AWorldTrajectoryEvaluatorBackend:
         eval_dir.mkdir(parents=True, exist_ok=True)
         log_path = eval_dir / "trajectory.log"
         records = _aworld_trajectory_records_for_request(request)
-        original_case_count = len(request.dataset.cases)
+        evaluation_cases = _evaluation_cases_for_split(request)
+        original_case_count = len(evaluation_cases)
         effective_case_count = len(records)
         deduplicated_case_count = max(0, original_case_count - effective_case_count)
         log_path.write_text(
             "\n".join(repr(record) for record in records) + "\n",
             encoding="utf-8",
         )
+        if not records:
+            metrics = _failed_aworld_evaluator_metrics(
+                failures=[],
+                case_count=0,
+                input_path=log_path,
+                judge_repetitions=self.judge_repetitions,
+            )
+            metrics.update(
+                {
+                    "evaluation_case_count": 0,
+                    "original_case_count": 0,
+                    "effective_case_count": 0,
+                    "deduplicated_case_count": 0,
+                    "evaluation_skip_reason": "dataset split has no evaluation cases",
+                }
+            )
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics=metrics,
+            )
         report_path = eval_dir / "report.json"
         runner = self.run_evaluator_source or _load_run_evaluator_source_cli()
-        task_id = request.dataset.cases[0].case_id if len(request.dataset.cases) == 1 else None
+        task_id = evaluation_cases[0].case_id if len(evaluation_cases) == 1 else None
         runner_kwargs = {
             "input": str(log_path),
             "kind": "trajectory",
@@ -584,7 +613,14 @@ def determine_candidate_confidence(
     held_out_summary: EvaluationSummary | None,
     min_eval_cases: int,
 ) -> CandidateConfidenceDecision:
-    held_out_case_count = len(dataset.recipe.held_out_case_ids)
+    independent_held_out_count = dataset.recipe.source.get("held_out_member_count")
+    held_out_case_count = (
+        int(independent_held_out_count)
+        if isinstance(independent_held_out_count, int)
+        and not isinstance(independent_held_out_count, bool)
+        and independent_held_out_count >= 0
+        else len(dataset.recipe.held_out_case_ids)
+    )
     baseline_replay_count, candidate_replay_count = _single_case_replay_counts(dataset)
     deterministic_signal_present = _has_deterministic_signal(
         validation_summary,
@@ -747,7 +783,7 @@ def _aworld_trajectory_records_for_request(
 ) -> list[Mapping[str, Any]]:
     records: list[Mapping[str, Any]] = []
     seen_replay_fingerprints: set[str] = set()
-    for case in request.dataset.cases:
+    for case in _evaluation_cases_for_split(request):
         record = _aworld_trajectory_record(case, request=request)
         if _case_uses_replay_variant(case):
             fingerprint = _aworld_trajectory_record_fingerprint(record)
@@ -756,6 +792,32 @@ def _aworld_trajectory_records_for_request(
             seen_replay_fingerprints.add(fingerprint)
         records.append(record)
     return records
+
+
+def _evaluation_cases_for_split(request: EvaluationRequest) -> tuple[Any, ...]:
+    cases = request.dataset.cases
+    split = request.dataset_split
+    if split in {"", "all", "post_apply", "single_case_replay"}:
+        return cases
+
+    recipe = request.dataset.recipe
+    if split == "validation":
+        selected_ids = tuple(recipe.splits.get("validation", ()))
+        if not selected_ids:
+            selected_ids = recipe.trainable_case_ids or tuple(
+                recipe.splits.get("train", ())
+            )
+        if not selected_ids:
+            return cases
+    elif split == "held_out":
+        selected_ids = recipe.held_out_case_ids or tuple(
+            recipe.splits.get("held_out", ())
+        )
+    else:
+        selected_ids = tuple(recipe.splits.get(split, ()))
+
+    selected = set(selected_ids)
+    return tuple(case for case in cases if case.case_id in selected)
 
 
 def _aworld_trajectory_record(

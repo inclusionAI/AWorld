@@ -51,28 +51,15 @@ def test_builtin_self_evolve_plan_reference_exists_and_defines_boundaries() -> N
     assert "Roadmap" in plan
 
 
-def test_verified_self_evolve_runtime_skill_hides_internal_context() -> None:
+def test_builtin_self_evolve_skill_defines_runtime_only_candidate_boundary() -> None:
     skills_root = resolve_repo_aworld_skills_path()
     assert skills_root is not None
 
-    skill_path = Path(skills_root) / "web-content-grounding" / "SKILL.md"
+    skill_path = Path(skills_root) / "self_evolve" / "SKILL.md"
     skill_text = skill_path.read_text(encoding="utf-8")
-    _, runtime_body = skill_text.split("---", 2)[1:]
 
-    forbidden_runtime_terms = [
-        "Self-Evolve Targeted Delta",
-        "Population strategy",
-        "candidate_score",
-        "baseline_score",
-        "A1_groundedness",
-        "A2_completeness",
-        "Trace scope",
-        "Source task ids",
-    ]
-    for term in forbidden_runtime_terms:
-        assert term not in runtime_body
-
-    assert "self_evolve:" in skill_text
-    assert "release_state: verified" in skill_text
-    assert "bounded evidence" in runtime_body
-    assert "compacted" in runtime_body
+    assert "Target skills express task behavior only" in skill_text
+    assert "must not encode" in skill_text
+    assert "self-evolve framework control flow" in skill_text
+    assert "released `SKILL.md` should contain only runtime" in skill_text
+    assert "Internal self-evolve context belongs in report artifacts" in skill_text

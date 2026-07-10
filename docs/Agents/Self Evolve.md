@@ -239,7 +239,7 @@ Each run writes durable artifacts under `.aworld/self_evolve/<run_id>/`:
 - `dataset_recipe.json`: source config, split seed, trainable cases, held-out cases, and synthetic generation policy.
 - `target_selection.json`: credit-assignment decision, confidence, and target inference signals.
 - `target_provenance.json`: provenance for the selected target when available.
-- `candidates/<candidate_id>.md`: candidate content. Skill candidates are marked with `self_evolve.release_state: candidate`.
+- `candidates/<candidate_id>.md`: runtime-only candidate content. Skill candidates are marked with `self_evolve.release_state: candidate`; task ids, evidence ids, gate names, scores, and prior feedback remain in lineage and lesson artifacts.
 - `candidates/<candidate_id>.diff`: unified diff against the current target, when the target adapter supports diffs.
 - `optimizer_lineage/<candidate_id>.json`: optimizer name/version, parents, trainable cases, content fingerprint, semantic fingerprint, lesson-set fingerprint, addressed lesson ids, and rationale.
 - `lessons/lessons.jsonl`: normalized failure memories, success memories, and required runtime behavior records extracted from evaluation feedback.
@@ -254,6 +254,8 @@ Trajectory-set runs may also include framework-owned trajectory-set and populati
 - `trajectory_set/members/<member_id>.json`: bounded member metadata and source references.
 - `population/candidates.jsonl`: generated candidate strategy records, including non-replayed candidates when replay budget is exhausted.
 - `population/patches/<candidate_id>.json`: patch intent metadata before materialization.
+
+Multi-member replay stores a versioned manifest under `replay/<candidate_id>/members/manifest.json`. Each member directory contains only that member's baseline/candidate repetitions and uses the member's own task input. Validation and held-out evaluators consume their assigned member splits; replay repetitions measure stability and do not count as additional independent held-out members.
 
 When `--include-prior-runs` is enabled, the framework imports same-target prior run reports as advisory trainable cases. These cases carry bounded status, failed gates, metric summaries, candidate ids, and report paths; they do not copy raw trajectories into optimizer prompts and they do not create new replay evidence.
 
@@ -299,7 +301,7 @@ When apply is allowed, the runner:
 
 Generated draft skills are hidden from runtime discovery until verified. Runtime skill registries filter out `draft`, `candidate`, `rejected`, and `disabled` self-evolve release states.
 
-Accepted production skills should contain only runtime-executable behavior rules. Candidate-only context such as trajectory ids, evaluator scores, gate names, raw harness diagnostic labels, and evidence ids belongs in run artifacts, not in `aworld-skills/.../SKILL.md`.
+Candidate overlays and accepted production skills should contain only runtime-executable behavior rules. Candidate-only context such as trajectory ids, evaluator scores, gate names, raw harness diagnostic labels, and evidence ids belongs in run artifacts, not in candidate bodies or `aworld-skills/.../SKILL.md`.
 
 Domain-specific learned skills, such as a grounding or media-comprehension skill produced by a run, are target artifacts. They are examples of what self-evolve can improve, not framework-owned self-evolve logic.
 

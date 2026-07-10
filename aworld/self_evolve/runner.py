@@ -2122,7 +2122,7 @@ def _rerun_cli_run_id(source_run_id: str, candidate_id: str) -> str:
 
 
 def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
-    return {
+    report: dict[str, object] = {
         "request": {
             "run_id": replay_result.request.run_id,
             "task_id": replay_result.request.task_id,
@@ -2151,6 +2151,20 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             "failure": replay_result.candidate.failure,
         },
     }
+    if replay_result.member_results:
+        report["members"] = [
+            {
+                "case_id": member.case_id,
+                "baseline_status": member.baseline.status,
+                "candidate_status": member.candidate.status,
+                "baseline_metrics": dict(member.baseline.metrics),
+                "candidate_metrics": dict(member.candidate.metrics),
+                "baseline_failure": member.baseline.failure,
+                "candidate_failure": member.candidate.failure,
+            }
+            for member in replay_result.member_results
+        ]
+    return report
 
 
 def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
@@ -2167,6 +2181,8 @@ def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
 def _baseline_replay_artifact_dir(replay_result: CandidateReplayResult) -> str:
     if replay_result.request.baseline_replay_dir:
         return replay_result.request.baseline_replay_dir
+    if replay_result.member_results:
+        return str(Path(_replay_artifact_path(replay_result)) / "members")
     return str(Path(_replay_artifact_path(replay_result)) / "baseline")
 
 
@@ -3042,12 +3058,26 @@ def _load_json_mapping(path: Path) -> Mapping[str, Any]:
 
 
 def _replay_gate_details(replay_result: CandidateReplayResult) -> dict[str, object]:
-    return {
+    details: dict[str, object] = {
         "baseline_status": replay_result.baseline.status,
         "candidate_status": replay_result.candidate.status,
         "baseline_failure": replay_result.baseline.failure,
         "candidate_failure": replay_result.candidate.failure,
     }
+    if replay_result.member_results:
+        details["member_count"] = len(replay_result.member_results)
+        details["failed_members"] = [
+            {
+                "case_id": member.case_id,
+                "baseline_status": member.baseline.status,
+                "candidate_status": member.candidate.status,
+                "baseline_failure": member.baseline.failure,
+                "candidate_failure": member.candidate.failure,
+            }
+            for member in replay_result.member_results
+            if not member.succeeded
+        ]
+    return details
 
 
 def _replay_confidence_gate(
@@ -3672,104 +3702,6 @@ def _is_semantic_lesson_duplicate(
     return fingerprint is not None and fingerprint in rejected_semantic_lesson_fingerprints
 
 
-def _feedback_guidance_from_mutation_prompt(prompt: str | None) -> list[str]:
-    if not prompt:
-        return []
-    start = prompt.find("{")
-    if start < 0:
-        return []
-    try:
-        payload = json.loads(prompt[start:])
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(payload, Mapping):
-        return []
-    feedback_items: list[object] = []
-    prior_feedback = payload.get("prior_feedback")
-    if isinstance(prior_feedback, list):
-        feedback_items.extend(prior_feedback[:3])
-    validation_feedback = payload.get("validation_feedback")
-    if isinstance(validation_feedback, list):
-        feedback_items.extend(validation_feedback[-3:])
-    if not feedback_items:
-        return []
-
-    guidance: list[str] = []
-    for item in feedback_items[:3]:
-        if not isinstance(item, Mapping):
-            continue
-        summary = item.get("feedback_summary")
-        summary = summary if isinstance(summary, Mapping) else item
-        metrics = summary.get("metrics")
-        metrics = metrics if isinstance(metrics, Mapping) else {}
-        evidence = summary.get("evidence")
-        evidence = evidence if isinstance(evidence, Mapping) else metrics
-        parts = []
-        score = metrics.get("score")
-        if isinstance(score, (int, float)):
-            parts.append(f"score={score}")
-        failed_gates = summary.get("failed_gates")
-        if not isinstance(failed_gates, list):
-            failed_gates = metrics.get("failed_gates")
-        if isinstance(failed_gates, list) and failed_gates:
-            parts.append(
-                "failed_gates="
-                + ",".join(str(gate) for gate in failed_gates if gate)
-            )
-        if isinstance(evidence.get("evidence_compacted"), bool):
-            parts.append(f"evidence_compacted={evidence['evidence_compacted']}")
-        if isinstance(evidence.get("evidence_incomplete"), bool):
-            parts.append(f"evidence_incomplete={evidence['evidence_incomplete']}")
-        evidence_issues = evidence.get("issues")
-        if not isinstance(evidence_issues, list):
-            evidence_issues = metrics.get("evidence_issues")
-        if isinstance(evidence_issues, list) and evidence_issues:
-            issue_text = "; ".join(
-                str(issue).strip()
-                for issue in evidence_issues[:2]
-                if str(issue).strip()
-            )
-            if issue_text:
-                parts.append(f"evidence_issues={issue_text}")
-        replay_failure_reasons = evidence.get("replay_failure_reasons")
-        if not isinstance(replay_failure_reasons, list):
-            replay_failure_reasons = metrics.get("replay_failure_reasons")
-        if isinstance(replay_failure_reasons, list) and replay_failure_reasons:
-            reason_text = ",".join(
-                str(reason).strip()
-                for reason in replay_failure_reasons[:3]
-                if str(reason).strip()
-            )
-            if reason_text:
-                parts.append(f"replay_failure_reasons={reason_text}")
-        replay_failure_types = evidence.get("replay_failure_types")
-        if not isinstance(replay_failure_types, list):
-            replay_failure_types = metrics.get("replay_failure_types")
-        if isinstance(replay_failure_types, list) and replay_failure_types:
-            type_text = ",".join(
-                str(failure_type).strip()
-                for failure_type in replay_failure_types[:3]
-                if str(failure_type).strip()
-            )
-            if type_text:
-                parts.append(f"replay_failure_types={type_text}")
-        required_behaviors = summary.get("required_behaviors")
-        if isinstance(required_behaviors, list) and required_behaviors:
-            behavior_text = ",".join(
-                str(behavior)
-                for behavior in required_behaviors[:5]
-                if str(behavior).strip()
-            )
-            if behavior_text:
-                parts.append(f"required_behaviors={behavior_text}")
-        if not parts:
-            continue
-        split = summary.get("dataset_split") or item.get("dataset_split") or "validation"
-        variant_id = summary.get("variant_id") or item.get("variant_id") or "candidate"
-        guidance.append(f"{variant_id} on {split}: {'; '.join(parts)}")
-    return guidance
-
-
 def _feedback_required_behaviors_from_mutation_prompt(prompt: str | None) -> set[str]:
     if not prompt:
         return set()
@@ -3978,164 +3910,103 @@ def _default_cli_skill_candidate(
     trace_packs: tuple[TracePack, ...],
     mutation_prompt: str | None = None,
 ) -> str:
-    feedback_guidance = _feedback_guidance_from_mutation_prompt(mutation_prompt)
-    evidence_preservation_issue = _feedback_has_evidence_preservation_issue(mutation_prompt)
-    scope_or_cost_issue = _feedback_has_scope_or_cost_issue(mutation_prompt)
-    high_baseline_regression_issue = _feedback_has_high_baseline_regression_issue(
-        mutation_prompt
+    runtime_rules = _runtime_behavior_rules_from_mutation_prompt(
+        mutation_prompt,
+        trace_packs=trace_packs,
     )
-    repair_plan = _feedback_repair_plan_from_mutation_prompt(mutation_prompt)
-    population_strategy = _population_strategy_from_mutation_prompt(mutation_prompt)
-    if high_baseline_regression_issue:
-        return _default_cli_high_baseline_delta_candidate(
-            current_content=current_content,
-            trace_packs=trace_packs,
-            repair_plan=repair_plan,
-            population_strategy=population_strategy,
-        )
-    if not trace_packs and not feedback_guidance:
+    if not runtime_rules:
         return current_content
+    prefix = _candidate_runtime_prefix(current_content)
+    section = ["## Runtime Behavior Delta", ""]
+    section.extend(f"- {rule}" for rule in runtime_rules[:6])
+    return prefix + "\n\n" + "\n".join(section) + "\n"
 
-    evidence_ids = [
-        step.evidence_id
-        for trace_pack in trace_packs[:3]
-        for step in trace_pack.steps[:4]
-    ]
-    task_ids = [trace_pack.task_id for trace_pack in trace_packs[:3]]
-    guidance = [
-        "Use trajectory evidence before choosing or repeating tool actions.",
-        (
-            "When a tool path fails or repeats, record the observed failure and "
-            "switch to an alternate evidence source before finalizing."
-        ),
-    ]
-    if evidence_preservation_issue:
-        guidance.extend(
-            [
-                "Evidence preservation requirements:",
-                (
-                    "Do not stream large raw pages, full HTML, large JSON, or long tool outputs "
-                    "directly into the conversation."
-                ),
-                (
-                    "For large or unknown-size sources, avoid raw dumps and line-based previews; "
-                    "they can still emit huge single-line content and trigger compaction."
-                ),
-                (
-                    "Persist raw evidence to a file or artifact first, then return only "
-                    "small, verifiable extracts with source fields and offsets."
-                ),
-                (
-                    "Emit a bounded structured summary instead of raw source material; include "
-                    "only source identifiers, byte or line ranges when available, and short excerpts "
-                    "needed to support the final answer."
-                ),
-                (
-                    "If a tool result is compacted, truncated, schema-invalid, or too large to "
-                    "inspect, treat that attempt as unusable evidence and switch to an artifact-first "
-                    "or narrower extraction strategy before answering."
-                ),
-                (
-                    "Maintain an evidence ledger mapping each important claim to a non-compacted "
-                    "extract, source location, or artifact reference."
-                ),
-                (
-                    "Before finalizing, verify that every concrete claim is supported by "
-                    "non-compacted evidence captured in the trajectory; do a claim-by-claim check "
-                    "and omit claims that cannot be verified."
-                ),
-            ]
+
+def _candidate_runtime_prefix(current_content: str) -> str:
+    prefix = current_content.rstrip()
+    for heading in (
+        "\n## Self-Evolve Trace Guidance\n",
+        "\n## Self-Evolve Targeted Delta\n",
+        "\n## Runtime Behavior Delta\n",
+    ):
+        if heading in prefix:
+            prefix = prefix.split(heading, 1)[0].rstrip()
+    return prefix
+
+
+def _runtime_behavior_rules_from_mutation_prompt(
+    prompt: str | None,
+    *,
+    trace_packs: tuple[TracePack, ...],
+) -> list[str]:
+    repair_plan = _feedback_repair_plan_from_mutation_prompt(prompt)
+    required_behaviors = _feedback_required_behaviors_from_mutation_prompt(prompt)
+    population_strategy = _population_strategy_from_mutation_prompt(prompt)
+    rules: list[str] = []
+
+    def add(rule: str) -> None:
+        if rule not in rules:
+            rules.append(rule)
+
+    if _feedback_has_evidence_preservation_issue(prompt) or required_behaviors & {
+        "artifact_first",
+        "bounded_structured_summary",
+        "non_compacted_evidence",
+        "claim_evidence_ledger",
+        "claim_by_claim_verification",
+        "support_every_claim_with_artifact_reference",
+    }:
+        add(
+            "Persist large or unknown-size evidence to an artifact before inspecting "
+            "or summarizing it."
         )
-    if scope_or_cost_issue:
-        guidance.extend(
-            [
-                "Scope and cost control requirements:",
-                (
-                    "Prefer fewer verified claims over broad synthesis when prior evaluation "
-                    "shows lower score, lower verifiability, or higher cost."
-                ),
-                (
-                    "Do not expand answer breadth until each concrete claim is tied to a "
-                    "non-compacted source excerpt, artifact reference, or structured field."
-                ),
-                (
-                    "Optimize verifiability per evidence block: each captured block should "
-                    "support a specific final-answer claim or be omitted."
-                ),
-                (
-                    "Avoid collecting more evidence without a verifiability gain; stop expanding "
-                    "once the required claims are supported."
-                ),
-                (
-                    "Cap evidence acquisition and summarization cost by using the smallest "
-                    "bounded extracts that can support the requested answer."
-                ),
-                (
-                    "Plan the shortest viable evidence path before tool use; choose the "
-                    "fewest actions likely to produce verifiable bounded evidence."
-                ),
-                (
-                    "Set a small evidence budget for attempts, sources, and final claims; "
-                    "spend new calls only when they add support for an uncovered claim."
-                ),
-                (
-                    "Do not repeat a failed or low-yield evidence path; switch strategy "
-                    "after one failed, compacted, or unsupported attempt."
-                ),
-                (
-                    "Stop after sufficient verified evidence is captured, then answer only "
-                    "with claims covered by the evidence ledger."
-                ),
-            ]
+        add(
+            "Use bounded structured extracts with source locations for the final answer; "
+            "do not place full pages, documents, logs, or large JSON in the conversation."
         )
-    if repair_plan["acceptance_criteria"]:
-        guidance.extend(
-            [
-                "Verified evidence acceptance criteria:",
-                (
-                    "Every final factual claim must have non-compacted support in a "
-                    "bounded extract, artifact reference, structured field, or source span."
-                ),
-                (
-                    "The evidence manifest must have no invalid entries; each entry must "
-                    "identify a source and include bounded evidence payload."
-                ),
-                (
-                    "Do not finalize if these criteria are not met; instead narrow the "
-                    "answer to only verified claims or report the missing evidence."
-                ),
-            ]
+        add(
+            "Treat compacted, truncated, or schema-invalid output as unusable; retry with "
+            "a narrower extraction and retain only claims supported by readable evidence."
         )
+
+    if _feedback_has_scope_or_cost_issue(prompt) or required_behaviors & {
+        "plan_before_tools",
+        "prefer_direct_structured_extraction",
+        "minimize_failed_attempts",
+        "avoid_repeated_paths",
+        "stop_after_sufficient_evidence",
+        "cap_evidence_acquisition_and_summarization_cost",
+    }:
+        add(
+            "Plan the shortest viable evidence path, avoid repeating a failed or low-yield "
+            "path, and stop once the requested claims have sufficient support."
+        )
+        add(
+            "Limit the final answer to requested claims with direct support; do not broaden "
+            "the synthesis or collect more evidence without a verifiability gain."
+        )
+
+    if repair_plan["actions"] & {
+        "write_valid_bounded_evidence_manifest",
+        "persist_evidence_before_inspection",
+    } or required_behaviors & {
+        "manifest_schema_compliance",
+    }:
+        add(
+            "Validate each evidence manifest entry before finalizing: identify its source "
+            "and include a bounded excerpt, structured extract, or source span."
+        )
+
     if repair_plan["issues"] & {
         "replay_timeout",
         "replay_evidence_quality_failure",
         "replay_trajectory_capture_failure",
-    }:
-        guidance.extend(
-            [
-                "Replay failure recovery requirements:",
-                (
-                    "After one failed replay evidence attempt, change the evidence strategy "
-                    "instead of repeating the same path."
-                ),
-                (
-                    "Do not finalize after a failed evidence retry; first produce a bounded "
-                    "missing-evidence report or narrow the answer to verified claims only."
-                ),
-                (
-                    "If replay succeeds but returns no trajectory evidence, treat the run "
-                    "as unusable and change strategy."
-                ),
-                (
-                    "Do not finalize without captured trajectory evidence that includes "
-                    "tool evidence and final state."
-                ),
-                (
-                    "The replay should complete without replay evidence failures before the "
-                    "candidate can be considered ready for verified apply."
-                ),
-            ]
+    } or _has_failed_trace_lesson(prompt, trace_packs=trace_packs):
+        add(
+            "After one failed tool or evidence path, record the observed failure and change "
+            "strategy before retrying; do not finalize without a captured result."
         )
+
     if (
         "compacted_tool_argument_replay" in repair_plan["issues"]
         or repair_plan["actions"]
@@ -4144,246 +4015,77 @@ def _default_cli_skill_candidate(
             "switch_to_artifact_read_after_invalid_tool_argument",
             "stop_repeating_invalid_tool_calls",
         }
-    ):
-        guidance.extend(
-            [
-                "Tool argument replay hygiene requirements:",
-                (
-                    "Do not execute replay placeholders, compacted string fields, or "
-                    "schema-invalid argument objects as real tool inputs."
-                ),
-                (
-                    "Regenerate the smallest schema-valid tool arguments from the current "
-                    "task context before retrying a tool path."
-                ),
-                (
-                    "If the original argument was compacted, read a saved artifact or use "
-                    "a narrower extraction path instead of replaying the placeholder."
-                ),
-                (
-                    "After one invalid tool-argument failure, stop repeating the same call "
-                    "and switch strategy before continuing."
-                ),
-            ]
-        )
-    if high_baseline_regression_issue:
-        guidance.extend(
-            [
-                "High-baseline improvement requirements:",
-                (
-                    "Preserve baseline strengths first: keep any existing behavior that already "
-                    "earns high groundedness, relevance, completeness, and completion scores."
-                ),
-                (
-                    "Define an explicit behavior delta before tool use: name the small "
-                    "execution behavior that will differ from the baseline and why it should "
-                    "raise score, compliance, efficiency, or robustness."
-                ),
-                (
-                    "Prefer one targeted change over broad rewrites; do not rewrite broad "
-                    "strategy when the baseline is already strong."
-                ),
-                (
-                    "Use a pre-final acceptance check: candidate_score exceeds baseline_score "
-                    "only if the answer is at least as grounded and complete while improving "
-                    "one weaker dimension such as compliance, efficiency, or robustness."
-                ),
-                (
-                    "If no concrete behavior delta is available, preserve the baseline strategy "
-                    "and avoid adding extra instructions that only increase complexity."
-                ),
-            ]
-        )
-
-    section = [
-        "## Self-Evolve Trace Guidance",
-        "",
-        f"- Source task ids: {', '.join(task_ids)}",
-        f"- Evidence steps: {', '.join(evidence_ids)}",
-    ]
-    section.extend(f"- {item}" for item in guidance)
-    if feedback_guidance:
-        section.append("- Previous validation feedback:")
-        section.extend(f"  - {item}" for item in feedback_guidance)
-
-    heading = "\n## Self-Evolve Trace Guidance\n"
-    prefix = current_content.rstrip()
-    if heading in current_content:
-        prefix = current_content.split(heading, 1)[0].rstrip()
-    return prefix + "\n\n" + "\n".join(section) + "\n"
-
-
-def _default_cli_high_baseline_delta_candidate(
-    *,
-    current_content: str,
-    trace_packs: tuple[TracePack, ...],
-    repair_plan: Mapping[str, set[str]],
-    population_strategy: str = "conservative_preserve_then_delta",
-) -> str:
-    evidence_ids = [
-        step.evidence_id
-        for trace_pack in trace_packs[:2]
-        for step in trace_pack.steps[:2]
-    ]
-    task_ids = [trace_pack.task_id for trace_pack in trace_packs[:2]]
-    issues = repair_plan.get("issues", set())
-    actions = repair_plan.get("actions", set())
-    acceptance_criteria = repair_plan.get("acceptance_criteria", set())
-
-    behavior_delta = (
-        "Before adding new evidence paths or expanding the final answer, run one "
-        "pre-final check over the already captured artifacts: every retained claim "
-        "must map to a bounded source span or artifact reference, and any invalid "
-        "manifest entry must be repaired with a bounded evidence payload or the "
-        "unsupported claim must be omitted without reducing supported answer completeness."
-    )
-    strategy_focus = "preserve the high-scoring baseline and add only one minimal delta"
-    if (
-        "score_or_efficiency_regression" in issues
-        or "stop_after_sufficient_verified_evidence" in actions
-    ):
-        behavior_delta = (
-            "After the minimum evidence needed for the requested answer is captured, "
-            "stop broad exploration and only add another evidence step when it covers "
-            "a specific unsupported claim or repairs a concrete verification failure."
-        )
-        strategy_focus = "avoid extra steps unless they repair a named verification gap"
-    if "invalid_evidence_manifest" in issues or "write_valid_bounded_evidence_manifest" in actions:
-        behavior_delta = (
-            "Before finalizing, validate the evidence manifest entries and repair only "
-            "schema-invalid or unsupported references; do not broaden the answer or "
-            "collect unrelated evidence while repairing the manifest. Each repaired "
-            "entry must include a bounded evidence payload such as excerpt, "
-            "structured_extract, or source_span; fields_used is only an index and "
-            "cannot replace that payload. Do not narrow the answer or omit supported "
-            "claims solely to make the manifest easier to validate."
-        )
-        strategy_focus = "repair evidence references without changing supported answer content"
-    if (
-        "compacted_tool_argument_replay" in issues
-        or actions
+        or required_behaviors
         & {
-            "regenerate_compacted_tool_arguments",
-            "switch_to_artifact_read_after_invalid_tool_argument",
+            "avoid_compacted_tool_arguments",
+            "regenerate_schema_valid_tool_arguments",
             "stop_repeating_invalid_tool_calls",
+            "switch_to_artifact_read_after_invalid_tool_argument",
         }
     ):
-        behavior_delta = (
-            "Before retrying any failed tool path, verify that the tool arguments are "
-            "schema-valid real inputs and not replay placeholders or compacted string "
-            "fields. If a required argument was compacted, regenerate the smallest valid "
-            "argument from the current task context or read the saved artifact; after one "
-            "invalid-argument failure, stop repeating that call and switch strategy."
+        add(
+            "Before retrying a tool, regenerate the smallest schema-valid arguments from "
+            "the current task or a saved artifact; never execute compacted placeholders."
         )
-        strategy_focus = "preserve baseline behavior while preventing invalid replay tool arguments"
-    if population_strategy == "evidence_integrity_delta":
-        behavior_delta = (
-            "Use an artifact-first evidence contract before finalizing: persist source "
-            "material as artifacts, write a manifest entry only when it has a bounded "
-            "payload, and treat fields_used, artifact names, or source ids as indexes "
-            "rather than evidence. If the bounded payload is missing or compacted, "
-            "retry with a narrower extraction or mark the claim unsupported instead of "
-            "answering from memory."
+
+    if _feedback_has_high_baseline_regression_issue(prompt):
+        add(
+            "Preserve the existing successful workflow and add only the smallest repair "
+            "required by current evidence; avoid extra collection or verification passes."
         )
-        strategy_focus = "make evidence validity the only changed execution behavior"
-    elif population_strategy == "score_dimension_repair_delta":
-        regressed_dimensions = [
-            action.removeprefix("restore_")
-            for action in sorted(actions)
-            if action.startswith("restore_")
-        ]
-        dimension_text = (
-            ", ".join(regressed_dimensions)
-            if regressed_dimensions
-            else "A1_groundedness, A2_completeness, and B2_efficiency"
-        )
-        behavior_delta = (
-            "Before finalizing, compare the draft answer against the baseline-strength "
-            f"dimensions ({dimension_text}). Restore any baseline-supported claim whose "
-            "removal would lower completeness, require a source span for claims that "
-            "affect groundedness, and avoid any additional step that does not improve "
-            "one of those regressed dimensions."
-        )
-        strategy_focus = f"restore {dimension_text} without broadening task scope"
+
     if (
-        "high_baseline_without_efficiency_gain" in issues
-        or "replace_broad_validation_with_efficiency_delta" in actions
-        or "candidate_uses_no_more_steps_than_baseline" in acceptance_criteria
+        "high_baseline_without_efficiency_gain" in repair_plan["issues"]
+        or "replace_broad_validation_with_efficiency_delta" in repair_plan["actions"]
+        or "candidate_uses_no_more_steps_than_baseline"
+        in repair_plan["acceptance_criteria"]
     ):
-        behavior_delta = (
-            "Use a high-baseline efficiency delta: preserve the same claim set, answer "
-            "structure, and source references as the baseline, but complete with no more "
-            "tool calls or evidence steps than the baseline. Do not add pre-final "
-            "comparison passes, broad re-validation loops, or new external claims; only "
-            "reuse already captured bounded artifacts and remove unsupported claims whose "
-            "source links cannot be preserved."
+        add(
+            "Preserve the supported claim set, answer structure, and source references while "
+            "using no more tool or evidence steps; do not add broad comparison passes."
         )
-        strategy_focus = "improve high-baseline runs only through fewer steps at unchanged quality"
 
-    acceptance_check = (
-        "candidate_score exceeds baseline_score, A1_groundedness and A2_completeness "
-        "stay no worse than baseline, answer completeness is preserved, "
-        "evidence_manifest_invalid_entry_count == 0, and every manifest entry includes "
-        "bounded evidence payload."
+    if rules and population_strategy == "evidence_integrity_delta":
+        add(
+            "Make evidence integrity the only changed behavior: repair bounded source payloads "
+            "without changing supported answer content."
+        )
+    elif rules and population_strategy == "score_dimension_repair_delta":
+        add(
+            "Restore grounded and complete supported claims first, and skip any additional "
+            "step that does not repair answer quality or execution efficiency."
+        )
+
+    return rules
+
+
+def _has_failed_trace_lesson(
+    prompt: str | None,
+    *,
+    trace_packs: tuple[TracePack, ...],
+) -> bool:
+    if any(
+        str(pack.steps[-1].reward.get("status", "")).strip().lower()
+        in {"failed", "error", "timeout", "cancelled", "rejected"}
+        for pack in trace_packs
+        if pack.steps
+    ):
+        return True
+    if not prompt:
+        return False
+    start = prompt.find("{")
+    if start < 0:
+        return False
+    try:
+        payload = json.loads(prompt[start:])
+    except json.JSONDecodeError:
+        return False
+    lessons = payload.get("lesson_records") if isinstance(payload, Mapping) else None
+    return isinstance(lessons, list) and any(
+        isinstance(lesson, Mapping)
+        and str(lesson.get("lesson_type", "")).endswith("failure_memory")
+        for lesson in lessons
     )
-    if "candidate_score_exceeds_baseline_score" in acceptance_criteria:
-        acceptance_check = (
-            "candidate_score exceeds baseline_score while preserving baseline "
-            "A1_groundedness, A2_completeness, answer completeness, and relevance; "
-            "evidence_manifest_invalid_entry_count == 0; otherwise keep the baseline behavior."
-        )
-    if "candidate_uses_no_more_steps_than_baseline" in acceptance_criteria:
-        acceptance_check = (
-            "candidate_score exceeds baseline_score; candidate_uses_no_more_steps_than_baseline; "
-            "candidate_groundedness_is_no_worse_than_baseline; answer completeness and source "
-            "references stay no worse than baseline; otherwise keep the baseline behavior."
-        )
-
-    section = [
-        "## Self-Evolve Targeted Delta",
-        "",
-        f"### Population strategy: {population_strategy}",
-        f"- Focus: {strategy_focus}.",
-        "",
-        "### Preserve",
-        (
-            "- Keep the existing high-scoring evidence acquisition, answer structure, "
-            "and completion behavior unchanged."
-        ),
-        (
-            "- Do not rewrite broad strategy or add extra evidence collection unless "
-            "it addresses a concrete failed check."
-        ),
-        (
-            "- Preserve A1_groundedness, A2_completeness, and answer completeness; "
-            "do not narrow the answer, and do not omit supported claims unless a "
-            "claim lacks non-compacted evidence."
-        ),
-        "",
-        "### Behavior delta",
-        f"- {behavior_delta}",
-        (
-            "- When writing evidence_manifest.jsonl, every entry must include bounded "
-            "evidence payload: use excerpt, structured_extract, or source_span. "
-            "fields_used can help describe selected fields, but it cannot replace "
-            "the bounded evidence payload."
-        ),
-        "",
-        "### Acceptance check",
-        f"- {acceptance_check}",
-    ]
-    if task_ids:
-        section.extend(
-            ["", "### Trace scope", f"- Source task ids: {', '.join(task_ids)}"]
-        )
-    if evidence_ids:
-        section.append(f"- Evidence steps: {', '.join(evidence_ids)}")
-
-    heading = "\n## Self-Evolve Targeted Delta\n"
-    prefix = current_content.rstrip()
-    if heading in current_content:
-        prefix = current_content.split(heading, 1)[0].rstrip()
-    return prefix + "\n\n" + "\n".join(section) + "\n"
 
 
 def _target_from_cli_ref(

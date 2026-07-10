@@ -14,17 +14,21 @@ from aworld.self_evolve.datasets import (
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.replay import (
+    CandidateReplayMemberResult,
+    CandidateReplayRequest,
     CandidateReplayResult,
     ReplayVariantResult,
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     _auto_group_trajectory_log_dataset,
+    _baseline_replay_artifact_dir,
     _default_cli_skill_candidate,
     _default_post_apply_evaluator,
     _include_prior_run_cases,
     _iteration_validation_feedback,
     _rank_candidate_population,
+    _replay_report,
     _summary_with_replay_evidence_metrics,
     optimize_explicit_target,
     optimize_from_cli_request,
@@ -69,6 +73,56 @@ class CaptureOptimizer:
                 ),
             ),
         )
+
+
+def test_multi_member_replay_reuses_member_baseline_root(tmp_path: Path) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-members",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="task A",
+    )
+    successful = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    result = CandidateReplayResult(
+        request=request,
+        baseline=successful,
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate"}}],
+        ),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=successful,
+                candidate=successful,
+            ),
+        ),
+    )
+
+    assert _baseline_replay_artifact_dir(result).endswith(
+        "/replay/candidate-1/members"
+    )
+    replay_report = _replay_report(result)
+    assert replay_report["members"] == [
+        {
+            "case_id": "task-a",
+            "baseline_status": "succeeded",
+            "candidate_status": "succeeded",
+            "baseline_metrics": {},
+            "candidate_metrics": {},
+            "baseline_failure": None,
+            "candidate_failure": None,
+        }
+    ]
 
 
 def _write_trajectory_log(path: Path, records: list[dict]) -> None:
@@ -4946,11 +5000,13 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
     candidate_content = candidate_path.read_text(encoding="utf-8")
     assert candidate_content.startswith("---\nname: agent-browser\nself_evolve:")
     assert "release_state: candidate" in candidate_content
-    assert "Self-Evolve Trace Guidance" in candidate_content
-    assert "browser-login-task" in candidate_content
+    assert "Runtime Behavior Delta" in candidate_content
+    assert "After one failed tool or evidence path" in candidate_content
+    assert "browser-login-task" not in candidate_content
+    assert "Self-Evolve Trace Guidance" not in candidate_content
 
 
-def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
+def test_default_cli_skill_candidate_ignores_non_actionable_iteration_feedback() -> None:
     current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
     prompt = (
         "Propose one concise text-only self-evolve candidate.\n"
@@ -4979,12 +5035,61 @@ def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
         mutation_prompt=prompt,
     )
 
-    assert "Previous validation feedback" in candidate_content
-    assert "score=68.0" in candidate_content
-    assert "held_out_verification" in candidate_content
+    assert candidate_content == current_content
 
 
-def test_default_cli_skill_candidate_prioritizes_newest_prior_feedback() -> None:
+def test_default_cli_skill_candidate_materializes_runtime_only_behavior_delta() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nExisting runtime rules.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-internal-id",
+                            "dataset_split": "historical",
+                            "metrics": {
+                                "score": 42.0,
+                                "failed_gates": ["evidence_quality"],
+                                "evidence_compacted": True,
+                            },
+                            "required_behaviors": [
+                                "artifact_first",
+                                "bounded_structured_summary",
+                                "claim_by_claim_verification",
+                            ],
+                            "repair_plan": {
+                                "issues": ["replay_evidence_quality_failure"],
+                                "actions": ["persist_evidence_before_inspection"],
+                                "acceptance_criteria": [
+                                    "evidence_manifest_has_bounded_payload"
+                                ],
+                            },
+                        }
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "## Runtime Behavior Delta" in candidate_content
+    assert "Persist large or unknown-size evidence" in candidate_content
+    assert "bounded structured extracts" in candidate_content
+    assert "Self-Evolve" not in candidate_content
+    assert "candidate-internal-id" not in candidate_content
+    assert "evidence_quality" not in candidate_content
+    assert "score=42.0" not in candidate_content
+    assert "Previous validation feedback" not in candidate_content
+
+
+def test_default_cli_skill_candidate_uses_feedback_behavior_without_internal_ids() -> None:
     current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
     prompt = (
         "Propose one concise text-only self-evolve candidate.\n"
@@ -5042,9 +5147,10 @@ def test_default_cli_skill_candidate_prioritizes_newest_prior_feedback() -> None
         mutation_prompt=prompt,
     )
 
-    assert "latest-candidate on historical" in candidate_content
-    assert "plan_before_tools" in candidate_content
-    assert "stale-candidate on historical" not in candidate_content
+    assert "Plan the shortest viable evidence path" in candidate_content
+    assert "latest-candidate" not in candidate_content
+    assert "stale-candidate" not in candidate_content
+    assert "score_improvement" not in candidate_content
 
 
 def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_preservation_guidance() -> None:
@@ -5079,18 +5185,13 @@ def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_pres
         mutation_prompt=prompt,
     )
 
-    assert "Evidence preservation requirements" in candidate_content
-    assert "Do not stream large raw pages" in candidate_content
-    assert "large or unknown-size sources" in candidate_content
-    assert "line-based previews" in candidate_content
-    assert "Persist raw evidence to a file or artifact" in candidate_content
-    assert "bounded structured summary" in candidate_content
-    assert "small, verifiable extracts" in candidate_content
-    assert "If a tool result is compacted" in candidate_content
-    assert "evidence ledger" in candidate_content
-    assert "claim-by-claim" in candidate_content
+    assert "## Runtime Behavior Delta" in candidate_content
+    assert "Persist large or unknown-size evidence" in candidate_content
+    assert "bounded structured extracts" in candidate_content
+    assert "Treat compacted, truncated" in candidate_content
     assert "curl" not in candidate_content.lower()
-    assert "evidence_compacted=True" in candidate_content
+    assert "evidence_compacted" not in candidate_content
+    assert "candidate-1" not in candidate_content
 
 
 def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generic_guidance() -> None:
@@ -5140,18 +5241,13 @@ def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generi
         mutation_prompt=prompt,
     )
 
-    assert "Scope and cost control requirements" in candidate_content
-    assert "Prefer fewer verified claims over broad synthesis" in candidate_content
-    assert "Do not expand answer breadth" in candidate_content
-    assert "verifiability per evidence block" in candidate_content
-    assert "avoid collecting more evidence without a verifiability gain" in candidate_content.lower()
-    assert "cap evidence acquisition and summarization cost" in candidate_content.lower()
+    assert "## Runtime Behavior Delta" in candidate_content
     assert "Plan the shortest viable evidence path" in candidate_content
-    assert "Set a small evidence budget" in candidate_content
-    assert "Do not repeat a failed or low-yield evidence path" in candidate_content
-    assert "Stop after sufficient verified evidence" in candidate_content
+    assert "do not broaden the synthesis" in candidate_content
+    assert "without a verifiability gain" in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
+    assert "B2_efficiency" not in candidate_content
 
 
 def test_default_cli_skill_candidate_generates_targeted_delta_for_high_baseline_regression() -> None:
@@ -5194,22 +5290,13 @@ def test_default_cli_skill_candidate_generates_targeted_delta_for_high_baseline_
     )
 
     assert candidate_content != current_content
-    assert "## Self-Evolve Targeted Delta" in candidate_content
-    assert "Preserve" in candidate_content
-    assert "Behavior delta" in candidate_content
-    assert "Acceptance check" in candidate_content
-    assert "High-baseline improvement requirements" not in candidate_content
-    assert "Evidence preservation requirements" not in candidate_content
-    assert "Previous validation feedback" not in candidate_content
-    assert "candidate_score exceeds baseline_score" in candidate_content
-    assert "A1_groundedness" in candidate_content
-    assert "A2_completeness" in candidate_content
-    assert "answer completeness" in candidate_content
-    assert "do not narrow" in candidate_content
-    assert "do not omit supported claims" in candidate_content
-    assert "bounded evidence payload" in candidate_content
-    assert "fields_used" in candidate_content
-    assert "cannot replace" in candidate_content
+    assert "## Runtime Behavior Delta" in candidate_content
+    assert "Preserve the existing successful workflow" in candidate_content
+    assert "smallest repair" in candidate_content
+    assert "Self-Evolve" not in candidate_content
+    assert "candidate_score" not in candidate_content
+    assert "A1_groundedness" not in candidate_content
+    assert "candidate-1" not in candidate_content
 
 
 def test_default_cli_skill_candidate_uses_efficiency_delta_for_high_baseline_score_only_regression() -> None:
@@ -5275,11 +5362,11 @@ def test_default_cli_skill_candidate_uses_efficiency_delta_for_high_baseline_sco
         mutation_prompt=prompt,
     )
 
-    assert "high-baseline efficiency delta" in candidate_content.lower()
-    assert "no more tool calls or evidence steps than the baseline" in candidate_content
-    assert "Do not add pre-final comparison passes" in candidate_content
-    assert "preserve the same claim set" in candidate_content
-    assert "candidate_uses_no_more_steps_than_baseline" in candidate_content
+    assert "Preserve the supported claim set" in candidate_content
+    assert "using no more tool or evidence steps" in candidate_content
+    assert "do not add broad comparison passes" in candidate_content
+    assert "candidate_uses_no_more_steps_than_baseline" not in candidate_content
+    assert "A1_groundedness" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -5346,13 +5433,13 @@ def test_default_cli_skill_candidate_uses_population_strategy_for_distinct_fallb
     )
 
     assert len({conservative, evidence, dimension}) == 3
-    assert "strategy: conservative_preserve_then_delta" in conservative
-    assert "strategy: evidence_integrity_delta" in evidence
-    assert "strategy: score_dimension_repair_delta" in dimension
-    assert "restore A1_groundedness" in dimension
-    assert "bounded payload" in evidence
-    assert "fields_used" in evidence
-    assert "evidence_manifest_invalid_entry_count == 0" in evidence
+    assert "Preserve the existing successful workflow" in conservative
+    assert "Make evidence integrity the only changed behavior" in evidence
+    assert "Restore grounded and complete supported claims" in dimension
+    assert "conservative_preserve_then_delta" not in conservative
+    assert "evidence_integrity_delta" not in evidence
+    assert "score_dimension_repair_delta" not in dimension
+    assert "A1_groundedness" not in dimension
     assert "podcast" not in evidence.lower()
 
 
@@ -5401,10 +5488,9 @@ def test_default_cli_skill_candidate_turns_repair_plan_into_acceptance_criteria(
         mutation_prompt=prompt,
     )
 
-    assert "Verified evidence acceptance criteria" in candidate_content
-    assert "Every final factual claim must have non-compacted support" in candidate_content
-    assert "The evidence manifest must have no invalid entries" in candidate_content
-    assert "Do not finalize if these criteria are not met" in candidate_content
+    assert "Validate each evidence manifest entry before finalizing" in candidate_content
+    assert "bounded excerpt, structured extract, or source span" in candidate_content
+    assert "all_final_claims_have_non_compacted_support" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -5448,10 +5534,10 @@ def test_default_cli_skill_candidate_turns_replay_failures_into_recovery_rules()
         mutation_prompt=prompt,
     )
 
-    assert "Replay failure recovery requirements" in candidate_content
-    assert "After one failed replay evidence attempt" in candidate_content
-    assert "Do not finalize after a failed evidence retry" in candidate_content
-    assert "complete without replay evidence failures" in candidate_content
+    assert "After one failed tool or evidence path" in candidate_content
+    assert "change strategy before retrying" in candidate_content
+    assert "do not finalize without a captured result" in candidate_content
+    assert "replay_timeout" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -5503,10 +5589,9 @@ def test_default_cli_skill_candidate_turns_missing_trajectory_capture_into_recov
         mutation_prompt=prompt,
     )
 
-    assert "Replay failure recovery requirements" in candidate_content
-    assert "returns no trajectory evidence" in candidate_content
-    assert "Do not finalize without captured trajectory evidence" in candidate_content
-    assert "replay_failure_reasons=trajectory_capture_unavailable" in candidate_content
+    assert "After one failed tool or evidence path" in candidate_content
+    assert "do not finalize without a captured result" in candidate_content
+    assert "trajectory_capture_unavailable" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -5564,11 +5649,10 @@ def test_default_cli_skill_candidate_turns_compacted_tool_arguments_into_recover
         mutation_prompt=prompt,
     )
 
-    assert "Tool argument replay hygiene requirements" in candidate_content
-    assert "Do not execute replay placeholders" in candidate_content
-    assert "Regenerate the smallest schema-valid tool arguments" in candidate_content
-    assert "After one invalid tool-argument failure" in candidate_content
-    assert "read a saved artifact" in candidate_content
+    assert "regenerate the smallest schema-valid arguments" in candidate_content
+    assert "current task or a saved artifact" in candidate_content
+    assert "never execute compacted placeholders" in candidate_content
+    assert "compacted_tool_argument_replay" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -6084,8 +6168,8 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
 
     assert created["count"] == 1
-    assert replay_agents == ["Aworld"]
-    assert replay_max_steps == [1]
+    assert replay_agents == ["Aworld", "Aworld"]
+    assert replay_max_steps == [1, 1]
     assert report_summary["best_candidate_id"] is None
     assert report_summary["selected_candidate_id"] is not None
     assert any(
@@ -6094,7 +6178,8 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
-    assert report["optimizer_diagnostics"]["filtered_duplicate_candidates"] == 1
+    assert report["optimizer_diagnostics"]["filtered_duplicate_candidates"] == 0
+    assert report["population"]["generated_candidate_count"] == 2
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
 
 
@@ -6193,7 +6278,8 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     assert updated_content != original_content
     assert "release_state: verified" in updated_content
     assert f"verified_run_id: {report['run_id']}" in updated_content
-    assert "Self-Evolve Trace Guidance" in updated_content
+    assert "Runtime Behavior Delta" in updated_content
+    assert "Self-Evolve Trace Guidance" not in updated_content
     assert report["post_apply"]["status"] == "accepted"
     assert refresh_calls == [candidate_id]
     assert report["post_apply"]["refresh"] == {

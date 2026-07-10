@@ -54,6 +54,12 @@ constraints or overlays. Do not copy those framework controls into the target
 skill unless the final applied guidance is independently useful for the target
 task itself.
 
+Before overlay replay, materialize target skill candidates as runtime-only
+behavior deltas. Keep task ids, evidence ids, evaluator metrics, gate names,
+historical feedback, and lineage details in self-evolve artifacts rather than
+the candidate instruction body. If no lesson supports an actionable runtime
+delta, preserve the target and report a no-op candidate.
+
 ## Workflow
 
 1. Clarify the requested outcome: diagnostics, proposal-only improvement, or

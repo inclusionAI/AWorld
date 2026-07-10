@@ -329,6 +329,27 @@ The materializer must validate:
 This design keeps generated changes reviewable and prevents whole-file rewrites
 from drifting away from proven successful behavior.
 
+Candidate materialization must separate internal optimization context from the
+runtime body before overlay replay. Task ids, evidence ids, evaluator metrics,
+gate names, and prior feedback remain in lesson, lineage, diagnostic, and report
+artifacts. The materialized `SKILL.md` contains only the smallest bounded runtime
+behavior delta supported by those records. If no actionable runtime rule can be
+derived, the materializer returns a no-op instead of appending internal guidance.
+
+### Member-Scoped Paired Replay
+
+For a multi-member trajectory set, replay is a member operation rather than a
+single primary-task operation. Each replayable member receives its own baseline
+and candidate repetitions using the member's task input and an isolated artifact
+directory. The result retains a member manifest keyed by `case_id`, while a
+top-level aggregate provides gate status and cost metrics.
+
+Paired evaluation cases are built from the matching member result only. Train,
+validation, and held-out assignments survive repetition expansion, and the
+evaluator filters cases by the requested split. Repetitions measure stability;
+they do not increase the number of independent held-out members. Stored replay
+loading and population baseline reuse reconstruct the same member mapping.
+
 ### Lineage And Lesson Memory
 
 Lineage memory persists what was tried and why.
@@ -355,8 +376,9 @@ to reuse an old lesson with a materially different behavior delta.
 
 ### Release Normalization
 
-Candidate content may contain self-evolve internal context during proposal and
-evaluation. Production skills should not.
+Optimizer prompts and lineage may contain self-evolve internal context, but the
+candidate body used for replay should already be runtime-only. Release
+normalization remains a final defense before production skill loading.
 
 Before verified apply writes or activates a skill, release normalization MUST
 convert the candidate into runtime-facing instructions:
