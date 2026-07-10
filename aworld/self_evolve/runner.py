@@ -52,6 +52,7 @@ from aworld.self_evolve.gates import (
     TokenLimitGate,
     TrustProvenanceGate,
 )
+from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
@@ -261,6 +262,10 @@ class SelfEvolveRunner:
             }
             if target_selection_report is not None:
                 report["target_selection"] = to_json_dict(target_selection_report)
+            report["artifact_retention"] = _artifact_retention_report(
+                self.store,
+                run_id,
+            )
             self.store.write_report(run_id, report)
             completed_run = SelfEvolveRun(
                 run_id=run_id,
@@ -735,6 +740,10 @@ class SelfEvolveRunner:
         )
         report["content_quality_diagnostics"] = build_content_quality_diagnostics(
             content_quality_metrics
+        )
+        report["artifact_retention"] = _artifact_retention_report(
+            self.store,
+            run_id,
         )
         self.store.write_report(run_id, report)
 
@@ -1831,6 +1840,27 @@ def _target_runtime_skill_path(target: SelfEvolveTarget) -> Path | None:
     if runtime_path is not None:
         return Path(runtime_path).resolve()
     return Path(target.identity.path).resolve() if target.identity.path else None
+
+
+def _artifact_retention_report(
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+) -> dict[str, object]:
+    try:
+        cleanup = cleanup_self_evolve_artifacts(
+            store.workspace_root,
+            artifact_root=store.artifact_root,
+            current_run_id=run_id,
+        )
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "error": str(exc),
+        }
+    return {
+        "status": "completed",
+        **cleanup,
+    }
 
 
 def _rerun_evaluator_from_stored_run(
@@ -4463,22 +4493,21 @@ def _persist_no_target_cli_result(
     store.create_run(run)
     store.write_dataset_recipe(run_id, dataset.recipe)
     target_selection_path = store.write_target_selection_report(run_id, target_selection_report)
-    report_path = store.write_report(
-        run_id,
-        {
-            "run_id": run_id,
-            "target": {
-                "target_type": target.target_type,
-                "target_id": target.target_id,
-                "path": target.path,
-            },
-            "apply_policy": apply_policy,
-            "candidate_ids": [],
-            "selected_candidate_id": None,
-            "status": run.status.value,
-            "target_selection": to_json_dict(target_selection_report),
+    report = {
+        "run_id": run_id,
+        "target": {
+            "target_type": target.target_type,
+            "target_id": target.target_id,
+            "path": target.path,
         },
-    )
+        "apply_policy": apply_policy,
+        "candidate_ids": [],
+        "selected_candidate_id": None,
+        "status": run.status.value,
+        "target_selection": to_json_dict(target_selection_report),
+    }
+    report["artifact_retention"] = _artifact_retention_report(store, run_id)
+    report_path = store.write_report(run_id, report)
     return {
         "report_path": str(report_path),
         "target_selection_path": str(target_selection_path),
@@ -4517,26 +4546,25 @@ def _persist_unsupported_target_cli_result(
         if target_provenance is not None
         else None
     )
-    report_path = store.write_report(
-        run_id,
-        {
-            "run_id": run_id,
-            "target": {
-                "target_type": target.target_type,
-                "target_id": target.target_id,
-                "path": target.path,
-            },
-            "apply_policy": apply_policy,
-            "candidate_ids": [],
-            "selected_candidate_id": None,
-            "status": run.status.value,
-            "target_selection": to_json_dict(target_selection_report),
-            "unsupported_target": {
-                "target_ref": _target_ref_text(target),
-                "reason": reason,
-            },
+    report = {
+        "run_id": run_id,
+        "target": {
+            "target_type": target.target_type,
+            "target_id": target.target_id,
+            "path": target.path,
         },
-    )
+        "apply_policy": apply_policy,
+        "candidate_ids": [],
+        "selected_candidate_id": None,
+        "status": run.status.value,
+        "target_selection": to_json_dict(target_selection_report),
+        "unsupported_target": {
+            "target_ref": _target_ref_text(target),
+            "reason": reason,
+        },
+    }
+    report["artifact_retention"] = _artifact_retention_report(store, run_id)
+    report_path = store.write_report(run_id, report)
     summary = {
         "report_path": str(report_path),
         "target_selection_path": str(target_selection_path),

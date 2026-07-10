@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,28 @@ class CaptureOptimizer:
                 ),
             ),
         )
+
+
+def _write_terminal_run_with_raw_artifacts(root: Path, run_id: str, timestamp: float) -> None:
+    run_dir = root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run.json").write_text(
+        json.dumps({"run_id": run_id, "status": "succeeded"}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "report.json").write_text(
+        json.dumps({"run_id": run_id, "status": "succeeded"}) + "\n",
+        encoding="utf-8",
+    )
+    replay_file = run_dir / "replay" / "cand-1" / "result.json"
+    replay_file.parent.mkdir(parents=True)
+    replay_file.write_text("{}\n", encoding="utf-8")
+    overlay_file = run_dir / "overlays" / "cand-1" / "skills" / "demo" / "SKILL.md"
+    overlay_file.parent.mkdir(parents=True)
+    overlay_file.write_text("# Demo\n", encoding="utf-8")
+    for child in sorted(run_dir.rglob("*"), reverse=True):
+        os.utime(child, (timestamp, timestamp))
+    os.utime(run_dir, (timestamp, timestamp))
 
 
 def test_multi_member_replay_reuses_member_baseline_root(tmp_path: Path) -> None:
@@ -493,6 +516,62 @@ async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None
             "details": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    for index in range(6):
+        _write_terminal_run_with_raw_artifacts(
+            artifact_root,
+            f"run-old-{index}",
+            1_000.0 + index,
+        )
+    target = SkillTextTarget(skill_path)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "summarize page"}},
+            "action": {"content": "summary failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-1",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="task-1",
+    )
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-current",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (artifact_root / "run-current" / "report.json").read_text(encoding="utf-8")
+    )
+    cleanup = report["artifact_retention"]
+    assert cleanup["removed_run_count"] >= 1
+    assert any("run-old-0/replay" in path for path in cleanup["removed_paths"])
+    assert not (artifact_root / "run-old-0" / "replay").exists()
+    assert not (artifact_root / "run-old-0" / "overlays").exists()
+    assert (artifact_root / "run-old-0" / "report.json").exists()
+    assert (artifact_root / "run-current" / "run.json").exists()
 
 
 @pytest.mark.asyncio
