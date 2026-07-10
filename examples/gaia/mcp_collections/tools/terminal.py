@@ -37,7 +37,12 @@ from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
 from aworld.logs.util import Color, logger
-from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
+from examples.gaia.mcp_collections.base import (
+    ActionArguments,
+    ActionCollection,
+    ActionResponse,
+    _is_stdio_disconnect_error,
+)
 
 # pylint: disable=C0301
 
@@ -62,6 +67,10 @@ REMINDER_NOTIFICATION_PATTERNS = (
     r"\bnotify-send\b",
     r"\bterminal-notifier\b",
 )
+
+
+def _should_log_taskgroup_error(error: BaseException) -> bool:
+    return not _is_stdio_disconnect_error(error)
 
 
 def _check_delayed_reminder_simulation(command: str) -> tuple[bool, str | None]:
@@ -678,6 +687,7 @@ if __name__ == "__main__":
         pass
     except _BaseExceptionGroup as e:
         # Python 3.11+ anyio TaskGroup "unhandled errors" (e.g. subprocess cancellation)
-        logger.error(f"TaskGroup error: {e}\n{traceback.format_exc()}")
+        if _should_log_taskgroup_error(e):
+            logger.error(f"TaskGroup error: {e}\n{traceback.format_exc()}")
     except Exception as e:
         logger.error(f"An error occurred: {e}: {traceback.format_exc()}")
