@@ -428,7 +428,7 @@ async def test_aworld_trajectory_evaluator_backend_runs_default_source_runtime_o
 
 
 @pytest.mark.asyncio
-async def test_aworld_trajectory_evaluator_backend_does_not_outer_timeout_default_source_runtime(
+async def test_aworld_trajectory_evaluator_backend_times_out_default_source_runtime(
     tmp_path, monkeypatch
 ) -> None:
     dataset = _dataset(
@@ -468,9 +468,15 @@ async def test_aworld_trajectory_evaluator_backend_does_not_outer_timeout_defaul
         timeout=1.0,
     )
 
-    assert summary.metrics["score"] == 81.0
-    assert summary.metrics["evaluator_gate_passed"] is True
-    assert summary.metrics["judge_success_count"] == 1
+    assert summary.metrics["score"] == 0.0
+    assert summary.metrics["evaluator_gate_passed"] is False
+    assert summary.metrics["judge_attempt_count"] == 3
+    assert summary.metrics["judge_success_count"] == 0
+    assert summary.metrics["judge_failure_count"] == 3
+    assert all(
+        failure["type"] == "TimeoutError"
+        for failure in summary.metrics["judge_failures"]
+    )
 
 
 @pytest.mark.asyncio

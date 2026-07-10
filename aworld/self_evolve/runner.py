@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import hashlib
 import json
+import time
 from dataclasses import dataclass, replace
 from typing import Callable, Any
 from pathlib import Path
@@ -28,6 +29,7 @@ from aworld.self_evolve.evaluation import (
     SkillCandidateOverlayBackend,
     determine_candidate_confidence,
     estimate_replay_cost,
+    estimate_replay_wall_clock_seconds,
     evaluate_baseline_and_candidate,
 )
 from aworld.self_evolve.gates import (
@@ -137,6 +139,17 @@ def _emit_progress(
         logger.debug(f"self_evolve.progress_callback_failed stage={stage} error={exc}")
 
 
+_PREFLIGHT_BLOCKING_GATES = {
+    "noop_candidate",
+    "malformed_candidate",
+    "token_limit",
+    "protected_path",
+    "external_code_evolution",
+    "skill_markdown",
+    "trust_provenance",
+}
+
+
 class SelfEvolveRunner:
     def __init__(
         self,
@@ -161,11 +174,24 @@ class SelfEvolveRunner:
         candidate_replay_repetitions: int = 1,
         replay_stability_margin: float = 0.0,
         replay_agent: str | None = None,
+        replay_concurrency: int = 1,
+        judge_concurrency: int = 1,
+        judge_failure_retries: int = 2,
+        judge_timeout_seconds: float | None = 300.0,
+        max_optimize_seconds: float | None = None,
         runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
         runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
         progress_callback: Callable[[str, str], Any] | None = None,
         skip_duplicate_rejected_candidate_gate: bool = False,
     ) -> None:
+        if replay_concurrency <= 0:
+            raise ValueError("replay_concurrency must be positive")
+        if judge_concurrency <= 0:
+            raise ValueError("judge_concurrency must be positive")
+        if judge_failure_retries < 0:
+            raise ValueError("judge_failure_retries must be non-negative")
+        if max_optimize_seconds is not None and max_optimize_seconds <= 0:
+            raise ValueError("max_optimize_seconds must be positive")
         self.store = store
         self.optimizer = optimizer
         self.post_apply_evaluator = post_apply_evaluator
@@ -186,10 +212,88 @@ class SelfEvolveRunner:
         self.candidate_replay_repetitions = candidate_replay_repetitions
         self.replay_stability_margin = replay_stability_margin
         self.replay_agent = replay_agent
+        self.replay_concurrency = replay_concurrency
+        self.judge_concurrency = judge_concurrency
+        self.judge_failure_retries = judge_failure_retries
+        self.judge_timeout_seconds = judge_timeout_seconds
+        self.max_optimize_seconds = max_optimize_seconds
+        self._run_started_at: float | None = None
         self.runtime_registry_refresher = runtime_registry_refresher
         self.runtime_skill_activator = runtime_skill_activator
         self.progress_callback = progress_callback
         self.skip_duplicate_rejected_candidate_gate = skip_duplicate_rejected_candidate_gate
+
+    def _wall_clock_budget_exceeded(self) -> bool:
+        if self.max_optimize_seconds is None or self._run_started_at is None:
+            return False
+        return (time.monotonic() - self._run_started_at) >= self.max_optimize_seconds
+
+    def _wall_clock_budget_gate(self) -> GateResult:
+        elapsed = (
+            time.monotonic() - self._run_started_at
+            if self._run_started_at is not None
+            else 0.0
+        )
+        return GateResult(
+            gate_name="wall_clock_budget",
+            passed=False,
+            reason="optimize wall-clock budget exhausted before expensive verification",
+            details={
+                "elapsed_seconds": elapsed,
+                "max_optimize_seconds": self.max_optimize_seconds,
+            },
+        )
+
+    def _replay_cost_report(
+        self,
+        *,
+        dataset: SelfEvolveDataset,
+        candidate_count: int,
+    ) -> dict[str, object]:
+        estimate = estimate_replay_cost(
+            dataset=dataset,
+            candidate_count=candidate_count,
+            judge_repetitions=self.judge_repetitions,
+            baseline_repetitions=self.baseline_replay_repetitions,
+            candidate_repetitions=self.candidate_replay_repetitions,
+            replay_candidate_limit=self.replay_candidate_limit,
+            max_run_tokens=self.max_run_tokens,
+        )
+        wall_clock_seconds = estimate_replay_wall_clock_seconds(
+            estimate=estimate,
+            replay_timeout_seconds=self.replay_timeout_seconds,
+            judge_timeout_seconds=self.judge_timeout_seconds,
+            judge_failure_retries=self.judge_failure_retries,
+            replay_concurrency=self.replay_concurrency,
+            judge_concurrency=self.judge_concurrency,
+        )
+        report: dict[str, object] = {
+            "passed": estimate.passed,
+            "reason": estimate.reason,
+            "baseline_replay_count": estimate.baseline_replay_count,
+            "candidate_replay_count": estimate.candidate_replay_count,
+            "total_replay_count": estimate.total_replay_count,
+            "verification_command_count": estimate.verification_command_count,
+            "judge_call_count": estimate.judge_call_count,
+            "estimated_tokens": estimate.estimated_tokens,
+            "estimated_cost_usd": estimate.estimated_cost_usd,
+            "replay_timeout_seconds": self.replay_timeout_seconds,
+            "judge_timeout_seconds": self.judge_timeout_seconds,
+            "judge_failure_retries": self.judge_failure_retries,
+            "replay_concurrency": self.replay_concurrency,
+            "judge_concurrency": self.judge_concurrency,
+            "estimated_worst_case_wall_clock_seconds": wall_clock_seconds,
+        }
+        _emit_progress(
+            self.progress_callback,
+            "replay_cost",
+            (
+                "Estimated verification cost: "
+                f"{estimate.total_replay_count} replay subprocesses, "
+                f"{estimate.judge_call_count} judge calls"
+            ),
+        )
+        return report
 
     async def run_explicit_target(
         self,
@@ -204,6 +308,7 @@ class SelfEvolveRunner:
     ) -> SelfEvolveRunnerResult:
         if apply_policy not in {"proposal", "auto_verified"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
+        self._run_started_at = time.monotonic()
         _emit_progress(
             self.progress_callback,
             "start",
@@ -273,6 +378,7 @@ class SelfEvolveRunner:
         held_out_summary: EvaluationSummary | None = None
         replay_result: CandidateReplayResult | None = None
         replay_dataset: SelfEvolveDataset | None = None
+        replay_cost: Mapping[str, object] | None = None
         gate_results: list[GateResult] = []
         prior_feedback = _load_prior_rejected_feedback(
             self.store,
@@ -464,6 +570,7 @@ class SelfEvolveRunner:
             held_out_summary = selected_state["held_out_summary"]  # type: ignore[assignment]
             replay_result = selected_state["replay_result"]  # type: ignore[assignment]
             replay_dataset = selected_state["replay_dataset"]  # type: ignore[assignment]
+            replay_cost = selected_state.get("replay_cost")  # type: ignore[assignment]
             gate_results = list(selected_state["gate_results"])  # type: ignore[arg-type]
         elif apply_policy == "auto_verified":
             gate_results.append(
@@ -524,6 +631,8 @@ class SelfEvolveRunner:
         if replay_result is not None:
             report["replay"] = _replay_report(replay_result)
             report["replay_path"] = _replay_artifact_path(replay_result)
+        if replay_cost is not None:
+            report["replay_cost"] = dict(replay_cost)
         evaluator_report_paths = _evaluator_report_paths(
             baseline_summary,
             candidate_summary,
@@ -632,40 +741,30 @@ class SelfEvolveRunner:
             for gate in gate_results
         )
         if accepted_duplicate_blocked or rejected_duplicate_blocked:
-            failed_gates = [gate for gate in gate_results if not gate.passed]
-            report_item = _iteration_report_item(
+            return _rejected_iteration_result(
                 iteration_number=iteration_number,
                 candidate_number=candidate_number,
                 candidate_count=candidate_count,
                 candidate=candidate,
-                status="rejected",
-                baseline_summary=None,
-                candidate_summary=None,
-                held_out_summary=None,
-                failed_gates=failed_gates,
-            )
-            state = _iteration_state(
-                candidate=candidate,
-                baseline_summary=None,
-                candidate_summary=None,
-                held_out_summary=None,
-                replay_result=None,
-                replay_dataset=None,
                 gate_results=gate_results,
-                status="rejected",
             )
-            feedback = (
-                EvaluationSummary(
-                    variant_id=candidate.candidate_id,
-                    metrics={
-                        "failed_gates": [gate.gate_name for gate in failed_gates],
-                        "candidate_status": "rejected",
-                    },
-                    dataset_split="validation",
-                ),
+        preflight_blocked = any(
+            gate.gate_name in _PREFLIGHT_BLOCKING_GATES and not gate.passed
+            for gate in gate_results
+        )
+        if preflight_blocked:
+            return _rejected_iteration_result(
+                iteration_number=iteration_number,
+                candidate_number=candidate_number,
+                candidate_count=candidate_count,
+                candidate=candidate,
+                gate_results=gate_results,
             )
-            return state, report_item, feedback
 
+        replay_cost = self._replay_cost_report(
+            dataset=dataset,
+            candidate_count=candidate_count,
+        )
         gate_results.append(
             BudgetGate().evaluate(
                 estimate_replay_cost(
@@ -679,6 +778,16 @@ class SelfEvolveRunner:
                 )
             )
         )
+        if self._wall_clock_budget_exceeded():
+            gate_results.append(self._wall_clock_budget_gate())
+            return _rejected_iteration_result(
+                iteration_number=iteration_number,
+                candidate_number=candidate_number,
+                candidate_count=candidate_count,
+                candidate=candidate,
+                gate_results=gate_results,
+                replay_cost=replay_cost,
+            )
         replay_result, replay_dataset, replay_gate = await self._replay_selected_candidate(
             run_id=run_id,
             target=target,
@@ -721,6 +830,7 @@ class SelfEvolveRunner:
                         candidate=candidate,
                         dataset_split="validation",
                         artifact_namespace=run_id,
+                        judge_concurrency=self.judge_concurrency,
                     )
                     if replay_result is not None:
                         baseline_summary = _summary_with_replay_evidence_metrics(
@@ -872,6 +982,7 @@ class SelfEvolveRunner:
             replay_dataset=replay_dataset,
             gate_results=gate_results,
             status=status,
+            replay_cost=replay_cost,
         )
         feedback = _iteration_validation_feedback(
             candidate=candidate,
@@ -1154,7 +1265,10 @@ def optimize_from_cli_request(
     post_apply_evaluator: Callable[[CandidateVariant], Any] | None = None,
     min_eval_cases: int = 30,
     judge_repetitions: int = 3,
+    judge_failure_retries: int = 2,
+    judge_concurrency: int = 1,
     judge_timeout_seconds: float | None = 300.0,
+    max_optimize_seconds: float | None = None,
     max_run_tokens: int = 500_000,
     min_score_delta: float = 0.0,
     auto_apply_target_types: tuple[str, ...] = ("skill",),
@@ -1164,6 +1278,7 @@ def optimize_from_cli_request(
     replay_timeout_seconds: int = 600,
     replay_max_steps: int | None = 1,
     replay_candidate_limit: int = 2,
+    replay_concurrency: int = 1,
     baseline_replay_repetitions: int = 1,
     candidate_replay_repetitions: int = 1,
     replay_stability_margin: float = 0.0,
@@ -1186,7 +1301,10 @@ def optimize_from_cli_request(
             post_apply_evaluator=post_apply_evaluator,
             min_eval_cases=min_eval_cases,
             judge_repetitions=judge_repetitions,
+            judge_failure_retries=judge_failure_retries,
+            judge_concurrency=judge_concurrency,
             judge_timeout_seconds=judge_timeout_seconds,
+            max_optimize_seconds=max_optimize_seconds,
             max_run_tokens=max_run_tokens,
             min_score_delta=min_score_delta,
             auto_apply_target_types=auto_apply_target_types,
@@ -1194,6 +1312,7 @@ def optimize_from_cli_request(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
             replay_candidate_limit=replay_candidate_limit,
+            replay_concurrency=replay_concurrency,
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
@@ -1362,11 +1481,18 @@ def optimize_from_cli_request(
             workspace_root=workspace_root,
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
+            judge_failure_retries=judge_failure_retries,
+            judge_concurrency=judge_concurrency,
         )
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
     if replay_enabled and candidate_replay_backend is None:
-        candidate_replay_backend = AWorldCliCandidateReplayBackend()
+        if replay_concurrency == 1:
+            candidate_replay_backend = AWorldCliCandidateReplayBackend()
+        else:
+            candidate_replay_backend = AWorldCliCandidateReplayBackend(
+                replay_concurrency=replay_concurrency,
+            )
 
     import asyncio
 
@@ -1380,6 +1506,10 @@ def optimize_from_cli_request(
             max_iterations=iterations or 1,
             min_eval_cases=min_eval_cases,
             judge_repetitions=judge_repetitions,
+            judge_failure_retries=judge_failure_retries,
+            judge_concurrency=judge_concurrency,
+            judge_timeout_seconds=judge_timeout_seconds,
+            max_optimize_seconds=max_optimize_seconds,
             max_run_tokens=max_run_tokens,
             auto_apply_target_types=auto_apply_target_types,
             replay_enabled=replay_enabled,
@@ -1387,6 +1517,7 @@ def optimize_from_cli_request(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
             replay_candidate_limit=replay_candidate_limit,
+            replay_concurrency=replay_concurrency,
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
@@ -1458,6 +1589,8 @@ def _evaluation_backend_from_judge_config(
     workspace_root: str | Path,
     judge_repetitions: int = 1,
     judge_timeout_seconds: float | None = 300.0,
+    judge_failure_retries: int = 2,
+    judge_concurrency: int = 1,
 ) -> EvaluationBackend:
     if judge_config is None:
         return SkillCandidateOverlayBackend()
@@ -1475,6 +1608,7 @@ def _evaluation_backend_from_judge_config(
             workspace_root=workspace_root,
             judge_agent=config.agent_path,
             judge_repetitions=judge_repetitions,
+            judge_failure_retries=judge_failure_retries,
             judge_timeout_seconds=judge_timeout_seconds,
         )
     if config.mode == "custom_agent":
@@ -1484,6 +1618,7 @@ def _evaluation_backend_from_judge_config(
             workspace_root=workspace_root,
             judge_agent_name=config.agent_id,
             judge_repetitions=judge_repetitions,
+            judge_failure_retries=judge_failure_retries,
             judge_timeout_seconds=judge_timeout_seconds,
         )
     if config.mode == "backend_ref":
@@ -1493,6 +1628,7 @@ def _evaluation_backend_from_judge_config(
             workspace_root=workspace_root,
             judge_backend_ref=config.backend_ref,
             judge_repetitions=judge_repetitions,
+            judge_failure_retries=judge_failure_retries,
             judge_timeout_seconds=judge_timeout_seconds,
         )
     if config.mode == "disabled":
@@ -1578,7 +1714,10 @@ def _rerun_evaluator_from_stored_run(
     post_apply_evaluator: Callable[[CandidateVariant], Any] | None,
     min_eval_cases: int,
     judge_repetitions: int,
+    judge_failure_retries: int,
+    judge_concurrency: int,
     judge_timeout_seconds: float | None,
+    max_optimize_seconds: float | None,
     max_run_tokens: int,
     min_score_delta: float,
     auto_apply_target_types: tuple[str, ...],
@@ -1586,6 +1725,7 @@ def _rerun_evaluator_from_stored_run(
     replay_timeout_seconds: int,
     replay_max_steps: int | None,
     replay_candidate_limit: int,
+    replay_concurrency: int,
     baseline_replay_repetitions: int,
     candidate_replay_repetitions: int,
     replay_stability_margin: float,
@@ -1635,6 +1775,8 @@ def _rerun_evaluator_from_stored_run(
             judge_config,
             workspace_root=workspace_root,
             judge_repetitions=judge_repetitions,
+            judge_failure_retries=judge_failure_retries,
+            judge_concurrency=judge_concurrency,
             judge_timeout_seconds=judge_timeout_seconds,
         )
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
@@ -1662,6 +1804,10 @@ def _rerun_evaluator_from_stored_run(
             max_iterations=1,
             min_eval_cases=min_eval_cases,
             judge_repetitions=judge_repetitions,
+            judge_failure_retries=judge_failure_retries,
+            judge_concurrency=judge_concurrency,
+            judge_timeout_seconds=judge_timeout_seconds,
+            max_optimize_seconds=max_optimize_seconds,
             max_run_tokens=max_run_tokens,
             auto_apply_target_types=auto_apply_target_types,
             replay_enabled=True,
@@ -1672,6 +1818,7 @@ def _rerun_evaluator_from_stored_run(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
             replay_candidate_limit=replay_candidate_limit,
+            replay_concurrency=replay_concurrency,
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
@@ -2381,6 +2528,51 @@ def _iteration_report_item(
     }
 
 
+def _rejected_iteration_result(
+    *,
+    iteration_number: int,
+    candidate_number: int,
+    candidate_count: int,
+    candidate: CandidateVariant,
+    gate_results: list[GateResult],
+    replay_cost: Mapping[str, object] | None = None,
+) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
+    failed_gates = [gate for gate in gate_results if not gate.passed]
+    report_item = _iteration_report_item(
+        iteration_number=iteration_number,
+        candidate_number=candidate_number,
+        candidate_count=candidate_count,
+        candidate=candidate,
+        status="rejected",
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=failed_gates,
+    )
+    state = _iteration_state(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        replay_result=None,
+        replay_dataset=None,
+        gate_results=gate_results,
+        status="rejected",
+        replay_cost=replay_cost,
+    )
+    feedback = (
+        EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={
+                "failed_gates": [gate.gate_name for gate in failed_gates],
+                "candidate_status": "rejected",
+            },
+            dataset_split="validation",
+        ),
+    )
+    return state, report_item, feedback
+
+
 def _iteration_state(
     *,
     candidate: CandidateVariant,
@@ -2391,8 +2583,9 @@ def _iteration_state(
     replay_dataset: SelfEvolveDataset | None,
     gate_results: list[GateResult],
     status: str,
+    replay_cost: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    return {
+    state = {
         "candidate": candidate,
         "baseline_summary": baseline_summary,
         "candidate_summary": candidate_summary,
@@ -2402,6 +2595,9 @@ def _iteration_state(
         "gate_results": gate_results,
         "status": status,
     }
+    if replay_cost is not None:
+        state["replay_cost"] = dict(replay_cost)
+    return state
 
 
 def _baseline_comparison_feedback_metrics(

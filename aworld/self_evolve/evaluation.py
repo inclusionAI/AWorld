@@ -403,7 +403,7 @@ class AWorldTrajectoryEvaluatorBackend:
         runner_kwargs: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         call = self._run_evaluator_source(runner, runner_kwargs=runner_kwargs)
-        if self.judge_timeout_seconds is None or self.run_evaluator_source is None:
+        if self.judge_timeout_seconds is None:
             return await call
         return await asyncio.wait_for(call, timeout=self.judge_timeout_seconds)
 
@@ -433,28 +433,71 @@ async def evaluate_baseline_and_candidate(
     dataset_split: str = "validation",
     baseline_variant_id: str = "baseline",
     artifact_namespace: str | None = None,
+    judge_concurrency: int = 1,
 ) -> tuple[EvaluationSummary, EvaluationSummary]:
-    baseline_summary = await backend.evaluate_variant(
-        EvaluationRequest(
-            variant_id=baseline_variant_id,
-            candidate=None,
-            dataset=dataset,
-            eval_config=eval_config,
-            dataset_split=dataset_split,
-            artifact_namespace=artifact_namespace,
-        )
+    if judge_concurrency <= 0:
+        raise ValueError("judge_concurrency must be positive")
+    baseline_request = EvaluationRequest(
+        variant_id=baseline_variant_id,
+        candidate=None,
+        dataset=dataset,
+        eval_config=eval_config,
+        dataset_split=dataset_split,
+        artifact_namespace=artifact_namespace,
     )
-    candidate_summary = await backend.evaluate_variant(
-        EvaluationRequest(
-            variant_id=candidate.candidate_id,
-            candidate=candidate,
-            dataset=dataset,
-            eval_config=eval_config,
-            dataset_split=dataset_split,
-            artifact_namespace=artifact_namespace,
-        )
+    candidate_request = EvaluationRequest(
+        variant_id=candidate.candidate_id,
+        candidate=candidate,
+        dataset=dataset,
+        eval_config=eval_config,
+        dataset_split=dataset_split,
+        artifact_namespace=artifact_namespace,
+    )
+    if judge_concurrency == 1:
+        baseline_summary = await backend.evaluate_variant(baseline_request)
+        candidate_summary = await backend.evaluate_variant(candidate_request)
+        return baseline_summary, candidate_summary
+
+    semaphore = asyncio.Semaphore(judge_concurrency)
+
+    async def evaluate(request: EvaluationRequest) -> EvaluationSummary:
+        async with semaphore:
+            return await backend.evaluate_variant(request)
+
+    baseline_summary, candidate_summary = await asyncio.gather(
+        evaluate(baseline_request),
+        evaluate(candidate_request),
     )
     return baseline_summary, candidate_summary
+
+
+def estimate_replay_wall_clock_seconds(
+    *,
+    estimate: ReplayCostEstimate,
+    replay_timeout_seconds: float | None,
+    judge_timeout_seconds: float | None,
+    judge_failure_retries: int,
+    replay_concurrency: int = 1,
+    judge_concurrency: int = 1,
+) -> float | None:
+    if judge_failure_retries < 0:
+        raise ValueError("judge_failure_retries must be non-negative")
+    if replay_concurrency <= 0:
+        raise ValueError("replay_concurrency must be positive")
+    if judge_concurrency <= 0:
+        raise ValueError("judge_concurrency must be positive")
+    replay_seconds = None
+    if replay_timeout_seconds is not None:
+        replay_batches = (estimate.total_replay_count + replay_concurrency - 1) // replay_concurrency
+        replay_seconds = replay_batches * replay_timeout_seconds
+    judge_seconds = None
+    if judge_timeout_seconds is not None:
+        judge_attempts = estimate.judge_call_count + judge_failure_retries
+        judge_batches = (judge_attempts + judge_concurrency - 1) // judge_concurrency
+        judge_seconds = judge_batches * judge_timeout_seconds
+    if replay_seconds is None and judge_seconds is None:
+        return None
+    return (replay_seconds or 0.0) + (judge_seconds or 0.0)
 
 
 def estimate_replay_cost(

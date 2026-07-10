@@ -130,8 +130,12 @@ class AWorldCliCandidateReplayBackend:
         self,
         *,
         executor: ReplayExecutor | None = None,
+        replay_concurrency: int = 1,
     ) -> None:
+        if replay_concurrency <= 0:
+            raise ValueError("replay_concurrency must be positive")
         self.executor = executor or AWorldCliReplayExecutor()
+        self.replay_concurrency = replay_concurrency
 
     async def replay_candidate(
         self,
@@ -207,13 +211,14 @@ class AWorldCliCandidateReplayBackend:
     ) -> ReplayVariantResult:
         if repetitions <= 0:
             raise ValueError("replay repetitions must be positive")
-        results: list[ReplayVariantResult] = []
+        results: list[ReplayVariantResult | None] = [None] * repetitions
+        semaphore = asyncio.Semaphore(self.replay_concurrency)
         logger.info(
             "self_evolve.replay.repetitions.start "
             f"run_id={request.run_id} task_id={request.task_id} "
             f"variant_id={base_variant_id} repetitions={repetitions}"
         )
-        for index in range(1, repetitions + 1):
+        async def run_one(index: int) -> None:
             variant_id = base_variant_id if repetitions == 1 else f"{base_variant_id}-{index}"
             repetition_dir = artifact_dir if repetitions == 1 else artifact_dir / str(index)
             logger.info(
@@ -221,23 +226,27 @@ class AWorldCliCandidateReplayBackend:
                 f"run_id={request.run_id} task_id={request.task_id} "
                 f"variant_id={variant_id} index={index}/{repetitions}"
             )
-            results.append(
-                await self._run_variant_with_evidence_retries(
+            async with semaphore:
+                result = await self._run_variant_with_evidence_retries(
                     request,
                     variant_id=variant_id,
                     skill_root=skill_root,
                     artifact_dir=repetition_dir,
                 )
-            )
+            results[index - 1] = result
             logger.info(
                 "self_evolve.replay.repetition.end "
                 f"run_id={request.run_id} task_id={request.task_id} "
                 f"variant_id={variant_id} index={index}/{repetitions} "
-                f"status={results[-1].status}"
+                f"status={result.status}"
             )
+        await asyncio.gather(*(run_one(index) for index in range(1, repetitions + 1)))
+        ordered_results = [
+            result for result in results if result is not None
+        ]
         aggregated = _aggregate_variant_results(
             base_variant_id=base_variant_id,
-            results=results,
+            results=ordered_results,
             artifact_dir=artifact_dir,
         )
         logger.info(
