@@ -79,6 +79,20 @@ one or more related trajectory members.
 - **AND** repeated executions of one member SHALL NOT be counted as independent
   held-out members.
 
+#### Scenario: Baseline task failure remains comparable without masking infrastructure failure
+
+- **GIVEN** a member baseline replay ends in a task-level failure such as a
+  bounded task timeout or evidence-quality failure
+- **AND** the same member's candidate replay succeeds
+- **AND** the member retains a valid source baseline trajectory
+- **WHEN** paired replay evidence is assembled
+- **THEN** the framework SHALL preserve the failed baseline outcome and use the
+  member's source trajectory as its comparison evidence
+- **AND** replay confidence SHALL report strict-success pairs, comparable
+  task-failure pairs, and incomparable pairs separately
+- **BUT** process, model, credential, runtime initialization, and trajectory
+  capture failures SHALL remain incomparable and SHALL block verified apply.
+
 ### Requirement: Lesson Extraction
 
 AWorld self-evolve SHALL convert trajectory-set evidence into normalized lesson

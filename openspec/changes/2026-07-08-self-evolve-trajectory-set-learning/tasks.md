@@ -217,3 +217,6 @@
 - [x] 12.6 Add tests for member isolation, partial failure diagnostics, stored
   replay recovery, path collisions, split isolation, and runtime-only
   candidates.
+- [x] 12.7 Preserve task-level baseline failures as typed comparable outcomes
+  when candidate replay succeeds and source trajectory evidence exists, while
+  keeping infrastructure failures as verified-apply blockers.

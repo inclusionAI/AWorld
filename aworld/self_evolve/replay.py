@@ -25,6 +25,8 @@ from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolve
 
 _EVIDENCE_RETRY_LIMIT = 1
 _SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
+_COMPARABLE_TASK_FAILURE_TYPES = {"TaskFailure", "TimeoutExpired"}
+_COMPARABLE_TASK_FAILURE_REASONS = {"evidence_quality_failed"}
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,145 @@ class CandidateReplayMemberResult:
     @property
     def succeeded(self) -> bool:
         return self.baseline.succeeded and self.candidate.succeeded
+
+
+def candidate_replay_is_comparable(
+    *,
+    dataset: SelfEvolveDataset,
+    replay_result: CandidateReplayResult,
+) -> bool:
+    coverage = candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
+    return (
+        coverage["member_count"] > 0
+        and coverage["comparable_pair_count"] == coverage["member_count"]
+    )
+
+
+def candidate_replay_pair_coverage(
+    *,
+    dataset: SelfEvolveDataset,
+    replay_result: CandidateReplayResult,
+) -> dict[str, int]:
+    replayable_cases = tuple(
+        case for case in dataset.cases if _is_replayable_user_task_case(case)
+    )
+    cases_by_id = {case.case_id: case for case in replayable_cases}
+    pairs: list[tuple[EvalCase | None, ReplayVariantResult, ReplayVariantResult]]
+    if replay_result.member_results:
+        pairs = [
+            (
+                cases_by_id.get(member.case_id),
+                member.baseline,
+                member.candidate,
+            )
+            for member in replay_result.member_results
+        ]
+        missing_member_count = max(0, len(cases_by_id) - len(pairs))
+    else:
+        case = cases_by_id.get(replay_result.request.task_id)
+        if case is None and len(replayable_cases) == 1:
+            case = replayable_cases[0]
+        pairs = [(case, replay_result.baseline, replay_result.candidate)]
+        missing_member_count = 0
+
+    strict_pair_count = 0
+    task_failure_pair_count = 0
+    infrastructure_failure_count = 0
+    candidate_failure_count = 0
+    incomparable_pair_count = missing_member_count
+    for case, baseline, candidate in pairs:
+        if case is None or not candidate.succeeded:
+            incomparable_pair_count += 1
+            if not candidate.succeeded:
+                candidate_failure_count += 1
+            continue
+        if baseline.succeeded:
+            strict_pair_count += 1
+            continue
+        if _replay_failure_outcome(baseline.failure) == "task_failure":
+            trajectory, _ = _baseline_comparison_trajectory(case, baseline)
+            if trajectory:
+                task_failure_pair_count += 1
+                continue
+        else:
+            infrastructure_failure_count += 1
+        incomparable_pair_count += 1
+
+    member_count = len(pairs) + missing_member_count
+    comparable_pair_count = strict_pair_count + task_failure_pair_count
+    return {
+        "member_count": member_count,
+        "strict_pair_count": strict_pair_count,
+        "task_failure_pair_count": task_failure_pair_count,
+        "comparable_pair_count": comparable_pair_count,
+        "incomparable_pair_count": incomparable_pair_count,
+        "infrastructure_failure_count": infrastructure_failure_count,
+        "candidate_failure_count": candidate_failure_count,
+    }
+
+
+def _replay_failure_outcome(failure: Mapping[str, Any] | None) -> str:
+    if not isinstance(failure, Mapping):
+        return "infrastructure_failure"
+    failure_type = failure.get("type")
+    if failure_type in _COMPARABLE_TASK_FAILURE_TYPES:
+        return "task_failure"
+    reason = failure.get("reason")
+    if reason in _COMPARABLE_TASK_FAILURE_REASONS:
+        return "task_failure"
+    nested = failure.get("failures")
+    if isinstance(nested, list) and nested:
+        outcomes = {
+            _replay_failure_outcome(item)
+            for item in nested
+            if isinstance(item, Mapping)
+        }
+        if outcomes == {"task_failure"}:
+            return "task_failure"
+    return "infrastructure_failure"
+
+
+def _baseline_comparison_trajectory(
+    case: EvalCase,
+    baseline: ReplayVariantResult,
+) -> tuple[list[Mapping[str, Any]], str]:
+    if baseline.trajectory:
+        return list(baseline.trajectory), (
+            "replay" if baseline.succeeded else "failed_replay"
+        )
+    metadata = case.metadata if isinstance(case.metadata, Mapping) else {}
+    baseline_trajectory = metadata.get("baseline_trajectory")
+    if isinstance(baseline_trajectory, list):
+        mapped = [item for item in baseline_trajectory if isinstance(item, Mapping)]
+        if mapped:
+            return mapped, "source_trajectory"
+    if case.trace_pack is not None:
+        trajectory = _trace_pack_to_trajectory(case.trace_pack)
+        if trajectory:
+            return trajectory, "source_trajectory"
+    return [], "unavailable"
+
+
+def _trace_pack_to_trajectory(trace_pack: Any) -> list[Mapping[str, Any]]:
+    trajectory: list[Mapping[str, Any]] = []
+    for index, step in enumerate(trace_pack.steps, start=1):
+        meta = {
+            "step": index,
+            "agent_id": step.agent_id,
+            "pre_agent": step.pre_agent,
+        }
+        trajectory.append(
+            {
+                "meta": {key: value for key, value in meta.items() if value is not None},
+                "state": dict(step.state),
+                "action": dict(step.action),
+                "reward": dict(step.reward),
+            }
+        )
+    return trajectory
 
 
 class CandidateReplayBackend(Protocol):
@@ -1847,8 +1988,11 @@ def build_paired_replay_dataset(
 ) -> SelfEvolveDataset:
     if not replay_result.candidate.succeeded:
         raise ValueError("candidate replay did not succeed")
-    if not replay_result.baseline.succeeded:
-        raise ValueError("baseline replay did not succeed")
+    if not candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replay_result,
+    ):
+        raise ValueError("candidate replay did not produce comparable paired outcomes")
 
     member_results = {
         member.case_id: member for member in replay_result.member_results
@@ -1867,6 +2011,24 @@ def build_paired_replay_dataset(
             baseline_variant = replay_result.baseline
             candidate_variant = replay_result.candidate
             replay_request = replay_result.request
+        baseline_trajectory, baseline_trajectory_source = (
+            _baseline_comparison_trajectory(case, baseline_variant)
+        )
+        baseline_outcome = (
+            "success"
+            if baseline_variant.succeeded
+            else _replay_failure_outcome(baseline_variant.failure)
+        )
+        if not baseline_variant.succeeded:
+            baseline_variant = replace(
+                baseline_variant,
+                trajectory=baseline_trajectory,
+                metrics={
+                    **dict(baseline_variant.metrics),
+                    "replay_outcome": baseline_outcome,
+                    "trajectory_source": baseline_trajectory_source,
+                },
+            )
         baseline_results = _evaluation_repetition_results(baseline_variant)
         candidate_results = _evaluation_repetition_results(candidate_variant)
         replay_case_count = max(len(baseline_results), len(candidate_results))
@@ -1887,6 +2049,8 @@ def build_paired_replay_dataset(
                 },
                 "baseline": {
                     "status": baseline_variant.status,
+                    "outcome": baseline_outcome,
+                    "trajectory_source": baseline_trajectory_source,
                     "metrics": _evaluation_replay_metrics(
                         aggregate_metrics=baseline_variant.metrics,
                         repetition_metrics=baseline_result.metrics,
@@ -1897,6 +2061,7 @@ def build_paired_replay_dataset(
                 },
                 "candidate": {
                     "status": candidate_variant.status,
+                    "outcome": "success",
                     "metrics": _evaluation_replay_metrics(
                         aggregate_metrics=candidate_variant.metrics,
                         repetition_metrics=candidate_result.metrics,

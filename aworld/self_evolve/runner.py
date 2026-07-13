@@ -65,6 +65,8 @@ from aworld.self_evolve.replay import (
     ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
+    candidate_replay_is_comparable,
+    candidate_replay_pair_coverage,
     load_candidate_replay_result,
     _load_variant_result_from_dir,
     _is_replayable_user_task_case,
@@ -892,6 +894,7 @@ class SelfEvolveRunner:
             gate_results.append(replay_gate)
         replay_confidence_gate = _replay_confidence_gate(
             replay_result,
+            dataset=dataset,
             apply_policy=apply_policy,
         )
         if replay_confidence_gate is not None:
@@ -1166,15 +1169,18 @@ class SelfEvolveRunner:
             candidate=selected_candidate,
             dataset=dataset,
         )
-        if not replay_result.succeeded:
+        if not candidate_replay_is_comparable(
+            dataset=dataset,
+            replay_result=replay_result,
+        ):
             return (
                 replay_result,
                 None,
                 GateResult(
                     gate_name="candidate_replay",
                     passed=False,
-                    reason="candidate replay did not produce successful paired trajectories",
-                    details=_replay_gate_details(replay_result),
+                    reason="candidate replay did not produce comparable paired outcomes",
+                    details=_replay_gate_details(replay_result, dataset=dataset),
                 ),
             )
         replay_dataset = build_paired_replay_dataset(
@@ -1188,8 +1194,8 @@ class SelfEvolveRunner:
             GateResult(
                 gate_name="candidate_replay",
                 passed=True,
-                reason="candidate replay produced successful paired trajectories",
-                details=_replay_gate_details(replay_result),
+                reason="candidate replay produced comparable paired outcomes",
+                details=_replay_gate_details(replay_result, dataset=dataset),
             ),
         )
 
@@ -1908,11 +1914,6 @@ def _rerun_evaluator_from_stored_run(
     candidate = _load_candidate_variant(source_run_path / "candidates" / f"{candidate_id}.json")
     replay_path = source_run_path / "replay" / candidate.candidate_id
     replay_result = load_candidate_replay_result(replay_path)
-    if not replay_result.succeeded:
-        raise ValueError(
-            "stored replay did not produce successful paired trajectories; "
-            "rerun the full optimize flow instead"
-        )
 
     source_config, split_seed = _source_config_from_stored_dataset_recipe(
         source_run_path / "dataset_recipe.json"
@@ -1923,6 +1924,14 @@ def _rerun_evaluator_from_stored_run(
         task_id=task,
         split_seed=split_seed,
     )
+    if not candidate_replay_is_comparable(
+        dataset=built_dataset,
+        replay_result=replay_result,
+    ):
+        raise ValueError(
+            "stored replay did not produce comparable paired outcomes; "
+            "rerun the full optimize flow instead"
+        )
     trace_packs = tuple(
         case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
     )
@@ -2106,6 +2115,17 @@ def _source_config_from_stored_dataset_recipe(
         for item in task_ids_payload
         if isinstance(item, str)
     ) if isinstance(task_ids_payload, list) else ()
+    if not task_ids:
+        auto_grouping = source.get("auto_grouping")
+        selected_case_ids = (
+            auto_grouping.get("selected_case_ids")
+            if isinstance(auto_grouping, Mapping)
+            else None
+        )
+        if isinstance(selected_case_ids, list):
+            task_ids = tuple(
+                str(item) for item in selected_case_ids if isinstance(item, str)
+            )
     source_config = SelfEvolveEvalSourceConfig(
         kind=kind,
         path=(str(source.get("path")) if source.get("path") is not None else None),
@@ -3304,12 +3324,20 @@ def _load_json_mapping(path: Path) -> Mapping[str, Any]:
     return payload
 
 
-def _replay_gate_details(replay_result: CandidateReplayResult) -> dict[str, object]:
+def _replay_gate_details(
+    replay_result: CandidateReplayResult,
+    *,
+    dataset: SelfEvolveDataset,
+) -> dict[str, object]:
     details: dict[str, object] = {
         "baseline_status": replay_result.baseline.status,
         "candidate_status": replay_result.candidate.status,
         "baseline_failure": replay_result.baseline.failure,
         "candidate_failure": replay_result.candidate.failure,
+        **candidate_replay_pair_coverage(
+            dataset=dataset,
+            replay_result=replay_result,
+        ),
     }
     if replay_result.member_results:
         details["member_count"] = len(replay_result.member_results)
@@ -3330,10 +3358,15 @@ def _replay_gate_details(replay_result: CandidateReplayResult) -> dict[str, obje
 def _replay_confidence_gate(
     replay_result: CandidateReplayResult | None,
     *,
+    dataset: SelfEvolveDataset,
     apply_policy: str,
 ) -> GateResult | None:
     if replay_result is None or apply_policy != "auto_verified":
         return None
+    coverage = candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
     baseline_source = replay_result.baseline.metrics.get("replay_source")
     candidate_repetitions = replay_result.candidate.metrics.get("repetition_count")
     candidate_successful_repetitions = replay_result.candidate.metrics.get(
@@ -3342,6 +3375,20 @@ def _replay_confidence_gate(
     candidate_failed_repetitions = replay_result.candidate.metrics.get(
         "failed_repetition_count"
     )
+    base_details: dict[str, object] = {
+        **coverage,
+        "baseline_replay_source": baseline_source,
+        "candidate_repetition_count": candidate_repetitions,
+        "candidate_successful_repetition_count": candidate_successful_repetitions,
+        "candidate_failed_repetition_count": candidate_failed_repetitions,
+    }
+    if coverage["incomparable_pair_count"] > 0:
+        return GateResult(
+            gate_name="replay_confidence",
+            passed=False,
+            reason="replay comparison contains incomparable member outcomes",
+            details=base_details,
+        )
     if (
         baseline_source == "historical"
         and isinstance(candidate_repetitions, (int, float))
@@ -3352,7 +3399,7 @@ def _replay_confidence_gate(
             passed=False,
             reason="fixed historical baseline plus one candidate rerun is limited confidence",
             details={
-                "baseline_replay_source": baseline_source,
+                **base_details,
                 "candidate_repetition_count": int(candidate_repetitions),
             },
         )
@@ -3367,7 +3414,7 @@ def _replay_confidence_gate(
             passed=False,
             reason="candidate replay successful repetitions are insufficient",
             details={
-                "baseline_replay_source": baseline_source,
+                **base_details,
                 "candidate_repetition_count": int(candidate_repetitions),
                 "candidate_successful_repetition_count": int(candidate_successful_repetitions),
                 "candidate_failed_repetition_count": (
@@ -3381,11 +3428,7 @@ def _replay_confidence_gate(
         gate_name="replay_confidence",
         passed=True,
         reason="replay comparison has sufficient confidence for policy",
-        details={
-            "baseline_replay_source": baseline_source,
-            "candidate_repetition_count": candidate_repetitions,
-            "candidate_successful_repetition_count": candidate_successful_repetitions,
-        },
+        details=base_details,
     )
 
 

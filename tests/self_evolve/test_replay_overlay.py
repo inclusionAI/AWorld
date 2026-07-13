@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.datasets import (
+    EvalCase,
+    SelfEvolveDataset,
+    SelfEvolveEvalSourceConfig,
+    build_dataset_from_source,
+)
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.overlay import cleanup_self_evolve_overlays
 from aworld.self_evolve.replay import (
@@ -19,6 +24,7 @@ from aworld.self_evolve.replay import (
     ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
+    candidate_replay_is_comparable,
     load_candidate_replay_result,
     _member_artifact_name,
     _member_baseline_replay_dir,
@@ -449,6 +455,106 @@ def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
     )
 
     with pytest.raises(ValueError, match="candidate replay did not succeed"):
+        build_paired_replay_dataset(
+            dataset=dataset,
+            replay_result=replay,
+            candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
+        )
+
+
+def test_paired_replay_dataset_uses_source_trajectory_for_baseline_task_failure() -> None:
+    source_trajectory = [
+        {
+            "state": {"input": {"content": "task"}},
+            "action": {"content": "baseline did not finish"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=source_trajectory,
+        task_id="task-1",
+    )
+    replay = CandidateReplayResult(
+        request=CandidateReplayRequest(
+            run_id="run-task-failure",
+            task_id="task-1",
+            workspace_root=str(Path("/tmp/workspace")),
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+            candidate_id="cand-1",
+            overlay_skill_root="/tmp/overlay",
+            task_input="task",
+        ),
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="failed",
+            trajectory=[],
+            failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="cand-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate completed"}}],
+        ),
+    )
+
+    assert candidate_replay_is_comparable(dataset=dataset, replay_result=replay) is True
+
+    paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=replay,
+        candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
+    )
+
+    case = paired.cases[0]
+    assert case.metadata["variant_trajectories"]["baseline"][0]["action"][
+        "content"
+    ] == "baseline did not finish"
+    assert case.metadata["replay"]["baseline"]["outcome"] == "task_failure"
+    assert (
+        case.metadata["replay"]["baseline"]["trajectory_source"]
+        == "source_trajectory"
+    )
+
+
+def test_paired_replay_dataset_rejects_infrastructure_baseline_failure() -> None:
+    source_trajectory = [
+        {
+            "state": {"input": {"content": "task"}},
+            "action": {"content": "baseline"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=source_trajectory,
+        task_id="task-1",
+    )
+    replay = CandidateReplayResult(
+        request=CandidateReplayRequest(
+            run_id="run-infrastructure-failure",
+            task_id="task-1",
+            workspace_root=str(Path("/tmp/workspace")),
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+            candidate_id="cand-1",
+            overlay_skill_root="/tmp/overlay",
+            task_input="task",
+        ),
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="failed",
+            trajectory=[],
+            failure={"type": "ProcessError", "reason": "aworld-cli run failed"},
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="cand-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate completed"}}],
+        ),
+    )
+
+    assert candidate_replay_is_comparable(dataset=dataset, replay_result=replay) is False
+    with pytest.raises(ValueError, match="comparable paired outcomes"):
         build_paired_replay_dataset(
             dataset=dataset,
             replay_result=replay,

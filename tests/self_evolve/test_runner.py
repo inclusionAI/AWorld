@@ -31,7 +31,9 @@ from aworld.self_evolve.runner import (
     _iteration_validation_feedback,
     _rank_candidate_population,
     _rejected_candidate_ids_from_report,
+    _replay_confidence_gate,
     _replay_report,
+    _source_config_from_stored_dataset_recipe,
     _summary_with_replay_evidence_metrics,
     optimize_explicit_target,
     optimize_from_cli_request,
@@ -234,6 +236,188 @@ def test_multi_member_replay_advances_from_historical_to_current_member_root(
         / "candidate-1"
         / "members"
     )
+
+
+def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
+    baseline_trajectory = [{"action": {"content": "baseline failed task"}}]
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="task-a",
+                input="task A",
+                metadata={"baseline_trajectory": baseline_trajectory},
+            ),
+            EvalCase(
+                case_id="task-b",
+                input="task B",
+                metadata={"baseline_trajectory": baseline_trajectory},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-comparable",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="succeeded",
+        status="succeeded",
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    timeout = ReplayVariantResult(
+        variant_id="baseline",
+        status="failed",
+        trajectory=[],
+        failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+    )
+    replay = CandidateReplayResult(
+        request=request,
+        baseline=timeout,
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=succeeded.trajectory,
+            metrics={
+                "repetition_count": 3,
+                "successful_repetition_count": 3,
+                "failed_repetition_count": 0,
+            },
+        ),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=succeeded,
+                candidate=succeeded,
+            ),
+            CandidateReplayMemberResult(
+                case_id="task-b",
+                request=request,
+                baseline=timeout,
+                candidate=succeeded,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="auto_verified",
+    )
+
+    assert gate is not None
+    assert gate.passed is True
+    assert gate.details["strict_pair_count"] == 1
+    assert gate.details["task_failure_pair_count"] == 1
+    assert gate.details["incomparable_pair_count"] == 0
+
+
+def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="task-a",
+                input="task A",
+                metadata={
+                    "baseline_trajectory": [{"action": {"content": "baseline"}}]
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-infrastructure",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate-1",
+        status="succeeded",
+        trajectory=[{"action": {"content": "completed"}}],
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 3,
+            "failed_repetition_count": 0,
+        },
+    )
+    infrastructure_failure = ReplayVariantResult(
+        variant_id="baseline",
+        status="failed",
+        trajectory=[],
+        failure={"type": "ProcessError", "reason": "model initialization failed"},
+    )
+    replay = CandidateReplayResult(
+        request=request,
+        baseline=infrastructure_failure,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=infrastructure_failure,
+                candidate=candidate,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="auto_verified",
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.reason == "replay comparison contains incomparable member outcomes"
+    assert gate.details["infrastructure_failure_count"] == 1
+    assert gate.details["incomparable_pair_count"] == 1
+
+
+def test_stored_dataset_recipe_restores_auto_grouped_member_ids(
+    tmp_path: Path,
+) -> None:
+    recipe_path = tmp_path / "dataset_recipe.json"
+    recipe_path.write_text(
+        json.dumps(
+            {
+                "source": {
+                    "kind": "trajectory_log",
+                    "path": "/tmp/trajectory.log",
+                    "task_ids": [],
+                    "auto_grouping": {
+                        "auto_grouped": True,
+                        "selected_case_ids": ["task-a", "task-b"],
+                    },
+                },
+                "split_seed": "stored-seed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    source_config, split_seed = _source_config_from_stored_dataset_recipe(
+        recipe_path
+    )
+
+    assert source_config.task_ids == ("task-a", "task-b")
+    assert split_seed == "stored-seed"
 
 
 def _write_trajectory_log(path: Path, records: list[dict]) -> None:
