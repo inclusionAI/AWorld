@@ -349,17 +349,27 @@ class AWorldTrajectoryEvaluatorBackend:
                     runner_kwargs=runner_kwargs,
                     log_path=runtime_log_path,
                 )
-            except asyncio.TimeoutError:
-                failures.append(
-                    {
-                        "attempt": attempt_index,
-                        "type": "TimeoutError",
-                        "reason": (
-                            "AWorld trajectory judge timed out after "
-                            f"{self.judge_timeout_seconds:g}s"
-                        ),
-                    }
-                )
+            except asyncio.TimeoutError as exc:
+                timeout_reason = str(exc).strip()
+                if not timeout_reason:
+                    timeout_reason = (
+                        "AWorld trajectory judge timed out after "
+                        f"{self.judge_timeout_seconds:g}s"
+                        if self.judge_timeout_seconds is not None
+                        else "AWorld trajectory judge timed out"
+                    )
+                failure: dict[str, Any] = {
+                    "attempt": attempt_index,
+                    "type": "TimeoutError",
+                    "reason": timeout_reason,
+                }
+                diagnostics = _judge_diagnostics_from_exception(exc)
+                if diagnostics:
+                    failure["diagnostics"] = diagnostics
+                    timeout_phase = diagnostics[-1].get("phase")
+                    if isinstance(timeout_phase, str) and timeout_phase:
+                        failure["timeout_phase"] = timeout_phase
+                failures.append(failure)
                 logger.info(
                     "self_evolve.evaluator.attempt.end "
                     f"variant_id={request.variant_id} split={request.dataset_split} "
@@ -514,6 +524,13 @@ def _self_evolve_runtime_log_env(log_path: Path):
 
 def _is_missing_model_profile_error(exc: Exception) -> bool:
     return "model profile not found or incomplete" in str(exc)
+
+
+def _judge_diagnostics_from_exception(exc: BaseException) -> list[dict[str, Any]]:
+    diagnostics = getattr(exc, "judge_diagnostics", None)
+    if not isinstance(diagnostics, (list, tuple)):
+        return []
+    return [dict(item) for item in diagnostics if isinstance(item, Mapping)]
 
 
 async def evaluate_baseline_and_candidate(
@@ -1006,6 +1023,7 @@ def _aworld_evaluator_metrics(
                 if isinstance(aggregate, Mapping) and isinstance(aggregate.get("mean"), (int, float)):
                     metrics[str(metric_name)] = float(aggregate["mean"])
     metrics.update(_aworld_evidence_quality_metrics(report))
+    metrics.update(_aworld_judge_diagnostic_metrics(report))
 
     gate = report.get("gate")
     gate_status = gate.get("status") if isinstance(gate, Mapping) else None
@@ -1064,9 +1082,18 @@ def _aggregate_aworld_evaluator_metrics(
         "input_path": str(input_path),
     }
     keys = {key for metrics in per_run for key in metrics}
+    combined_judge_diagnostics: list[dict[str, Any]] = []
     for key in sorted(keys):
         values = [metrics[key] for metrics in per_run if key in metrics]
         if not values:
+            continue
+        if key == "judge_call_diagnostics":
+            for value in values:
+                if not isinstance(value, list):
+                    continue
+                combined_judge_diagnostics.extend(
+                    dict(item) for item in value if isinstance(item, Mapping)
+                )
             continue
         if key in {"evidence_compacted", "evidence_incomplete"}:
             aggregated[key] = any(_truthy_metric(value) for value in values)
@@ -1103,6 +1130,9 @@ def _aggregate_aworld_evaluator_metrics(
         if all(value == values[0] for value in values):
             aggregated[key] = values[0]
 
+    if combined_judge_diagnostics:
+        aggregated.update(_summarize_judge_diagnostics(combined_judge_diagnostics))
+
     gate_passed = bool(aggregated.get("evaluator_gate_passed"))
     aggregated["global_regression_passed"] = gate_passed
     aggregated["deterministic_signal"] = gate_passed
@@ -1111,6 +1141,64 @@ def _aggregate_aworld_evaluator_metrics(
     aggregated["command_failure_count"] = 0 if gate_passed else case_count
     aggregated["command_pass_rate"] = 1.0 if gate_passed else 0.0
     return aggregated
+
+
+def _aworld_judge_diagnostic_metrics(report: Mapping[str, Any]) -> dict[str, Any]:
+    diagnostics: list[dict[str, Any]] = []
+    results = report.get("results")
+    if isinstance(results, list):
+        for result in results:
+            if not isinstance(result, Mapping):
+                continue
+            case_diagnostics = result.get("judge_diagnostics")
+            if not isinstance(case_diagnostics, list):
+                continue
+            diagnostics.extend(
+                dict(item) for item in case_diagnostics if isinstance(item, Mapping)
+            )
+    return _summarize_judge_diagnostics(diagnostics)
+
+
+def _summarize_judge_diagnostics(
+    diagnostics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not diagnostics:
+        return {}
+
+    def _number(item: Mapping[str, Any], key: str) -> float:
+        value = item.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return 0.0
+
+    latencies = [_number(item, "latency_ms") for item in diagnostics]
+    return {
+        "judge_call_diagnostics": [dict(item) for item in diagnostics],
+        "judge_call_count": len(diagnostics),
+        "judge_artifact_read_round_count": sum(
+            1 for item in diagnostics if str(item.get("phase", "")).startswith("artifact_read_round_")
+        ),
+        "judge_artifact_request_count": int(
+            sum(_number(item, "artifact_request_count") for item in diagnostics)
+        ),
+        "judge_artifact_read_count": int(
+            sum(_number(item, "artifact_read_count") for item in diagnostics)
+        ),
+        "judge_artifact_read_chars": int(
+            sum(_number(item, "artifact_read_chars") for item in diagnostics)
+        ),
+        "judge_prompt_chars_total": int(
+            sum(_number(item, "prompt_chars") for item in diagnostics)
+        ),
+        "judge_estimated_input_tokens_total": int(
+            sum(_number(item, "estimated_input_tokens") for item in diagnostics)
+        ),
+        "judge_model_latency_ms_total": sum(latencies),
+        "judge_model_latency_ms_max": max(latencies, default=0.0),
+        "judge_timeout_count": sum(
+            1 for item in diagnostics if item.get("status") == "timed_out"
+        ),
+    }
 
 
 def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any]:

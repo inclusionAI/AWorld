@@ -9,6 +9,7 @@ import inspect
 import os
 import re
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ from aworld.evaluations.report import (
     EvaluatorReport,
 )
 from aworld.runners.evaluate_runner import EvaluateRunner
+from aworld.logs.util import logger
 
 
 JudgeCallable = Callable[[dict[str, Any], dict[str, Any]], Mapping[str, Any] | Awaitable[Mapping[str, Any]]]
@@ -291,6 +293,15 @@ class GatePolicyDef:
 class JudgeExecution:
     backend_id: str
     payload: dict[str, Any]
+    diagnostics: tuple[dict[str, Any], ...] = tuple()
+
+
+class JudgeTimeoutError(asyncio.TimeoutError):
+    """A judge call timeout with bounded, content-free call diagnostics."""
+
+    def __init__(self, message: str, *, diagnostics: tuple[dict[str, Any], ...]) -> None:
+        super().__init__(message)
+        self.judge_diagnostics = diagnostics
 
 
 class _RuntimeCompositionJudgeOutput(BaseModel):
@@ -408,6 +419,8 @@ class AgentJudgeBackend:
         prompt_builder = self.prompt_builder or _build_default_judge_prompt
         prompt = prompt_builder(case_input, target, suite)
         executor = self.executor
+        diagnostics: list[dict[str, Any]] = []
+        suite_id = str(getattr(suite, "suite_id", "unknown") or "unknown")
 
         async def _run_executor(current_prompt: JudgePrompt):
             if executor is None:
@@ -422,31 +435,130 @@ class AgentJudgeBackend:
                 return await result
             return result
 
-        async def _run_with_timeout(current_prompt: JudgePrompt):
-            if self.timeout_seconds is None:
-                return await _run_executor(current_prompt)
-            task = asyncio.create_task(_run_executor(current_prompt))
+        async def _run_with_timeout(
+            current_prompt: JudgePrompt,
+            *,
+            phase: str,
+            round_index: int,
+            read_results: list[dict[str, Any]] | None = None,
+        ):
+            diagnostic = _judge_call_diagnostic(
+                prompt=current_prompt,
+                system_prompt=self.system_prompt,
+                phase=phase,
+                round_index=round_index,
+                timeout_seconds=self.timeout_seconds,
+                read_results=read_results or [],
+            )
+            started_at = time.monotonic()
+            logger.info(
+                "evaluation.judge.call.start "
+                f"backend_id={self.backend_id} suite_id={suite_id} "
+                f"phase={phase} round_index={round_index} "
+                f"prompt_chars={diagnostic['prompt_chars']} "
+                f"estimated_input_tokens={diagnostic['estimated_input_tokens']} "
+                f"artifact_read_count={diagnostic['artifact_read_count']}"
+            )
             try:
-                return await asyncio.wait_for(task, timeout=self.timeout_seconds)
-            except Exception:
-                task.cancel()
+                if self.timeout_seconds is None:
+                    result = await _run_executor(current_prompt)
+                else:
+                    task = asyncio.create_task(_run_executor(current_prompt))
+                    try:
+                        result = await asyncio.wait_for(task, timeout=self.timeout_seconds)
+                    except Exception:
+                        task.cancel()
+                        try:
+                            await task
+                        except BaseException:
+                            pass
+                        raise
+            except asyncio.TimeoutError as exc:
+                diagnostic.update(
+                    {
+                        "status": "timed_out",
+                        "latency_ms": _elapsed_monotonic_ms(started_at),
+                        "error_type": "TimeoutError",
+                    }
+                )
+                diagnostics.append(diagnostic)
+                logger.info(
+                    "evaluation.judge.call.end "
+                    f"backend_id={self.backend_id} suite_id={suite_id} "
+                    f"phase={phase} round_index={round_index} status=timed_out "
+                    f"latency_ms={diagnostic['latency_ms']:.3f}"
+                )
+                timeout_text = (
+                    f" after {self.timeout_seconds:g}s"
+                    if self.timeout_seconds is not None
+                    else ""
+                )
+                raise JudgeTimeoutError(
+                    f"judge call timed out during {phase}{timeout_text}",
+                    diagnostics=tuple(dict(item) for item in diagnostics),
+                ) from exc
+            except Exception as exc:
+                diagnostic.update(
+                    {
+                        "status": "failed",
+                        "latency_ms": _elapsed_monotonic_ms(started_at),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                diagnostics.append(diagnostic)
+                logger.info(
+                    "evaluation.judge.call.end "
+                    f"backend_id={self.backend_id} suite_id={suite_id} "
+                    f"phase={phase} round_index={round_index} status=failed "
+                    f"latency_ms={diagnostic['latency_ms']:.3f} "
+                    f"error_type={type(exc).__name__}"
+                )
                 try:
-                    await task
-                except BaseException:
+                    setattr(exc, "judge_diagnostics", tuple(dict(item) for item in diagnostics))
+                except (AttributeError, TypeError):
                     pass
                 raise
+            diagnostic.update(
+                {
+                    "status": "succeeded",
+                    "latency_ms": _elapsed_monotonic_ms(started_at),
+                    "artifact_request_count": len(_extract_artifact_read_requests(result)),
+                }
+            )
+            diagnostics.append(diagnostic)
+            logger.info(
+                "evaluation.judge.call.end "
+                f"backend_id={self.backend_id} suite_id={suite_id} "
+                f"phase={phase} round_index={round_index} status=succeeded "
+                f"latency_ms={diagnostic['latency_ms']:.3f} "
+                f"artifact_request_count={diagnostic['artifact_request_count']}"
+            )
+            return result
 
-        response = await _run_with_timeout(prompt)
+        response = await _run_with_timeout(
+            prompt,
+            phase="initial_judge",
+            round_index=0,
+        )
         prompt_for_reads = prompt
-        for _ in range(_MAX_JUDGE_ARTIFACT_READ_ROUNDS):
+        for read_round in range(1, _MAX_JUDGE_ARTIFACT_READ_ROUNDS + 1):
             read_requests = _extract_artifact_read_requests(response)
             if not read_requests:
                 break
             read_results = _resolve_artifact_read_requests(prompt_for_reads, read_requests)
             prompt_for_reads = _append_artifact_read_results_to_prompt(prompt_for_reads, read_results)
-            response = await _run_with_timeout(prompt_for_reads)
+            response = await _run_with_timeout(
+                prompt_for_reads,
+                phase=f"artifact_read_round_{read_round}",
+                round_index=read_round,
+                read_results=read_results,
+            )
         payload = _coerce_judge_payload(response, judge_schema=getattr(suite, "judge_schema", None))
-        return JudgeExecution(backend_id=self.backend_id, payload=payload)
+        return JudgeExecution(
+            backend_id=self.backend_id,
+            payload=payload,
+            diagnostics=tuple(dict(item) for item in diagnostics),
+        )
 
     async def judge(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> dict[str, Any]:
         execution = await self.execute(case_input, target, suite)
@@ -1332,6 +1444,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
         case_metrics: dict[str, Any] = {}
         case_metric_details: dict[str, Any] = {}
         case_backend_id = None
+        case_judge_diagnostics: list[dict[str, Any]] = []
         if case_result.score_rows:
             cases_with_metrics += 1
         for score_row in case_result.score_rows.values():
@@ -1362,6 +1475,11 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
             metric_result = score_row.metric_results.get("score", {})
             judge_payload = dict(metric_result.get("metadata", {}))
             report_backend_id = report_backend_id or judge_payload.pop("_judge_backend", None)
+            raw_diagnostics = judge_payload.pop("_judge_diagnostics", None)
+            if isinstance(raw_diagnostics, list):
+                case_judge_diagnostics = [
+                    dict(item) for item in raw_diagnostics if isinstance(item, Mapping)
+                ]
         if judge_payload:
             cases_with_judge += 1
         results.append(
@@ -1371,6 +1489,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
                 metrics=case_metrics,
                 judge=judge_payload,
                 judge_backend={"backend_id": case_backend_id} if case_backend_id is not None else None,
+                judge_diagnostics=case_judge_diagnostics,
                 state_summary=_build_state_summary(case_result.output),
                 artifacts=_build_state_artifacts(case_result.output),
                 metadata=_build_state_metadata(case_result.output),
@@ -1742,6 +1861,42 @@ def _extract_artifact_read_requests(response: Mapping[str, Any] | str) -> list[d
 
 def _prompt_text(prompt: JudgePrompt) -> str:
     return prompt[0] if isinstance(prompt, tuple) else prompt
+
+
+def _judge_call_diagnostic(
+    *,
+    prompt: JudgePrompt,
+    system_prompt: str,
+    phase: str,
+    round_index: int,
+    timeout_seconds: float | None,
+    read_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    prompt_chars = len(_prompt_text(prompt))
+    system_prompt_chars = len(system_prompt)
+    input_chars = prompt_chars + system_prompt_chars
+    successful_reads = [result for result in read_results if result.get("status") == "ok"]
+    return {
+        "phase": phase,
+        "round_index": round_index,
+        "status": "running",
+        "prompt_chars": prompt_chars,
+        "system_prompt_chars": system_prompt_chars,
+        "input_chars": input_chars,
+        "estimated_input_tokens": (input_chars + 3) // 4,
+        "artifact_request_count": 0,
+        "artifact_read_result_count": len(read_results),
+        "artifact_read_count": len(successful_reads),
+        "artifact_read_chars": sum(
+            int(result.get("chars_returned") or 0)
+            for result in successful_reads
+        ),
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def _elapsed_monotonic_ms(started_at: float) -> float:
+    return (time.monotonic() - started_at) * 1000
 
 
 def _allowed_artifact_paths(prompt: JudgePrompt) -> dict[str, str]:
