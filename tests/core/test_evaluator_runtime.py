@@ -1043,6 +1043,63 @@ def test_trajectory_prompt_includes_canonical_evidence_bundle(tmp_path: Path) ->
     )
 
 
+def test_trajectory_prompt_preserves_non_file_evidence_metadata_in_digest(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "scheduled_notification",
+                        "evidence_type": "metadata",
+                        "extraction_method": "scheduler_response",
+                        "metadata": {
+                            "operation": "schedule_notification",
+                            "reference_id": "job-123",
+                            "status": "scheduled",
+                        },
+                        "bounded_evidence": {
+                            "bounded_excerpt": "Notification job job-123 was scheduled."
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "schedule the report"},
+            {
+                "case_id": "case-1",
+                "answer": "scheduled",
+                "trajectory": [],
+                "artifacts": {"outcome": {"extracted_path": None}},
+                "evidence_bundle_path": str(bundle_path),
+            },
+            suite=None,
+        )
+    )
+
+    digest_entry = prompt["evidence_digest"]["entries"][0]
+    assert digest_entry["evidence_type"] == "metadata"
+    assert digest_entry["metadata"] == {
+        "operation": "schedule_notification",
+        "reference_id": "job-123",
+        "status": "scheduled",
+    }
+    assert digest_entry["evidence"]["bounded_excerpt"] == (
+        "Notification job job-123 was scheduled."
+    )
+    assert "artifact_path" not in digest_entry
+
+
 def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload(
     tmp_path: Path,
 ) -> None:

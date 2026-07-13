@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from aworld.logs.util import logger
+from aworld.memory.tool_call_compaction import REPLAY_COMPACTED_ARGUMENT_FAILURE
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -742,6 +743,18 @@ class AWorldCliReplayExecutor:
                 evidence_manifest=evidence_manifest,
                 workspace_root=Path(request.workspace_root),
             )
+            compacted_argument_failure = _compacted_argument_replay_failure(
+                evidence_metrics
+            )
+            if compacted_argument_failure is not None:
+                return ReplayExecutionResult(
+                    status="failed",
+                    trajectory=[],
+                    stdout=stdout,
+                    stderr=stderr,
+                    failure=compacted_argument_failure,
+                    metrics=evidence_metrics,
+                )
             if _has_valid_artifact_backed_timeout_evidence(evidence_metrics):
                 metrics = {
                     "trajectory_capture_mode": "artifact_manifest",
@@ -784,6 +797,16 @@ class AWorldCliReplayExecutor:
             "trajectory_capture_mode": capture_mode,
             **evidence_metrics,
         }
+        compacted_argument_failure = _compacted_argument_replay_failure(metrics)
+        if compacted_argument_failure is not None:
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=trajectory,
+                stdout=stdout,
+                stderr=stderr,
+                metrics=metrics,
+                failure=compacted_argument_failure,
+            )
         if completed.returncode == 0 and trajectory and capture_mode != "task_response":
             return ReplayExecutionResult(
                 status="failed",
@@ -1081,7 +1104,8 @@ Self-evolve replay evidence requirements:
 - Also export or use AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR={artifact_dir} when invoking tools that can receive environment variables.
 - Append one JSON object per evidence source to this exact replay evidence_manifest.jsonl file: {evidence_manifest}
 - Also export or use AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST={evidence_manifest} when invoking tools that can receive environment variables.
-- Each manifest object must include source_id, artifact_path, extraction_method, and the bounded excerpt or field list used for the final answer.
+- Each manifest object must include source_id, extraction_method, and the bounded excerpt or field list used for the final answer.
+- File-backed evidence must include artifact_path. Non-file operation evidence must instead use evidence_type="metadata" with a structured metadata object; never place job IDs, status text, or multiple values into artifact_path.
 - Emit only bounded structured summaries with source identifiers, locations, and short excerpts.
 - If a tool result is compacted, truncated, schema-invalid, or too large to inspect and no valid artifact-backed evidence bundle, manifest entry, or bounded extract exists, treat that result as unusable evidence and retry with a narrower extraction strategy before answering.
 - Keep a concise evidence ledger mapping important final-answer claims to non-compacted extracts or artifact references.
@@ -1193,6 +1217,9 @@ def _replay_evidence_metrics(
     if any(marker in signal_text for marker in truncated_markers):
         signals.append("tool_output_truncated")
     compacted = bool(signals)
+    replay_compacted_argument_blocked = (
+        REPLAY_COMPACTED_ARGUMENT_FAILURE in signal_text
+    )
     manifest_metrics = _evidence_manifest_metrics(
         artifact_dir=artifact_dir,
         evidence_manifest=evidence_manifest,
@@ -1203,11 +1230,25 @@ def _replay_evidence_metrics(
     manifest_fully_valid = manifest_valid and not (
         isinstance(manifest_invalid_count, (int, float)) and manifest_invalid_count > 0
     )
-    return {
+    metrics = {
         "evidence_compacted": compacted,
         "evidence_strategy_passed": (not compacted) or manifest_fully_valid,
         "evidence_compaction_signals": signals,
         **manifest_metrics,
+    }
+    if replay_compacted_argument_blocked:
+        metrics["replay_compacted_argument_blocked"] = True
+    return metrics
+
+
+def _compacted_argument_replay_failure(
+    metrics: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if metrics.get("replay_compacted_argument_blocked") is not True:
+        return None
+    return {
+        "reason": REPLAY_COMPACTED_ARGUMENT_FAILURE,
+        "detail": "replay stopped before executing compacted tool arguments",
     }
 
 
@@ -1315,9 +1356,12 @@ def _canonical_evidence_entry(
     *,
     artifact_dir: Path | None,
 ) -> dict[str, Any]:
-    artifact_path = _manifest_artifact_path(entry, artifact_dir=artifact_dir)
     bounded_evidence = _bounded_evidence_payload(entry)
-    if not bounded_evidence:
+    evidence_type = _manifest_evidence_type(entry)
+    artifact_path = None
+    if evidence_type == "artifact":
+        artifact_path = _manifest_artifact_path(entry, artifact_dir=artifact_dir)
+    if not bounded_evidence and artifact_path is not None:
         synthetic_excerpt = _synthetic_bounded_artifact_excerpt(artifact_path)
         if synthetic_excerpt:
             bounded_evidence["bounded_excerpt"] = synthetic_excerpt["text"]
@@ -1326,12 +1370,17 @@ def _canonical_evidence_entry(
     fields_used = entry.get("fields_used")
     if fields_used and "fields_used" not in bounded_evidence:
         bounded_evidence["fields_used"] = fields_used
-    return {
+    canonical = {
         "source_id": str(entry.get("source_id") or ""),
-        "artifact_path": str(artifact_path),
         "extraction_method": str(entry.get("extraction_method") or ""),
         "bounded_evidence": bounded_evidence,
     }
+    if evidence_type == "metadata":
+        canonical["evidence_type"] = "metadata"
+        canonical["metadata"] = dict(entry.get("metadata") or {})
+    elif artifact_path is not None:
+        canonical["artifact_path"] = str(artifact_path)
+    return canonical
 
 
 def _bounded_evidence_payload(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -1347,9 +1396,21 @@ def _invalid_evidence_manifest_entry_reason(
     *,
     artifact_dir: Path | None,
 ) -> str | None:
-    for key in ("source_id", "artifact_path", "extraction_method"):
+    for key in ("source_id", "extraction_method"):
         if not str(entry.get(key) or "").strip():
             return f"missing {key}"
+    evidence_type = _manifest_evidence_type(entry)
+    if evidence_type == "metadata":
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, Mapping) or not metadata:
+            return "missing metadata"
+        if not _has_inline_bounded_evidence_payload(entry):
+            return "missing bounded evidence payload"
+        return None
+    if evidence_type != "artifact":
+        return f"unsupported evidence_type: {evidence_type}"
+    if not str(entry.get("artifact_path") or "").strip():
+        return "missing artifact_path"
     artifact_path = _manifest_artifact_path(entry, artifact_dir=artifact_dir)
     has_inline_bounded_evidence = _has_inline_bounded_evidence_payload(entry)
     if not artifact_path.exists():
@@ -1367,6 +1428,17 @@ def _invalid_evidence_manifest_entry_reason(
     return None
 
 
+def _manifest_evidence_type(entry: Mapping[str, Any]) -> str:
+    explicit = str(entry.get("evidence_type") or "").strip().lower()
+    if explicit:
+        return explicit
+    if not str(entry.get("artifact_path") or "").strip() and isinstance(
+        entry.get("metadata"), Mapping
+    ):
+        return "metadata"
+    return "artifact"
+
+
 def _manifest_artifact_path(entry: Mapping[str, Any], *, artifact_dir: Path | None) -> Path:
     artifact_path = Path(str(entry.get("artifact_path")))
     if not artifact_path.is_absolute() and artifact_dir is not None:
@@ -1381,6 +1453,8 @@ def _archive_workspace_manifest_artifact(
     workspace_root: Path | None,
 ) -> Mapping[str, Any]:
     if artifact_dir is None or workspace_root is None:
+        return entry
+    if _manifest_evidence_type(entry) != "artifact":
         return entry
     artifact_path = _manifest_artifact_path(entry, artifact_dir=artifact_dir)
     try:

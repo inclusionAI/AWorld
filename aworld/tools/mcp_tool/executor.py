@@ -12,7 +12,10 @@ from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.tool.base import ToolActionExecutor, Tool, AsyncTool
 from aworld.logs.util import logger
 from aworld.mcp_client.server import MCPServer, MCPServerSse
-from aworld.memory.tool_call_compaction import compacted_replay_execution_error
+from aworld.memory.tool_call_compaction import (
+    REPLAY_COMPACTED_ARGUMENT_FAILURE,
+    compacted_replay_execution_error,
+)
 import aworld.mcp_client.utils as mcp_utils
 from aworld.utils.common import sync_exec, find_file
 
@@ -193,7 +196,16 @@ class MCPToolExecutor(ToolActionExecutor):
             )
             if replay_error:
                 logger.warning(f"Blocking replay-compacted MCP tool call: {replay_error}")
-                results.append(ActionResult(content=replay_error, keep=True))
+                results.append(
+                    ActionResult(
+                        content=f"{REPLAY_COMPACTED_ARGUMENT_FAILURE}: {replay_error}",
+                        keep=True,
+                        is_done=True,
+                        success=False,
+                        error=REPLAY_COMPACTED_ARGUMENT_FAILURE,
+                        metadata={"failure_type": REPLAY_COMPACTED_ARGUMENT_FAILURE},
+                    )
+                )
                 continue
 
             try:

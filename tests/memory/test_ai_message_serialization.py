@@ -203,10 +203,29 @@ def test_memory_ai_message_compacts_oversized_tool_call_arguments_for_replay():
     assert compacted_args["payload"]["content_hash"].startswith("sha256:")
 
 
-def test_normalize_tool_call_arguments_compacts_large_string_fields_before_full_placeholder():
+def test_normalize_tool_call_arguments_preserves_bounded_execution_critical_fields():
+    command = (
+        "cat > script.py <<'EOF'\n"
+        + ("print('hello world')\n" * 80)
+        + "EOF\npython3 script.py\n"
+    )
+    arguments = json.dumps({"command": command, "timeout": 30})
+
+    normalized = normalize_tool_call_arguments_for_replay(
+        arguments,
+        tool_name="bash",
+        token_threshold=100000,
+    )
+    parsed = json.loads(normalized)
+
+    assert parsed["timeout"] == 30
+    assert parsed["command"] == command
+
+
+def test_normalize_tool_call_arguments_compacts_oversized_execution_critical_fields():
     arguments = json.dumps(
         {
-            "command": "cat > script.py <<'EOF'\n" + ("print('hello world')\n" * 300) + "EOF\npython3 script.py\n",
+            "command": "python3 - <<'PY'\n" + ("print('hello world')\n" * 1000) + "PY\n",
             "timeout": 30,
         }
     )
@@ -219,10 +238,8 @@ def test_normalize_tool_call_arguments_compacts_large_string_fields_before_full_
     parsed = json.loads(normalized)
 
     assert parsed["timeout"] == 30
-    assert isinstance(parsed["command"], dict)
     assert parsed["command"]["_aworld_replay"] == "compacted_string_field"
     assert parsed["command"]["field_hint"] == "command"
-    assert parsed["command"]["sanitized_reason"] == "oversized_string_field_compaction"
 
 
 def test_normalize_tool_call_arguments_preserves_moderate_subagent_directive_text():

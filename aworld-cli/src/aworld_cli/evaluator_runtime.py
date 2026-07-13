@@ -814,7 +814,13 @@ def _evidence_digest_bundle_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     digest_entry = {
         "source_id": str(entry.get("source_id") or ""),
         "artifact_path": str(entry.get("artifact_path") or ""),
+        "evidence_type": str(entry.get("evidence_type") or ""),
         "extraction_method": str(entry.get("extraction_method") or ""),
+        "metadata": (
+            _compact_digest_mapping(entry["metadata"])
+            if isinstance(entry.get("metadata"), Mapping)
+            else {}
+        ),
         "evidence": _compact_digest_mapping(evidence),
     }
     return {key: value for key, value in digest_entry.items() if value not in ("", {})}
@@ -1135,11 +1141,16 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
 
 
 def _prompt_bundle_artifact_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    compacted = {
         "source_id": str(entry.get("source_id") or ""),
         "artifact_path": str(entry.get("artifact_path") or ""),
+        "evidence_type": str(entry.get("evidence_type") or ""),
         "extraction_method": str(entry.get("extraction_method") or ""),
     }
+    metadata = entry.get("metadata")
+    if isinstance(metadata, Mapping):
+        compacted["metadata"] = _compact_digest_mapping(metadata)
+    return {key: value for key, value in compacted.items() if value not in ("", {})}
 
 
 def _compact_prompt_bundle_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
