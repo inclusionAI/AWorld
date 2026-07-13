@@ -66,6 +66,9 @@ from aworld.self_evolve.replay import (
     build_paired_replay_dataset,
     build_replay_request,
     load_candidate_replay_result,
+    _load_variant_result_from_dir,
+    _is_replayable_user_task_case,
+    _select_replay_case,
 )
 from aworld.self_evolve.release_checks import (
     build_content_quality_diagnostics,
@@ -312,6 +315,7 @@ class SelfEvolveRunner:
             feedback.variant_id
             for feedback in prior_feedback
             if feedback.metrics.get("candidate_status") == "rejected"
+            and not _retryable_infrastructure_rejection(feedback.metrics)
         }
         accepted_candidate_ids = {
             feedback.variant_id
@@ -501,7 +505,13 @@ class SelfEvolveRunner:
                 continue
 
             accepted_in_iteration = False
-            reusable_baseline_replay_dir: str | None = None
+            reusable_baseline_replay_dir: str | None = _find_reusable_baseline_replay_dir(
+                store=self.store,
+                run_id=run_id,
+                target=target.identity,
+                dataset=dataset,
+                baseline_repetitions=self.baseline_replay_repetitions,
+            )
             for candidate_index, iteration_candidate in enumerate(candidate_population):
                 state, report_item, validation_feedback = await self._evaluate_iteration_candidate(
                     run_id=run_id,
@@ -2224,6 +2234,143 @@ def _baseline_replay_artifact_dir(replay_result: CandidateReplayResult) -> str:
     return str(Path(_replay_artifact_path(replay_result)) / "baseline")
 
 
+def _find_reusable_baseline_replay_dir(
+    *,
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    target: SelfEvolveTargetRef,
+    dataset: SelfEvolveDataset,
+    baseline_repetitions: int,
+) -> str | None:
+    root = store.artifact_root
+    if not root.exists():
+        return None
+    case_ids = tuple(
+        case.case_id for case in dataset.cases if _is_replayable_user_task_case(case)
+    )
+    if not case_ids:
+        case_ids = tuple(case.case_id for case in dataset.cases)
+    run_dirs = [
+        path
+        for path in root.iterdir()
+        if path.is_dir() and path.name != run_id
+    ]
+    for prior_run_dir in sorted(run_dirs, key=lambda path: path.stat().st_mtime, reverse=True):
+        replay_root = prior_run_dir / "replay"
+        if not replay_root.exists():
+            continue
+        replay_dirs = [path for path in replay_root.iterdir() if path.is_dir()]
+        for replay_dir in sorted(replay_dirs, key=lambda path: path.stat().st_mtime, reverse=True):
+            try:
+                replay_result = load_candidate_replay_result(replay_dir)
+            except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+                legacy_baseline_dir = _legacy_member_baseline_replay_dir(
+                    replay_dir=replay_dir,
+                    target=target,
+                    case_ids=case_ids,
+                    baseline_repetitions=baseline_repetitions,
+                )
+                if legacy_baseline_dir is not None:
+                    return legacy_baseline_dir
+                continue
+            if not _replay_target_matches(replay_result.request.target, target):
+                continue
+            if replay_result.member_results:
+                member_case_ids = tuple(member.case_id for member in replay_result.member_results)
+                if set(member_case_ids) != set(case_ids):
+                    continue
+                if all(
+                    member.baseline.succeeded
+                    and _successful_replay_count(member.baseline) >= baseline_repetitions
+                    for member in replay_result.member_results
+                ):
+                    members_dir = replay_dir / "members"
+                    if (members_dir / "manifest.json").exists():
+                        return str(members_dir)
+                continue
+            if len(case_ids) != 1 or replay_result.request.task_id != case_ids[0]:
+                continue
+            if (
+                replay_result.baseline.succeeded
+                and _successful_replay_count(replay_result.baseline) >= baseline_repetitions
+            ):
+                baseline_dir = replay_dir / "baseline"
+                if baseline_dir.exists():
+                    return str(baseline_dir)
+    return None
+
+
+def _legacy_member_baseline_replay_dir(
+    *,
+    replay_dir: Path,
+    target: SelfEvolveTargetRef,
+    case_ids: tuple[str, ...],
+    baseline_repetitions: int,
+) -> str | None:
+    members_root = replay_dir / "members"
+    if not members_root.exists():
+        return None
+    reusable_by_case: dict[str, Path] = {}
+    for member_dir in sorted(members_root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True):
+        if not member_dir.is_dir():
+            continue
+        request_path = member_dir / "request.json"
+        if not request_path.exists():
+            continue
+        try:
+            payload = json.loads(request_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping):
+                continue
+            target_payload = payload.get("target")
+            if not isinstance(target_payload, Mapping):
+                continue
+            stored_target = SelfEvolveTargetRef(
+                target_type=str(target_payload.get("target_type") or ""),
+                target_id=str(target_payload.get("target_id") or ""),
+                path=(
+                    str(target_payload.get("path"))
+                    if target_payload.get("path") is not None
+                    else None
+                ),
+            )
+            task_id = str(payload.get("task_id") or "")
+            if task_id not in case_ids:
+                continue
+            if not _replay_target_matches(stored_target, target):
+                continue
+            baseline = _load_variant_result_from_dir(
+                member_dir / "baseline",
+                base_variant_id="baseline",
+            )
+        except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+            continue
+        if baseline.succeeded and _successful_replay_count(baseline) >= baseline_repetitions:
+            reusable_by_case[task_id] = member_dir / "baseline"
+    if len(case_ids) == 1:
+        baseline_dir = reusable_by_case.get(case_ids[0])
+        return str(baseline_dir) if baseline_dir is not None else None
+    if all(case_id in reusable_by_case for case_id in case_ids):
+        return str(members_root)
+    return None
+
+
+def _replay_target_matches(stored: SelfEvolveTargetRef, current: SelfEvolveTargetRef) -> bool:
+    if stored.target_type != current.target_type or stored.target_id != current.target_id:
+        return False
+    if stored.path is None or current.path is None:
+        return True
+    return Path(stored.path).expanduser() == Path(current.path).expanduser()
+
+
+def _successful_replay_count(result: ReplayVariantResult) -> int:
+    count = result.metrics.get("successful_repetition_count")
+    if isinstance(count, (int, float)):
+        return int(count)
+    if result.repetition_results:
+        return sum(1 for repetition in result.repetition_results if repetition.succeeded)
+    return 1 if result.succeeded else 0
+
+
 def _evaluator_report_paths(
     *summaries: EvaluationSummary | None,
 ) -> list[str]:
@@ -2362,6 +2509,7 @@ def _load_prior_rejected_semantic_lesson_fingerprints(
 
 def _rejected_candidate_ids_from_report(report: Mapping[str, Any]) -> set[str]:
     rejected: set[str] = set()
+    retryable_infra_rejections: set[str] = set()
     iterations = report.get("iterations")
     if isinstance(iterations, list):
         for item in iterations:
@@ -2371,9 +2519,17 @@ def _rejected_candidate_ids_from_report(report: Mapping[str, Any]) -> set[str]:
                 continue
             candidate_id = item.get("candidate_id")
             if isinstance(candidate_id, str) and candidate_id:
+                if _retryable_infrastructure_rejection(_historical_feedback_metrics(item)):
+                    retryable_infra_rejections.add(candidate_id)
+                    continue
                 rejected.add(candidate_id)
     selected = report.get("selected_candidate_id")
-    if str(report.get("status")) == "rejected" and isinstance(selected, str) and selected:
+    if (
+        str(report.get("status")) == "rejected"
+        and isinstance(selected, str)
+        and selected
+        and selected not in retryable_infra_rejections
+    ):
         rejected.add(selected)
     return rejected
 
@@ -2997,6 +3153,45 @@ def _historical_feedback_metrics(iteration: Mapping[str, Any]) -> dict[str, Any]
     if isinstance(failed_gates, list):
         metrics["failed_gates"] = [str(gate) for gate in failed_gates if gate]
     return metrics
+
+
+def _retryable_infrastructure_rejection(metrics: Mapping[str, Any]) -> bool:
+    if _has_missing_model_profile_judge_failure(metrics):
+        return True
+    failed_gates = {
+        str(gate)
+        for gate in metrics.get("failed_gates", ())
+        if str(gate)
+    }
+    return bool(failed_gates) and failed_gates <= {
+        "candidate_replay",
+        "replay_confidence",
+    } and not any(
+        key in metrics
+        for key in (
+            "score",
+            "candidate_score",
+            "evaluator_gate_passed",
+            "judge_attempt_count",
+            "A1_groundedness",
+            "A2_completeness",
+        )
+    )
+
+
+def _has_missing_model_profile_judge_failure(metrics: Mapping[str, Any]) -> bool:
+    for key, value in metrics.items():
+        if not str(key).endswith("judge_failures"):
+            continue
+        if not isinstance(value, list):
+            continue
+        for failure in value:
+            if not isinstance(failure, Mapping):
+                continue
+            reason = str(failure.get("reason") or "")
+            if "model profile not found or incomplete" in reason:
+                return True
+    return False
 
 
 def _evidence_quality_gate(summary: EvaluationSummary) -> GateResult | None:
@@ -4003,8 +4198,10 @@ def _runtime_behavior_rules_from_mutation_prompt(
             "do not place full pages, documents, logs, or large JSON in the conversation."
         )
         add(
-            "Treat compacted, truncated, or schema-invalid output as unusable; retry with "
-            "a narrower extraction and retain only claims supported by readable evidence."
+            "When output is compacted, truncated, or schema-invalid and no valid "
+            "artifact-backed evidence bundle, manifest entry, or bounded extract exists, "
+            "retry with a narrower extraction; otherwise use the artifact-backed evidence "
+            "and retain only claims it directly supports."
         )
 
     if _feedback_has_scope_or_cost_issue(prompt) or required_behaviors & {

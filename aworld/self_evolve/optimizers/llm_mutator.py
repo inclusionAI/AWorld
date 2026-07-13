@@ -191,8 +191,9 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "evidence-preservation guidance. Make it actionable and tool-agnostic: avoid "
         "large raw tool outputs, persist raw evidence to files or artifacts first, emit "
         "only bounded structured summaries with source locations and short excerpts, "
-        "treat compacted/truncated outputs as unusable evidence, keep an evidence ledger, "
-        "and require a claim-by-claim non-compacted evidence check before final answers. "
+        "treat compacted/truncated raw outputs without artifact-backed extracts as "
+        "unusable evidence, keep an evidence ledger, and require a claim-by-claim "
+        "artifact-backed or bounded-extract evidence check before final answers. "
         "If feedback mentions invalid manifest entries, veto_triggered, low A1_groundedness, "
         "or required_behaviors such as manifest_schema_compliance, pre_final_veto_check, "
         "support_every_claim_with_artifact_reference, or raise_groundedness_before_breadth, "
@@ -519,7 +520,7 @@ def _is_weak_high_baseline_regression_candidate(
         "更多证据",
         "扩大",
     )
-    has_broad_guidance = any(term in text for term in broad_terms)
+    has_broad_guidance = _has_unnegated_guidance(text, broad_terms)
     if retained_delta is not None:
         max_delta_chars = min(4_000, max(1_200, int(len(current_content) * 0.4)))
         return has_broad_guidance or len(retained_delta) > max_delta_chars
@@ -539,6 +540,24 @@ def _retained_baseline_delta(
     if not baseline or not content.startswith(baseline):
         return None
     return content[len(baseline) :].strip()
+
+
+def _has_unnegated_guidance(text: str, terms: tuple[str, ...]) -> bool:
+    for term in terms:
+        for match in re.finditer(re.escape(term), text):
+            clause_start = max(
+                text.rfind(delimiter, 0, match.start())
+                for delimiter in ("\n", ".", ";", "!", "?", "。", "；", "！", "？")
+            )
+            prefix = text[clause_start + 1 : match.start()]
+            if re.search(
+                r"(?:\b(?:do not|don't|never|avoid|without|not)\b|"
+                r"不要|不得|避免|禁止|无需|不再)",
+                prefix,
+            ):
+                continue
+            return True
+    return False
 
 
 def _preserves_lean_solution_path(

@@ -20,6 +20,8 @@ from aworld.self_evolve.replay import (
     build_paired_replay_dataset,
     build_replay_request,
     load_candidate_replay_result,
+    _member_artifact_name,
+    _member_baseline_replay_dir,
 )
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef
 from aworld.skills.compat_provider import build_compat_registry
@@ -739,6 +741,77 @@ async def test_multi_member_replay_executes_and_maps_each_member_independently(
 
 
 @pytest.mark.asyncio
+async def test_multi_member_replay_distributes_repetition_budget_across_members(
+    tmp_path: Path,
+) -> None:
+    calls: list[ReplayExecutionRequest] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": f"{request.task_id}:{request.variant_id}"},
+                    "reward": {"status": "ok"},
+                }
+            ],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=f"task-{index}", input=f"Replay task {index}")
+            for index in range(1, 5)
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 4},
+            split_seed="seed",
+            splits={
+                "train": ["task-1", "task-2"],
+                "validation": ["task-3"],
+                "held_out": ["task-4"],
+            },
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-distributed-repetitions",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=dataset,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert [(call.task_id, call.variant_id) for call in calls] == [
+        ("task-1", "baseline"),
+        ("task-1", "cand-1"),
+        ("task-2", "baseline"),
+        ("task-2", "cand-1"),
+        ("task-3", "baseline"),
+        ("task-3", "cand-1"),
+        ("task-4", "baseline"),
+        ("task-4", "cand-1"),
+    ]
+    assert result.baseline.metrics["repetition_count"] == 4
+    assert result.candidate.metrics["repetition_count"] == 4
+    assert all(
+        member.baseline.metrics["repetition_count"] == 1
+        and member.candidate.metrics["repetition_count"] == 1
+        for member in result.member_results
+    )
+
+
+@pytest.mark.asyncio
 async def test_multi_member_replay_reports_failed_case_without_masking_it(
     tmp_path: Path,
 ) -> None:
@@ -854,10 +927,14 @@ async def test_load_candidate_replay_result_restores_multi_member_mapping(
         "task-b",
     ]
     assert all(
-        len(member.baseline.repetition_results) == 2
-        and len(member.candidate.repetition_results) == 2
+        len(member.baseline.repetition_results) == 0
+        and member.baseline.metrics["repetition_count"] == 1
+        and len(member.candidate.repetition_results) == 0
+        and member.candidate.metrics["repetition_count"] == 1
         for member in loaded.member_results
     )
+    assert loaded.baseline.metrics["repetition_count"] == 2
+    assert loaded.candidate.metrics["repetition_count"] == 2
     paired = build_paired_replay_dataset(
         dataset=dataset,
         replay_result=loaded,
@@ -964,6 +1041,33 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         "task-b",
     ]
     assert all(member.baseline.succeeded for member in loaded.member_results)
+
+
+def test_member_baseline_replay_dir_maps_legacy_member_root_without_manifest(
+    tmp_path: Path,
+) -> None:
+    members_root = tmp_path / "members"
+    case_id = "task-a"
+    member_dir = members_root / _member_artifact_name(case_id)
+    member_dir.mkdir(parents=True)
+    (member_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-run",
+                "task_id": case_id,
+                "workspace_root": str(tmp_path),
+                "target": {"target_type": "skill", "target_id": "demo"},
+                "candidate_id": "cand-1",
+                "overlay_skill_root": str(tmp_path / "overlay"),
+                "task_input": "Replay task A",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _member_baseline_replay_dir(str(members_root), case_id) == str(
+        member_dir / "baseline"
+    )
 
 
 @pytest.mark.asyncio
@@ -1439,6 +1543,17 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "artifact-first" in task_text
     assert "bounded structured summaries" in task_text
     assert "compacted" in task_text
+    assert (
+        "Once the requested output artifact and a valid evidence manifest exist, "
+        "stop evidence collection and return the final answer"
+    ) in task_text
+    assert (
+        "For bounded replay validation, prefer the smallest representative evidence path"
+    ) in task_text
+    assert (
+        "After the first successful structured extraction, immediately persist replay "
+        "artifacts"
+    ) in task_text
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_AUTO_DRAIN"] == "0"
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"] == str(
@@ -1455,6 +1570,65 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert str(tmp_path / "artifacts") in task_text
     assert str(tmp_path / "artifacts" / "evidence_manifest.jsonl") in task_text
     assert "evidence_manifest.jsonl" in task_text
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_normalizes_stale_workspace_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    workspace_root = tmp_path / "aworld"
+    workspace_root.mkdir()
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {"input": {"content": "Replay this task"}},
+            "action": {"content": "Replay completed.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(workspace_root),
+            task_input={"content": "Replay this task"},
+            task_text=(
+                "Use /Users/manwu/Documents/workspace/aworld/examples/skill_agent/"
+                "skills/x-scraper and write /Users/manwu/Documents/workspace/"
+                "aworld/x_ai_daily_extra.json"
+            ),
+            skill_root=str(workspace_root / "skills"),
+            artifact_dir=str(workspace_root / "artifacts"),
+        )
+    )
+
+    task_index = captured["command"].index("--task") + 1
+    task_text = captured["command"][task_index]
+    assert "/Users/manwu/Documents/workspace/aworld" not in task_text
+    assert str(workspace_root / "examples" / "skill_agent" / "skills" / "x-scraper") in task_text
+    assert str(workspace_root / "x_ai_daily_extra.json") in task_text
 
 
 @pytest.mark.asyncio
@@ -1805,6 +1979,99 @@ async def test_aworld_cli_replay_executor_rejects_untrusted_manifest_artifact_ou
     ]
 
 
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_accepts_bounded_excerpt_for_outside_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "Tool output compacted for context reuse.",
+                    }
+                ]
+            },
+            "action": {"content": "Replay completed.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        artifact_dir = workspace_root / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        outside_path = tmp_path / "scrape_stderr.log"
+        outside_path.write_text("large outside log should not be read", encoding="utf-8")
+        (artifact_dir / "evidence_manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "source_id": "scrape_stderr_log",
+                    "artifact_path": str(outside_path),
+                    "extraction_method": "stderr capture",
+                    "fields": ["scroll_rounds", "final_total", "ai_count"],
+                    "bounded_excerpt": (
+                        "search flow: 10 scrolls, 121 raw -> 20 deduped; "
+                        "RESULT: total=20, ai_count=16"
+                    ),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Tool output compacted for context reuse.\n"
+            + json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path / "workspace"),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "workspace" / "skills"),
+            artifact_dir=str(tmp_path / "workspace" / "artifacts"),
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.failure is None
+    assert result.metrics["evidence_manifest_entry_count"] == 1
+    assert "evidence_manifest_invalid_entry_count" not in result.metrics
+    bundle = json.loads(
+        (tmp_path / "workspace" / "artifacts" / "evidence_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert bundle["valid"] is True
+    assert bundle["entries"][0]["bounded_evidence"]["bounded_excerpt"].startswith(
+        "search flow"
+    )
+    assert bundle["entries"][0]["bounded_evidence"]["fields"] == [
+        "scroll_rounds",
+        "final_total",
+        "ai_count",
+    ]
+
+
 def test_replay_aggregate_metrics_include_bundle_validity() -> None:
     from aworld.self_evolve.replay import _aggregate_variant_results
 
@@ -1987,6 +2254,90 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
     assert result.stdout == "partial stdout"
     assert result.stderr == "partial stderr"
     assert result.failure == {"type": "TimeoutExpired", "reason": "replay timed out"}
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_recovers_timeout_with_valid_artifact_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        evidence_path = artifact_dir / "x_ai_daily_extra.json"
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "meta": {"count": 1, "ai_related_count": 1},
+                    "tweets": [
+                        {
+                            "author_name": "A",
+                            "author_handle": "@a",
+                            "time": "now",
+                            "text": "OpenAI agent update",
+                            "link": "https://x.com/a/status/1",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (artifact_dir / "evidence_manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "source_id": "final_output",
+                    "artifact_path": "x_ai_daily_extra.json",
+                    "extraction_method": "bounded_replay_extract",
+                    "fields": ["meta.count", "meta.ai_related_count", "tweets[].link"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=b"partial stdout",
+            stderr=b"partial stderr",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.failure is None
+    assert result.stdout == "partial stdout"
+    assert result.stderr == "partial stderr"
+    assert result.metrics["timeout_recovered_with_artifact_evidence"] is True
+    assert result.metrics["evidence_bundle_valid"] is True
+    assert result.trajectory == [
+        {
+            "state": {"input": {"content": "Replay this task"}},
+            "action": {
+                "content": "Replay completed from artifact-backed evidence manifest.",
+                "is_agent_finished": "True",
+            },
+            "reward": {"status": "ok"},
+            "meta": {
+                "trajectory_capture_mode": "artifact_manifest",
+                "evidence_manifest_path": str(tmp_path / "artifacts" / "evidence_manifest.jsonl"),
+                "evidence_bundle_path": str(tmp_path / "artifacts" / "evidence_bundle.json"),
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

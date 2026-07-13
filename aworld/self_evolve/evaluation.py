@@ -329,6 +329,7 @@ class AWorldTrajectoryEvaluatorBackend:
         reports: list[Mapping[str, Any]] = []
         failures: list[Mapping[str, Any]] = []
         max_attempts = self.judge_repetitions + self.judge_failure_retries
+        fallback_model_profile: str | None = None
         logger.info(
             "self_evolve.evaluator.start "
             f"variant_id={request.variant_id} split={request.dataset_split} "
@@ -366,6 +367,13 @@ class AWorldTrajectoryEvaluatorBackend:
                 )
                 continue
             except Exception as exc:
+                if (
+                    fallback_model_profile is None
+                    and runner_kwargs.get("judge_model_profile")
+                    and _is_missing_model_profile_error(exc)
+                ):
+                    fallback_model_profile = str(runner_kwargs["judge_model_profile"])
+                    runner_kwargs["judge_model_profile"] = None
                 failures.append(
                     {
                         "attempt": attempt_index,
@@ -421,6 +429,8 @@ class AWorldTrajectoryEvaluatorBackend:
             metrics["judge_repetitions"] = self.judge_repetitions
             if failures:
                 metrics["judge_failures"] = failures
+            if fallback_model_profile is not None:
+                metrics["judge_model_profile_fallback"] = fallback_model_profile
         else:
             metrics = _failed_aworld_evaluator_metrics(
                 failures=failures,
@@ -434,6 +444,8 @@ class AWorldTrajectoryEvaluatorBackend:
                     effective_case_count=effective_case_count,
                 )
             )
+            if fallback_model_profile is not None:
+                metrics["judge_model_profile_fallback"] = fallback_model_profile
         logger.info(
             "self_evolve.evaluator.end "
             f"variant_id={request.variant_id} split={request.dataset_split} "
@@ -498,6 +510,10 @@ def _self_evolve_runtime_log_env(log_path: Path):
             os.environ.pop("AWORLD_TRAJECTORY_LOG_DISABLED", None)
         else:
             os.environ["AWORLD_TRAJECTORY_LOG_DISABLED"] = previous_disabled
+
+
+def _is_missing_model_profile_error(exc: Exception) -> bool:
+    return "model profile not found or incomplete" in str(exc)
 
 
 async def evaluate_baseline_and_candidate(
@@ -649,6 +665,24 @@ def determine_candidate_confidence(
             candidate_replay_count=candidate_replay_count,
         )
 
+    if (
+        held_out_summary is not None
+        and held_out_case_count > 0
+        and deterministic_signal_present
+        and _has_trajectory_set_validation_source(dataset)
+    ):
+        return CandidateConfidenceDecision(
+            confidence="verified",
+            reason="trajectory-set validation is sufficient",
+            selection_split=selection_split,
+            verification_split="trajectory_set_validation",
+            deterministic_signal_present=True,
+            held_out_case_count=held_out_case_count,
+            verification_mode="trajectory_set_validation",
+            baseline_replay_count=baseline_replay_count,
+            candidate_replay_count=candidate_replay_count,
+        )
+
     if held_out_case_count < min_eval_cases or held_out_summary is None:
         if (
             held_out_summary is not None
@@ -745,6 +779,19 @@ def _successful_replay_count(payload: Any) -> int:
     if repetition_count is None:
         return successful_count
     return min(successful_count, repetition_count)
+
+
+def _has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
+    source = dataset.recipe.source
+    if source.get("kind") == "trajectory_set":
+        return True
+    auto_grouping = source.get("auto_grouping")
+    if not isinstance(auto_grouping, Mapping):
+        return False
+    if auto_grouping.get("auto_grouped") is not True:
+        return False
+    selected_count = auto_grouping.get("selected_case_count")
+    return isinstance(selected_count, int) and selected_count > 1
 
 
 def _int_metric(metrics: Mapping[str, Any], key: str) -> int | None:
