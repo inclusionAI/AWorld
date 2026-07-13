@@ -2154,6 +2154,157 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
 
 
 @pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "Tool output compacted for context reuse.",
+                    }
+                ]
+            },
+            "action": {"content": "Notification scheduled.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "evidence_manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "source_id": "scheduled_notification",
+                    "evidence_type": "metadata",
+                    "extraction_method": "scheduler_response",
+                    "metadata": {
+                        "operation": "schedule_notification",
+                        "reference_id": "job-123",
+                        "status": "scheduled",
+                    },
+                    "bounded_excerpt": "Notification job job-123 was scheduled.",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Tool output compacted for context reuse.\n"
+            + json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["evidence_bundle_valid"] is True
+    bundle = json.loads((tmp_path / "artifacts" / "evidence_bundle.json").read_text())
+    assert bundle["entries"] == [
+        {
+            "bounded_evidence": {
+                "bounded_excerpt": "Notification job job-123 was scheduled."
+            },
+            "evidence_type": "metadata",
+            "extraction_method": "scheduler_response",
+            "metadata": {
+                "operation": "schedule_notification",
+                "reference_id": "job-123",
+                "status": "scheduled",
+            },
+            "source_id": "scheduled_notification",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_reports_compacted_argument_without_evidence_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": (
+                            "replay_compacted_argument_unavailable: tool call argument "
+                            "contains compacted_string_field"
+                        ),
+                    }
+                ]
+            },
+            "action": {"content": "Replay stopped.", "is_agent_finished": "True"},
+            "reward": {"status": "failed"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.succeeded is False
+    assert result.failure == {
+        "reason": "replay_compacted_argument_unavailable",
+        "detail": "replay stopped before executing compacted tool arguments",
+    }
+    assert result.metrics["replay_compacted_argument_blocked"] is True
+
+
+@pytest.mark.asyncio
 async def test_aworld_cli_replay_executor_archives_workspace_manifest_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
