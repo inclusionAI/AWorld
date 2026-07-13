@@ -89,6 +89,84 @@ def test_resolve_model_profile_accepts_key_and_token_aliases() -> None:
     assert token_config.llm_api_key == "token-secret"
 
 
+def test_resolve_model_profile_from_workspace_aworld_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class EmptyConfig:
+        def load_config(self):
+            return {"models": {}}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("aworld_cli.core.config.get_config", lambda: EmptyConfig())
+    config_path = tmp_path / ".aworld" / "aworld.json"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        """
+{
+  "models": {
+    "judge": {
+      "PROVIDER": "openai",
+      "MODEL": "gpt-5.5",
+      "BASE_URL": "https://matrixllm.example.test/v1",
+      "api_key": "judge-secret"
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = resolve_model_profile("judge")
+
+    assert config.llm_provider == "openai"
+    assert config.llm_model_name == "gpt-5.5"
+    assert config.llm_base_url == "https://matrixllm.example.test/v1"
+    assert config.llm_api_key == "judge-secret"
+
+
+def test_resolve_model_profile_prefers_workspace_over_global_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class GlobalConfig:
+        def load_config(self):
+            return {
+                "models": {
+                    "judge": {
+                        "provider": "anthropic",
+                        "model": "global-model",
+                        "api_key": "global-secret",
+                    }
+                }
+            }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("aworld_cli.core.config.get_config", lambda: GlobalConfig())
+    config_path = tmp_path / ".aworld" / "aworld.json"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        """
+{
+  "models": {
+    "judge": {
+      "provider": "openai",
+      "model": "workspace-model",
+      "api_key": "workspace-secret"
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = resolve_model_profile("judge")
+
+    assert config.llm_provider == "openai"
+    assert config.llm_model_name == "workspace-model"
+    assert config.llm_api_key == "workspace-secret"
+
+
 def test_resolve_model_profile_raises_for_missing_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     class EmptyConfig:
         def load_config(self):

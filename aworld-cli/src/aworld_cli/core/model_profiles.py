@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from aworld.config.conf import ModelConfig
@@ -20,6 +22,14 @@ def resolve_model_profile(
     candidates: list[Mapping[str, Any]] = []
     if config_dict is not None:
         models = config_dict.get("models") if isinstance(config_dict, Mapping) else None
+        if isinstance(models, Mapping):
+            candidate = models.get(profile)
+            if isinstance(candidate, Mapping):
+                candidates.append(candidate)
+
+    workspace_config = _load_workspace_config()
+    if workspace_config is not None:
+        models = workspace_config.get("models")
         if isinstance(models, Mapping):
             candidate = models.get(profile)
             if isinstance(candidate, Mapping):
@@ -46,6 +56,17 @@ def resolve_model_profile(
         if model_config is not None:
             return model_config
     raise KeyError(f"model profile not found or incomplete: {profile}")
+
+
+def _load_workspace_config() -> Mapping[str, Any] | None:
+    config_path = Path.cwd() / ".aworld" / "aworld.json"
+    if not config_path.exists():
+        return None
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
 
 
 def _profile_from_env() -> dict[str, Any] | None:
