@@ -294,6 +294,7 @@ class SelfEvolveRunner:
         optimizer_lineage_paths_by_candidate: dict[str, str] = {}
         iteration_reports: list[dict[str, object]] = []
         iteration_states: list[dict[str, object]] = []
+        population_screening_reports: list[dict[str, object]] = []
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
         held_out_summary: EvaluationSummary | None = None
@@ -332,6 +333,7 @@ class SelfEvolveRunner:
             )
         )
 
+        baseline_preflight_blocked = False
         for iteration_index in range(self.max_iterations):
             _emit_progress(
                 self.progress_callback,
@@ -506,6 +508,16 @@ class SelfEvolveRunner:
                 )
                 continue
 
+            candidate_population, screening_report = await self._screen_candidate_population(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                candidates=candidate_population,
+                apply_policy=apply_policy,
+            )
+            if screening_report is not None:
+                population_screening_reports.append(screening_report)
+
             accepted_in_iteration = False
             reusable_baseline_replay_dir: str | None = _find_reusable_baseline_replay_dir(
                 store=self.store,
@@ -543,10 +555,16 @@ class SelfEvolveRunner:
                 ]
                 if failed_gates:
                     rejected_candidate_ids.add(iteration_candidate.candidate_id)
+                if (
+                    isinstance(replay_state, CandidateReplayResult)
+                    and _baseline_preflight_blocks_population(replay_state)
+                ):
+                    baseline_preflight_blocked = True
+                    break
                 if state["status"] == "accepted":
                     accepted_in_iteration = True
                     break
-            if accepted_in_iteration:
+            if accepted_in_iteration or baseline_preflight_blocked:
                 break
 
         selected_state = _select_iteration_state(iteration_states)
@@ -646,6 +664,7 @@ class SelfEvolveRunner:
             iteration_reports=iteration_reports,
             replay_candidate_limit=self.replay_candidate_limit,
             optimizer_diagnostics=optimizer_diagnostics,
+            screening_reports=population_screening_reports,
         )
         if population_report is not None:
             report["population"] = population_report
@@ -777,6 +796,118 @@ class SelfEvolveRunner:
             f"Self-evolve run {run_id} finished with status {completed_run.status.value}",
         )
         return SelfEvolveRunnerResult(run=completed_run, selected_candidate=selected_candidate)
+
+    async def _screen_candidate_population(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+        candidates: tuple[CandidateVariant, ...],
+        apply_policy: str,
+    ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
+        screening_dataset = _candidate_screening_dataset(dataset)
+        if (
+            apply_policy != "auto_verified"
+            or len(candidates) <= 1
+            or screening_dataset is None
+            or not self.replay_enabled
+            or self.candidate_replay_backend is None
+        ):
+            return candidates, None
+
+        representative_case_id = screening_dataset.cases[0].case_id
+        _emit_progress(
+            self.progress_callback,
+            "candidate_screening",
+            (
+                "Screening candidate population on representative case "
+                f"{representative_case_id} ({len(candidates)} candidate(s))"
+            ),
+        )
+        attempts: list[dict[str, object]] = []
+        selected_candidate: CandidateVariant | None = None
+        screening_baseline_replay_dir = _find_reusable_baseline_replay_dir(
+            store=self.store,
+            run_id=run_id,
+            target=target.identity,
+            dataset=screening_dataset,
+            baseline_repetitions=1,
+        )
+        for candidate in candidates:
+            screening_candidate = replace(
+                candidate,
+                candidate_id=f"{candidate.candidate_id}--screening",
+            )
+            replay_result, replay_dataset, replay_gate = (
+                await self._replay_selected_candidate(
+                    run_id=run_id,
+                    target=target,
+                    dataset=screening_dataset,
+                    selected_candidate=screening_candidate,
+                    apply_policy=apply_policy,
+                    baseline_replay_dir=screening_baseline_replay_dir,
+                    baseline_repetitions=1,
+                    candidate_repetitions=1,
+                    progress_stage="candidate_screening",
+                )
+            )
+            if replay_result is not None and (
+                replay_result.member_results or replay_result.baseline.succeeded
+            ):
+                screening_baseline_replay_dir = _baseline_replay_artifact_dir(
+                    replay_result
+                )
+            passed = bool(
+                replay_dataset is not None
+                and replay_gate is not None
+                and replay_gate.passed
+            )
+            attempts.append(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "screening_candidate_id": screening_candidate.candidate_id,
+                    "passed": passed,
+                    "reason": (
+                        replay_gate.reason
+                        if replay_gate is not None
+                        else "screening replay was unavailable"
+                    ),
+                    "details": replay_gate.details if replay_gate is not None else None,
+                }
+            )
+            if passed:
+                selected_candidate = candidate
+                break
+            if (
+                replay_result is not None
+                and _baseline_preflight_blocks_population(replay_result)
+            ):
+                break
+
+        selection_reason = "representative replay produced a comparable pair"
+        if selected_candidate is None:
+            # Screening is a bounded cost filter, not an acceptance gate. Preserve
+            # the highest-ranked candidate so transient screening failures are
+            # still decided by the authoritative full replay and its gates.
+            selected_candidate = candidates[0]
+            selection_reason = (
+                "screening was inconclusive; authoritative full replay retained "
+                "the highest-ranked candidate"
+            )
+        return (
+            (selected_candidate,),
+            {
+                "representative_case_id": representative_case_id,
+                "generated_candidate_count": len(candidates),
+                "attempted_candidate_count": len(attempts),
+                "selected_candidate_id": selected_candidate.candidate_id,
+                "selection_reason": selection_reason,
+                "baseline_repetitions": 1,
+                "candidate_repetitions": 1,
+                "attempts": attempts,
+            },
+        )
 
     async def _evaluate_iteration_candidate(
         self,
@@ -1096,6 +1227,9 @@ class SelfEvolveRunner:
         selected_candidate: CandidateVariant,
         apply_policy: str,
         baseline_replay_dir: str | None = None,
+        baseline_repetitions: int | None = None,
+        candidate_repetitions: int | None = None,
+        progress_stage: str = "candidate_replay",
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
@@ -1121,13 +1255,23 @@ class SelfEvolveRunner:
                     reason="skill replay requires target filesystem path",
                 ),
             )
+        effective_baseline_repetitions = (
+            baseline_repetitions
+            if baseline_repetitions is not None
+            else self.baseline_replay_repetitions
+        )
+        effective_candidate_repetitions = (
+            candidate_repetitions
+            if candidate_repetitions is not None
+            else self.candidate_replay_repetitions
+        )
         _emit_progress(
             self.progress_callback,
-            "candidate_replay",
+            progress_stage,
             (
                 "Running paired replay "
-                f"(baseline x{self.baseline_replay_repetitions}, "
-                f"candidate x{self.candidate_replay_repetitions})"
+                f"(baseline x{effective_baseline_repetitions}, "
+                f"candidate x{effective_candidate_repetitions})"
             ),
         )
 
@@ -1150,8 +1294,8 @@ class SelfEvolveRunner:
                 timeout_seconds=self.replay_timeout_seconds,
                 max_steps=self.replay_max_steps,
                 max_tokens=self.max_run_tokens,
-                baseline_repetitions=self.baseline_replay_repetitions,
-                candidate_repetitions=self.candidate_replay_repetitions,
+                baseline_repetitions=effective_baseline_repetitions,
+                candidate_repetitions=effective_candidate_repetitions,
                 baseline_replay_dir=baseline_replay_dir,
             )
         except ValueError as exc:
@@ -3355,6 +3499,21 @@ def _replay_gate_details(
     return details
 
 
+def _baseline_preflight_blocks_population(
+    replay_result: CandidateReplayResult,
+) -> bool:
+    candidates = (
+        [member.candidate for member in replay_result.member_results]
+        if replay_result.member_results
+        else [replay_result.candidate]
+    )
+    return any(
+        isinstance(candidate.failure, Mapping)
+        and candidate.failure.get("reason") == "baseline_preflight_failed"
+        for candidate in candidates
+    )
+
+
 def _replay_confidence_gate(
     replay_result: CandidateReplayResult | None,
     *,
@@ -3703,6 +3862,7 @@ def _population_report(
     iteration_reports: list[dict[str, object]],
     replay_candidate_limit: int,
     optimizer_diagnostics: list[dict[str, object]] | None = None,
+    screening_reports: list[dict[str, object]] | None = None,
 ) -> dict[str, object] | None:
     if not all_candidates and not iteration_reports:
         return None
@@ -3735,7 +3895,58 @@ def _population_report(
         ]
         if non_replayed:
             report["non_replayed_candidate_strategies"] = non_replayed
+    if screening_reports:
+        report["screening"] = screening_reports[-1]
+        if len(screening_reports) > 1:
+            report["screening_iterations"] = screening_reports
     return report
+
+
+def _candidate_screening_dataset(
+    dataset: SelfEvolveDataset,
+) -> SelfEvolveDataset | None:
+    replayable_cases = tuple(
+        case for case in dataset.cases if _is_replayable_user_task_case(case)
+    )
+    if len(replayable_cases) <= 1:
+        return None
+
+    replayable_by_id = {case.case_id: case for case in replayable_cases}
+    held_out_case_ids = set(dataset.recipe.held_out_case_ids)
+    held_out_case_ids.update(dataset.recipe.splits.get("held_out", ()))
+    preferred_case_ids = (
+        *dataset.recipe.trainable_case_ids,
+        *dataset.recipe.splits.get("train", ()),
+        *dataset.recipe.splits.get("validation", ()),
+        *(case.case_id for case in replayable_cases),
+    )
+    representative = next(
+        (
+            replayable_by_id[case_id]
+            for case_id in preferred_case_ids
+            if case_id in replayable_by_id and case_id not in held_out_case_ids
+        ),
+        replayable_cases[0],
+    )
+    return SelfEvolveDataset(
+        cases=(representative,),
+        recipe=replace(
+            dataset.recipe,
+            source={
+                **dict(dataset.recipe.source),
+                "candidate_screening": True,
+                "screening_case_id": representative.case_id,
+                "original_case_count": len(dataset.cases),
+            },
+            splits={
+                "train": [representative.case_id],
+                "validation": [],
+                "held_out": [],
+            },
+            trainable_case_ids=(representative.case_id,),
+            held_out_case_ids=(),
+        ),
+    )
 
 
 def _candidate_strategy_records(

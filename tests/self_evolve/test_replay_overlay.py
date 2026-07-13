@@ -26,6 +26,7 @@ from aworld.self_evolve.replay import (
     build_replay_request,
     candidate_replay_is_comparable,
     load_candidate_replay_result,
+    _invalid_evidence_manifest_entry_reason,
     _member_artifact_name,
     _member_baseline_replay_dir,
 )
@@ -854,8 +855,8 @@ async def test_multi_member_replay_executes_and_maps_each_member_independently(
 
     assert [(call.task_id, call.variant_id) for call in calls] == [
         ("task-a", "baseline"),
-        ("task-a", "cand-1"),
         ("task-b", "baseline"),
+        ("task-a", "cand-1"),
         ("task-b", "cand-1"),
     ]
     assert [member.case_id for member in result.member_results] == [
@@ -943,12 +944,12 @@ async def test_multi_member_replay_distributes_repetition_budget_across_members(
 
     assert [(call.task_id, call.variant_id) for call in calls] == [
         ("task-1", "baseline"),
-        ("task-1", "cand-1"),
         ("task-2", "baseline"),
-        ("task-2", "cand-1"),
         ("task-3", "baseline"),
-        ("task-3", "cand-1"),
         ("task-4", "baseline"),
+        ("task-1", "cand-1"),
+        ("task-2", "cand-1"),
+        ("task-3", "cand-1"),
         ("task-4", "cand-1"),
     ]
     assert result.baseline.metrics["repetition_count"] == 4
@@ -1285,10 +1286,71 @@ async def test_multi_member_replay_reuses_successful_baselines_and_retries_faile
 
     assert second_result.baseline.succeeded is True
     assert calls == [
-        ("task-a", "cand-2"),
         ("task-b", "baseline"),
+        ("task-a", "cand-2"),
         ("task-b", "cand-2"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_multi_member_replay_stops_before_candidates_when_baseline_preflight_fails(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        if request.task_id == "task-b" and request.variant_id == "baseline":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={"reason": "replay_compacted_argument_unavailable"},
+            )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="cand-1",
+    )
+    request = build_replay_request(
+        run_id="run-baseline-preflight",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert calls == [("task-a", "baseline"), ("task-b", "baseline")]
+    assert result.baseline.succeeded is False
+    assert all(
+        member.candidate.failure
+        == {
+            "reason": "baseline_preflight_failed",
+            "detail": "candidate replay skipped because baseline infrastructure replay failed",
+        }
+        for member in result.member_results
+    )
 
 
 def test_member_baseline_replay_dir_maps_legacy_member_root_without_manifest(
@@ -2097,6 +2159,7 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
             json.dumps(
                 {
                     "source_id": "source-1",
+                    "evidence_type": "file",
                     "artifact_path": "bounded_extract.txt",
                     "extraction_method": "bounded_extract",
                     "bounded_excerpt": "bounded non-compacted evidence excerpt",
@@ -2188,7 +2251,6 @@ async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
                         "reference_id": "job-123",
                         "status": "scheduled",
                     },
-                    "bounded_excerpt": "Notification job job-123 was scheduled.",
                 }
             )
             + "\n",
@@ -2228,9 +2290,7 @@ async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
     bundle = json.loads((tmp_path / "artifacts" / "evidence_bundle.json").read_text())
     assert bundle["entries"] == [
         {
-            "bounded_evidence": {
-                "bounded_excerpt": "Notification job job-123 was scheduled."
-            },
+            "bounded_evidence": {},
             "evidence_type": "metadata",
             "extraction_method": "scheduler_response",
             "metadata": {
@@ -2241,6 +2301,20 @@ async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
             "source_id": "scheduled_notification",
         }
     ]
+
+
+def test_replay_evidence_manifest_rejects_oversized_metadata(tmp_path: Path) -> None:
+    reason = _invalid_evidence_manifest_entry_reason(
+        {
+            "source_id": "operation_result",
+            "evidence_type": "metadata",
+            "extraction_method": "structured_result",
+            "metadata": {"value": "x" * 20_000},
+        },
+        artifact_dir=tmp_path,
+    )
+
+    assert reason == "metadata exceeds bounded evidence limit"
 
 
 @pytest.mark.asyncio

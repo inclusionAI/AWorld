@@ -2120,6 +2120,242 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
 
 
 @pytest.mark.asyncio
+async def test_runner_stops_candidate_population_after_baseline_preflight_failure(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve replay behavior."}},
+            "action": {"content": "Baseline output."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="baseline-preflight-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="baseline-preflight-task",
+    )
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidate_one = CandidateVariant(
+        candidate_id="candidate-one",
+        target=target,
+        content="---\nname: demo\n---\n# Demo\n\nCandidate one.\n",
+        rationale="first",
+        target_fingerprint="fingerprint",
+    )
+    candidate_two = CandidateVariant(
+        candidate_id="candidate-two",
+        target=target,
+        content="---\nname: demo\n---\n# Demo\n\nCandidate two.\n",
+        rationale="second",
+        target_fingerprint="fingerprint",
+    )
+
+    class PopulationOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate_one, candidate_two))
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.candidate_ids.append(candidate.candidate_id)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="failed",
+                    trajectory=[],
+                    failure={"reason": "replay_compacted_argument_unavailable"},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="failed",
+                    trajectory=[],
+                    failure={"reason": "baseline_preflight_failed"},
+                ),
+            )
+
+    replay_backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=PopulationOptimizer(),
+        evaluation_backend=None,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-baseline-preflight-stop",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert replay_backend.candidate_ids == ["candidate-one"]
+
+
+@pytest.mark.asyncio
+async def test_runner_screens_population_on_representative_member_before_full_replay(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    cases = (
+        EvalCase(case_id="task-a", input={"content": "Replay task A"}),
+        EvalCase(case_id="task-b", input={"content": "Replay task B"}),
+    )
+    dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": ["task-b"], "held_out": []},
+            trainable_case_ids=("task-a", "task-b"),
+        ),
+    )
+    trace_pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {"input": {"content": "Replay task A"}},
+                "action": {"content": "Baseline output."},
+                "reward": {"status": "ok"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="task-a",
+    )
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target,
+            content=f"---\nname: demo\n---\n# Demo\n\nCandidate {index}.\n",
+            rationale=f"candidate {index}",
+            target_fingerprint="fingerprint",
+        )
+        for index in (1, 2)
+    )
+
+    class PopulationOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=candidates)
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            case_ids = tuple(case.case_id for case in dataset.cases)
+            self.calls.append((candidate.candidate_id, case_ids))
+            baseline = ReplayVariantResult(
+                variant_id="baseline",
+                status="succeeded",
+                trajectory=[{"action": {"content": "baseline"}}],
+                metrics={"repetition_count": 1, "successful_repetition_count": 1},
+            )
+            candidate_result = ReplayVariantResult(
+                variant_id=candidate.candidate_id,
+                status="succeeded",
+                trajectory=[{"action": {"content": candidate.candidate_id}}],
+                metrics={"repetition_count": 1, "successful_repetition_count": 1},
+            )
+            members = tuple(
+                CandidateReplayMemberResult(
+                    case_id=case.case_id,
+                    request=request,
+                    baseline=baseline,
+                    candidate=candidate_result,
+                )
+                for case in dataset.cases
+            )
+            return CandidateReplayResult(
+                request=request,
+                baseline=baseline,
+                candidate=candidate_result,
+                member_results=members if len(members) > 1 else (),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 90.0 if request.candidate is None else 80.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=PopulationOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+        min_eval_cases=0,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-population-screening",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert replay_backend.calls == [
+        ("candidate-1--screening", ("task-a",)),
+        ("candidate-1", ("task-a", "task-b")),
+    ]
+    report = json.loads(
+        (tmp_path / ".aworld" / "self_evolve" / "run-population-screening" / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["population"]["screening"]["selected_candidate_id"] == "candidate-1"
+    assert report["population"]["screening"]["representative_case_id"] == "task-a"
+
+
+@pytest.mark.asyncio
 async def test_runner_reuses_successful_legacy_member_baseline_replay_from_prior_run(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)

@@ -26,6 +26,7 @@ from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolve
 
 _EVIDENCE_RETRY_LIMIT = 1
 _SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
+_MAX_METADATA_EVIDENCE_CHARS = 16_384
 _COMPARABLE_TASK_FAILURE_TYPES = {"TaskFailure", "TimeoutExpired"}
 _COMPARABLE_TASK_FAILURE_REASONS = {"evidence_quality_failed"}
 
@@ -189,6 +190,22 @@ def _replay_failure_outcome(failure: Mapping[str, Any] | None) -> str:
         if outcomes == {"task_failure"}:
             return "task_failure"
     return "infrastructure_failure"
+
+
+def _baseline_preflight_skipped_candidate_result(
+    candidate_id: str,
+) -> ReplayVariantResult:
+    return ReplayVariantResult(
+        variant_id=candidate_id,
+        status="failed",
+        trajectory=[],
+        failure={
+            "reason": "baseline_preflight_failed",
+            "detail": (
+                "candidate replay skipped because baseline infrastructure replay failed"
+            ),
+        },
+    )
 
 
 def _baseline_comparison_trajectory(
@@ -401,6 +418,9 @@ class AWorldCliCandidateReplayBackend:
         else:
             members_root = replay_dir / "members"
             member_items: list[CandidateReplayMemberResult] = []
+            prepared_members: list[
+                tuple[CandidateReplayRequest, Path, ReplayVariantResult]
+            ] = []
             member_baseline_repetitions = _distributed_member_repetitions(
                 request.baseline_repetitions,
                 member_count=len(replay_cases),
@@ -424,11 +444,38 @@ class AWorldCliCandidateReplayBackend:
                 member_dir = members_root / _member_artifact_name(case.case_id)
                 member_dir.mkdir(parents=True, exist_ok=True)
                 _write_json(member_dir / "request.json", member_request)
-                member_items.append(
-                    await self._replay_member(
+                baseline = await self._load_or_run_baseline(
+                    member_request,
+                    candidate=candidate,
+                    replay_dir=member_dir,
+                )
+                prepared_members.append((member_request, member_dir, baseline))
+
+            baseline_preflight_failed = any(
+                not baseline.succeeded
+                and _replay_failure_outcome(baseline.failure)
+                == "infrastructure_failure"
+                for _, _, baseline in prepared_members
+            )
+            for member_request, member_dir, baseline in prepared_members:
+                if baseline_preflight_failed:
+                    candidate_result = _baseline_preflight_skipped_candidate_result(
+                        candidate.candidate_id
+                    )
+                else:
+                    candidate_result = await self._run_repetitions(
                         member_request,
-                        candidate=candidate,
-                        replay_dir=member_dir,
+                        base_variant_id=candidate.candidate_id,
+                        skill_root=member_request.overlay_skill_root,
+                        artifact_dir=member_dir / _safe_path(candidate.candidate_id),
+                        repetitions=member_request.candidate_repetitions,
+                    )
+                member_items.append(
+                    CandidateReplayMemberResult(
+                        case_id=member_request.task_id,
+                        request=member_request,
+                        baseline=baseline,
+                        candidate=candidate_result,
                     )
                 )
             member_results = tuple(member_items)
@@ -478,6 +525,32 @@ class AWorldCliCandidateReplayBackend:
         candidate: CandidateVariant,
         replay_dir: Path,
     ) -> CandidateReplayMemberResult:
+        baseline = await self._load_or_run_baseline(
+            request,
+            candidate=candidate,
+            replay_dir=replay_dir,
+        )
+        candidate_result = await self._run_repetitions(
+            request,
+            base_variant_id=candidate.candidate_id,
+            skill_root=request.overlay_skill_root,
+            artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
+            repetitions=request.candidate_repetitions,
+        )
+        return CandidateReplayMemberResult(
+            case_id=request.task_id,
+            request=request,
+            baseline=baseline,
+            candidate=candidate_result,
+        )
+
+    async def _load_or_run_baseline(
+        self,
+        request: CandidateReplayRequest,
+        *,
+        candidate: CandidateVariant,
+        replay_dir: Path,
+    ) -> ReplayVariantResult:
         if request.baseline_replay_dir:
             baseline = _load_variant_result_from_dir(
                 Path(request.baseline_replay_dir),
@@ -497,19 +570,7 @@ class AWorldCliCandidateReplayBackend:
                 artifact_dir=replay_dir / "baseline",
                 repetitions=request.baseline_repetitions,
             )
-        candidate_result = await self._run_repetitions(
-            request,
-            base_variant_id=candidate.candidate_id,
-            skill_root=request.overlay_skill_root,
-            artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
-            repetitions=request.candidate_repetitions,
-        )
-        return CandidateReplayMemberResult(
-            case_id=request.task_id,
-            request=request,
-            baseline=baseline,
-            candidate=candidate_result,
-        )
+        return baseline
 
     async def _run_repetitions(
         self,
@@ -1404,8 +1465,17 @@ def _invalid_evidence_manifest_entry_reason(
         metadata = entry.get("metadata")
         if not isinstance(metadata, Mapping) or not metadata:
             return "missing metadata"
-        if not _has_inline_bounded_evidence_payload(entry):
-            return "missing bounded evidence payload"
+        try:
+            serialized_metadata = json.dumps(
+                metadata,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError):
+            return "metadata is not JSON serializable"
+        if len(serialized_metadata) > _MAX_METADATA_EVIDENCE_CHARS:
+            return "metadata exceeds bounded evidence limit"
         return None
     if evidence_type != "artifact":
         return f"unsupported evidence_type: {evidence_type}"
@@ -1430,6 +1500,8 @@ def _invalid_evidence_manifest_entry_reason(
 
 def _manifest_evidence_type(entry: Mapping[str, Any]) -> str:
     explicit = str(entry.get("evidence_type") or "").strip().lower()
+    if explicit == "file":
+        return "artifact"
     if explicit:
         return explicit
     if not str(entry.get("artifact_path") or "").strip() and isinstance(
