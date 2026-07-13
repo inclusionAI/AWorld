@@ -817,8 +817,49 @@ def _member_baseline_replay_dir(
             isinstance(relative_path, str)
             and relative_path == _member_artifact_name(case_id)
         ):
-            return str(root / relative_path / "baseline")
+            return _stored_member_baseline_replay_dir(
+                root / relative_path,
+                case_id=case_id,
+            )
     return None
+
+
+def _stored_member_baseline_replay_dir(
+    member_root: Path,
+    *,
+    case_id: str,
+) -> str | None:
+    local_baseline = member_root / "baseline"
+    if local_baseline.is_dir():
+        return str(local_baseline)
+
+    request_path = member_root / "request.json"
+    if not request_path.exists():
+        return None
+    try:
+        member_request = _load_json_object(request_path)
+    except (ValueError, json.JSONDecodeError, OSError):
+        return None
+    if member_request.get("task_id") != case_id:
+        return None
+
+    raw_baseline_dir = member_request.get("baseline_replay_dir")
+    if not isinstance(raw_baseline_dir, str) or not raw_baseline_dir.strip():
+        return None
+    baseline_dir = Path(raw_baseline_dir).expanduser()
+    if not baseline_dir.is_dir():
+        return None
+
+    owner_request_path = baseline_dir.parent / "request.json"
+    if not owner_request_path.exists():
+        return None
+    try:
+        owner_request = _load_json_object(owner_request_path)
+    except (ValueError, json.JSONDecodeError, OSError):
+        return None
+    if owner_request.get("task_id") != case_id:
+        return None
+    return str(baseline_dir)
 
 
 def _legacy_member_replay_dir(root: Path, case_id: str) -> Path | None:
