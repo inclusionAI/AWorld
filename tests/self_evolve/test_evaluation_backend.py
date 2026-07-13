@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from aworld.config.conf import EvaluationConfig
+from aworld.evaluations.substrate import JudgeTimeoutError
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 import aworld.self_evolve.evaluation as evaluation_module
 from aworld.self_evolve.evaluation import (
@@ -432,6 +433,171 @@ async def test_aworld_trajectory_evaluator_backend_times_out_hung_judge_call(tmp
     assert summary.metrics["judge_failure_count"] == 1
     assert summary.metrics["judge_failures"][0]["type"] == "TimeoutError"
     assert "timed out after 0.01s" in summary.metrics["judge_failures"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_preserves_judge_timeout_diagnostics(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    diagnostics = (
+        {
+            "phase": "initial_judge",
+            "round_index": 0,
+            "status": "timed_out",
+            "prompt_chars": 1200,
+            "estimated_input_tokens": 400,
+            "artifact_request_count": 0,
+            "artifact_read_count": 0,
+            "artifact_read_chars": 0,
+            "latency_ms": 10.0,
+            "timeout_seconds": 0.01,
+        },
+    )
+
+    def timed_out_run_evaluator_source(**kwargs):
+        raise JudgeTimeoutError("judge call timed out during initial_judge", diagnostics=diagnostics)
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=timed_out_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=0,
+        judge_timeout_seconds=1,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    failure = summary.metrics["judge_failures"][0]
+    assert failure["type"] == "TimeoutError"
+    assert failure["diagnostics"] == list(diagnostics)
+    assert failure["timeout_phase"] == "initial_judge"
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_preserves_provider_timeout_without_limit(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+
+    def timed_out_run_evaluator_source(**kwargs):
+        raise JudgeTimeoutError(
+            "judge call timed out during initial_judge",
+            diagnostics=(
+                {
+                    "phase": "initial_judge",
+                    "status": "timed_out",
+                    "latency_ms": 10.0,
+                    "timeout_seconds": None,
+                },
+            ),
+        )
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=timed_out_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=0,
+        judge_timeout_seconds=None,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    failure = summary.metrics["judge_failures"][0]
+    assert failure["reason"] == "judge call timed out during initial_judge"
+    assert failure["timeout_phase"] == "initial_judge"
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_summarizes_judge_call_diagnostics(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+
+    def diagnostic_run_evaluator_source(**kwargs):
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 84.0}}},
+            "results": [
+                {
+                    "case_id": "task-eval",
+                    "judge_diagnostics": [
+                        {
+                            "phase": "initial_judge",
+                            "status": "succeeded",
+                            "prompt_chars": 1200,
+                            "estimated_input_tokens": 400,
+                            "artifact_request_count": 1,
+                            "artifact_read_count": 0,
+                            "artifact_read_chars": 0,
+                            "latency_ms": 25.0,
+                        },
+                        {
+                            "phase": "artifact_read_round_1",
+                            "status": "succeeded",
+                            "prompt_chars": 2200,
+                            "estimated_input_tokens": 650,
+                            "artifact_request_count": 0,
+                            "artifact_read_count": 1,
+                            "artifact_read_chars": 700,
+                            "latency_ms": 40.0,
+                        },
+                    ],
+                }
+            ],
+            "gate": {"status": "pass", "metric_name": "score", "value": 84.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=diagnostic_run_evaluator_source,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["judge_call_count"] == 2
+    assert summary.metrics["judge_artifact_read_round_count"] == 1
+    assert summary.metrics["judge_artifact_request_count"] == 1
+    assert summary.metrics["judge_artifact_read_count"] == 1
+    assert summary.metrics["judge_artifact_read_chars"] == 700
+    assert summary.metrics["judge_prompt_chars_total"] == 3400
+    assert summary.metrics["judge_estimated_input_tokens_total"] == 1050
+    assert summary.metrics["judge_model_latency_ms_total"] == pytest.approx(65.0)
+    assert summary.metrics["judge_model_latency_ms_max"] == pytest.approx(40.0)
+    assert summary.metrics["judge_timeout_count"] == 0
+    assert len(summary.metrics["judge_call_diagnostics"]) == 2
 
 
 @pytest.mark.asyncio
