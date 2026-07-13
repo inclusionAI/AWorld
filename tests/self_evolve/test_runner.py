@@ -97,6 +97,25 @@ def test_replay_only_rejection_does_not_permanently_blacklist_candidate() -> Non
     assert _rejected_candidate_ids_from_report(report) == set()
 
 
+def test_duplicate_only_rejection_does_not_create_new_blacklist_record() -> None:
+    report = {
+        "status": "rejected",
+        "selected_candidate_id": "candidate-retry",
+        "iterations": [
+            {
+                "candidate_id": "candidate-retry",
+                "status": "rejected",
+                "baseline_metrics": None,
+                "candidate_metrics": None,
+                "held_out_metrics": None,
+                "failed_gates": ["duplicate_rejected_candidate"],
+            }
+        ],
+    }
+
+    assert _rejected_candidate_ids_from_report(report) == set()
+
+
 def _write_terminal_run_with_raw_artifacts(root: Path, run_id: str, timestamp: float) -> None:
     run_dir = root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)

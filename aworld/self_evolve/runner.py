@@ -315,7 +315,7 @@ class SelfEvolveRunner:
             feedback.variant_id
             for feedback in prior_feedback
             if feedback.metrics.get("candidate_status") == "rejected"
-            and not _retryable_infrastructure_rejection(feedback.metrics)
+            and not _non_authoritative_candidate_rejection(feedback.metrics)
         }
         accepted_candidate_ids = {
             feedback.variant_id
@@ -2519,7 +2519,9 @@ def _rejected_candidate_ids_from_report(report: Mapping[str, Any]) -> set[str]:
                 continue
             candidate_id = item.get("candidate_id")
             if isinstance(candidate_id, str) and candidate_id:
-                if _retryable_infrastructure_rejection(_historical_feedback_metrics(item)):
+                if _non_authoritative_candidate_rejection(
+                    _historical_feedback_metrics(item)
+                ):
                     retryable_infra_rejections.add(candidate_id)
                     continue
                 rejected.add(candidate_id)
@@ -3177,6 +3179,17 @@ def _retryable_infrastructure_rejection(metrics: Mapping[str, Any]) -> bool:
             "A2_completeness",
         )
     )
+
+
+def _non_authoritative_candidate_rejection(metrics: Mapping[str, Any]) -> bool:
+    if _retryable_infrastructure_rejection(metrics):
+        return True
+    failed_gates = {
+        str(gate)
+        for gate in metrics.get("failed_gates", ())
+        if str(gate)
+    }
+    return failed_gates == {"duplicate_rejected_candidate"}
 
 
 def _has_missing_model_profile_judge_failure(metrics: Mapping[str, Any]) -> bool:
