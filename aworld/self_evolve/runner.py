@@ -529,12 +529,13 @@ class SelfEvolveRunner:
                 )
                 iteration_reports.append(report_item)
                 iteration_states.append(state)
-                if reusable_baseline_replay_dir is None:
-                    replay_state = state.get("replay_result")
-                    if isinstance(replay_state, CandidateReplayResult) and replay_state.baseline.succeeded:
-                        reusable_baseline_replay_dir = _baseline_replay_artifact_dir(
-                            replay_state
-                        )
+                replay_state = state.get("replay_result")
+                if isinstance(replay_state, CandidateReplayResult) and (
+                    replay_state.member_results or replay_state.baseline.succeeded
+                ):
+                    reusable_baseline_replay_dir = _baseline_replay_artifact_dir(
+                        replay_state
+                    )
                 failed_gates = [
                     gate for gate in state["gate_results"] if not gate.passed
                 ]
@@ -2227,10 +2228,10 @@ def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
 
 
 def _baseline_replay_artifact_dir(replay_result: CandidateReplayResult) -> str:
-    if replay_result.request.baseline_replay_dir:
-        return replay_result.request.baseline_replay_dir
     if replay_result.member_results:
         return str(Path(_replay_artifact_path(replay_result)) / "members")
+    if replay_result.request.baseline_replay_dir:
+        return replay_result.request.baseline_replay_dir
     return str(Path(_replay_artifact_path(replay_result)) / "baseline")
 
 

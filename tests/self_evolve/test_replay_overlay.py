@@ -373,6 +373,49 @@ def test_load_candidate_replay_result_restores_repetition_artifacts(tmp_path: Pa
     assert loaded.candidate.trajectory[0]["action"]["content"] == "cand-1-3"
 
 
+def test_load_candidate_replay_result_prefers_successful_single_evidence_retry(
+    tmp_path: Path,
+) -> None:
+    replay_dir = tmp_path / "replay" / "cand-1"
+    request = CandidateReplayRequest(
+        run_id="run-single-retry",
+        task_id="task-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="cand-1",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input={"content": "task"},
+    )
+    _write_json(replay_dir / "request.json", request)
+    baseline_dir = replay_dir / "baseline"
+    _write_json(
+        baseline_dir / "trajectory.json",
+        [{"action": {"content": "compacted baseline"}}],
+    )
+    _write_json(
+        baseline_dir / "failure.json",
+        {"reason": "evidence_quality_failed"},
+    )
+    retry_dir = baseline_dir / "evidence_retry_2"
+    _write_json(
+        retry_dir / "trajectory.json",
+        [{"action": {"content": "complete baseline"}}],
+    )
+    _write_json(retry_dir / "metrics.json", {"evidence_strategy_passed": True})
+    candidate_dir = replay_dir / "cand-1"
+    _write_json(
+        candidate_dir / "trajectory.json",
+        [{"action": {"content": "candidate"}}],
+    )
+    _write_json(candidate_dir / "metrics.json", {})
+
+    loaded = load_candidate_replay_result(replay_dir)
+
+    assert loaded.baseline.succeeded is True
+    assert loaded.baseline.trajectory[0]["action"]["content"] == "complete baseline"
+    assert loaded.succeeded is True
+
+
 def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
     dataset = SelfEvolveDataset(
         cases=(EvalCase(case_id="task-1", input="task"),),
@@ -1043,6 +1086,105 @@ async def test_multi_member_replay_reuses_each_members_baseline(
     assert all(member.baseline.succeeded for member in loaded.member_results)
 
 
+@pytest.mark.asyncio
+async def test_multi_member_replay_reuses_successful_baselines_and_retries_failed_member(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    baseline_attempts: dict[str, int] = {}
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        if request.variant_id == "baseline":
+            baseline_attempts[request.task_id] = (
+                baseline_attempts.get(request.task_id, 0) + 1
+            )
+            if request.task_id == "task-b" and baseline_attempts[request.task_id] == 1:
+                return ReplayExecutionResult(
+                    status="failed",
+                    trajectory=[],
+                    failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+                )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "state": {"input": request.task_input},
+                    "action": {"content": f"{request.task_id}:{request.variant_id}"},
+                }
+            ],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="Replay task A"),
+            EvalCase(case_id="task-b", input="Replay task B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"], "validation": [], "held_out": []},
+        ),
+    )
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    first_candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nFirst.\n",
+        candidate_id="cand-1",
+    )
+    first_request = build_replay_request(
+        run_id="run-partial-member-cache",
+        workspace_root=tmp_path,
+        target=first_candidate.target,
+        candidate=first_candidate,
+        overlay_skill_root=tmp_path / "overlay-1",
+        dataset=dataset,
+    )
+
+    first_result = await backend.replay_candidate(
+        first_request,
+        candidate=first_candidate,
+        dataset=dataset,
+    )
+
+    assert first_result.baseline.succeeded is False
+    members_root = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-partial-member-cache"
+        / "replay"
+        / "cand-1"
+        / "members"
+    )
+    calls.clear()
+    second_candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nSecond.\n",
+        candidate_id="cand-2",
+    )
+    second_request = build_replay_request(
+        run_id="run-partial-member-cache",
+        workspace_root=tmp_path,
+        target=second_candidate.target,
+        candidate=second_candidate,
+        overlay_skill_root=tmp_path / "overlay-2",
+        dataset=dataset,
+        baseline_replay_dir=members_root,
+    )
+
+    second_result = await backend.replay_candidate(
+        second_request,
+        candidate=second_candidate,
+        dataset=dataset,
+    )
+
+    assert second_result.baseline.succeeded is True
+    assert calls == [
+        ("task-a", "cand-2"),
+        ("task-b", "baseline"),
+        ("task-b", "cand-2"),
+    ]
+
+
 def test_member_baseline_replay_dir_maps_legacy_member_root_without_manifest(
     tmp_path: Path,
 ) -> None:
@@ -1124,6 +1266,11 @@ def test_member_baseline_replay_dir_follows_matching_chained_baseline(
     prior_replay_root = tmp_path / "old-replay"
     prior_baseline = prior_replay_root / "baseline"
     prior_baseline.mkdir(parents=True)
+    (prior_baseline / "trajectory.json").write_text(
+        json.dumps([{"action": {"content": "stored baseline"}}]),
+        encoding="utf-8",
+    )
+    (prior_baseline / "metrics.json").write_text("{}\n", encoding="utf-8")
     (prior_replay_root / "request.json").write_text(
         json.dumps({"task_id": case_id}),
         encoding="utf-8",
