@@ -1070,6 +1070,94 @@ def test_member_baseline_replay_dir_maps_legacy_member_root_without_manifest(
     )
 
 
+def test_member_baseline_replay_dir_rejects_mismatched_chained_baseline(
+    tmp_path: Path,
+) -> None:
+    members_root = tmp_path / "members"
+    case_id = "task-b"
+    member_name = _member_artifact_name(case_id)
+    member_dir = members_root / member_name
+    member_dir.mkdir(parents=True)
+    stale_replay_root = tmp_path / "old-replay"
+    stale_baseline = stale_replay_root / "baseline"
+    stale_baseline.mkdir(parents=True)
+    (stale_replay_root / "request.json").write_text(
+        json.dumps({"task_id": "task-a"}),
+        encoding="utf-8",
+    )
+    (member_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "task_id": case_id,
+                "baseline_replay_dir": str(stale_baseline),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (members_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.member_replay.v1",
+                "members": [
+                    {
+                        "case_id": case_id,
+                        "path": member_name,
+                        "succeeded": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _member_baseline_replay_dir(str(members_root), case_id) is None
+
+
+def test_member_baseline_replay_dir_follows_matching_chained_baseline(
+    tmp_path: Path,
+) -> None:
+    members_root = tmp_path / "members"
+    case_id = "task-a"
+    member_name = _member_artifact_name(case_id)
+    member_dir = members_root / member_name
+    member_dir.mkdir(parents=True)
+    prior_replay_root = tmp_path / "old-replay"
+    prior_baseline = prior_replay_root / "baseline"
+    prior_baseline.mkdir(parents=True)
+    (prior_replay_root / "request.json").write_text(
+        json.dumps({"task_id": case_id}),
+        encoding="utf-8",
+    )
+    (member_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "task_id": case_id,
+                "baseline_replay_dir": str(prior_baseline),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (members_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.member_replay.v1",
+                "members": [
+                    {
+                        "case_id": case_id,
+                        "path": member_name,
+                        "succeeded": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _member_baseline_replay_dir(str(members_root), case_id) == str(
+        prior_baseline
+    )
+
+
 @pytest.mark.asyncio
 async def test_multi_member_replay_paths_do_not_collide_after_sanitization(
     tmp_path: Path,
