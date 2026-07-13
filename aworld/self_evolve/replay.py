@@ -829,10 +829,6 @@ def _stored_member_baseline_replay_dir(
     *,
     case_id: str,
 ) -> str | None:
-    local_baseline = member_root / "baseline"
-    if local_baseline.is_dir():
-        return str(local_baseline)
-
     request_path = member_root / "request.json"
     if not request_path.exists():
         return None
@@ -842,6 +838,10 @@ def _stored_member_baseline_replay_dir(
         return None
     if member_request.get("task_id") != case_id:
         return None
+
+    local_baseline = member_root / "baseline"
+    if _stored_replay_variant_succeeded(local_baseline):
+        return str(local_baseline)
 
     raw_baseline_dir = member_request.get("baseline_replay_dir")
     if not isinstance(raw_baseline_dir, str) or not raw_baseline_dir.strip():
@@ -859,7 +859,22 @@ def _stored_member_baseline_replay_dir(
         return None
     if owner_request.get("task_id") != case_id:
         return None
-    return str(baseline_dir)
+    if _stored_replay_variant_succeeded(baseline_dir):
+        return str(baseline_dir)
+    return None
+
+
+def _stored_replay_variant_succeeded(variant_dir: Path) -> bool:
+    if not variant_dir.is_dir():
+        return False
+    try:
+        result = _load_variant_result_from_dir(
+            variant_dir,
+            base_variant_id="baseline",
+        )
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        return False
+    return result.succeeded
 
 
 def _legacy_member_replay_dir(root: Path, case_id: str) -> Path | None:
@@ -1691,7 +1706,10 @@ def _load_variant_result_from_dir(
         raise FileNotFoundError(f"stored replay variant not found: {variant_dir}")
     repetition_dirs = _stored_repetition_dirs(variant_dir)
     if not repetition_dirs:
-        return _load_single_variant_result(variant_dir, variant_id=base_variant_id)
+        return _load_single_variant_result(
+            _effective_repetition_dir(variant_dir),
+            variant_id=base_variant_id,
+        )
 
     results = [
         _load_single_variant_result(

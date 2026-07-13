@@ -188,6 +188,54 @@ def test_multi_member_replay_reuses_member_baseline_root(tmp_path: Path) -> None
     ]
 
 
+def test_multi_member_replay_advances_from_historical_to_current_member_root(
+    tmp_path: Path,
+) -> None:
+    historical_members = tmp_path / "historical" / "members"
+    request = CandidateReplayRequest(
+        run_id="run-members",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="task A",
+        baseline_replay_dir=str(historical_members),
+    )
+    successful = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    result = CandidateReplayResult(
+        request=request,
+        baseline=successful,
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate"}}],
+        ),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=successful,
+                candidate=successful,
+            ),
+        ),
+    )
+
+    assert _baseline_replay_artifact_dir(result) == str(
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-members"
+        / "replay"
+        / "candidate-1"
+        / "members"
+    )
+
+
 def _write_trajectory_log(path: Path, records: list[dict]) -> None:
     path.write_text(
         "\n".join(
