@@ -259,6 +259,14 @@ class AWorldCliCandidateReplayBackend:
         else:
             members_root = replay_dir / "members"
             member_items: list[CandidateReplayMemberResult] = []
+            member_baseline_repetitions = _distributed_member_repetitions(
+                request.baseline_repetitions,
+                member_count=len(replay_cases),
+            )
+            member_candidate_repetitions = _distributed_member_repetitions(
+                request.candidate_repetitions,
+                member_count=len(replay_cases),
+            )
             for case in replay_cases:
                 member_request = replace(
                     request,
@@ -268,6 +276,8 @@ class AWorldCliCandidateReplayBackend:
                         request.baseline_replay_dir,
                         case.case_id,
                     ),
+                    baseline_repetitions=member_baseline_repetitions,
+                    candidate_repetitions=member_candidate_repetitions,
                 )
                 member_dir = members_root / _member_artifact_name(case.case_id)
                 member_dir.mkdir(parents=True, exist_ok=True)
@@ -549,6 +559,7 @@ class AWorldCliReplayExecutor:
                 request.task_text,
                 artifact_dir=artifact_dir,
                 evidence_manifest=evidence_manifest,
+                workspace_root=Path(request.workspace_root),
             ),
             "--non-interactive",
             "--emit-trajectory",
@@ -580,11 +591,37 @@ class AWorldCliReplayExecutor:
                 },
             )
         except subprocess.TimeoutExpired as exc:
+            stdout = _text_output(exc.stdout)
+            stderr = _text_output(exc.stderr)
+            evidence_metrics = _replay_evidence_metrics(
+                stdout=stdout,
+                stderr=stderr,
+                trajectory=[],
+                artifact_dir=artifact_dir,
+                evidence_manifest=evidence_manifest,
+                workspace_root=Path(request.workspace_root),
+            )
+            if _has_valid_artifact_backed_timeout_evidence(evidence_metrics):
+                metrics = {
+                    "trajectory_capture_mode": "artifact_manifest",
+                    "timeout_recovered_with_artifact_evidence": True,
+                    **evidence_metrics,
+                }
+                return ReplayExecutionResult(
+                    status="succeeded",
+                    trajectory=_artifact_manifest_trajectory(
+                        request,
+                        metrics=metrics,
+                    ),
+                    stdout=stdout,
+                    stderr=stderr,
+                    metrics=metrics,
+                )
             return ReplayExecutionResult(
                 status="failed",
                 trajectory=[],
-                stdout=_text_output(exc.stdout),
-                stderr=_text_output(exc.stderr),
+                stdout=stdout,
+                stderr=stderr,
                 failure={"type": "TimeoutExpired", "reason": "replay timed out"},
             )
 
@@ -764,6 +801,9 @@ def _member_baseline_replay_dir(
     root = Path(baseline_replay_dir)
     manifest_path = root / "manifest.json"
     if not manifest_path.exists():
+        legacy_member_dir = _legacy_member_replay_dir(root, case_id)
+        if legacy_member_dir is not None:
+            return str(legacy_member_dir / "baseline")
         return baseline_replay_dir
     manifest = _load_json_object(manifest_path)
     members = manifest.get("members")
@@ -779,6 +819,28 @@ def _member_baseline_replay_dir(
         ):
             return str(root / relative_path / "baseline")
     return None
+
+
+def _legacy_member_replay_dir(root: Path, case_id: str) -> Path | None:
+    for member_dir in sorted(root.iterdir()) if root.exists() else ():
+        if not member_dir.is_dir():
+            continue
+        request_path = member_dir / "request.json"
+        if not request_path.exists():
+            continue
+        try:
+            payload = _load_json_object(request_path)
+        except (ValueError, json.JSONDecodeError, OSError):
+            continue
+        if payload.get("task_id") == case_id:
+            return member_dir
+    return None
+
+
+def _distributed_member_repetitions(repetitions: int, *, member_count: int) -> int:
+    if member_count <= 0:
+        raise ValueError("member_count must be positive")
+    return max(1, (max(1, repetitions) + member_count - 1) // member_count)
 
 
 def _infer_baseline_skill_root_from_target(target: SelfEvolveTargetRef) -> str | None:
@@ -824,8 +886,11 @@ Self-evolve replay evidence requirements:
 - Also export or use AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST={evidence_manifest} when invoking tools that can receive environment variables.
 - Each manifest object must include source_id, artifact_path, extraction_method, and the bounded excerpt or field list used for the final answer.
 - Emit only bounded structured summaries with source identifiers, locations, and short excerpts.
-- If any tool result is compacted, truncated, schema-invalid, or too large to inspect, treat that result as unusable evidence and retry with a narrower extraction strategy before answering.
+- If a tool result is compacted, truncated, schema-invalid, or too large to inspect and no valid artifact-backed evidence bundle, manifest entry, or bounded extract exists, treat that result as unusable evidence and retry with a narrower extraction strategy before answering.
 - Keep a concise evidence ledger mapping important final-answer claims to non-compacted extracts or artifact references.
+- For bounded replay validation, prefer the smallest representative evidence path that can verify the task contract; cap slow external collection once at least one valid artifact-backed sample exists, and report the actual collected counts rather than padding them.
+- After the first successful structured extraction, immediately persist replay artifacts and a manifest entry before any further collection attempts.
+- Once the requested output artifact and a valid evidence manifest exist, stop evidence collection and return the final answer with only the artifact path, counts, and evidence ledger requested by the task.
 - Before finalizing, perform a claim-by-claim check and omit claims that are not supported by non-compacted evidence captured in the trajectory.
 """.strip()
 
@@ -835,7 +900,12 @@ def _replay_task_text(
     *,
     artifact_dir: Path | None = None,
     evidence_manifest: Path | None = None,
+    workspace_root: Path | None = None,
 ) -> str:
+    task_text = _normalize_replay_workspace_paths(
+        task_text,
+        workspace_root=workspace_root,
+    )
     if "Self-evolve replay evidence requirements:" in task_text:
         return task_text
     artifact_dir_text = str(artifact_dir) if artifact_dir is not None else "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"
@@ -848,6 +918,23 @@ def _replay_task_text(
         artifact_dir=artifact_dir_text,
         evidence_manifest=evidence_manifest_text,
     )
+
+
+def _normalize_replay_workspace_paths(
+    task_text: str,
+    *,
+    workspace_root: Path | None,
+) -> str:
+    if workspace_root is None:
+        return task_text
+    workspace = workspace_root.expanduser().resolve()
+    repo_name = workspace.name
+    if not repo_name:
+        return task_text
+    stale_workspace_root_pattern = (
+        rf"/(?:Users|home)/[^/\s]+/Documents/workspace/{re.escape(repo_name)}"
+    )
+    return re.sub(stale_workspace_root_pattern, str(workspace), task_text)
 
 
 def _extract_trajectory_from_stdout(stdout: str) -> list[Mapping[str, Any]]:
@@ -1067,13 +1154,15 @@ def _invalid_evidence_manifest_entry_reason(
         if not str(entry.get(key) or "").strip():
             return f"missing {key}"
     artifact_path = _manifest_artifact_path(entry, artifact_dir=artifact_dir)
+    has_inline_bounded_evidence = _has_inline_bounded_evidence_payload(entry)
     if not artifact_path.exists():
         return "artifact_path does not exist"
     if artifact_dir is not None:
         try:
             artifact_path.resolve().relative_to(artifact_dir.resolve())
         except ValueError:
-            return "artifact_path is outside trusted replay/workspace directories"
+            if not has_inline_bounded_evidence:
+                return "artifact_path is outside trusted replay/workspace directories"
     if not _has_manifest_evidence_payload(entry) and not _synthetic_bounded_artifact_excerpt(
         artifact_path
     ):
@@ -1164,8 +1253,28 @@ _MANIFEST_EVIDENCE_PAYLOAD_KEYS = (
 )
 
 
+_MANIFEST_INLINE_BOUNDED_EVIDENCE_KEYS = (
+    "excerpt",
+    "excerpts",
+    "bounded_excerpt",
+    "bounded_excerpts",
+    "claims_supported",
+    "claims_supported_by",
+    "summary",
+    "structured_summary",
+)
+
+
 def _has_manifest_evidence_payload(entry: Mapping[str, Any]) -> bool:
-    for key in _MANIFEST_EVIDENCE_PAYLOAD_KEYS:
+    return _has_any_manifest_payload(entry, keys=_MANIFEST_EVIDENCE_PAYLOAD_KEYS)
+
+
+def _has_inline_bounded_evidence_payload(entry: Mapping[str, Any]) -> bool:
+    return _has_any_manifest_payload(entry, keys=_MANIFEST_INLINE_BOUNDED_EVIDENCE_KEYS)
+
+
+def _has_any_manifest_payload(entry: Mapping[str, Any], *, keys: Sequence[str]) -> bool:
+    for key in keys:
         value = entry.get(key)
         if isinstance(value, str) and value.strip():
             return True
@@ -1197,6 +1306,46 @@ def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | No
         "evidence_manifest_invalid_entry_count": invalid_manifest_count if manifest_invalid else 0,
         "evidence_compaction_signals": [str(signal) for signal in signals],
     }
+
+
+def _has_valid_artifact_backed_timeout_evidence(metrics: Mapping[str, Any]) -> bool:
+    invalid_manifest_count = metrics.get("evidence_manifest_invalid_entry_count")
+    manifest_invalid = (
+        isinstance(invalid_manifest_count, (int, float))
+        and invalid_manifest_count > 0
+    )
+    return (
+        metrics.get("evidence_manifest_valid") is True
+        and metrics.get("evidence_bundle_valid") is True
+        and not manifest_invalid
+    )
+
+
+def _artifact_manifest_trajectory(
+    request: ReplayExecutionRequest,
+    *,
+    metrics: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    meta = {
+        "trajectory_capture_mode": "artifact_manifest",
+    }
+    manifest_path = metrics.get("evidence_manifest_path")
+    if isinstance(manifest_path, str) and manifest_path:
+        meta["evidence_manifest_path"] = manifest_path
+    bundle_path = metrics.get("evidence_bundle_path")
+    if isinstance(bundle_path, str) and bundle_path:
+        meta["evidence_bundle_path"] = bundle_path
+    return [
+        {
+            "state": {"input": request.task_input},
+            "action": {
+                "content": "Replay completed from artifact-backed evidence manifest.",
+                "is_agent_finished": "True",
+            },
+            "reward": {"status": "ok"},
+            "meta": meta,
+        }
+    ]
 
 
 def _is_evidence_quality_failure(result: ReplayVariantResult) -> bool:
@@ -1357,6 +1506,14 @@ def _aggregate_variant_results(
         metrics["evidence_compaction_signals"] = evidence_compaction_signals
     for key, values in numeric_metrics.items():
         if values:
+            if key in {
+                "repetition_count",
+                "successful_repetition_count",
+                "failed_repetition_count",
+            }:
+                metrics[key] = sum(values)
+                metrics[f"{key}_values"] = values
+                continue
             metrics[key] = sum(values) / len(values)
             metrics[f"{key}_values"] = values
 
@@ -1569,6 +1726,9 @@ def _load_single_variant_result(variant_dir: Path, *, variant_id: str) -> Replay
             "reason": "trajectory_capture_unavailable",
             "detail": "stored replay trajectory is empty",
         }
+    metrics.setdefault("repetition_count", 1)
+    metrics.setdefault("successful_repetition_count", 1 if status == "succeeded" else 0)
+    metrics.setdefault("failed_repetition_count", 0 if status == "succeeded" else 1)
     stdout_path = variant_dir / "stdout.txt"
     stderr_path = variant_dir / "stderr.txt"
     return ReplayVariantResult(

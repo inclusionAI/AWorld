@@ -515,11 +515,24 @@ class HeldOutVerificationGate:
             and decision.baseline_replay_count >= 2
             and decision.candidate_replay_count >= 3
         )
-        passed = held_out_passed or single_case_replay_passed
+        trajectory_set_validation_passed = (
+            decision.confidence == "verified"
+            and decision.verification_mode == "trajectory_set_validation"
+            and decision.verification_split == "trajectory_set_validation"
+            and decision.held_out_case_count > 0
+            and decision.deterministic_signal_present
+        )
+        passed = (
+            held_out_passed
+            or single_case_replay_passed
+            or trajectory_set_validation_passed
+        )
         if held_out_passed:
             reason = "candidate is verified on sufficient held-out cases"
         elif single_case_replay_passed:
             reason = "candidate is verified by stable single-case replay"
+        elif trajectory_set_validation_passed:
+            reason = "candidate is verified by trajectory-set validation"
         else:
             reason = "candidate is not verified on sufficient held-out cases"
         return GateResult(

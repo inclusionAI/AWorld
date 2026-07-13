@@ -135,7 +135,7 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
     assert "tool-agnostic" in prompts[0]
     assert "persist raw evidence to files or artifacts first" in prompts[0]
     assert "bounded structured summaries" in prompts[0]
-    assert "compacted/truncated outputs as unusable evidence" in prompts[0]
+    assert "compacted/truncated raw outputs without artifact-backed extracts as unusable evidence" in prompts[0]
     assert "evidence ledger" in prompts[0]
     assert "claim-by-claim" in prompts[0]
     assert "held-1" not in prompts[0]
@@ -1154,6 +1154,8 @@ async def test_llm_mutator_accepts_runtime_delta_that_retains_high_baseline_cont
                 + "\n## Runtime Behavior Delta\n\n"
                 "- When the first evidence path is incomplete, switch once to a bounded "
                 "alternative and stop after sufficient evidence is available.\n"
+                "- Do not broaden the synthesis or collect more evidence after the requested "
+                "claims have direct support.\n"
             ),
             "rationale": "Runtime-only delta that preserves the full baseline skill.",
         }

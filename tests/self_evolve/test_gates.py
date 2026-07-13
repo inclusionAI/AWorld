@@ -434,6 +434,27 @@ def test_held_out_gate_accepts_stable_single_case_replay_verification() -> None:
     assert result.details["candidate_replay_count"] == 3
 
 
+def test_held_out_gate_accepts_trajectory_set_validation() -> None:
+    gate = HeldOutVerificationGate(min_eval_cases=30)
+
+    result = gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="verified",
+            reason="trajectory-set validation is sufficient",
+            selection_split="validation",
+            verification_split="trajectory_set_validation",
+            deterministic_signal_present=True,
+            held_out_case_count=1,
+            verification_mode="trajectory_set_validation",
+        )
+    )
+
+    assert result.passed is True
+    assert result.reason == "candidate is verified by trajectory-set validation"
+    assert result.details["verification_mode"] == "trajectory_set_validation"
+    assert result.details["held_out_case_count"] == 1
+
+
 def test_trust_provenance_gate_rejects_protected_generated_and_external_targets() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     gate = TrustProvenanceGate()

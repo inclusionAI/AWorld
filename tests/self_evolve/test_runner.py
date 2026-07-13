@@ -19,6 +19,7 @@ from aworld.self_evolve.replay import (
     CandidateReplayRequest,
     CandidateReplayResult,
     ReplayVariantResult,
+    _member_artifact_name,
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
@@ -29,6 +30,7 @@ from aworld.self_evolve.runner import (
     _include_prior_run_cases,
     _iteration_validation_feedback,
     _rank_candidate_population,
+    _rejected_candidate_ids_from_report,
     _replay_report,
     _summary_with_replay_evidence_metrics,
     optimize_explicit_target,
@@ -74,6 +76,25 @@ class CaptureOptimizer:
                 ),
             ),
         )
+
+
+def test_replay_only_rejection_does_not_permanently_blacklist_candidate() -> None:
+    report = {
+        "status": "rejected",
+        "selected_candidate_id": "candidate-retry",
+        "iterations": [
+            {
+                "candidate_id": "candidate-retry",
+                "status": "rejected",
+                "baseline_metrics": None,
+                "candidate_metrics": None,
+                "held_out_metrics": None,
+                "failed_gates": ["candidate_replay", "replay_confidence"],
+            }
+        ],
+    }
+
+    assert _rejected_candidate_ids_from_report(report) == set()
 
 
 def _write_terminal_run_with_raw_artifacts(root: Path, run_id: str, timestamp: float) -> None:
@@ -1848,7 +1869,170 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
 
 
 @pytest.mark.asyncio
-async def test_runner_filters_prior_duplicate_candidates_before_replay_population(tmp_path) -> None:
+async def test_runner_reuses_successful_legacy_member_baseline_replay_from_prior_run(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Replay this task."}},
+            "action": {"content": "Baseline was already strong."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="task-prior-baseline",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-prior-baseline",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            dataset.cases[0],
+            EvalCase(case_id="grouped-extra-case", input={"content": "Extra grouped task."}),
+        ),
+        recipe=dataset.recipe,
+    )
+    prior_replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "old-run"
+        / "replay"
+        / "old-candidate"
+    )
+    (prior_replay_dir / "members").mkdir(parents=True, exist_ok=True)
+    root_request_payload = {
+        "run_id": "old-run",
+        "task_id": "task-prior-baseline",
+        "workspace_root": str(tmp_path),
+        "target": {
+            "target_type": "skill",
+            "target_id": "demo",
+            "path": str(skill_path),
+        },
+        "candidate_id": "old-candidate",
+        "overlay_skill_root": str(tmp_path / "old-overlay"),
+        "task_input": {"content": "Replay this task."},
+        "baseline_skill_root": str(tmp_path / "skills"),
+        "baseline_repetitions": 2,
+        "candidate_repetitions": 3,
+    }
+    (prior_replay_dir / "request.json").write_text(
+        json.dumps(root_request_payload), encoding="utf-8"
+    )
+    for case_id in ("task-prior-baseline", "grouped-extra-case"):
+        member_dir = prior_replay_dir / "members" / _member_artifact_name(case_id)
+        (member_dir / "baseline" / "1").mkdir(parents=True)
+        (member_dir / "old-candidate").mkdir(parents=True)
+        member_request_payload = {**root_request_payload, "task_id": case_id}
+        (member_dir / "request.json").write_text(
+            json.dumps(member_request_payload), encoding="utf-8"
+        )
+        for repetition in ("1", "2"):
+            rep_dir = member_dir / "baseline" / repetition
+            rep_dir.mkdir(parents=True, exist_ok=True)
+            (rep_dir / "trajectory.json").write_text(
+                json.dumps([{"action": {"content": f"{case_id} baseline {repetition}"}}]),
+                encoding="utf-8",
+            )
+            (rep_dir / "metrics.json").write_text(json.dumps({"score": 1.0}), encoding="utf-8")
+        (member_dir / "old-candidate" / "trajectory.json").write_text(
+            json.dumps([{"action": {"content": f"{case_id} old candidate"}}]),
+            encoding="utf-8",
+        )
+
+    class OneCandidateOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-new",
+                        target=request.target,
+                        content="---\nname: demo\n---\n# Demo\n\nSmall delta.\n",
+                        rationale="new",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.baseline_replay_dirs: list[str | None] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.baseline_replay_dirs.append(getattr(request, "baseline_replay_dir", None))
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": candidate.candidate_id}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 92.0,
+                    "A1_groundedness": 5.0,
+                    "A2_completeness": 5.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=OneCandidateOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        post_apply_evaluator=lambda candidate: EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        ),
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="new-run",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert replay_backend.baseline_replay_dirs == [str(prior_replay_dir / "members")]
+
+
+@pytest.mark.asyncio
+async def test_runner_filters_quality_rejection_but_retries_replay_only_candidate(
+    tmp_path,
+) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
@@ -2024,15 +2208,15 @@ async def test_runner_filters_prior_duplicate_candidates_before_replay_populatio
 
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates > 2
-    assert replay_backend.candidate_ids == ["candidate-fresh"]
+    assert replay_backend.candidate_ids == ["candidate-dup-2"]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-filter-duplicates" / "report.json").read_text(
             encoding="utf-8"
         )
     )
-    assert report["selected_candidate_id"] == "candidate-fresh"
-    assert report["optimizer_diagnostics"]["filtered_known_duplicate_candidates"] == 2
-    assert report["iterations"][0]["candidate_id"] == "candidate-fresh"
+    assert report["selected_candidate_id"] == "candidate-dup-2"
+    assert report["optimizer_diagnostics"]["filtered_known_duplicate_candidates"] == 1
+    assert report["iterations"][0]["candidate_id"] == "candidate-dup-2"
 
 
 @pytest.mark.asyncio
@@ -3327,6 +3511,175 @@ async def test_runner_skips_duplicate_rejected_candidate_before_replay(
     )
     assert "replay" not in report
     assert report["iterations"][0]["failed_gates"] == ["duplicate_rejected_candidate"]
+
+
+@pytest.mark.asyncio
+async def test_runner_allows_duplicate_rejected_candidate_after_judge_infrastructure_failure(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nRetryable guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-run"
+    historical_dir.mkdir(parents=True)
+    judge_failure = {
+        "judge_attempt_count": 3,
+        "judge_success_count": 0,
+        "judge_failure_count": 3,
+        "judge_failures": [
+            {
+                "attempt": 1,
+                "type": "KeyError",
+                "reason": "'model profile not found or incomplete: judge'",
+            }
+        ],
+    }
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "selected_candidate_id": "candidate-dup",
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-dup",
+                        "status": "rejected",
+                        "baseline_metrics": {"score": 0.0, **judge_failure},
+                        "candidate_metrics": {"score": 0.0, **judge_failure},
+                        "held_out_metrics": {"score": 0.0, **judge_failure},
+                        "failed_gates": [
+                            "score_improvement",
+                            "required_verification",
+                            "held_out_verification",
+                            "judge_only_signal",
+                            "global_regression_benchmark",
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix evidence handling."}},
+            "action": {"content": "Evidence was missing."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="duplicate-infra-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="duplicate-infra-task",
+    )
+
+    duplicate_candidate = CandidateVariant(
+        candidate_id="candidate-dup",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content=candidate_content,
+        rationale="repeat candidate after evaluator infrastructure fix",
+        target_fingerprint="fingerprint",
+    )
+
+    class DuplicateOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(duplicate_candidate,))
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "old"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "new"}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class VerifiedBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def evaluate_variant(self, request):
+            self.requests.append(request)
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate else 0.2,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": len(request.dataset.cases),
+                    "command_pass_count": len(request.dataset.cases),
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True, "deterministic_signal": True},
+            dataset_split="post_apply",
+        )
+
+    replay_backend = ReplayBackend()
+    evaluation_backend = VerifiedBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=DuplicateOptimizer(),
+        evaluation_backend=evaluation_backend,
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-duplicate-infra-retry",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert replay_backend.requests
+    assert evaluation_backend.requests
+    applied_content = skill_path.read_text(encoding="utf-8")
+    assert "Retryable guidance." in applied_content
+    assert "release_state: verified" in applied_content
 
 
 @pytest.mark.asyncio
@@ -5270,7 +5623,8 @@ def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_pres
     assert "## Runtime Behavior Delta" in candidate_content
     assert "Persist large or unknown-size evidence" in candidate_content
     assert "bounded structured extracts" in candidate_content
-    assert "Treat compacted, truncated" in candidate_content
+    assert "valid artifact-backed evidence bundle" in candidate_content
+    assert "Treat compacted, truncated" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "evidence_compacted" not in candidate_content
     assert "candidate-1" not in candidate_content

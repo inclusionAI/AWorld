@@ -163,6 +163,53 @@ async def test_aworld_trajectory_evaluator_backend_retries_transient_judge_parse
 
 
 @pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_falls_back_from_missing_model_profile(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    profiles_seen: list[str | None] = []
+
+    def profile_sensitive_run_evaluator_source(**kwargs):
+        profiles_seen.append(kwargs["judge_model_profile"])
+        if kwargs["judge_model_profile"] == "judge":
+            raise KeyError("model profile not found or incomplete: judge")
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 84.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 84.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        judge_model_profile="judge",
+        run_evaluator_source=profile_sensitive_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=1,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert profiles_seen == ["judge", None]
+    assert summary.metrics["score"] == 84.0
+    assert summary.metrics["evaluator_gate_passed"] is True
+    assert summary.metrics["judge_attempt_count"] == 2
+    assert summary.metrics["judge_success_count"] == 1
+    assert summary.metrics["judge_failure_count"] == 1
+    assert summary.metrics["judge_failures"][0]["type"] == "KeyError"
+    assert summary.metrics["judge_model_profile_fallback"] == "judge"
+
+
+@pytest.mark.asyncio
 async def test_aworld_trajectory_evaluator_backend_aggregates_judge_repetitions(tmp_path) -> None:
     dataset = _dataset(
         (
@@ -1247,6 +1294,114 @@ def test_candidate_confidence_accepts_stable_single_case_replay() -> None:
     assert decision.held_out_case_count == 0
     assert decision.baseline_replay_count == 2
     assert decision.candidate_replay_count == 3
+
+
+def test_candidate_confidence_counts_multi_member_single_case_replay_metadata() -> None:
+    single_case_replay_dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": {
+                            "metrics": {
+                                "member_count": 4,
+                                "repetition_count": 8,
+                                "successful_repetition_count": 8,
+                            },
+                        },
+                        "candidate": {
+                            "metrics": {
+                                "member_count": 4,
+                                "repetition_count": 12,
+                                "successful_repetition_count": 12,
+                            },
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "case_count": 1,
+                "original_case_count": 1,
+                "paired_replay": True,
+            },
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=("held-out-1",),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=single_case_replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"score_delta": 0.4, "deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"score_delta": 0.4, "deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.verification_mode == "single_case_replay"
+    assert decision.baseline_replay_count == 8
+    assert decision.candidate_replay_count == 12
+
+
+def test_candidate_confidence_accepts_trajectory_set_validation_with_small_held_out_pool() -> None:
+    trajectory_set_dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-train", input="train"),
+            EvalCase(case_id="case-validation", input="validation"),
+            EvalCase(case_id="case-held-out", input="held-out"),
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "case_count": 3,
+                "auto_grouping": {
+                    "auto_grouped": True,
+                    "selected_case_count": 3,
+                },
+            },
+            split_seed="seed",
+            splits={
+                "train": ["case-train"],
+                "validation": ["case-validation"],
+                "held_out": ["case-held-out"],
+            },
+            held_out_case_ids=("case-held-out",),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=trajectory_set_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"score_delta": 0.4, "deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"score_delta": 0.4, "deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.reason == "trajectory-set validation is sufficient"
+    assert decision.verification_split == "trajectory_set_validation"
+    assert decision.verification_mode == "trajectory_set_validation"
+    assert decision.held_out_case_count == 1
 
 
 def test_candidate_confidence_keeps_single_case_replay_limited_when_repetitions_are_low() -> None:
