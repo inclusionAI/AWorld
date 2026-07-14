@@ -25,10 +25,14 @@ Mutation and judging are separate concerns.
 
 ## Candidate Generation
 
-`TraceReflectiveLLMMutator` continues to own the candidate contract. Its prompt
+`TraceReflectiveLLMMutator` continues to own the candidate contract. Its request
 contains the current skill, trace evidence, trainable cases, replay requirements,
-package inventory, and a structured output schema. The CLI-backed mutation
-callable sends that prompt to the injected model and accepts one JSON object with:
+package inventory, and a structured output schema. Candidate generation runs
+through a dedicated AWorld `Agent` with an isolated lightweight `Context` rather
+than calling the model provider directly. This keeps model invocation, prompt
+assembly, framework retries, hooks, and token accounting on the standard AWorld
+path without attaching each stateless population member to global persistent
+agent memory. The agent accepts one JSON object with:
 
 - complete `content` or a `patch_intent`;
 - a concise `rationale`;
@@ -36,9 +40,30 @@ callable sends that prompt to the injected model and accepts one JSON object wit
 
 The parser accepts raw or fenced JSON, validates the top-level shape, and retries
 once with a contract-repair instruction. It does not synthesize replay files in
-framework code. Model-call or repeated schema failure produces no candidate, so
-the existing candidate-generation gate rejects verified application rather than
-silently using a domain-specific fallback.
+framework code. The candidate-generation agent enforces a bounded output-token
+budget at its AWorld model-call boundary. A typed agent/model infrastructure
+failure stops the remaining candidate population and records only a safe failure
+code, stage, and exception type. Provider exceptions are converted before the
+generic Agent terminal-diagnostic boundary, and the specialized agent suppresses
+the generic `failed_requests` artifact because the self-evolve report already
+owns the bounded failure record. A repeated schema failure still produces no
+candidate, so the existing candidate-generation gate rejects verified application
+rather than silently using a domain-specific fallback.
+
+The existing AWorld provider/model observability policy is unchanged. Self-evolve
+does not replace provider implementations or model-layer request tracing; any
+framework-wide log redaction belongs at that shared framework boundary rather than
+in this agent.
+
+## Context Ownership
+
+Self-evolve reconstructs and labels trajectory evidence but does not implement a
+second context-management stack. In particular, it does not add private
+summarization, truncation, or model-selection logic for repeated prior feedback
+and lessons. Context lifecycle and future compression/retrieval policy belong to
+the candidate-generation AWorld agent and its context configuration. Self-evolve
+retains only protocol-specific normalization and sanitization needed to keep
+untrusted trajectory content and secrets out of the candidate prompt and report.
 
 ## Dependency Analysis
 
@@ -71,6 +96,11 @@ Regression coverage verifies:
 - evaluator-only reruns skip mutation-model resolution;
 - invalid model JSON receives one repair retry and a structured multi-file
   candidate is persisted;
+- candidate generation uses the AWorld agent/runtime/context path and always
+  supplies an output-token limit;
+- one infrastructure failure stops the remaining candidate population without
+  adding raw exception text or secrets to self-evolve reports or generic Agent
+  `failed_requests` artifacts;
 - prior-turn paths do not appear as current local-file requirements;
 - preflight and compile agree on missing current local files;
 - URL punctuation does not alter dependency identity;

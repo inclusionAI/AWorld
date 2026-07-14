@@ -8,6 +8,10 @@ from aworld.self_evolve.credit_assignment import (
     TrajectoryCreditAssigner,
     build_default_target_inventory,
 )
+from aworld.self_evolve.candidate_generation import (
+    CandidateGenerationAgent,
+    CandidateGenerationInfrastructureError,
+)
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -194,6 +198,8 @@ __all__ = [
     "AWorldCliCandidateReplayBackend",
     "AWorldCliReplayExecutor",
     "BudgetGate",
+    "CandidateGenerationAgent",
+    "CandidateGenerationInfrastructureError",
     "CandidateFileDelta",
     "CandidatePackageGate",
     "CandidateOptimizer",

@@ -61,6 +61,10 @@ from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
     validate_candidate_files,
 )
+from aworld.self_evolve.candidate_generation import (
+    CandidateGenerationAgent,
+    CandidateGenerationInfrastructureError,
+)
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
@@ -2170,16 +2174,39 @@ def optimize_from_cli_request(
             current_run_id=run_id,
         )
 
+    candidate_generation_agent = (
+        CandidateGenerationAgent(model_config=mutation_model_config)
+        if mutation_model_config is not None
+        else None
+    )
+
     async def _cli_default_mutation(prompt: str) -> Mapping[str, Any]:
         current_content = target_adapter.load_current_content()
-        if mutation_model_config is not None:
+        if candidate_generation_agent is not None:
             model_prompt = prompt
             for attempt in range(2):
                 try:
-                    raw_output = await _call_candidate_mutation_model(
-                        mutation_model_config,
+                    raw_output = await _run_candidate_generation_agent(
+                        candidate_generation_agent,
                         model_prompt,
                     )
+                except CandidateGenerationInfrastructureError as exc:
+                    logger.warning(
+                        "self_evolve.mutation.agent_runtime_failed "
+                        f"stage={exc.stage} error_type={exc.error_type}"
+                    )
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "self_evolve.mutation.agent_runtime_failed "
+                        f"stage=model_call error_type={type(exc).__name__}"
+                    )
+                    raise CandidateGenerationInfrastructureError(
+                        stage="model_call",
+                        error_type=type(exc).__name__,
+                    ) from exc
+
+                try:
                     return _parse_candidate_mutation_model_output(
                         raw_output,
                         current_content=current_content,
@@ -2197,12 +2224,6 @@ def optimize_from_cli_request(
                         continue
                     logger.warning(
                         "self_evolve.mutation.invalid_model_output "
-                        f"error_type={type(exc).__name__}"
-                    )
-                    return {}
-                except Exception as exc:
-                    logger.warning(
-                        "self_evolve.mutation.model_call_failed "
                         f"error_type={type(exc).__name__}"
                     )
                     return {}
@@ -2318,35 +2339,13 @@ def optimize_from_cli_request(
     return summary
 
 
-async def _call_candidate_mutation_model(
-    model_config: ModelConfig,
+async def _run_candidate_generation_agent(
+    agent: CandidateGenerationAgent,
     prompt: str,
 ) -> str:
-    """Call the CLI-selected mutation model without depending on CLI modules."""
+    """Run one request through the optimize-scoped AWorld candidate agent."""
 
-    from aworld.models.llm import acall_llm_model, get_llm_model
-
-    model = get_llm_model(model_config)
-    response = await acall_llm_model(
-        model,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You generate one self-evolve candidate package. Return only a JSON "
-                    "object matching the candidate_output_contract in the user prompt. "
-                    "Do not wrap the JSON in prose. Keep domain-specific replay behavior "
-                    "inside candidate-owned files and do not invent unavailable recordings."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=model_config.llm_temperature,
-    )
-    content = getattr(response, "content", None)
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("mutation model returned no text content")
-    return content
+    return await agent.generate(prompt)
 
 
 def _parse_candidate_mutation_model_output(

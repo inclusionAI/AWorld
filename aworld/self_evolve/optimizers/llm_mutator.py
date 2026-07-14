@@ -10,6 +10,9 @@ from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
     validate_candidate_files,
 )
+from aworld.self_evolve.candidate_generation import (
+    CandidateGenerationInfrastructureError,
+)
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
@@ -49,13 +52,18 @@ class TraceReflectiveLLMMutator:
         seen_content_fingerprints: set[str] = set()
         require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
+        candidate_generation_failure: dict[str, str] | None = None
 
         for index in range(request.max_candidates):
             prompt = _build_mutation_prompt(request, candidate_index=index)
             strategy_record = _candidate_strategy_record(request, candidate_index=index)
-            output = self.mutate_text(prompt)
-            if inspect.isawaitable(output):
-                output = await output
+            try:
+                output = self.mutate_text(prompt)
+                if inspect.isawaitable(output):
+                    output = await output
+            except CandidateGenerationInfrastructureError as exc:
+                candidate_generation_failure = exc.to_diagnostic()
+                break
             try:
                 content, rationale, materialization, files = _materialize_mutator_output(
                     output,
@@ -124,18 +132,22 @@ class TraceReflectiveLLMMutator:
                 )
             )
 
+        diagnostics: dict[str, object] = {
+            "filtered_noop_candidates": filtered_noop_count,
+            "filtered_high_baseline_regression_candidates": (
+                filtered_high_baseline_regression_count
+            ),
+            "filtered_duplicate_candidates": filtered_duplicate_count,
+            "filtered_invalid_patch_candidates": filtered_invalid_patch_count,
+            "candidate_strategies": candidate_strategy_records,
+        }
+        if candidate_generation_failure is not None:
+            diagnostics["candidate_generation_failure"] = candidate_generation_failure
+
         return OptimizerResult(
             candidates=tuple(candidates),
             lineage=tuple(lineage),
-            diagnostics={
-                "filtered_noop_candidates": filtered_noop_count,
-                "filtered_high_baseline_regression_candidates": (
-                    filtered_high_baseline_regression_count
-                ),
-                "filtered_duplicate_candidates": filtered_duplicate_count,
-                "filtered_invalid_patch_candidates": filtered_invalid_patch_count,
-                "candidate_strategies": candidate_strategy_records,
-            },
+            diagnostics=diagnostics,
         )
 
 
