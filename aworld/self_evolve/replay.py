@@ -1212,6 +1212,11 @@ def replay_dataset_fingerprint(dataset: SelfEvolveDataset) -> str:
                 "verification_command": case.verification_command,
                 "metadata": case.metadata,
                 "source": case.source,
+                "context_snapshot_fingerprint": (
+                    case.context_snapshot.fingerprint
+                    if case.context_snapshot is not None
+                    else None
+                ),
             }
             for case in dataset.cases
         ],
