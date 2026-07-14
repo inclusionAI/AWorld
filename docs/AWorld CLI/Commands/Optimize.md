@@ -63,6 +63,30 @@ Exactly one evaluation source is normally provided:
 
 When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. Low-confidence inferred targets are blocked for `auto_verified` apply.
 
+## Replay Adaptation and Portability
+
+`trajectory.log` and the other data sources are dataset inputs. They may come from the
+current workspace or from a completely different rollout machine. The framework does
+not execute historical file paths or compare a candidate directly with the historical
+answer.
+
+Before replay, the framework compiles each replayable case into a portable plan. It
+abstracts workspace paths, snapshots bounded local inputs and non-secret environment
+metadata, records external prerequisites, and creates one content-addressed workspace
+seed. Baseline and candidate repetitions each start from a separate copy of that same
+seed. This isolates skill changes from workspace mutations and host drift.
+
+Stateful external resources require a deterministic registered adapter. An unbound
+live URL, local endpoint, missing continuation context, secret-like file, or unknown
+external path fails the `replay_adaptation` gate before rollout. The candidate remains
+available in `proposal` mode, but cannot pass `auto_verified`.
+
+Strict baseline reuse requires the same target, current-skill fingerprint, dataset
+fingerprint, adaptation fingerprint, workspace-seed fingerprint, cases, and requested
+repetition coverage. Legacy replay artifacts can still be opened or used by the
+evaluator-resume flow, but are not reused as a new strict baseline when this provenance
+is absent.
+
 ## Options
 
 - `--agent`: agent name or id used by replay/evaluator request context.
@@ -136,10 +160,17 @@ Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
 - `harness_diagnostics`: advisory framework diagnostic artifact links and counts.
 - `release_normalization`: normalized release fingerprint, pre-normalization fingerprint, preserved runtime constraints, and verification status.
 - `replay_path`: candidate replay artifact path.
+- `replay.adaptation`: adaptation readiness plus workspace, environment, task, dataset, and current-skill fingerprints for completed paired replay.
 - `evaluator_report_paths`: evaluator output artifacts.
 - `post_apply`: accepted or rolled-back apply details, backup path, journal path, runtime activation, and registry refresh status.
 
 Candidate files and diffs live under `.aworld/self_evolve/<run_id>/candidates/`. For skill candidates, proposal content is marked with `self_evolve.release_state: candidate`; verified content is marked with `self_evolve.release_state: verified` only after post-apply checks pass.
+
+Replay adaptation artifacts live under
+`.aworld/self_evolve/<run_id>/replay_adaptation/<dataset_fingerprint>/`. The directory
+contains `bundle.json`, `workspace_manifest.json`, `environment_snapshot.json`, and
+`workspace_seed/`. Each executed repetition stores its disposable workspace under the
+corresponding replay repetition directory.
 
 ## Runtime Skill Management
 

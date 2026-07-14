@@ -31,6 +31,40 @@ Self-evolve follows a proposal-first pipeline:
 
 This keeps the self-evolve loop outside the task response path. Post-run scheduling is best effort: a failed enqueue is logged and does not change the completed `TaskResponse`.
 
+### Three-Trajectory Replay Model
+
+A trajectory dataset is historical evidence, not an executable copy of its source
+machine. Self-evolve uses three distinct trajectories:
+
+1. The source trajectory supplies candidate-generation evidence and the semantic
+   task anchor.
+2. The replay baseline runs the current skill in a newly adapted environment.
+3. The replay candidate runs the proposed skill from the same adapted initial state.
+
+Only the paired replay baseline/candidate comparison is used to attribute an
+improvement to the skill change. The historical trajectory is not substituted for a
+missing replay baseline.
+
+Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace paths
+to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment
+snapshot, fingerprints both, and classifies external dependencies. Explicit bounded
+local files may be copied into the seed. Live HTTP resources, local endpoints,
+continuation context, browser state, authenticated profiles, and other stateful
+dependencies require a registered deterministic adapter; the compiler never invents
+a successful mock for an unknown dependency.
+
+Every baseline, candidate, and repetition receives a fresh copy of the same verified
+seed as its working directory. Writes from one rollout therefore cannot change the
+initial state of another rollout. A pair is comparable only when its adaptation,
+workspace-seed, task-input, dataset, and baseline-skill provenance agree. Cached
+baselines are reused only when target identity and all relevant fingerprints still
+match; older replay artifacts without provenance remain readable but are not reused.
+
+Unresolved adaptation produces a failed `replay_adaptation` gate before a rollout is
+started. Proposal mode still preserves the generated candidate and diagnostics.
+`auto_verified` rejects the candidate because deterministic paired evidence is
+missing.
+
 ## Configuration
 
 `SelfEvolveConfig.mode` controls whether the runner schedules self-evolve work:
@@ -228,6 +262,46 @@ result = asyncio.run(
 )
 ```
 
+Stateful dependencies can be made replayable through an explicit SDK adapter:
+
+```python
+from aworld.self_evolve import (
+    ReplayAdapterBinding,
+    ReplayAdaptationCompiler,
+)
+
+
+class RecordedServiceAdapter:
+    adapter_id = "example.recorded-service.v1"
+
+    def __init__(self, fixture: Path) -> None:
+        self.fixture = fixture.resolve()
+
+    def bind(self, dependency, *, context):
+        if dependency.kind != "http_resource" or not self.fixture.is_file():
+            return None
+        return ReplayAdapterBinding(
+            adapter_id=self.adapter_id,
+            dependency_id=dependency.identifier,
+            deterministic=True,
+            environment={"AWORLD_REPLAY_SERVICE_FIXTURE": str(self.fixture)},
+            fixture_paths=(str(self.fixture),),
+        )
+
+
+runner = SelfEvolveRunner(
+    store=FilesystemSelfEvolveStore(Path.cwd()),
+    optimizer=TraceReflectiveLLMMutator(mutate_text=mutate_text),
+    replay_adaptation_compiler=ReplayAdaptationCompiler(
+        adapters=(RecordedServiceAdapter(Path("fixtures/service.json")),)
+    ),
+)
+```
+
+An adapter is an assertion about a real deterministic fixture or simulator. Marking a
+live service deterministic without supplying equivalent replay behavior invalidates
+the comparison contract.
+
 Proposal runs persist candidates and reports but do not write the target file. Use `apply_policy="auto_verified"` only when an evaluation backend, replay evidence, and post-apply runtime-loader verification are available.
 
 ## Run Artifacts
@@ -247,6 +321,10 @@ Each run writes durable artifacts under `.aworld/self_evolve/<run_id>/`:
 - `judges/<backend_id>.json`: judge prompt/result metadata.
 - `apply/<candidate_id>.backup.md` and `apply/<candidate_id>.journal.json`: rollback material for verified apply.
 - `release_normalization` in `report.json`: pre-normalization fingerprint, normalized release fingerprint, preserved runtime constraints, removed internal line count, and normalization verification status.
+- `replay_adaptation/<dataset_fingerprint>/bundle.json`: adapted per-case inputs, dependency status, adapter ids, readiness, and provenance fingerprints.
+- `replay_adaptation/<dataset_fingerprint>/workspace_seed/`: filtered immutable replay seed verified before every rollout copy.
+- `replay_adaptation/<dataset_fingerprint>/workspace_manifest.json`: relative paths, modes, sizes, and SHA-256 digests for seed files.
+- `replay_adaptation/<dataset_fingerprint>/environment_snapshot.json`: bounded non-secret runtime, locale, platform, and observed tool metadata used in the adaptation fingerprint.
 
 Trajectory-set runs may also include framework-owned trajectory-set and population artifacts:
 
@@ -256,6 +334,10 @@ Trajectory-set runs may also include framework-owned trajectory-set and populati
 - `population/patches/<candidate_id>.json`: patch intent metadata before materialization.
 
 Multi-member replay stores a versioned manifest under `replay/<candidate_id>/members/manifest.json`. Each member directory contains only that member's baseline/candidate repetitions and uses the member's own task input. Validation and held-out evaluators consume their assigned member splits; replay repetitions measure stability and do not count as additional independent held-out members.
+
+Each repetition directory also contains a `workspace/` copied from the adaptation
+seed. These workspaces are execution sandboxes and may contain rollout mutations;
+the compiler seed remains the canonical initial state.
 
 When `--include-prior-runs` is enabled, the framework imports same-target prior run reports as advisory trainable cases. These cases carry bounded status, failed gates, metric summaries, candidate ids, and report paths; they do not copy raw trajectories into optimizer prompts and they do not create new replay evidence.
 
@@ -313,6 +395,8 @@ Domain-specific learned skills, such as a grounding or media-comprehension skill
 - Do not expose held-out cases to candidate optimizers.
 - Do not copy replay overlay instructions or framework control flow into target skills.
 - Treat a missing gate, missing replay artifact, or missing post-apply runtime-loader signal as not verified.
+- Treat `runtime_required`, `unresolved`, and `context_incomplete` replay dependencies as non-deterministic until a typed adapter supplies equivalent fixtures.
+- Never repair replay by copying credentials, browser profiles, cookies, or private host state into the seed.
 - For long-lived runtimes, check `post_apply.activation` and `post_apply.refresh` before claiming future tasks will observe the applied skill without restart.
 
 ## Troubleshooting
@@ -322,6 +406,7 @@ Domain-specific learned skills, such as a grounding or media-comprehension skill
 - `auto_verified skill apply requires candidate replay backend`: verified apply requires replay evidence for skill candidates.
 - Judge timeout after replay completed: rerun `aworld-cli optimize --from-run <run_id> --rerun-evaluator`.
 - Missing replay repetitions or replay timeout: rerun full optimize with a higher `--replay-timeout`; evaluator-only resume cannot create new replay evidence.
+- `replay_adaptation requires unavailable context or dependencies`: inspect the gate details and `replay_adaptation/.../bundle.json`; provide a bounded fixture/adapter or keep the result proposal-only.
 - Post-apply status is `rolled_back`: inspect `report.json` and `apply/<candidate_id>.journal.json` for the failed metric, activation error, or runtime-loader mismatch.
 
 See [Optimize](../AWorld%20CLI/Commands/Optimize.md) for the command reference. A small toy dataset is available in the repository at `examples/aworld_quick_start/self_evolve/`.

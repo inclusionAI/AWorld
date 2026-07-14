@@ -296,9 +296,12 @@ class ReplayAdaptationCompiler:
             if binding is None:
                 adapted_dependencies.append(dependency)
                 continue
-            safe_binding = replace(
-                binding,
-                environment=_safe_adapter_environment(binding.environment),
+            safe_binding = self._snapshot_adapter_fixtures(
+                replace(
+                    binding,
+                    environment=_safe_adapter_environment(binding.environment),
+                ),
+                workspace_seed=workspace_seed,
             )
             bindings.append(safe_binding)
             adapted_dependencies.append(
@@ -385,6 +388,51 @@ class ReplayAdaptationCompiler:
             if binding is not None:
                 return binding
         return None
+
+    def _snapshot_adapter_fixtures(
+        self,
+        binding: ReplayAdapterBinding,
+        *,
+        workspace_seed: Path,
+    ) -> ReplayAdapterBinding:
+        environment = dict(binding.environment)
+        snapshotted_paths: list[str] = []
+        adapter_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", binding.adapter_id).strip(
+            ".-"
+        ) or "adapter"
+        for raw_path in binding.fixture_paths:
+            source = Path(raw_path).expanduser()
+            if (
+                not source.is_file()
+                or _is_sensitive_path(source)
+                or source.stat().st_size > self.max_external_file_bytes
+            ):
+                raise ReplayAdaptationError(
+                    "replay adapter fixture must be a bounded non-secret regular file: "
+                    f"{binding.adapter_id}"
+                )
+            content = source.read_bytes()
+            fixture_name = hashlib.sha256(content).hexdigest()[:12] + "-" + source.name
+            relative = (
+                Path(".aworld_replay_adapter_fixtures")
+                / adapter_name
+                / fixture_name
+            )
+            destination = workspace_seed / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if not destination.exists():
+                shutil.copy2(source, destination)
+            fixture_ref = f"{REPLAY_WORKSPACE_PLACEHOLDER}/{relative.as_posix()}"
+            snapshotted_paths.append(fixture_ref)
+            environment = {
+                key: value.replace(str(source), fixture_ref)
+                for key, value in environment.items()
+            }
+        return replace(
+            binding,
+            environment=environment,
+            fixture_paths=tuple(snapshotted_paths),
+        )
 
     def _copy_workspace_seed(
         self,

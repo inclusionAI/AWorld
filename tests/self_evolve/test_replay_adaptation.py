@@ -199,7 +199,12 @@ def test_registered_adapter_can_make_local_endpoint_deterministic(tmp_path: Path
     )
     assert dependency.status == "adapter_bound"
     assert dependency.adapter_id == "test.local-endpoint-fixture.v1"
-    assert case.bindings[0].environment["AWORLD_REPLAY_CDP_FIXTURE"].endswith("cdp.json")
+    fixture_ref = case.bindings[0].environment["AWORLD_REPLAY_CDP_FIXTURE"]
+    assert fixture_ref.startswith(
+        "${AWORLD_REPLAY_WORKSPACE}/.aworld_replay_adapter_fixtures/"
+    )
+    fixture_relative = fixture_ref.removeprefix("${AWORLD_REPLAY_WORKSPACE}/")
+    assert (Path(bundle.workspace_seed) / fixture_relative).read_text() == '{"pages": []}'
     assert bundle.ready is True
 
 
@@ -453,3 +458,68 @@ async def test_runner_blocks_unresolved_adaptation_before_rollout(
         assert gate.gate_name == "replay_adaptation"
         assert gate.passed is False
         assert gate.details["readiness"] == "runtime_required"
+
+
+@pytest.mark.asyncio
+async def test_unresolved_adaptation_preserves_proposal_but_rejects_verified_apply(
+    tmp_path: Path,
+) -> None:
+    class SingleCandidateOptimizer:
+        async def propose(self, request):
+            from aworld.self_evolve.optimizers.base import OptimizerResult
+
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="cand-policy",
+                        target=request.target,
+                        content="---\nname: demo\n---\n# Demo\nImproved.\n",
+                        rationale="test",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class FailingBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            raise AssertionError("blocked adaptation must not start rollout")
+
+    for policy, expected_status in (
+        ("proposal", "succeeded"),
+        ("auto_verified", "rejected"),
+    ):
+        workspace = tmp_path / policy
+        skill_path = workspace / "skills" / "demo" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+        dataset = _dataset("Inspect http://127.0.0.1:9222")
+        runner = SelfEvolveRunner(
+            store=FilesystemSelfEvolveStore(workspace),
+            optimizer=SingleCandidateOptimizer(),
+            replay_enabled=True,
+            candidate_replay_backend=FailingBackend(),
+            min_eval_cases=0,
+        )
+
+        result = await runner.run_explicit_target(
+            run_id=f"run-policy-{policy}",
+            target=SkillTextTarget(skill_path, allow_auto_apply=True),
+            dataset=dataset,
+            trace_packs=(dataset.cases[0].trace_pack,),
+            apply_policy=policy,
+        )
+
+        assert result.run.status.value == expected_status
+        assert result.selected_candidate is not None
+        assert (
+            workspace
+            / ".aworld"
+            / "self_evolve"
+            / f"run-policy-{policy}"
+            / "candidates"
+            / "cand-policy.json"
+        ).is_file()
+        assert any(
+            gate.gate_name == "replay_adaptation" and not gate.passed
+            for gate in result.run.gate_results
+        )

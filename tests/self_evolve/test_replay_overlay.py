@@ -464,7 +464,7 @@ def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
         )
 
 
-def test_paired_replay_dataset_uses_source_trajectory_for_baseline_task_failure() -> None:
+def test_paired_replay_dataset_rejects_source_trajectory_baseline_fallback() -> None:
     source_trajectory = [
         {
             "state": {"input": {"content": "task"}},
@@ -500,23 +500,13 @@ def test_paired_replay_dataset_uses_source_trajectory_for_baseline_task_failure(
         ),
     )
 
-    assert candidate_replay_is_comparable(dataset=dataset, replay_result=replay) is True
-
-    paired = build_paired_replay_dataset(
-        dataset=dataset,
-        replay_result=replay,
-        candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
-    )
-
-    case = paired.cases[0]
-    assert case.metadata["variant_trajectories"]["baseline"][0]["action"][
-        "content"
-    ] == "baseline did not finish"
-    assert case.metadata["replay"]["baseline"]["outcome"] == "task_failure"
-    assert (
-        case.metadata["replay"]["baseline"]["trajectory_source"]
-        == "source_trajectory"
-    )
+    assert candidate_replay_is_comparable(dataset=dataset, replay_result=replay) is False
+    with pytest.raises(ValueError, match="comparable paired outcomes"):
+        build_paired_replay_dataset(
+            dataset=dataset,
+            replay_result=replay,
+            candidate=_candidate("---\nname: demo\n---\n# Demo\n"),
+        )
 
 
 def test_paired_replay_dataset_rejects_infrastructure_baseline_failure() -> None:

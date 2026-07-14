@@ -41,8 +41,8 @@ run artifact root, and optional adapter registry. It produces a versioned
 
 Each case records:
 
-- the original and adapted task input;
-- workspace and external path mappings;
+- the adapted task input and its fingerprint;
+- normalized workspace references and snapshotted external-file dependencies;
 - detected tools and external prerequisites;
 - adapter bindings and deterministic/non-deterministic classification;
 - an immutable workspace seed path and content fingerprint;
@@ -117,10 +117,11 @@ count. A case-id-only match is insufficient.
 Each run writes:
 
 ```text
-.aworld/self_evolve/<run-id>/adaptation/
+.aworld/self_evolve/<run-id>/replay_adaptation/<dataset-fingerprint>/
   bundle.json
   workspace_seed/
   workspace_manifest.json
+  environment_snapshot.json
   fixtures/
 ```
 
