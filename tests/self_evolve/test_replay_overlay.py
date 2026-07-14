@@ -1946,6 +1946,12 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "artifact-first" in task_text
     assert "bounded structured summaries" in task_text
     assert "compacted" in task_text
+    assert "Self-evolve replay runtime contract" in task_text
+    assert "Task-plane operations required by the original task are allowed" in task_text
+    assert "explicitly authorizes a control-plane operation" in task_text
+    assert "Do not terminate, restart, reconfigure, or replace externally managed prerequisites" in task_text
+    assert "Do not copy or substitute credentials, sessions, profiles, or private state" in task_text
+    assert "fail the replay with a prerequisite-unavailable reason" in task_text
     assert (
         "Once the requested output artifact and a valid evidence manifest exist, "
         "stop evidence collection and return the final answer"
@@ -1969,6 +1975,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
         tmp_path / "artifacts" / "logs"
     )
     assert captured["kwargs"]["env"]["AWORLD_TRAJECTORY_LOG_DISABLED"] == "1"
+    assert captured["kwargs"]["env"]["AWORLD_TOOL_CALL_LIMIT"] == "24"
     assert "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR" in task_text
     assert str(tmp_path / "artifacts") in task_text
     assert str(tmp_path / "artifacts" / "evidence_manifest.jsonl") in task_text
