@@ -16,6 +16,7 @@ from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 
 
 REPLAY_ADAPTATION_SCHEMA_VERSION = "aworld.self_evolve.replay_adaptation.v1"
+REPLAY_PREFLIGHT_SCHEMA_VERSION = "aworld.self_evolve.replay_preflight.v1"
 REPLAY_WORKSPACE_PLACEHOLDER = "${AWORLD_REPLAY_WORKSPACE}"
 REPLAY_ARTIFACT_PLACEHOLDER = "${AWORLD_REPLAY_ARTIFACT_DIR}"
 
@@ -98,6 +99,27 @@ class ReplayDependency:
     deterministic: bool
     adapter_id: str | None = None
     detail: str | None = None
+
+
+@dataclass(frozen=True)
+class ReplayCapabilityRequirement:
+    requirement_id: str
+    kind: str
+    identifier: str
+    case_ids: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+    status: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class ReplayPreflightReport:
+    schema_version: str
+    requirements: tuple[ReplayCapabilityRequirement, ...]
+    fingerprint: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -185,6 +207,61 @@ class ReplayAdaptationCompiler:
         self.max_workspace_files = max_workspace_files
         self.max_workspace_bytes = max_workspace_bytes
 
+    def preflight(
+        self,
+        *,
+        dataset: SelfEvolveDataset,
+        workspace_root: str | Path,
+    ) -> ReplayPreflightReport:
+        workspace = Path(workspace_root).expanduser().resolve()
+        if not workspace.is_dir():
+            raise ReplayAdaptationError(f"replay workspace does not exist: {workspace}")
+        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for case in dataset.cases:
+            task_input = _normalize_value(
+                case.input,
+                lambda text: _normalize_workspace_paths(
+                    text,
+                    workspace_root=workspace,
+                ),
+            )
+            for dependency in _detected_runtime_dependencies(case, task_input):
+                key = (
+                    dependency.kind,
+                    dependency.identifier,
+                    dependency.status,
+                )
+                item = grouped.setdefault(
+                    key,
+                    {"case_ids": [], "evidence_refs": [], "detail": dependency.detail},
+                )
+                if case.case_id not in item["case_ids"]:
+                    item["case_ids"].append(case.case_id)
+                evidence_ref = _context_evidence_ref(case)
+                if evidence_ref not in item["evidence_refs"]:
+                    item["evidence_refs"].append(evidence_ref)
+        requirements = tuple(
+            ReplayCapabilityRequirement(
+                requirement_id=_requirement_id(kind, identifier),
+                kind=kind,
+                identifier=identifier,
+                case_ids=tuple(value["case_ids"]),
+                evidence_refs=tuple(value["evidence_refs"]),
+                status=status,
+                detail=value["detail"],
+            )
+            for (kind, identifier, status), value in sorted(grouped.items())
+        )
+        payload = {
+            "schema_version": REPLAY_PREFLIGHT_SCHEMA_VERSION,
+            "requirements": [asdict(item) for item in requirements],
+        }
+        return ReplayPreflightReport(
+            schema_version=REPLAY_PREFLIGHT_SCHEMA_VERSION,
+            requirements=requirements,
+            fingerprint=_json_fingerprint(payload),
+        )
+
     def compile(
         self,
         *,
@@ -263,48 +340,8 @@ class ReplayAdaptationCompiler:
             lambda text: _normalize_workspace_paths(text, workspace_root=workspace_root),
         )
         task_text = _text_fragments(task_input)
-        dependencies: list[ReplayDependency] = []
+        dependencies = list(_detected_runtime_dependencies(case, task_input))
         diagnostics: list[str] = []
-
-        lowered = task_text.lower()
-        if any(marker in lowered for marker in _CONTINUATION_MARKERS):
-            dependencies.append(
-                ReplayDependency(
-                    kind="conversation_context",
-                    identifier="prior-task-context",
-                    status="context_incomplete",
-                    deterministic=False,
-                    detail="required prior task context is absent",
-                )
-            )
-
-        local_endpoints = tuple(dict.fromkeys(_LOCAL_ENDPOINT.findall(task_text)))
-        for endpoint in local_endpoints:
-            dependencies.append(
-                ReplayDependency(
-                    kind="local_endpoint",
-                    identifier=endpoint,
-                    status="runtime_required",
-                    deterministic=False,
-                    detail="stateful local endpoint requires a registered replay adapter",
-                )
-            )
-
-        external_urls = tuple(
-            url
-            for url in dict.fromkeys(_HTTP_RESOURCE.findall(task_text))
-            if url not in local_endpoints
-        )
-        for url in external_urls:
-            dependencies.append(
-                ReplayDependency(
-                    kind="http_resource",
-                    identifier=url,
-                    status="runtime_required",
-                    deterministic=False,
-                    detail="live HTTP content requires a deterministic replay adapter",
-                )
-            )
 
         for raw_path in _absolute_local_path_references(task_text):
             task_input, dependency = self._adapt_external_path(
@@ -315,19 +352,6 @@ class ReplayAdaptationCompiler:
             dependencies.append(dependency)
 
         tool_names = _case_tool_names(case)
-        for tool_name in tool_names:
-            if _is_stateful_tool_name(tool_name):
-                dependencies.append(
-                    ReplayDependency(
-                        kind="stateful_tool",
-                        identifier=tool_name,
-                        status="runtime_required",
-                        deterministic=False,
-                        detail=(
-                            "stateful trace tool requires a registered replay adapter"
-                        ),
-                    )
-                )
 
         context = ReplayAdapterContext(
             case_id=case.case_id,
@@ -756,6 +780,83 @@ def _is_stateful_tool_name(tool_name: str) -> bool:
         or (token == "web" and next_token in _STATEFUL_WEB_ACTION_TOKENS)
         for token, next_token in zip(tokens, tokens[1:])
     ) or tokens == ("web",)
+
+
+def _detected_runtime_dependencies(
+    case: EvalCase,
+    task_input: Any,
+) -> tuple[ReplayDependency, ...]:
+    task_text = _text_fragments(task_input)
+    dependencies: list[ReplayDependency] = []
+    lowered = task_text.lower()
+    if (
+        any(marker in lowered for marker in _CONTINUATION_MARKERS)
+        and not _case_has_reconstructed_context(case)
+    ):
+        dependencies.append(
+            ReplayDependency(
+                kind="conversation_context",
+                identifier="prior-task-context",
+                status="context_incomplete",
+                deterministic=False,
+                detail="required prior task context is absent",
+            )
+        )
+    local_endpoints = tuple(dict.fromkeys(_LOCAL_ENDPOINT.findall(task_text)))
+    for endpoint in local_endpoints:
+        dependencies.append(
+            ReplayDependency(
+                kind="local_endpoint",
+                identifier=endpoint,
+                status="runtime_required",
+                deterministic=False,
+                detail="stateful local endpoint requires a replay capability",
+            )
+        )
+    for url in dict.fromkeys(_HTTP_RESOURCE.findall(task_text)):
+        if url in local_endpoints:
+            continue
+        dependencies.append(
+            ReplayDependency(
+                kind="http_resource",
+                identifier=url,
+                status="runtime_required",
+                deterministic=False,
+                detail="live HTTP content requires a deterministic replay capability",
+            )
+        )
+    for tool_name in _case_tool_names(case):
+        if not _is_stateful_tool_name(tool_name):
+            continue
+        dependencies.append(
+            ReplayDependency(
+                kind="stateful_tool",
+                identifier=tool_name,
+                status="runtime_required",
+                deterministic=False,
+                detail="stateful trace tool requires a replay capability",
+            )
+        )
+    return tuple(dependencies)
+
+
+def _case_has_reconstructed_context(case: EvalCase) -> bool:
+    snapshot = case.context_snapshot
+    return bool(snapshot is not None and snapshot.prior_turns)
+
+
+def _context_evidence_ref(case: EvalCase) -> str:
+    snapshot = case.context_snapshot
+    if snapshot is not None:
+        return f"context:{case.case_id}:{snapshot.fingerprint}"
+    return f"case:{case.case_id}:input"
+
+
+def _requirement_id(kind: str, identifier: str) -> str:
+    digest = hashlib.sha256(
+        f"{kind}\0{identifier}".encode("utf-8")
+    ).hexdigest()[:20]
+    return f"requirement-{digest}"
 
 
 def _case_readiness(dependencies: Sequence[ReplayDependency]) -> str:
