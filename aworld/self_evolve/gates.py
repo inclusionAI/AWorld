@@ -7,7 +7,52 @@ from typing import Any
 
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
+
+
+class ReplayAdaptationGate:
+    def evaluate(self, bundle: ReplayAdaptationBundle) -> GateResult:
+        readiness_values = {case.readiness for case in bundle.cases}
+        readiness = "ready"
+        if not bundle.ready:
+            readiness = next(
+                (
+                    value
+                    for value in (
+                        "context_incomplete",
+                        "unresolved",
+                        "runtime_required",
+                    )
+                    if value in readiness_values
+                ),
+                "unresolved",
+            )
+        unavailable_dependencies = [
+            dependency
+            for case in bundle.cases
+            for dependency in case.dependencies
+            if not dependency.deterministic
+            or dependency.status
+            in {"context_incomplete", "unresolved", "runtime_required"}
+        ]
+        return GateResult(
+            gate_name="replay_adaptation",
+            passed=bundle.ready and not unavailable_dependencies,
+            reason=(
+                "replay adaptation is deterministic and ready"
+                if bundle.ready and not unavailable_dependencies
+                else "replay adaptation requires unavailable context or dependencies"
+            ),
+            details={
+                "readiness": readiness,
+                "case_count": len(bundle.cases),
+                "unresolved_dependency_count": len(unavailable_dependencies),
+                "adaptation_fingerprint": bundle.adaptation_fingerprint,
+                "workspace_seed_fingerprint": bundle.workspace_seed_fingerprint,
+                "environment_fingerprint": bundle.environment_fingerprint,
+            },
+        )
 
 
 class ScoreImprovementGate:

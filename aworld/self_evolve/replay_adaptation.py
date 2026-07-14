@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import stat
+import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -124,6 +126,8 @@ class ReplayAdaptationBundle:
     workspace_seed: str
     workspace_seed_fingerprint: str
     manifest_path: str
+    environment_snapshot_path: str
+    environment_fingerprint: str
     cases: tuple[ReplayCaseAdaptation, ...]
     adaptation_fingerprint: str
     ready: bool
@@ -188,10 +192,15 @@ class ReplayAdaptationCompiler:
         manifest = _workspace_manifest(seed)
         _write_json_atomic(manifest_path, manifest)
         seed_fingerprint = _json_fingerprint(manifest)
+        environment_snapshot_path = artifact / "environment_snapshot.json"
+        environment_snapshot = _environment_snapshot(cases)
+        _write_json_atomic(environment_snapshot_path, environment_snapshot)
+        environment_fingerprint = _json_fingerprint(environment_snapshot)
         adaptation_payload = {
             "schema_version": REPLAY_ADAPTATION_SCHEMA_VERSION,
             "source_workspace_root": str(workspace),
             "workspace_seed_fingerprint": seed_fingerprint,
+            "environment_fingerprint": environment_fingerprint,
             "cases": [asdict(case) for case in cases],
         }
         bundle = ReplayAdaptationBundle(
@@ -200,6 +209,8 @@ class ReplayAdaptationCompiler:
             workspace_seed=str(seed),
             workspace_seed_fingerprint=seed_fingerprint,
             manifest_path=str(manifest_path),
+            environment_snapshot_path=str(environment_snapshot_path),
+            environment_fingerprint=environment_fingerprint,
             cases=cases,
             adaptation_fingerprint=_json_fingerprint(adaptation_payload),
             ready=bool(cases) and all(case.readiness == "ready" for case in cases),
@@ -570,6 +581,35 @@ def _workspace_manifest(root: Path) -> dict[str, Any]:
     return {
         "schema_version": "aworld.self_evolve.workspace_manifest.v1",
         "entries": entries,
+    }
+
+
+def _environment_snapshot(
+    cases: Sequence[ReplayCaseAdaptation],
+) -> dict[str, Any]:
+    environment_keys = ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
+    return {
+        "schema_version": "aworld.self_evolve.environment_snapshot.v1",
+        "runtime": {
+            "python_implementation": platform.python_implementation(),
+            "python_version": platform.python_version(),
+            "platform": sys.platform,
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+        },
+        "environment": {
+            key: os.environ[key]
+            for key in environment_keys
+            if key in os.environ
+        },
+        "tool_names": sorted(
+            {
+                tool_name
+                for case in cases
+                for tool_name in case.tool_names
+            }
+        ),
     }
 
 

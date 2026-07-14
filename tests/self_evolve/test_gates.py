@@ -14,6 +14,7 @@ from aworld.self_evolve.gates import (
     PromptSectionGate,
     ProtectedPathGate,
     RequiredVerificationGate,
+    ReplayAdaptationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
     StoppingConditionGate,
@@ -21,6 +22,11 @@ from aworld.self_evolve.gates import (
     TokenLimitGate,
     ToolDescriptionGate,
     TrustProvenanceGate,
+)
+from aworld.self_evolve.replay_adaptation import (
+    ReplayAdaptationBundle,
+    ReplayCaseAdaptation,
+    ReplayDependency,
 )
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
@@ -34,6 +40,57 @@ def _candidate(content: str, *, path: str | None = "SKILL.md") -> CandidateVaria
         rationale="test",
         target_fingerprint="sha256:old",
     )
+
+
+def test_replay_adaptation_gate_requires_deterministic_ready_cases() -> None:
+    ready_case = ReplayCaseAdaptation(
+        case_id="task-ready",
+        adapted_task_input="task",
+        task_input_fingerprint="sha256:task",
+        dependencies=(),
+        bindings=(),
+        tool_names=(),
+        readiness="ready",
+    )
+    blocked_case = ReplayCaseAdaptation(
+        case_id="task-blocked",
+        adapted_task_input="task",
+        task_input_fingerprint="sha256:blocked-task",
+        dependencies=(
+            ReplayDependency(
+                kind="http_resource",
+                identifier="https://example.test/data",
+                status="runtime_required",
+                deterministic=False,
+            ),
+        ),
+        bindings=(),
+        tool_names=(),
+        readiness="runtime_required",
+    )
+    base = {
+        "schema_version": "test.v1",
+        "source_workspace_root": "/workspace",
+        "workspace_seed": "/seed",
+        "workspace_seed_fingerprint": "sha256:seed",
+        "manifest_path": "/manifest.json",
+        "environment_snapshot_path": "/environment.json",
+        "environment_fingerprint": "sha256:environment",
+        "adaptation_fingerprint": "sha256:adaptation",
+    }
+
+    passed = ReplayAdaptationGate().evaluate(
+        ReplayAdaptationBundle(cases=(ready_case,), ready=True, **base)
+    )
+    failed = ReplayAdaptationGate().evaluate(
+        ReplayAdaptationBundle(cases=(blocked_case,), ready=False, **base)
+    )
+
+    assert passed.passed is True
+    assert failed.passed is False
+    assert failed.gate_name == "replay_adaptation"
+    assert failed.details["readiness"] == "runtime_required"
+    assert failed.details["unresolved_dependency_count"] == 1
 
 
 def test_score_improvement_gate_requires_min_delta() -> None:
