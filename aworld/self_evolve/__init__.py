@@ -120,6 +120,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayCaseAdaptation,
     ReplayDependency,
     ReplayDependencyAdapter,
+    materialize_replay_workspace,
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
@@ -271,5 +272,6 @@ __all__ = [
     "load_jsonl_eval_cases",
     "load_session_eval_cases",
     "load_trajectory_set_eval_cases",
+    "materialize_replay_workspace",
     "trace_packs_from_trajectory_log",
 ]

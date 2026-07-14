@@ -22,6 +22,12 @@ from aworld.self_evolve.datasets import (
     SelfEvolveDataset,
     is_framework_meta_trace_pack,
 )
+from aworld.self_evolve.replay_adaptation import (
+    REPLAY_ARTIFACT_PLACEHOLDER,
+    REPLAY_WORKSPACE_PLACEHOLDER,
+    ReplayAdaptationBundle,
+    materialize_replay_workspace,
+)
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
 _EVIDENCE_RETRY_LIMIT = 1
@@ -49,6 +55,7 @@ class CandidateReplayRequest:
     max_cost_usd: float | None = None
     baseline_repetitions: int = 1
     candidate_repetitions: int = 1
+    replay_adaptation: ReplayAdaptationBundle | None = None
 
 
 @dataclass(frozen=True)
@@ -346,6 +353,10 @@ class ReplayExecutionRequest:
     max_steps: int | None = None
     max_tokens: int | None = None
     max_cost_usd: float | None = None
+    environment: Mapping[str, str] = field(default_factory=dict)
+    adaptation_fingerprint: str | None = None
+    workspace_seed_fingerprint: str | None = None
+    task_input_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -430,10 +441,11 @@ class AWorldCliCandidateReplayBackend:
                 member_count=len(replay_cases),
             )
             for case in replay_cases:
+                adapted_task_input = _adapted_task_input(request, case)
                 member_request = replace(
                     request,
                     task_id=case.case_id,
-                    task_input=case.input,
+                    task_input=adapted_task_input,
                     baseline_replay_dir=_member_baseline_replay_dir(
                         request.baseline_replay_dir,
                         case.case_id,
@@ -678,13 +690,43 @@ class AWorldCliCandidateReplayBackend:
         artifact_dir: Path,
     ) -> ReplayVariantResult:
         artifact_dir.mkdir(parents=True, exist_ok=True)
+        workspace_root = request.workspace_root
+        task_input = request.task_input
+        environment: dict[str, str] = {}
+        adaptation_fingerprint: str | None = None
+        workspace_seed_fingerprint: str | None = None
+        task_input_fingerprint: str | None = None
+        if request.replay_adaptation is not None:
+            case_adaptation = request.replay_adaptation.case(request.task_id)
+            isolated_workspace = materialize_replay_workspace(
+                request.replay_adaptation,
+                artifact_dir / "workspace",
+            )
+            workspace_root = str(isolated_workspace)
+            task_input = _expand_replay_placeholders(
+                request.task_input,
+                workspace_root=isolated_workspace,
+                artifact_dir=artifact_dir,
+            )
+            environment = _adapter_environment(case_adaptation.bindings)
+            environment.update(
+                {
+                    "AWORLD_REPLAY_WORKSPACE": str(isolated_workspace),
+                    "AWORLD_REPLAY_ARTIFACT_DIR": str(artifact_dir),
+                }
+            )
+            adaptation_fingerprint = request.replay_adaptation.adaptation_fingerprint
+            workspace_seed_fingerprint = (
+                request.replay_adaptation.workspace_seed_fingerprint
+            )
+            task_input_fingerprint = case_adaptation.task_input_fingerprint
         execution_request = ReplayExecutionRequest(
             variant_id=variant_id,
             task_id=request.task_id,
             candidate_id=request.candidate_id,
-            workspace_root=request.workspace_root,
-            task_input=request.task_input,
-            task_text=_task_text(request.task_input),
+            workspace_root=workspace_root,
+            task_input=task_input,
+            task_text=_task_text(task_input),
             skill_root=skill_root,
             artifact_dir=str(artifact_dir),
             agent=request.agent,
@@ -692,6 +734,10 @@ class AWorldCliCandidateReplayBackend:
             max_steps=request.max_steps,
             max_tokens=request.max_tokens,
             max_cost_usd=request.max_cost_usd,
+            environment=environment,
+            adaptation_fingerprint=adaptation_fingerprint,
+            workspace_seed_fingerprint=workspace_seed_fingerprint,
+            task_input_fingerprint=task_input_fingerprint,
         )
         _write_json(artifact_dir / "execution_request.json", execution_request)
         started_at = time.monotonic()
@@ -788,6 +834,7 @@ class AWorldCliReplayExecutor:
                 timeout=request.timeout_seconds,
                 env={
                     **os.environ,
+                    **dict(request.environment),
                     "AWORLD_SELF_EVOLVE_AUTO_DRAIN": "0",
                     "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(artifact_dir),
                     "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
@@ -933,10 +980,19 @@ def build_replay_request(
     baseline_repetitions: int = 1,
     candidate_repetitions: int = 1,
     baseline_replay_dir: str | Path | None = None,
+    replay_adaptation: ReplayAdaptationBundle | None = None,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
     case = _select_replay_case(dataset)
+    if replay_adaptation is not None:
+        for replay_case in dataset.cases:
+            if not _is_replayable_user_task_case(replay_case):
+                continue
+            replay_adaptation.case(replay_case.case_id)
+        task_input = replay_adaptation.case(case.case_id).adapted_task_input
+    else:
+        task_input = case.input
     return CandidateReplayRequest(
         run_id=run_id,
         task_id=case.case_id,
@@ -948,7 +1004,7 @@ def build_replay_request(
         baseline_replay_dir=(
             str(Path(baseline_replay_dir)) if baseline_replay_dir is not None else None
         ),
-        task_input=case.input,
+        task_input=task_input,
         agent=agent,
         timeout_seconds=timeout_seconds,
         max_steps=max_steps,
@@ -956,7 +1012,72 @@ def build_replay_request(
         max_cost_usd=max_cost_usd,
         baseline_repetitions=baseline_repetitions,
         candidate_repetitions=candidate_repetitions,
+        replay_adaptation=replay_adaptation,
     )
+
+
+def _adapted_task_input(request: CandidateReplayRequest, case: EvalCase) -> Any:
+    if request.replay_adaptation is None:
+        return case.input
+    return request.replay_adaptation.case(case.case_id).adapted_task_input
+
+
+def _expand_replay_placeholders(
+    value: Any,
+    *,
+    workspace_root: Path,
+    artifact_dir: Path,
+) -> Any:
+    def expand(text: str) -> str:
+        return text.replace(
+            REPLAY_WORKSPACE_PLACEHOLDER,
+            str(workspace_root),
+        ).replace(
+            REPLAY_ARTIFACT_PLACEHOLDER,
+            str(artifact_dir),
+        )
+
+    if isinstance(value, str):
+        return expand(value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): _expand_replay_placeholders(
+                item,
+                workspace_root=workspace_root,
+                artifact_dir=artifact_dir,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _expand_replay_placeholders(
+                item,
+                workspace_root=workspace_root,
+                artifact_dir=artifact_dir,
+            )
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _expand_replay_placeholders(
+                item,
+                workspace_root=workspace_root,
+                artifact_dir=artifact_dir,
+            )
+            for item in value
+        )
+    return value
+
+
+def _adapter_environment(bindings: Sequence[Any]) -> dict[str, str]:
+    environment: dict[str, str] = {}
+    for binding in bindings:
+        for key, value in binding.environment.items():
+            existing = environment.get(key)
+            if existing is not None and existing != value:
+                raise ValueError(f"conflicting replay adapter environment value: {key}")
+            environment[key] = value
+    return environment
 
 
 def _select_replay_case(dataset: SelfEvolveDataset) -> EvalCase:

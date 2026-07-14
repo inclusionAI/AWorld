@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from aworld.self_evolve.datasets import (
     SelfEvolveEvalSourceConfig,
     build_dataset_from_source,
@@ -11,7 +13,15 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
     ReplayAdaptationCompiler,
     ReplayDependency,
+    materialize_replay_workspace,
 )
+from aworld.self_evolve.replay import (
+    AWorldCliCandidateReplayBackend,
+    ReplayExecutionRequest,
+    ReplayExecutionResult,
+    build_replay_request,
+)
+from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
 
 
 def _dataset(task: str, *, task_id: str = "task-1"):
@@ -176,3 +186,88 @@ def test_registered_adapter_can_make_local_endpoint_deterministic(tmp_path: Path
     assert dependency.adapter_id == "test.local-endpoint-fixture.v1"
     assert case.bindings[0].environment["AWORLD_REPLAY_CDP_FIXTURE"].endswith("cdp.json")
     assert bundle.ready is True
+
+
+def test_materialize_replay_workspace_replaces_dirty_destination(tmp_path: Path) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    (workspace / "input.txt").write_text("seed", encoding="utf-8")
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset(f"Read {workspace}/input.txt"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+    destination = tmp_path / "rollout"
+    destination.mkdir()
+    (destination / "dirty.txt").write_text("old mutation", encoding="utf-8")
+
+    materialize_replay_workspace(bundle, destination)
+
+    assert (destination / "input.txt").read_text(encoding="utf-8") == "seed"
+    assert not (destination / "dirty.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_each_variant_and_repetition_starts_from_same_clean_seed(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    (workspace / "input.txt").write_text("seed", encoding="utf-8")
+    dataset = _dataset(f"Read {workspace}/input.txt")
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    candidate = CandidateVariant(
+        candidate_id="cand-1",
+        target=target,
+        content="---\nname: demo\n---\n# Demo\n",
+        rationale="test",
+        target_fingerprint="sha256:baseline",
+    )
+    calls: list[ReplayExecutionRequest] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request)
+        isolated_workspace = Path(request.workspace_root)
+        assert isolated_workspace != workspace
+        assert (isolated_workspace / "input.txt").read_text(encoding="utf-8") == "seed"
+        assert not (isolated_workspace / "mutation.txt").exists()
+        assert str(isolated_workspace / "input.txt") in request.task_text
+        assert request.workspace_seed_fingerprint == bundle.workspace_seed_fingerprint
+        assert request.adaptation_fingerprint == bundle.adaptation_fingerprint
+        (isolated_workspace / "mutation.txt").write_text(
+            request.variant_id,
+            encoding="utf-8",
+        )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id="run-isolated",
+        workspace_root=workspace,
+        target=target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=bundle,
+        baseline_repetitions=2,
+        candidate_repetitions=2,
+    )
+
+    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert len(calls) == 4
+    assert len({call.workspace_root for call in calls}) == 4
+    assert {
+        Path(call.workspace_root).parents[1].name for call in calls
+    } == {"baseline", "cand-1"}
