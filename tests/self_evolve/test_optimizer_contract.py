@@ -3,6 +3,9 @@ from __future__ import annotations
 import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.candidate_generation import (
+    CandidateGenerationInfrastructureError,
+)
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.optimizers.base import OptimizerRequest
@@ -42,6 +45,38 @@ def _trace_pack():
         source_kind="current_trajectory",
         task_id="optimizer-task",
     )
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_stops_population_after_infrastructure_failure() -> None:
+    calls = 0
+
+    async def mutate(prompt: str) -> dict:
+        nonlocal calls
+        calls += 1
+        raise CandidateGenerationInfrastructureError(
+            stage="agent_runtime",
+            error_type="APIConnectionError",
+        )
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=3,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert calls == 1
+    assert result.candidates == ()
+    assert result.diagnostics["candidate_generation_failure"] == {
+        "code": "candidate_generation_infrastructure_error",
+        "stage": "agent_runtime",
+        "error_type": "APIConnectionError",
+    }
 
 
 def test_optimizer_request_exposes_trainable_cases_without_held_out_leakage() -> None:

@@ -9,6 +9,7 @@ import pytest
 
 from aworld.config.conf import ModelConfig
 
+from aworld.self_evolve.candidate_generation import CandidateGenerationAgent
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -6152,7 +6153,7 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
         repr({"task_id": "demo-task", "trajectory": json.dumps(trajectory)}) + "\n",
         encoding="utf-8",
     )
-    model_calls: list[tuple[ModelConfig, str]] = []
+    model_calls: list[tuple[CandidateGenerationAgent, str]] = []
     manifest = {
         "schema_version": "aworld.skill.replay_capability.v1",
         "capability_id": "recorded-http",
@@ -6176,8 +6177,8 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
         ],
     }
 
-    async def fake_call(model_config: ModelConfig, prompt: str) -> str:
-        model_calls.append((model_config, prompt))
+    async def fake_call(agent: CandidateGenerationAgent, prompt: str) -> str:
+        model_calls.append((agent, prompt))
         if len(model_calls) == 1:
             return json.dumps(
                 {
@@ -6190,9 +6191,8 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
 
     monkeypatch.setattr(
         runner_module,
-        "_call_candidate_mutation_model",
+        "_run_candidate_generation_agent",
         fake_call,
-        raising=False,
     )
     mutation_model_config = ModelConfig(
         llm_provider="openai",
@@ -6216,7 +6216,8 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
         (candidate_package / "candidate.json").read_text(encoding="utf-8")
     )
     assert len(model_calls) == 2
-    assert all(call[0] is mutation_model_config for call in model_calls)
+    assert all(call[0] is model_calls[0][0] for call in model_calls)
+    assert model_calls[0][0].conf.llm_config.llm_model_name == "mutation-model"
     assert '"replay_requirements"' in model_calls[0][1]
     assert "previous response violated the candidate output contract" in model_calls[1][1]
     assert [item["path"] for item in candidate_json["files"]] == [
@@ -6225,6 +6226,72 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
     ]
     assert (candidate_package / "replay" / "capability.json").is_file()
     assert (candidate_package / "replay" / "compiler.py").is_file()
+
+
+def test_optimize_cli_request_stops_population_after_model_runtime_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    trajectory_log = tmp_path / "trajectory.log"
+    trajectory_log.write_text(
+        repr(
+            {
+                "task_id": "demo-task",
+                "trajectory": json.dumps(
+                    [
+                        {
+                            "meta": {"step": 1, "agent_id": "agent"},
+                            "state": {"input": {"content": "Summarize a report"}},
+                            "action": {"content": "The dependency was unavailable."},
+                            "reward": {"status": "failed"},
+                        }
+                    ]
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    model_call_count = 0
+
+    async def fake_call(agent: CandidateGenerationAgent, prompt: str) -> str:
+        nonlocal model_call_count
+        model_call_count += 1
+        raise RuntimeError("Authorization: Bearer should-not-leak")
+
+    monkeypatch.setattr(
+        runner_module,
+        "_run_candidate_generation_agent",
+        fake_call,
+    )
+
+    summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        from_trajectory=str(trajectory_log),
+        apply_policy="proposal",
+        mutation_model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="mutation-model",
+            llm_api_key="test-key",
+        ),
+        replay_candidate_limit=3,
+    )
+
+    report_text = Path(summary["report_path"]).read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert model_call_count == 1
+    assert report["optimizer_diagnostics"]["candidate_generation_failure"] == {
+        "code": "candidate_generation_infrastructure_error",
+        "stage": "model_call",
+        "error_type": "RuntimeError",
+    }
+    assert "should-not-leak" not in report_text
 
 
 def test_candidate_model_parser_rejects_invalid_patch_intent_before_optimizer() -> None:
