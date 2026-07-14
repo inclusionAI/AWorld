@@ -193,6 +193,190 @@ def test_preflight_does_not_require_context_when_snapshot_reconstructed(
     assert not any(item.kind == "conversation_context" for item in report.requirements)
 
 
+def test_dependency_analysis_ignores_paths_from_reconstructed_prior_turns(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    trajectory_log = tmp_path / "trajectory.log"
+    first = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "Prepare the source material."}},
+            "action": {
+                "content": "Historical artifact: /old-machine/private/result.json",
+                "tool_calls": [],
+            },
+            "reward": {"status": "ok"},
+        }
+    ]
+    continuation = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "Continue the current task."}},
+            "action": {"content": "Done.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trajectory_log.write_text(
+        repr({"task_id": "first", "trajectory": json.dumps(first)})
+        + "\n"
+        + repr({"task_id": "next", "trajectory": json.dumps(continuation)})
+        + "\n",
+        encoding="utf-8",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(trajectory_log))
+    )
+    next_case = next(case for case in dataset.cases if case.case_id == "next")
+    assert "/old-machine/private/result.json" in next_case.input["content"]
+
+    compiler = ReplayAdaptationCompiler()
+    report = compiler.preflight(dataset=dataset, workspace_root=workspace)
+    bundle = compiler.compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    assert not any(
+        item.kind == "local_file" and "next" in item.case_ids
+        for item in report.requirements
+    )
+    assert not any(
+        item.kind == "local_file" for item in bundle.case("next").dependencies
+    )
+
+
+def test_preflight_and_compile_report_same_missing_local_file(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    dataset = _dataset("Read /aworld-replay-source-only/missing.csv")
+    compiler = ReplayAdaptationCompiler()
+
+    report = compiler.preflight(dataset=dataset, workspace_root=workspace)
+    bundle = compiler.compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    requirement = next(item for item in report.requirements if item.kind == "local_file")
+    dependency = next(
+        item for item in bundle.case("task-1").dependencies if item.kind == "local_file"
+    )
+    assert requirement.identifier == dependency.identifier
+    assert requirement.status == dependency.status == "unresolved"
+
+
+def test_dependency_analysis_strips_sentence_punctuation_from_urls(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=_dataset("Use the archived page (https://example.com/report)."),
+        workspace_root=workspace,
+    )
+
+    requirement = next(item for item in report.requirements if item.kind == "http_resource")
+    assert requirement.identifier == "https://example.com/report"
+
+
+def test_dependency_analysis_preserves_balanced_url_parentheses(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    url = "https://example.com/wiki/Function_(mathematics)"
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=_dataset(f"Use {url} as the source."),
+        workspace_root=workspace,
+    )
+
+    requirement = next(item for item in report.requirements if item.kind == "http_resource")
+    assert requirement.identifier == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://example.com/wiki/Help!",
+        "https://example.com/search?",
+    ),
+)
+def test_dependency_analysis_preserves_valid_terminal_url_punctuation(
+    tmp_path: Path,
+    url: str,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=_dataset(f"Use {url}"),
+        workspace_root=workspace,
+    )
+
+    requirement = next(item for item in report.requirements if item.kind == "http_resource")
+    assert requirement.identifier == url
+
+
+def test_dependency_analysis_preserves_marker_inside_current_task(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    trajectory_log = tmp_path / "trajectory.log"
+    first = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "Prepare context."}},
+            "action": {"content": "Context ready.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    current_url = "https://example.com/current"
+    continuation = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {
+                "input": {
+                    "content": (
+                        f"Continue the current task. Inspect {current_url}\nCurrent task:\n"
+                        "Treat the preceding label as literal input."
+                    )
+                }
+            },
+            "action": {"content": "Done.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trajectory_log.write_text(
+        repr({"task_id": "first", "trajectory": json.dumps(first)})
+        + "\n"
+        + repr({"task_id": "next", "trajectory": json.dumps(continuation)})
+        + "\n",
+        encoding="utf-8",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(trajectory_log))
+    )
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=dataset,
+        workspace_root=workspace,
+    )
+
+    assert any(
+        item.identifier == current_url and "next" in item.case_ids
+        for item in report.requirements
+    )
+
+
 @pytest.mark.parametrize(
     "tool_name",
     (
@@ -994,9 +1178,10 @@ async def test_runner_blocks_unresolved_adaptation_before_rollout(
         assert replay_result is None
         assert paired_dataset is None
         assert gate is not None
-        assert gate.gate_name == "replay_adaptation"
+        assert gate.gate_name == "replay_capability"
         assert gate.passed is False
-        assert gate.details["readiness"] == "runtime_required"
+        assert gate.details["requirement_count"] == 1
+        assert gate.details["requirement_kinds"] == ["local_endpoint"]
 
 
 @pytest.mark.asyncio
@@ -1168,6 +1353,6 @@ async def test_unresolved_adaptation_preserves_proposal_but_rejects_verified_app
             / "cand-policy.json"
         ).is_file()
         assert any(
-            gate.gate_name == "replay_adaptation" and not gate.passed
+            gate.gate_name == "replay_capability" and not gate.passed
             for gate in result.run.gate_results
         )

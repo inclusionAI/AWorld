@@ -229,7 +229,13 @@ class ReplayAdaptationCompiler:
                     workspace_root=workspace,
                 ),
             )
-            for dependency in _detected_runtime_dependencies(case, task_input):
+            for dependency, _raw_path in self._analyze_case_dependencies(
+                case,
+                task_input=task_input,
+                workspace_root=workspace,
+            ):
+                if dependency.deterministic:
+                    continue
                 key = (
                     dependency.kind,
                     dependency.identifier,
@@ -353,16 +359,22 @@ class ReplayAdaptationCompiler:
             case.input,
             lambda text: _normalize_workspace_paths(text, workspace_root=workspace_root),
         )
-        task_text = _text_fragments(task_input)
-        dependencies = list(_detected_runtime_dependencies(case, task_input))
+        analyzed_dependencies = self._analyze_case_dependencies(
+            case,
+            task_input=task_input,
+            workspace_root=workspace_root,
+        )
+        dependencies: list[ReplayDependency] = []
         diagnostics: list[str] = []
 
-        for raw_path in _absolute_local_path_references(task_text):
-            task_input, dependency = self._adapt_external_path(
-                task_input,
-                raw_path=raw_path,
-                workspace_seed=workspace_seed,
-            )
+        for dependency, raw_path in analyzed_dependencies:
+            if raw_path is not None:
+                task_input, dependency = self._adapt_external_path(
+                    task_input,
+                    raw_path=raw_path,
+                    workspace_seed=workspace_seed,
+                    dependency=dependency,
+                )
             dependencies.append(dependency)
 
         tool_names = _case_tool_names(case)
@@ -417,33 +429,73 @@ class ReplayAdaptationCompiler:
             diagnostics=tuple(diagnostics),
         )
 
+    def _analyze_case_dependencies(
+        self,
+        case: EvalCase,
+        *,
+        task_input: Any,
+        workspace_root: Path,
+    ) -> tuple[tuple[ReplayDependency, str | None], ...]:
+        dependency_input = _case_dependency_input(
+            case,
+            normalized_task_input=task_input,
+            workspace_root=workspace_root,
+        )
+        analyzed: list[tuple[ReplayDependency, str | None]] = [
+            (dependency, None)
+            for dependency in _detected_runtime_dependencies(case, dependency_input)
+        ]
+        for raw_path in _absolute_local_path_references(
+            _text_fragments(dependency_input)
+        ):
+            analyzed.append((self._external_path_dependency(raw_path), raw_path))
+        return tuple(analyzed)
+
+    def _external_path_dependency(self, raw_path: str) -> ReplayDependency:
+        source = Path(raw_path).expanduser()
+        identifier = "local-file:" + hashlib.sha256(
+            raw_path.encode("utf-8")
+        ).hexdigest()[:16]
+        try:
+            can_snapshot = (
+                source.is_file()
+                and not source.is_symlink()
+                and not _is_sensitive_path(source)
+                and source.stat().st_size <= self.max_external_file_bytes
+            )
+        except OSError:
+            can_snapshot = False
+        if not can_snapshot:
+            return ReplayDependency(
+                kind="local_file",
+                identifier=identifier,
+                status="unresolved",
+                deterministic=False,
+                detail="external path cannot be included in the replay seed",
+            )
+        return ReplayDependency(
+            kind="local_file",
+            identifier=identifier,
+            status="snapshotted",
+            deterministic=True,
+            detail="bounded local file copied into the replay seed",
+        )
+
     def _adapt_external_path(
         self,
         task_input: Any,
         *,
         raw_path: str,
         workspace_seed: Path,
+        dependency: ReplayDependency | None = None,
     ) -> tuple[Any, ReplayDependency]:
         source = Path(raw_path).expanduser()
-        identifier = "local-file:" + hashlib.sha256(
-            raw_path.encode("utf-8")
-        ).hexdigest()[:16]
-        if (
-            not source.is_file()
-            or source.is_symlink()
-            or _is_sensitive_path(source)
-            or source.stat().st_size > self.max_external_file_bytes
-        ):
+        dependency = dependency or self._external_path_dependency(raw_path)
+        if not dependency.deterministic:
             replacement = "${AWORLD_REPLAY_UNRESOLVED_PATH}"
             return (
                 _replace_in_value(task_input, raw_path, replacement),
-                ReplayDependency(
-                    kind="local_file",
-                    identifier=identifier,
-                    status="unresolved",
-                    deterministic=False,
-                    detail="external path cannot be included in the replay seed",
-                ),
+                dependency,
             )
         fixture_name = (
             hashlib.sha256(source.read_bytes()).hexdigest()[:12]
@@ -467,13 +519,7 @@ class ReplayAdaptationCompiler:
         replacement = f"{REPLAY_WORKSPACE_PLACEHOLDER}/{relative.as_posix()}"
         return (
             _replace_in_value(task_input, raw_path, replacement),
-            ReplayDependency(
-                kind="local_file",
-                identifier=identifier,
-                status="snapshotted",
-                deterministic=True,
-                detail="bounded local file copied into the replay seed",
-            ),
+            dependency,
         )
 
     def _bind_dependency(
@@ -821,7 +867,12 @@ def _detected_runtime_dependencies(
                 detail="required prior task context is absent",
             )
         )
-    local_endpoints = tuple(dict.fromkeys(_LOCAL_ENDPOINT.findall(task_text)))
+    local_endpoints = tuple(
+        dict.fromkeys(
+            _normalize_detected_url(value)
+            for value in _LOCAL_ENDPOINT.findall(task_text)
+        )
+    )
     for endpoint in local_endpoints:
         dependencies.append(
             ReplayDependency(
@@ -832,7 +883,10 @@ def _detected_runtime_dependencies(
                 detail="stateful local endpoint requires a replay capability",
             )
         )
-    for url in dict.fromkeys(_HTTP_RESOURCE.findall(task_text)):
+    for url in dict.fromkeys(
+        _normalize_detected_url(value)
+        for value in _HTTP_RESOURCE.findall(task_text)
+    ):
         if url in local_endpoints:
             continue
         dependencies.append(
@@ -857,6 +911,56 @@ def _detected_runtime_dependencies(
             )
         )
     return tuple(dependencies)
+
+
+def _case_dependency_input(
+    case: EvalCase,
+    *,
+    normalized_task_input: Any,
+    workspace_root: Path,
+) -> Any:
+    """Use the current task for dependencies; prior turns remain replay evidence."""
+
+    snapshot = case.context_snapshot
+    if snapshot is None or not snapshot.prior_turns:
+        return normalized_task_input
+    transcript = "\n".join(
+        f"{turn.role.title()}: {turn.content}"
+        for turn in snapshot.prior_turns
+    )
+    reconstructed_prefix = (
+        "Recorded prior task context "
+        f"[{snapshot.link_strategy or 'recorded'}]:\n{transcript}\n\n"
+        "Current task:\n"
+    )
+    if isinstance(normalized_task_input, str) and normalized_task_input.startswith(
+        reconstructed_prefix
+    ):
+        return normalized_task_input[len(reconstructed_prefix) :]
+    if isinstance(normalized_task_input, Mapping):
+        content = normalized_task_input.get("content")
+        if isinstance(content, str) and content.startswith(reconstructed_prefix):
+            return {
+                **dict(normalized_task_input),
+                "content": content[len(reconstructed_prefix) :],
+            }
+    return _normalize_value(
+        snapshot.task_input,
+        lambda text: _normalize_workspace_paths(
+            text,
+            workspace_root=workspace_root,
+        ),
+    )
+
+
+def _normalize_detected_url(value: str) -> str:
+    normalized = value.rstrip(".,")
+    for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
+        while normalized.endswith(closing) and normalized.count(closing) > normalized.count(
+            opening
+        ):
+            normalized = normalized[:-1]
+    return normalized
 
 
 def _case_has_reconstructed_context(case: EvalCase) -> bool:
