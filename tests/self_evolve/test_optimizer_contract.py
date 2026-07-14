@@ -10,6 +10,7 @@ from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMI
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import (
+    CandidateFileDelta,
     CandidateVariant,
     DatasetRecipe,
     EvaluationSummary,
@@ -139,6 +140,49 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
     assert "evidence ledger" in prompts[0]
     assert "claim-by-claim" in prompts[0]
     assert "held-1" not in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "# Demo\n\nAdd recorded replay capability.\n",
+            "rationale": "Supply a skill-owned replay compiler.",
+            "files": [
+                {
+                    "path": "replay/capability.json",
+                    "content": '{"schema_version":"aworld.skill.replay_capability.v1"}',
+                },
+                {
+                    "path": "replay/compiler.py",
+                    "content": "print('compile')\n",
+                    "executable": True,
+                },
+            ],
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert result.candidates[0].files == (
+        CandidateFileDelta(
+            path="replay/capability.json",
+            content='{"schema_version":"aworld.skill.replay_capability.v1"}',
+        ),
+        CandidateFileDelta(
+            path="replay/compiler.py",
+            content="print('compile')\n",
+            executable=True,
+        ),
+    )
 
 
 @pytest.mark.asyncio

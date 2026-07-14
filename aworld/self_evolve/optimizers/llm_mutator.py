@@ -6,10 +6,14 @@ import json
 import re
 from typing import Any, Callable, Mapping
 
+from aworld.self_evolve.candidate_package import (
+    candidate_package_fingerprint,
+    validate_candidate_files,
+)
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
-from aworld.self_evolve.types import CandidateVariant, OptimizerLineage
+from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, OptimizerLineage
 
 
 MutateTextCallable = Callable[[str], Any]
@@ -53,17 +57,25 @@ class TraceReflectiveLLMMutator:
             if inspect.isawaitable(output):
                 output = await output
             try:
-                content, rationale, materialization = _materialize_mutator_output(
+                content, rationale, materialization, files = _materialize_mutator_output(
                     output,
                     request=request,
                 )
             except ValueError:
                 filtered_invalid_patch_count += 1
                 continue
-            if content == request.current_content:
+            if content == request.current_content and not files:
                 filtered_noop_count += 1
                 continue
-            content_fingerprint = _content_fingerprint(content)
+            candidate = CandidateVariant(
+                candidate_id="pending",
+                target=request.target,
+                content=content,
+                rationale=rationale,
+                target_fingerprint=request.target_fingerprint,
+                files=files,
+            )
+            content_fingerprint = candidate_package_fingerprint(candidate)
             if content_fingerprint in seen_content_fingerprints:
                 filtered_duplicate_count += 1
                 continue
@@ -76,13 +88,19 @@ class TraceReflectiveLLMMutator:
                 continue
             seen_content_fingerprints.add(content_fingerprint)
 
-            candidate_id = _candidate_id(request, content, index=index)
+            candidate_id = _candidate_id(
+                request,
+                content,
+                files=files,
+                index=index,
+            )
             candidate = CandidateVariant(
                 candidate_id=candidate_id,
                 target=request.target,
                 content=content,
                 rationale=rationale,
                 target_fingerprint=request.target_fingerprint,
+                files=files,
             )
             candidates.append(candidate)
             candidate_strategy_records.append(
@@ -370,15 +388,17 @@ def _materialize_mutator_output(
     output: Any,
     *,
     request: OptimizerRequest,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, tuple[CandidateFileDelta, ...]]:
     if isinstance(output, Mapping):
         content = output.get("content")
         patch_intent = output.get("patch_intent")
         rationale = output.get("rationale", "")
+        raw_files = output.get("files", ())
     else:
         content = output
         patch_intent = None
         rationale = ""
+        raw_files = ()
     if isinstance(patch_intent, Mapping):
         content = apply_skill_patch_intent(request.current_content, patch_intent)
         materialization = "patch_intent"
@@ -388,12 +408,48 @@ def _materialize_mutator_output(
         raise ValueError("mutator output must include non-empty content")
     if not isinstance(rationale, str):
         rationale = ""
-    return content, rationale, materialization
+    if not isinstance(raw_files, (list, tuple)):
+        raise ValueError("mutator files must be a list")
+    files = validate_candidate_files(
+        CandidateFileDelta(
+            path=str(item.get("path") or ""),
+            operation=str(item.get("operation") or "upsert"),
+            content=(
+                item.get("content")
+                if isinstance(item.get("content"), str)
+                else None
+            ),
+            executable=bool(item.get("executable", False)),
+        )
+        for item in raw_files
+        if isinstance(item, Mapping)
+    )
+    return content, rationale, materialization, files
 
 
-def _candidate_id(request: OptimizerRequest, content: str, *, index: int) -> str:
+def _candidate_id(
+    request: OptimizerRequest,
+    content: str,
+    *,
+    files: tuple[CandidateFileDelta, ...] = (),
+    index: int,
+) -> str:
+    file_payload = [
+        (item.path, item.operation, item.content, item.executable)
+        for item in validate_candidate_files(files)
+    ]
     digest = hashlib.sha256(
-        f"{request.target.target_type}:{request.target.target_id}:{index}:{content}".encode("utf-8")
+        json.dumps(
+            {
+                "target_type": request.target.target_type,
+                "target_id": request.target.target_id,
+                "index": index,
+                "content": content,
+                "files": file_payload,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
     ).hexdigest()[:12]
     return f"llm-mutator-{digest}"
 

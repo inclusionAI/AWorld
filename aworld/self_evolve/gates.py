@@ -9,6 +9,10 @@ from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCos
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
+from aworld.self_evolve.candidate_package import (
+    candidate_files_total_bytes,
+    validate_candidate_files,
+)
 
 
 class ReplayAdaptationGate:
@@ -153,7 +157,7 @@ class CostLatencyRegressionGate:
 
 class NoopCandidateGate:
     def evaluate(self, *, current_content: str, candidate: CandidateVariant) -> GateResult:
-        changed = candidate.content != current_content
+        changed = candidate.content != current_content or bool(candidate.files)
         return GateResult(
             gate_name="noop_candidate",
             passed=changed,
@@ -232,7 +236,8 @@ class TokenLimitGate:
         self.max_chars = max_chars
 
     def evaluate(self, candidate: CandidateVariant) -> GateResult:
-        passed = len(candidate.content) <= self.max_chars
+        actual_chars = len(candidate.content) + candidate_files_total_bytes(candidate.files)
+        passed = actual_chars <= self.max_chars
         return GateResult(
             gate_name="token_limit",
             passed=passed,
@@ -241,7 +246,25 @@ class TokenLimitGate:
                 if passed
                 else "candidate content exceeds token budget"
             ),
-            details={"max_chars": self.max_chars, "actual_chars": len(candidate.content)},
+            details={"max_chars": self.max_chars, "actual_chars": actual_chars},
+        )
+
+
+class CandidatePackageGate:
+    def evaluate(self, candidate: CandidateVariant) -> GateResult:
+        try:
+            files = validate_candidate_files(candidate.files)
+        except ValueError as exc:
+            return GateResult(
+                gate_name="candidate_package",
+                passed=False,
+                reason=str(exc),
+            )
+        return GateResult(
+            gate_name="candidate_package",
+            passed=True,
+            reason="candidate package file deltas are valid",
+            details={"file_count": len(files)},
         )
 
 

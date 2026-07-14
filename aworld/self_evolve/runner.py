@@ -35,6 +35,7 @@ from aworld.self_evolve.evaluation import (
 )
 from aworld.self_evolve.gates import (
     BudgetGate,
+    CandidatePackageGate,
     CostLatencyRegressionGate,
     EvidenceQualityGate,
     ExternalCodeEvolutionGate,
@@ -4878,6 +4879,7 @@ def _candidate_gate_results(
     results = [
         NoopCandidateGate().evaluate(current_content=current_content, candidate=candidate),
         MalformedCandidateGate().evaluate(candidate),
+        CandidatePackageGate().evaluate(candidate),
         TokenLimitGate(max_chars=max_chars).evaluate(candidate),
         ProtectedPathGate(workspace_root=workspace_root).evaluate(candidate),
         ExternalCodeEvolutionGate().evaluate(candidate),
