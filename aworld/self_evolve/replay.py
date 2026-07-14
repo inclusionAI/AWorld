@@ -749,6 +749,8 @@ class AWorldCliCandidateReplayBackend:
 
 
 class AWorldCliReplayExecutor:
+    _DEFAULT_TOOL_CALL_LIMIT = 24
+
     async def __call__(self, request: ReplayExecutionRequest) -> ReplayExecutionResult:
         artifact_dir = Path(request.artifact_dir)
         evidence_manifest = artifact_dir / "evidence_manifest.jsonl"
@@ -791,6 +793,7 @@ class AWorldCliReplayExecutor:
                     "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
                     "AWORLD_LOG_PATH": str(artifact_dir / "logs"),
                     "AWORLD_TRAJECTORY_LOG_DISABLED": "1",
+                    "AWORLD_TOOL_CALL_LIMIT": str(self._DEFAULT_TOOL_CALL_LIMIT),
                 },
             )
         except subprocess.TimeoutExpired as exc:
@@ -1177,6 +1180,19 @@ Self-evolve replay evidence requirements:
 """.strip()
 
 
+_REPLAY_RUNTIME_POLICY = """
+Self-evolve replay runtime contract:
+- Preserve the original task's authorization boundary. Task-plane operations required by the original task are allowed, including task-requested reads, writes, navigation, submissions, and artifact creation.
+- Treat prerequisites not created by this replay as externally managed and attach-only by default.
+- Do not terminate, restart, reconfigure, or replace externally managed prerequisites solely to make replay succeed.
+- Do not copy or substitute credentials, sessions, profiles, or private state from the host solely to repair a missing prerequisite.
+- If the original task explicitly authorizes a control-plane operation, that operation is allowed within the stated scope. Resources created by this replay may also be managed and cleaned up by this replay.
+- Probe prerequisite compatibility using bounded, non-mutating checks. If the required prerequisite remains unavailable, fail the replay with a prerequisite-unavailable reason instead of repairing the host environment.
+- Keep all replay-created files inside the workspace or replay artifact directory unless the original task explicitly names another output location.
+- Stop retrying a failed execution path when it cannot produce new evidence; switch once to a materially different bounded strategy or fail with the observed reason.
+""".strip()
+
+
 def _replay_task_text(
     task_text: str,
     *,
@@ -1188,18 +1204,25 @@ def _replay_task_text(
         task_text,
         workspace_root=workspace_root,
     )
-    if "Self-evolve replay evidence requirements:" in task_text:
-        return task_text
     artifact_dir_text = str(artifact_dir) if artifact_dir is not None else "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"
     evidence_manifest_text = (
         str(evidence_manifest)
         if evidence_manifest is not None
         else "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST"
     )
-    return task_text.rstrip() + "\n\n" + _REPLAY_EVIDENCE_POLICY.format(
-        artifact_dir=artifact_dir_text,
-        evidence_manifest=evidence_manifest_text,
-    )
+    policies: list[str] = []
+    if "Self-evolve replay evidence requirements:" not in task_text:
+        policies.append(
+            _REPLAY_EVIDENCE_POLICY.format(
+                artifact_dir=artifact_dir_text,
+                evidence_manifest=evidence_manifest_text,
+            )
+        )
+    if "Self-evolve replay runtime contract:" not in task_text:
+        policies.append(_REPLAY_RUNTIME_POLICY)
+    if not policies:
+        return task_text
+    return task_text.rstrip() + "\n\n" + "\n\n".join(policies)
 
 
 def _normalize_replay_workspace_paths(

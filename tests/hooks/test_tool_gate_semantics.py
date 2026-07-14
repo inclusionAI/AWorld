@@ -680,3 +680,55 @@ EOF
         assert result.payload[0].content == 'Hook-adjusted output'
         assert result.payload[4]['audit_logged'] is True
         assert result.payload[4]['audit_source'] == 'shared-helper-test'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool_fixture_name", "tool_name"),
+        [
+            ("mock_tool", "mock_tool"),
+            ("mock_sync_tool", "mock_sync_tool"),
+        ],
+    )
+    async def test_runtime_tool_call_budget_applies_to_sync_and_async_tools(
+        self,
+        request,
+        tool_fixture_name,
+        tool_name,
+        mock_context,
+        tmp_path,
+        monkeypatch,
+    ):
+        HookManager._config_hooks_cache = {}
+        monkeypatch.setenv("AWORLD_TOOL_CALL_LIMIT", "1")
+        monkeypatch.setenv("AWORLD_TRUST_ALL_WORKSPACES", "true")
+        mock_context.workspace_path = str(tmp_path)
+        tool = request.getfixturevalue(tool_fixture_name)
+
+        def message(call_id: str) -> Message:
+            value = Message(
+                category="test",
+                payload=[
+                    ActionModel(
+                        tool_name=tool_name,
+                        action_name="run",
+                        params={},
+                        agent_name="test_agent",
+                        tool_call_id=call_id,
+                    )
+                ],
+                sender="test_agent",
+                session_id="test_session",
+            )
+            value.context = mock_context
+            return value
+
+        first_result = tool.step(message("first"))
+        if asyncio.iscoroutine(first_result):
+            await first_result
+
+        with pytest.raises(ToolExecutionDenied, match="runtime tool-call budget exhausted"):
+            second_result = tool.step(message("second"))
+            if asyncio.iscoroutine(second_result):
+                await second_result
+
+        assert tool.execution_count == 1
