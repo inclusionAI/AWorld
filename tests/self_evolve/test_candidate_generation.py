@@ -5,6 +5,7 @@ import pytest
 import aworld.self_evolve.candidate_generation as candidate_generation_module
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import ModelConfig
+from aworld.core.agent.base import AgentFactory
 from aworld.core.context.base import Context
 from aworld.models.model_response import ModelResponse
 from aworld.self_evolve.candidate_generation import (
@@ -12,6 +13,18 @@ from aworld.self_evolve.candidate_generation import (
     CandidateGenerationInfrastructureError,
     _SanitizingProvider,
 )
+
+
+def test_candidate_generation_agent_registers_with_aworld_runtime() -> None:
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="candidate-model",
+            llm_api_key="test-key",
+        )
+    )
+
+    assert AgentFactory.agent_instance(agent.id()) is agent
 
 
 @pytest.mark.asyncio
