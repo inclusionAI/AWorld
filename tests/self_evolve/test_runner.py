@@ -1080,10 +1080,67 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
     assert metrics["failed_gates"] == ["score_improvement"]
 
 
+def test_iteration_validation_feedback_does_not_mix_validation_delta_into_held_out() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-1",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="test",
+    )
+    baseline_summary = EvaluationSummary(
+        variant_id="baseline",
+        metrics={"score": 82.0, "A1_groundedness": 4.0},
+        dataset_split="validation",
+    )
+    candidate_summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={"score": 84.0, "A1_groundedness": 4.0},
+        dataset_split="validation",
+    )
+    held_out_summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={
+            "score": 63.0,
+            "A1_groundedness": 2.0,
+            "evidence_incomplete": True,
+        },
+        dataset_split="held_out",
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=baseline_summary,
+        candidate_summary=candidate_summary,
+        held_out_summary=held_out_summary,
+        failed_gates=[
+            GateResult(
+                gate_name="global_regression_benchmark",
+                passed=False,
+                reason="held-out regression",
+            )
+        ],
+    )
+
+    assert len(feedback) == 2
+    validation_metrics = feedback[0].metrics
+    held_out_metrics = feedback[1].metrics
+    assert validation_metrics["score_delta"] == 2.0
+    assert held_out_metrics["score"] == 63.0
+    assert held_out_metrics["A1_groundedness"] == 2.0
+    assert held_out_metrics["evidence_incomplete"] is True
+    assert "baseline_score" not in held_out_metrics
+    assert "candidate_score" not in held_out_metrics
+    assert "score_delta" not in held_out_metrics
+
+
 def test_summary_with_replay_evidence_metrics_includes_replay_failure_diagnostics() -> None:
     summary = EvaluationSummary(
         variant_id="cand-1",
-        metrics={"score": 68.0},
+        metrics={
+            "score": 68.0,
+            "evidence_bundle_valid": False,
+            "evidence_bundle_entry_count": 1,
+        },
         dataset_split="validation",
     )
     replay_variant = ReplayVariantResult(
@@ -1119,9 +1176,9 @@ def test_summary_with_replay_evidence_metrics_includes_replay_failure_diagnostic
         "evidence_quality_failed",
     ]
     assert merged.metrics["replay_evidence_manifest_invalid_entry_count"] == 1
-    assert merged.metrics["evidence_bundle_valid"] is True
+    assert merged.metrics["evidence_bundle_valid"] is False
     assert merged.metrics["replay_evidence_bundle_valid"] is True
-    assert merged.metrics["evidence_bundle_entry_count"] == 2
+    assert merged.metrics["evidence_bundle_entry_count"] == 1
     assert merged.metrics["replay_evidence_bundle_entry_count"] == 2
 
 

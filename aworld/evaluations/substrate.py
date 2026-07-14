@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import math
 import inspect
@@ -1876,6 +1877,21 @@ def _judge_call_diagnostic(
     system_prompt_chars = len(system_prompt)
     input_chars = prompt_chars + system_prompt_chars
     successful_reads = [result for result in read_results if result.get("status") == "ok"]
+    denied_reads = [result for result in read_results if result.get("status") == "denied"]
+    denial_reasons = list(
+        dict.fromkeys(
+            str(result.get("reason"))
+            for result in denied_reads
+            if result.get("reason")
+        )
+    )
+    denied_path_fingerprints = list(
+        dict.fromkeys(
+            str(result.get("requested_path_fingerprint"))
+            for result in denied_reads
+            if result.get("requested_path_fingerprint")
+        )
+    )
     return {
         "phase": phase,
         "round_index": round_index,
@@ -1887,6 +1903,9 @@ def _judge_call_diagnostic(
         "artifact_request_count": 0,
         "artifact_read_result_count": len(read_results),
         "artifact_read_count": len(successful_reads),
+        "artifact_read_denied_count": len(denied_reads),
+        "artifact_read_denial_reasons": denial_reasons,
+        "artifact_read_denied_path_fingerprints": denied_path_fingerprints,
         "artifact_read_chars": sum(
             int(result.get("chars_returned") or 0)
             for result in successful_reads
@@ -1949,7 +1968,17 @@ def _resolve_artifact_read_requests(
         resolved_requested = str(requested_path.resolve(strict=False))
         canonical_allowed = allowed_paths.get(resolved_requested)
         if canonical_allowed is None:
-            result.update({"status": "denied", "reason": "path_not_in_artifact_index"})
+            result.update(
+                {
+                    "status": "denied",
+                    "reason": "path_not_in_artifact_index",
+                    "artifact_index_present": bool(allowed_paths),
+                    "allowed_path_count": len(allowed_paths),
+                    "requested_path_fingerprint": hashlib.sha256(
+                        resolved_requested.encode("utf-8")
+                    ).hexdigest()[:16],
+                }
+            )
             results.append(result)
             continue
         start = _bounded_int(request.get("start"), default=0, minimum=0, maximum=10_000_000)

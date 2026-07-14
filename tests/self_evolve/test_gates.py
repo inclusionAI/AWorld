@@ -264,7 +264,7 @@ def test_evidence_quality_gate_accepts_valid_bundle_despite_raw_compaction() -> 
             "has_evidence": 1.0,
             "evidence_block_count": 4,
             "evidence_compacted": True,
-            "evidence_incomplete": True,
+            "evidence_incomplete": False,
             "evidence_strategy_passed": True,
             "evidence_manifest_entry_count": 2,
             "evidence_manifest_invalid_entry_count": 0,
@@ -278,9 +278,32 @@ def test_evidence_quality_gate_accepts_valid_bundle_despite_raw_compaction() -> 
     assert result.passed is True
     assert result.reason == "evaluation evidence is present via canonical evidence bundle"
     assert result.details["evidence_compacted"] is True
-    assert result.details["evidence_incomplete"] is True
+    assert result.details["evidence_incomplete"] is False
     assert result.details["evidence_bundle_valid"] is True
     assert result.details["evidence_bundle_entry_count"] == 2
+
+
+def test_evidence_quality_gate_rejects_incomplete_canonical_bundle() -> None:
+    result = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 1,
+                "evidence_compacted": True,
+                "evidence_incomplete": True,
+                "evidence_strategy_passed": True,
+                "evidence_manifest_entry_count": 1,
+                "evidence_manifest_invalid_entry_count": 0,
+                "evidence_bundle_valid": True,
+                "evidence_bundle_entry_count": 1,
+            },
+        )
+    )
+
+    assert result.passed is False
+    assert result.reason == "evaluation evidence is compacted or incomplete"
+    assert result.details["evidence_incomplete"] is True
 
 
 def test_evidence_quality_gate_rejects_unverifiable_artifact_manifest() -> None:

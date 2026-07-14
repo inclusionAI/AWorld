@@ -1491,7 +1491,11 @@ async def test_agent_judge_backend_denies_artifact_reads_outside_index(tmp_path:
         result = payload["artifact_read_results"][0]
         assert result["status"] == "denied"
         assert result["reason"] == "path_not_in_artifact_index"
+        assert result["artifact_index_present"] is True
+        assert result["allowed_path_count"] == 1
+        assert len(result["requested_path_fingerprint"]) == 16
         assert "content" not in result
+        assert str(allowed_path) not in json.dumps(result)
         return {"score": 10.0, "verdict": "Fail"}
 
     prompt = {
@@ -1518,13 +1522,20 @@ async def test_agent_judge_backend_denies_artifact_reads_outside_index(tmp_path:
         prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
     )
 
-    payload = await backend.judge(
+    execution = await backend.execute(
         case_input={"query": "evaluate"},
         target={"answer": "done"},
         suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
     )
 
-    assert payload["score"] == pytest.approx(10.0)
+    assert execution.payload["score"] == pytest.approx(10.0)
+    denied_diagnostic = execution.diagnostics[-1]
+    assert denied_diagnostic["artifact_read_denied_count"] == 1
+    assert denied_diagnostic["artifact_read_denial_reasons"] == [
+        "path_not_in_artifact_index"
+    ]
+    assert len(denied_diagnostic["artifact_read_denied_path_fingerprints"][0]) == 16
+    assert str(allowed_path) not in json.dumps(denied_diagnostic)
 
 
 @pytest.mark.asyncio

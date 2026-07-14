@@ -385,18 +385,25 @@ class EvidenceQualityGate:
                 reason="verified apply requires replay tool evidence",
                 details=details,
             )
-        if canonical_bundle_evidence and evidence_manifest_invalid_entry_count == 0:
-            return GateResult(
-                gate_name="evidence_quality",
-                passed=True,
-                reason="evaluation evidence is present via canonical evidence bundle",
-                details=details,
-            )
         if artifact_first_evidence and evidence_manifest_invalid_entry_count > 0:
             return GateResult(
                 gate_name="evidence_quality",
                 passed=False,
                 reason="artifact-first evidence is not fully verifiable",
+                details=details,
+            )
+        if incomplete:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="evaluation evidence is compacted or incomplete",
+                details=details,
+            )
+        if canonical_bundle_evidence:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=True,
+                reason="evaluation evidence is present via canonical evidence bundle",
                 details=details,
             )
         if artifact_first_evidence:
@@ -406,7 +413,7 @@ class EvidenceQualityGate:
                 reason="evaluation evidence is present via artifact-first manifest",
                 details=details,
             )
-        if compacted or incomplete:
+        if compacted:
             return GateResult(
                 gate_name="evidence_quality",
                 passed=False,
