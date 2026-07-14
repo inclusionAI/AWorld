@@ -18,13 +18,19 @@ from aworld.self_evolve.replay_adaptation import (
 )
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
+    CandidateReplayResult,
     ReplayExecutionRequest,
     ReplayExecutionResult,
+    ReplayVariantResult,
     build_replay_request,
     candidate_replay_is_comparable,
 )
-from aworld.self_evolve.runner import _find_reusable_baseline_replay_dir
+from aworld.self_evolve.runner import (
+    SelfEvolveRunner,
+    _find_reusable_baseline_replay_dir,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
 
 
@@ -66,13 +72,18 @@ def test_compiler_normalizes_workspace_paths_and_persists_bundle(tmp_path: Path)
     assert Path(bundle.workspace_seed).is_dir()
     assert (Path(bundle.workspace_seed) / "input.txt").read_text(encoding="utf-8") == "fixture"
     assert Path(bundle.manifest_path).is_file()
+    assert Path(bundle.environment_snapshot_path).is_file()
     assert bundle.workspace_seed_fingerprint.startswith("sha256:")
+    assert bundle.environment_fingerprint.startswith("sha256:")
     assert bundle.adaptation_fingerprint.startswith("sha256:")
     assert bundle.ready is True
     persisted = json.loads(
         (tmp_path / "run" / "adaptation" / "bundle.json").read_text(encoding="utf-8")
     )
     assert persisted["adaptation_fingerprint"] == bundle.adaptation_fingerprint
+    environment = json.loads(Path(bundle.environment_snapshot_path).read_text())
+    assert environment["runtime"]["python_version"]
+    assert not any("token" in key.lower() for key in environment["environment"])
 
 
 def test_compiler_marks_continuation_without_prior_context_incomplete(tmp_path: Path) -> None:
@@ -316,3 +327,129 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
     assert _find_reusable_baseline_replay_dir(
         **{**lookup, "adaptation_fingerprint": "sha256:changed-adaptation"}
     ) is None
+
+
+def _result_with_request_provenance(request, candidate_id: str) -> CandidateReplayResult:
+    metrics = {
+        "adaptation_fingerprint": request.adaptation_fingerprint,
+        "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+        "task_input_fingerprint": request.task_input_fingerprint,
+        "dataset_fingerprint": request.dataset_fingerprint,
+        "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+    }
+    return CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[{"action": {"content": "baseline"}}],
+            metrics=metrics,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id=candidate_id,
+            status="succeeded",
+            trajectory=[{"action": {"content": candidate_id}}],
+            metrics=metrics,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_compiles_adaptation_before_building_replay_request(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = _dataset(f"Read {tmp_path}/input.txt")
+    (tmp_path / "input.txt").write_text("seed", encoding="utf-8")
+    target = SkillTextTarget(skill_path)
+    candidate = CandidateVariant(
+        candidate_id="cand-runner",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\nImproved.\n",
+        rationale="test",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+
+    class CapturingBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
+            return _result_with_request_provenance(request, candidate.candidate_id)
+
+    backend = CapturingBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=object(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+    )
+
+    replay_result, paired_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-adapted",
+        target=target,
+        dataset=dataset,
+        selected_candidate=candidate,
+        apply_policy="proposal",
+    )
+
+    assert replay_result is not None
+    assert paired_dataset is not None
+    assert gate is not None and gate.passed is True
+    request = backend.requests[0]
+    assert request.replay_adaptation is not None
+    assert request.replay_adaptation.ready is True
+    assert "${AWORLD_REPLAY_WORKSPACE}/input.txt" in request.task_input["content"]
+    assert (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-adapted"
+        / "replay_adaptation"
+    ).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_runner_blocks_unresolved_adaptation_before_rollout(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path)
+    candidate = CandidateVariant(
+        candidate_id="cand-blocked",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\nImproved.\n",
+        rationale="test",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+
+    class FailingBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            raise AssertionError("rollout must not start for unresolved adaptation")
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=object(),
+        replay_enabled=True,
+        candidate_replay_backend=FailingBackend(),
+    )
+
+    for policy in ("proposal", "auto_verified"):
+        replay_result, paired_dataset, gate = await runner._replay_selected_candidate(
+            run_id=f"run-blocked-{policy}",
+            target=target,
+            dataset=_dataset("Inspect http://127.0.0.1:9222"),
+            selected_candidate=candidate,
+            apply_policy=policy,
+        )
+        assert replay_result is None
+        assert paired_dataset is None
+        assert gate is not None
+        assert gate.gate_name == "replay_adaptation"
+        assert gate.passed is False
+        assert gate.details["readiness"] == "runtime_required"

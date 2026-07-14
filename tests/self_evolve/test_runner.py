@@ -21,6 +21,10 @@ from aworld.self_evolve.replay import (
     ReplayVariantResult,
     _member_artifact_name,
 )
+from aworld.self_evolve.replay_adaptation import (
+    ReplayAdapterBinding,
+    ReplayAdaptationCompiler,
+)
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     _auto_group_trajectory_log_dataset,
@@ -2413,7 +2417,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
 
 @pytest.mark.asyncio
-async def test_runner_reuses_successful_legacy_member_baseline_replay_from_prior_run(tmp_path) -> None:
+async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
@@ -2570,7 +2574,7 @@ async def test_runner_reuses_successful_legacy_member_baseline_replay_from_prior
     )
 
     assert result.run.status.value == "succeeded"
-    assert replay_backend.baseline_replay_dirs == [str(prior_replay_dir / "members")]
+    assert replay_backend.baseline_replay_dirs == [None]
 
 
 @pytest.mark.asyncio
@@ -3423,11 +3427,12 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
     )
 
     stages = [stage for stage, _ in events]
-    assert stages[:6] == [
+    assert stages[:7] == [
         "start",
         "trajectory_set_loading",
         "candidate_generation",
         "population_generation",
+        "replay_adaptation",
         "candidate_replay",
         "evaluation",
     ]
@@ -6774,6 +6779,19 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
 
     replay_backend = FakeReplayBackend()
     evaluation_backend = PositiveEvaluationBackend()
+
+    class RecordedHttpAdapter:
+        adapter_id = "test.recorded-http.v1"
+
+        def bind(self, dependency, *, context):
+            if dependency.kind != "http_resource":
+                return None
+            return ReplayAdapterBinding(
+                adapter_id=self.adapter_id,
+                dependency_id=dependency.identifier,
+                deterministic=True,
+            )
+
     report_summary = optimize_from_cli_request(
         workspace_root=tmp_path,
         current_trajectory=trajectory,
@@ -6788,6 +6806,9 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
         replay_enabled=True,
         baseline_replay_repetitions=2,
         candidate_replay_repetitions=3,
+        replay_adaptation_compiler=ReplayAdaptationCompiler(
+            adapters=(RecordedHttpAdapter(),)
+        ),
     )
 
     assert report_summary["status"] == "succeeded"

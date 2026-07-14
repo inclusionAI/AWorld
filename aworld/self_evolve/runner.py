@@ -45,6 +45,7 @@ from aworld.self_evolve.gates import (
     NoopCandidateGate,
     ProtectedPathGate,
     RequiredVerificationGate,
+    ReplayAdaptationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
     StoppingConditionGate,
@@ -69,9 +70,14 @@ from aworld.self_evolve.replay import (
     candidate_replay_is_comparable,
     candidate_replay_pair_coverage,
     load_candidate_replay_result,
+    replay_dataset_fingerprint,
     _load_variant_result_from_dir,
     _is_replayable_user_task_case,
     _select_replay_case,
+)
+from aworld.self_evolve.replay_adaptation import (
+    ReplayAdaptationBundle,
+    ReplayAdaptationCompiler,
 )
 from aworld.self_evolve.release_checks import (
     build_content_quality_diagnostics,
@@ -178,6 +184,7 @@ class SelfEvolveRunner:
         runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
         progress_callback: Callable[[str, str], Any] | None = None,
         skip_duplicate_rejected_candidate_gate: bool = False,
+        replay_adaptation_compiler: ReplayAdaptationCompiler | None = None,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -203,6 +210,13 @@ class SelfEvolveRunner:
         self.runtime_skill_activator = runtime_skill_activator
         self.progress_callback = progress_callback
         self.skip_duplicate_rejected_candidate_gate = skip_duplicate_rejected_candidate_gate
+        self.replay_adaptation_compiler = (
+            replay_adaptation_compiler or ReplayAdaptationCompiler()
+        )
+        self._replay_adaptation_cache: dict[
+            tuple[str, str],
+            tuple[ReplayAdaptationBundle | None, GateResult],
+        ] = {}
 
     async def run_explicit_target(
         self,
@@ -520,13 +534,34 @@ class SelfEvolveRunner:
                 population_screening_reports.append(screening_report)
 
             accepted_in_iteration = False
-            reusable_baseline_replay_dir: str | None = _find_reusable_baseline_replay_dir(
-                store=self.store,
-                run_id=run_id,
-                target=target.identity,
-                dataset=dataset,
-                baseline_repetitions=self.baseline_replay_repetitions,
-            )
+            reusable_baseline_replay_dir: str | None = None
+            if (
+                self.replay_enabled
+                and target.identity.target_type == "skill"
+                and self.candidate_replay_backend is not None
+            ):
+                replay_adaptation, replay_adaptation_gate = (
+                    self._prepare_replay_adaptation(
+                        run_id=run_id,
+                        dataset=dataset,
+                    )
+                )
+                if replay_adaptation_gate.passed and replay_adaptation is not None:
+                    reusable_baseline_replay_dir = _find_reusable_baseline_replay_dir(
+                        store=self.store,
+                        run_id=run_id,
+                        target=target.identity,
+                        dataset=dataset,
+                        baseline_repetitions=self.baseline_replay_repetitions,
+                        baseline_skill_fingerprint=target.fingerprint_current_content(),
+                        dataset_fingerprint=replay_dataset_fingerprint(dataset),
+                        adaptation_fingerprint=(
+                            replay_adaptation.adaptation_fingerprint
+                        ),
+                        workspace_seed_fingerprint=(
+                            replay_adaptation.workspace_seed_fingerprint
+                        ),
+                    )
             for candidate_index, iteration_candidate in enumerate(candidate_population):
                 state, report_item, validation_feedback = await self._evaluate_iteration_candidate(
                     run_id=run_id,
@@ -834,6 +869,11 @@ class SelfEvolveRunner:
             target=target.identity,
             dataset=screening_dataset,
             baseline_repetitions=1,
+            **self._baseline_reuse_provenance(
+                run_id=run_id,
+                target=target,
+                dataset=screening_dataset,
+            ),
         )
         for candidate in candidates:
             screening_candidate = replace(
@@ -1219,6 +1259,98 @@ class SelfEvolveRunner:
         )
         return state, report_item, feedback
 
+    def _prepare_replay_adaptation(
+        self,
+        *,
+        run_id: str,
+        dataset: SelfEvolveDataset,
+    ) -> tuple[ReplayAdaptationBundle | None, GateResult]:
+        dataset_fingerprint = replay_dataset_fingerprint(dataset)
+        cache_key = (run_id, dataset_fingerprint)
+        cached = self._replay_adaptation_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        _emit_progress(
+            self.progress_callback,
+            "replay_adaptation",
+            "Compiling replay paths, workspace seed, and dependency bindings",
+        )
+        replayable_cases = tuple(
+            case for case in dataset.cases if _is_replayable_user_task_case(case)
+        )
+        replayable_dataset = SelfEvolveDataset(
+            cases=replayable_cases,
+            recipe=dataset.recipe,
+        )
+        artifact_root = (
+            self.store.run_path(run_id)
+            / "replay_adaptation"
+            / dataset_fingerprint.removeprefix("sha256:")[:16]
+        )
+        try:
+            bundle = self.replay_adaptation_compiler.compile(
+                dataset=replayable_dataset,
+                workspace_root=self.store.workspace_root,
+                artifact_root=artifact_root,
+            )
+        except Exception as exc:
+            result = (
+                None,
+                GateResult(
+                    gate_name="replay_adaptation",
+                    passed=False,
+                    reason="replay adaptation compilation failed",
+                    details={
+                        "type": type(exc).__name__,
+                        "reason": str(exc),
+                        "artifact_root": str(artifact_root),
+                    },
+                ),
+            )
+            self._replay_adaptation_cache[cache_key] = result
+            return result
+        base_gate = ReplayAdaptationGate().evaluate(bundle)
+        readiness = str((base_gate.details or {}).get("readiness") or "unresolved")
+        gate = replace(
+            base_gate,
+            details={
+                **dict(base_gate.details or {}),
+                **_replay_adaptation_details(
+                    bundle,
+                    readiness=readiness,
+                    artifact_root=artifact_root,
+                ),
+            },
+        )
+        result = (bundle, gate)
+        self._replay_adaptation_cache[cache_key] = result
+        return result
+
+    def _baseline_reuse_provenance(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+    ) -> dict[str, str | None]:
+        bundle, gate = self._prepare_replay_adaptation(
+            run_id=run_id,
+            dataset=dataset,
+        )
+        if bundle is None or not gate.passed:
+            return {
+                "baseline_skill_fingerprint": None,
+                "dataset_fingerprint": None,
+                "adaptation_fingerprint": None,
+                "workspace_seed_fingerprint": None,
+            }
+        return {
+            "baseline_skill_fingerprint": target.fingerprint_current_content(),
+            "dataset_fingerprint": replay_dataset_fingerprint(dataset),
+            "adaptation_fingerprint": bundle.adaptation_fingerprint,
+            "workspace_seed_fingerprint": bundle.workspace_seed_fingerprint,
+        }
+
     async def _replay_selected_candidate(
         self,
         *,
@@ -1256,6 +1388,19 @@ class SelfEvolveRunner:
                     reason="skill replay requires target filesystem path",
                 ),
             )
+        if not any(_is_replayable_user_task_case(case) for case in dataset.cases):
+            return (
+                None,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason=(
+                        "candidate replay requires at least one user task eval case; "
+                        "framework-generated evaluation contracts are not replayable"
+                    ),
+                ),
+            )
         effective_baseline_repetitions = (
             baseline_repetitions
             if baseline_repetitions is not None
@@ -1266,6 +1411,12 @@ class SelfEvolveRunner:
             if candidate_repetitions is not None
             else self.candidate_replay_repetitions
         )
+        replay_adaptation, adaptation_gate = self._prepare_replay_adaptation(
+            run_id=run_id,
+            dataset=dataset,
+        )
+        if replay_adaptation is None or not adaptation_gate.passed:
+            return None, None, adaptation_gate
         _emit_progress(
             self.progress_callback,
             progress_stage,
@@ -1298,6 +1449,7 @@ class SelfEvolveRunner:
                 baseline_repetitions=effective_baseline_repetitions,
                 candidate_repetitions=effective_candidate_repetitions,
                 baseline_replay_dir=baseline_replay_dir,
+                replay_adaptation=replay_adaptation,
             )
         except ValueError as exc:
             return (
@@ -1566,6 +1718,7 @@ def optimize_from_cli_request(
     baseline_replay_repetitions: int = 1,
     candidate_replay_repetitions: int = 1,
     replay_stability_margin: float = 0.0,
+    replay_adaptation_compiler: ReplayAdaptationCompiler | None = None,
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
@@ -1824,6 +1977,7 @@ def optimize_from_cli_request(
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
             replay_stability_margin=replay_stability_margin,
+            replay_adaptation_compiler=replay_adaptation_compiler,
             replay_agent=agent,
             runtime_registry_refresher=runtime_registry_refresher,
             runtime_skill_activator=runtime_skill_activator,
@@ -2346,6 +2500,16 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             "timeout_seconds": replay_result.request.timeout_seconds,
             "max_steps": replay_result.request.max_steps,
             "max_tokens": replay_result.request.max_tokens,
+            "dataset_fingerprint": replay_result.request.dataset_fingerprint,
+            "baseline_skill_fingerprint": (
+                replay_result.request.baseline_skill_fingerprint
+            ),
+            "adaptation_fingerprint": (
+                replay_result.request.adaptation_fingerprint
+            ),
+            "workspace_seed_fingerprint": (
+                replay_result.request.workspace_seed_fingerprint
+            ),
         },
         "overlay_skill_root": replay_result.request.overlay_skill_root,
         "baseline": {
@@ -2365,6 +2529,25 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             "failure": replay_result.candidate.failure,
         },
     }
+    if replay_result.request.replay_adaptation is not None:
+        adaptation = replay_result.request.replay_adaptation
+        report["adaptation"] = {
+            "schema_version": adaptation.schema_version,
+            "ready": adaptation.ready,
+            "adaptation_fingerprint": adaptation.adaptation_fingerprint,
+            "workspace_seed_fingerprint": adaptation.workspace_seed_fingerprint,
+            "environment_fingerprint": adaptation.environment_fingerprint,
+            "manifest_path": adaptation.manifest_path,
+            "environment_snapshot_path": adaptation.environment_snapshot_path,
+            "cases": [
+                {
+                    "case_id": case.case_id,
+                    "readiness": case.readiness,
+                    "task_input_fingerprint": case.task_input_fingerprint,
+                }
+                for case in adaptation.cases
+            ],
+        }
     if replay_result.member_results:
         report["members"] = [
             {
@@ -3503,6 +3686,14 @@ def _replay_gate_details(
             dataset=dataset,
             replay_result=replay_result,
         ),
+        "adaptation_fingerprint": replay_result.request.adaptation_fingerprint,
+        "workspace_seed_fingerprint": (
+            replay_result.request.workspace_seed_fingerprint
+        ),
+        "dataset_fingerprint": replay_result.request.dataset_fingerprint,
+        "baseline_skill_fingerprint": (
+            replay_result.request.baseline_skill_fingerprint
+        ),
     }
     if replay_result.member_results:
         details["member_count"] = len(replay_result.member_results)
@@ -3518,6 +3709,46 @@ def _replay_gate_details(
             if not member.succeeded
         ]
     return details
+
+
+def _replay_adaptation_details(
+    bundle: ReplayAdaptationBundle,
+    *,
+    readiness: str,
+    artifact_root: Path,
+) -> dict[str, object]:
+    return {
+        "schema_version": bundle.schema_version,
+        "readiness": readiness,
+        "ready": bundle.ready,
+        "adaptation_fingerprint": bundle.adaptation_fingerprint,
+        "workspace_seed_fingerprint": bundle.workspace_seed_fingerprint,
+        "environment_fingerprint": bundle.environment_fingerprint,
+        "bundle_path": str(artifact_root / "bundle.json"),
+        "manifest_path": bundle.manifest_path,
+        "environment_snapshot_path": bundle.environment_snapshot_path,
+        "cases": [
+            {
+                "case_id": case.case_id,
+                "readiness": case.readiness,
+                "task_input_fingerprint": case.task_input_fingerprint,
+                "dependencies": [
+                    {
+                        "kind": dependency.kind,
+                        "identifier": dependency.identifier,
+                        "status": dependency.status,
+                        "deterministic": dependency.deterministic,
+                        "adapter_id": dependency.adapter_id,
+                        "detail": dependency.detail,
+                    }
+                    for dependency in case.dependencies
+                ],
+                "tool_names": list(case.tool_names),
+                "diagnostics": list(case.diagnostics),
+            }
+            for case in bundle.cases
+        ],
+    }
 
 
 def _baseline_preflight_blocks_population(
