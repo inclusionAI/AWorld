@@ -40,6 +40,7 @@ from aworld.self_evolve.evaluation import (
 )
 from aworld.self_evolve.gates import (
     BudgetGate,
+    CandidatePackageGate,
     CostLatencyRegressionGate,
     ExternalCodeEvolutionGate,
     GlobalRegressionBenchmarkGate,
@@ -146,6 +147,7 @@ from aworld.self_evolve.trace_pack import (
     trace_packs_from_trajectory_log,
 )
 from aworld.self_evolve.types import (
+    CandidateFileDelta,
     CandidateVariant,
     DatasetRecipe,
     EvaluationSummary,
@@ -162,6 +164,8 @@ __all__ = [
     "AWorldCliCandidateReplayBackend",
     "AWorldCliReplayExecutor",
     "BudgetGate",
+    "CandidateFileDelta",
+    "CandidatePackageGate",
     "CandidateOptimizer",
     "CandidateReplayBackend",
     "CandidateReplayRequest",
