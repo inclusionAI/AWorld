@@ -30,6 +30,7 @@ from aworld.self_evolve.replay import (
     _member_artifact_name,
     _member_baseline_replay_dir,
 )
+from aworld.self_evolve.replay_adaptation import ReplayAdaptationCompiler
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef
 from aworld.skills.compat_provider import build_compat_registry
 
@@ -637,7 +638,7 @@ async def test_aworld_cli_candidate_replay_backend_aggregates_repetitions(
 
 
 @pytest.mark.asyncio
-async def test_aworld_cli_candidate_replay_backend_reuses_stored_baseline_replay(
+async def test_aworld_cli_candidate_replay_backend_does_not_reuse_legacy_baseline_without_provenance(
     tmp_path: Path,
 ) -> None:
     baseline_dir = tmp_path / "stored-baseline"
@@ -706,10 +707,16 @@ async def test_aworld_cli_candidate_replay_backend_reuses_stored_baseline_replay
         ),
     )
 
-    assert [call.variant_id for call in calls] == ["cand-1-1", "cand-1-2", "cand-1-3"]
+    assert [call.variant_id for call in calls] == [
+        "baseline-1",
+        "baseline-2",
+        "cand-1-1",
+        "cand-1-2",
+        "cand-1-3",
+    ]
     assert result.baseline.succeeded is True
     assert result.baseline.metrics["repetition_count"] == 2
-    assert result.baseline.trajectory[0]["action"]["content"] == "stored baseline selected"
+    assert result.baseline.trajectory[0]["action"]["content"] == "baseline-2"
     assert result.candidate.succeeded is True
 
 
@@ -1126,6 +1133,11 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         "---\nname: demo\n---\n# Demo\nFirst.\n",
         candidate_id="cand-1",
     )
+    replay_adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / ".aworld" / "self_evolve" / "run-reuse-members" / "adaptation",
+    )
     first_request = build_replay_request(
         run_id="run-reuse-members",
         workspace_root=tmp_path,
@@ -1133,6 +1145,7 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         candidate=first_candidate,
         overlay_skill_root=tmp_path / "overlay-1",
         dataset=dataset,
+        replay_adaptation=replay_adaptation,
     )
     backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
     await backend.replay_candidate(
@@ -1162,6 +1175,7 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         overlay_skill_root=tmp_path / "overlay-2",
         dataset=dataset,
         baseline_replay_dir=members_root,
+        replay_adaptation=replay_adaptation,
     )
 
     result = await backend.replay_candidate(
@@ -1234,6 +1248,17 @@ async def test_multi_member_replay_reuses_successful_baselines_and_retries_faile
         ),
     )
     backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    replay_adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-partial-member-cache"
+            / "adaptation"
+        ),
+    )
     first_candidate = _candidate(
         "---\nname: demo\n---\n# Demo\nFirst.\n",
         candidate_id="cand-1",
@@ -1245,6 +1270,7 @@ async def test_multi_member_replay_reuses_successful_baselines_and_retries_faile
         candidate=first_candidate,
         overlay_skill_root=tmp_path / "overlay-1",
         dataset=dataset,
+        replay_adaptation=replay_adaptation,
     )
 
     first_result = await backend.replay_candidate(
@@ -1276,6 +1302,7 @@ async def test_multi_member_replay_reuses_successful_baselines_and_retries_faile
         overlay_skill_root=tmp_path / "overlay-2",
         dataset=dataset,
         baseline_replay_dir=members_root,
+        replay_adaptation=replay_adaptation,
     )
 
     second_result = await backend.replay_candidate(

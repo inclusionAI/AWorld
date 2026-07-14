@@ -35,6 +35,13 @@ _SYNTHETIC_EVIDENCE_EXCERPT_CHARS = 4000
 _MAX_METADATA_EVIDENCE_CHARS = 16_384
 _COMPARABLE_TASK_FAILURE_TYPES = {"TaskFailure", "TimeoutExpired"}
 _COMPARABLE_TASK_FAILURE_REASONS = {"evidence_quality_failed"}
+_REPLAY_PROVENANCE_METRIC_KEYS = (
+    "adaptation_fingerprint",
+    "workspace_seed_fingerprint",
+    "task_input_fingerprint",
+    "dataset_fingerprint",
+    "baseline_skill_fingerprint",
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,11 @@ class CandidateReplayRequest:
     baseline_repetitions: int = 1
     candidate_repetitions: int = 1
     replay_adaptation: ReplayAdaptationBundle | None = None
+    dataset_fingerprint: str | None = None
+    baseline_skill_fingerprint: str | None = None
+    adaptation_fingerprint: str | None = None
+    workspace_seed_fingerprint: str | None = None
+    task_input_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +117,8 @@ def candidate_replay_is_comparable(
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
 ) -> bool:
+    if not _candidate_replay_provenance_is_comparable(replay_result):
+        return False
     coverage = candidate_replay_pair_coverage(
         dataset=dataset,
         replay_result=replay_result,
@@ -113,6 +127,40 @@ def candidate_replay_is_comparable(
         coverage["member_count"] > 0
         and coverage["comparable_pair_count"] == coverage["member_count"]
     )
+
+
+def _candidate_replay_provenance_is_comparable(
+    replay_result: CandidateReplayResult,
+) -> bool:
+    if replay_result.request.adaptation_fingerprint is None:
+        return True
+    if replay_result.member_results:
+        pairs = tuple(
+            (member.request, member.baseline, member.candidate)
+            for member in replay_result.member_results
+        )
+    else:
+        pairs = (
+            (
+                replay_result.request,
+                replay_result.baseline,
+                replay_result.candidate,
+            ),
+        )
+    for request, baseline, candidate in pairs:
+        expected = {
+            "adaptation_fingerprint": request.adaptation_fingerprint,
+            "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+            "task_input_fingerprint": request.task_input_fingerprint,
+            "dataset_fingerprint": request.dataset_fingerprint,
+            "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+        }
+        if any(value is None for value in expected.values()):
+            return False
+        for key, value in expected.items():
+            if baseline.metrics.get(key) != value or candidate.metrics.get(key) != value:
+                return False
+    return True
 
 
 def candidate_replay_pair_coverage(
@@ -357,6 +405,8 @@ class ReplayExecutionRequest:
     adaptation_fingerprint: str | None = None
     workspace_seed_fingerprint: str | None = None
     task_input_fingerprint: str | None = None
+    dataset_fingerprint: str | None = None
+    baseline_skill_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -446,6 +496,10 @@ class AWorldCliCandidateReplayBackend:
                     request,
                     task_id=case.case_id,
                     task_input=adapted_task_input,
+                    task_input_fingerprint=_adapted_task_input_fingerprint(
+                        request,
+                        case,
+                    ),
                     baseline_replay_dir=_member_baseline_replay_dir(
                         request.baseline_replay_dir,
                         case.case_id,
@@ -563,7 +617,7 @@ class AWorldCliCandidateReplayBackend:
         candidate: CandidateVariant,
         replay_dir: Path,
     ) -> ReplayVariantResult:
-        if request.baseline_replay_dir:
+        if request.baseline_replay_dir and _stored_baseline_matches_request(request):
             baseline = _load_variant_result_from_dir(
                 Path(request.baseline_replay_dir),
                 base_variant_id="baseline",
@@ -575,6 +629,13 @@ class AWorldCliCandidateReplayBackend:
                 f"baseline_replay_dir={request.baseline_replay_dir}"
             )
         else:
+            if request.baseline_replay_dir:
+                logger.info(
+                    "self_evolve.replay.baseline.reuse_skip "
+                    f"run_id={request.run_id} task_id={request.task_id} "
+                    f"candidate_id={candidate.candidate_id} "
+                    "reason=missing_or_mismatched_replay_provenance"
+                )
             baseline = await self._run_repetitions(
                 request,
                 base_variant_id="baseline",
@@ -583,7 +644,6 @@ class AWorldCliCandidateReplayBackend:
                 repetitions=request.baseline_repetitions,
             )
         return baseline
-
     async def _run_repetitions(
         self,
         request: CandidateReplayRequest,
@@ -738,6 +798,8 @@ class AWorldCliCandidateReplayBackend:
             adaptation_fingerprint=adaptation_fingerprint,
             workspace_seed_fingerprint=workspace_seed_fingerprint,
             task_input_fingerprint=task_input_fingerprint,
+            dataset_fingerprint=request.dataset_fingerprint,
+            baseline_skill_fingerprint=request.baseline_skill_fingerprint,
         )
         _write_json(artifact_dir / "execution_request.json", execution_request)
         started_at = time.monotonic()
@@ -760,6 +822,7 @@ class AWorldCliCandidateReplayBackend:
         metrics = {
             "latency_ms": (time.monotonic() - started_at) * 1000,
             **dict(execution_result.metrics),
+            **_replay_execution_provenance(execution_request),
         }
         status = execution_result.status
         failure = execution_result.failure
@@ -792,6 +855,40 @@ class AWorldCliCandidateReplayBackend:
             stderr_path=str(stderr_path),
             failure=failure,
         )
+
+
+def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
+    if request.baseline_replay_dir is None:
+        return False
+    provenance_keys = (
+        "baseline_skill_fingerprint",
+        "dataset_fingerprint",
+        "adaptation_fingerprint",
+        "workspace_seed_fingerprint",
+        "task_input_fingerprint",
+    )
+    if any(getattr(request, key) is None for key in provenance_keys):
+        return False
+    request_path = Path(request.baseline_replay_dir).parent / "request.json"
+    if not request_path.is_file():
+        return False
+    try:
+        stored = _candidate_replay_request_from_mapping(
+            _load_json_object(request_path)
+        )
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        return False
+    if stored.task_id != request.task_id:
+        return False
+    if (
+        stored.target.target_type != request.target.target_type
+        or stored.target.target_id != request.target.target_id
+    ):
+        return False
+    return all(
+        getattr(stored, key) == getattr(request, key)
+        for key in provenance_keys
+    )
 
 
 class AWorldCliReplayExecutor:
@@ -991,8 +1088,16 @@ def build_replay_request(
                 continue
             replay_adaptation.case(replay_case.case_id)
         task_input = replay_adaptation.case(case.case_id).adapted_task_input
+        adaptation_fingerprint = replay_adaptation.adaptation_fingerprint
+        workspace_seed_fingerprint = replay_adaptation.workspace_seed_fingerprint
+        task_input_fingerprint = replay_adaptation.case(
+            case.case_id
+        ).task_input_fingerprint
     else:
         task_input = case.input
+        adaptation_fingerprint = None
+        workspace_seed_fingerprint = None
+        task_input_fingerprint = None
     return CandidateReplayRequest(
         run_id=run_id,
         task_id=case.case_id,
@@ -1013,6 +1118,11 @@ def build_replay_request(
         baseline_repetitions=baseline_repetitions,
         candidate_repetitions=candidate_repetitions,
         replay_adaptation=replay_adaptation,
+        dataset_fingerprint=replay_dataset_fingerprint(dataset),
+        baseline_skill_fingerprint=candidate.target_fingerprint,
+        adaptation_fingerprint=adaptation_fingerprint,
+        workspace_seed_fingerprint=workspace_seed_fingerprint,
+        task_input_fingerprint=task_input_fingerprint,
     )
 
 
@@ -1020,6 +1130,56 @@ def _adapted_task_input(request: CandidateReplayRequest, case: EvalCase) -> Any:
     if request.replay_adaptation is None:
         return case.input
     return request.replay_adaptation.case(case.case_id).adapted_task_input
+
+
+def _adapted_task_input_fingerprint(
+    request: CandidateReplayRequest,
+    case: EvalCase,
+) -> str | None:
+    if request.replay_adaptation is None:
+        return request.task_input_fingerprint
+    return request.replay_adaptation.case(case.case_id).task_input_fingerprint
+
+
+def replay_dataset_fingerprint(dataset: SelfEvolveDataset) -> str:
+    payload = {
+        "cases": [
+            {
+                "case_id": case.case_id,
+                "input": case.input,
+                "expected_output": case.expected_output,
+                "verification_command": case.verification_command,
+                "metadata": case.metadata,
+                "source": case.source,
+            }
+            for case in dataset.cases
+        ],
+        "recipe": to_json_dict(dataset.recipe),
+    }
+    encoded = json.dumps(
+        to_json_dict(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _replay_execution_provenance(
+    request: ReplayExecutionRequest,
+) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in (
+            ("adaptation_fingerprint", request.adaptation_fingerprint),
+            ("workspace_seed_fingerprint", request.workspace_seed_fingerprint),
+            ("task_input_fingerprint", request.task_input_fingerprint),
+            ("dataset_fingerprint", request.dataset_fingerprint),
+            ("baseline_skill_fingerprint", request.baseline_skill_fingerprint),
+        )
+        if value is not None
+    }
 
 
 def _expand_replay_placeholders(
@@ -1953,9 +2113,14 @@ def _aggregate_variant_results(
     evidence_strategy_passed_values: list[bool] = []
     evidence_bundle_valid_values: list[bool] = []
     latest_evidence_bundle_path: str | None = None
+    provenance_values: dict[str, list[str]] = {
+        key: [] for key in _REPLAY_PROVENANCE_METRIC_KEYS
+    }
     for result in results:
         for key, value in result.metrics.items():
-            if key == "evidence_compacted" and isinstance(value, bool):
+            if key in provenance_values and isinstance(value, str):
+                provenance_values[key].append(value)
+            elif key == "evidence_compacted" and isinstance(value, bool):
                 evidence_compacted_values.append(value)
             elif key == "evidence_strategy_passed" and isinstance(value, bool):
                 evidence_strategy_passed_values.append(value)
@@ -1991,6 +2156,11 @@ def _aggregate_variant_results(
         metrics["evidence_bundle_path"] = latest_evidence_bundle_path
     if evidence_compaction_signals:
         metrics["evidence_compaction_signals"] = evidence_compaction_signals
+    for key, values in provenance_values.items():
+        if len(values) == len(results) and len(set(values)) == 1:
+            metrics[key] = values[0]
+        elif values:
+            metrics[f"{key}_values"] = values
     for key, values in numeric_metrics.items():
         if values:
             if key in {
@@ -2125,6 +2295,31 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         max_cost_usd=_optional_float(payload.get("max_cost_usd")),
         baseline_repetitions=_positive_int(payload.get("baseline_repetitions"), default=1),
         candidate_repetitions=_positive_int(payload.get("candidate_repetitions"), default=1),
+        dataset_fingerprint=(
+            str(payload.get("dataset_fingerprint"))
+            if payload.get("dataset_fingerprint") is not None
+            else None
+        ),
+        baseline_skill_fingerprint=(
+            str(payload.get("baseline_skill_fingerprint"))
+            if payload.get("baseline_skill_fingerprint") is not None
+            else None
+        ),
+        adaptation_fingerprint=(
+            str(payload.get("adaptation_fingerprint"))
+            if payload.get("adaptation_fingerprint") is not None
+            else None
+        ),
+        workspace_seed_fingerprint=(
+            str(payload.get("workspace_seed_fingerprint"))
+            if payload.get("workspace_seed_fingerprint") is not None
+            else None
+        ),
+        task_input_fingerprint=(
+            str(payload.get("task_input_fingerprint"))
+            if payload.get("task_input_fingerprint") is not None
+            else None
+        ),
     )
 
 

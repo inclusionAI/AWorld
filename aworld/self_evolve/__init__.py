@@ -107,6 +107,7 @@ from aworld.self_evolve.replay import (
     ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
+    replay_dataset_fingerprint,
 )
 from aworld.self_evolve.replay_adaptation import (
     REPLAY_ADAPTATION_SCHEMA_VERSION,
@@ -254,6 +255,7 @@ __all__ = [
     "build_judge_backend",
     "build_paired_replay_dataset",
     "build_replay_request",
+    "replay_dataset_fingerprint",
     "cleanup_self_evolve_overlays",
     "cleanup_self_evolve_artifacts",
     "create_candidate_skill_overlay",

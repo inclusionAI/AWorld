@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,10 @@ from aworld.self_evolve.replay import (
     ReplayExecutionRequest,
     ReplayExecutionResult,
     build_replay_request,
+    candidate_replay_is_comparable,
 )
+from aworld.self_evolve.runner import _find_reusable_baseline_replay_dir
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
 
 
@@ -260,7 +264,13 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
         candidate_repetitions=2,
     )
 
-    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+    assert request.dataset_fingerprint.startswith("sha256:")
+    assert request.baseline_skill_fingerprint == "sha256:baseline"
+    assert request.adaptation_fingerprint == bundle.adaptation_fingerprint
+    assert request.workspace_seed_fingerprint == bundle.workspace_seed_fingerprint
+    assert request.task_input_fingerprint == bundle.case("task-1").task_input_fingerprint
+
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
         request,
         candidate=candidate,
         dataset=dataset,
@@ -271,3 +281,38 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
     assert {
         Path(call.workspace_root).parents[1].name for call in calls
     } == {"baseline", "cand-1"}
+    assert candidate_replay_is_comparable(dataset=dataset, replay_result=result) is True
+
+    mismatched_candidate = replace(
+        result.candidate,
+        metrics={
+            **dict(result.candidate.metrics),
+            "workspace_seed_fingerprint": "sha256:different-seed",
+        },
+    )
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replace(result, candidate=mismatched_candidate),
+    ) is False
+
+    lookup = {
+        "store": FilesystemSelfEvolveStore(workspace),
+        "run_id": "next-run",
+        "target": target,
+        "dataset": dataset,
+        "baseline_repetitions": 2,
+        "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+        "dataset_fingerprint": request.dataset_fingerprint,
+        "adaptation_fingerprint": request.adaptation_fingerprint,
+        "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+    }
+    assert _find_reusable_baseline_replay_dir(**lookup) is not None
+    assert _find_reusable_baseline_replay_dir(
+        **{**lookup, "baseline_skill_fingerprint": "sha256:changed-skill"}
+    ) is None
+    assert _find_reusable_baseline_replay_dir(
+        **{**lookup, "dataset_fingerprint": "sha256:changed-dataset"}
+    ) is None
+    assert _find_reusable_baseline_replay_dir(
+        **{**lookup, "adaptation_fingerprint": "sha256:changed-adaptation"}
+    ) is None
