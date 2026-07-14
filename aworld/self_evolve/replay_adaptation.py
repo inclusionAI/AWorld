@@ -429,6 +429,33 @@ class ReplayAdaptationCompiler:
                 shutil.copy2(source_path, target_root / file_name)
 
 
+def materialize_replay_workspace(
+    bundle: ReplayAdaptationBundle,
+    destination: str | Path,
+) -> Path:
+    """Create a clean rollout workspace from a verified adaptation seed."""
+
+    seed = Path(bundle.workspace_seed).expanduser().resolve()
+    target = Path(destination).expanduser().resolve()
+    if not seed.is_dir():
+        raise ReplayAdaptationError(f"replay workspace seed does not exist: {seed}")
+    if target == seed or _is_within(seed, target):
+        raise ReplayAdaptationError("rollout workspace cannot contain the replay seed")
+    current_fingerprint = _json_fingerprint(_workspace_manifest(seed))
+    if current_fingerprint != bundle.workspace_seed_fingerprint:
+        raise ReplayAdaptationError(
+            "replay workspace seed changed after adaptation compilation"
+        )
+    if target.exists():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(seed, target, symlinks=True)
+    return target
+
+
 def _normalize_workspace_paths(text: str, *, workspace_root: Path) -> str:
     normalized = text.replace(str(workspace_root), REPLAY_WORKSPACE_PLACEHOLDER)
     repository_name = re.escape(workspace_root.name)
