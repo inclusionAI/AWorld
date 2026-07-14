@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from aworld.self_evolve.candidate_package import (
+    candidate_package_fingerprint,
+    validate_candidate_files,
+)
+from aworld.self_evolve.replay_capability import fingerprint_skill_package
 from aworld.self_evolve.types import CandidateVariant, to_json_dict
 
 
@@ -17,6 +22,7 @@ class SkillOverlayArtifact:
     candidate_skill_path: Path
     metadata_path: Path
     baseline_skill_roots: tuple[str, ...]
+    candidate_skill_package_fingerprint: str
 
 
 def create_candidate_skill_overlay(
@@ -65,9 +71,20 @@ def create_candidate_skill_overlay(
             )
 
     candidate_dir = shadow_root / target_name
-    candidate_dir.mkdir(parents=True, exist_ok=True)
+    source_skill_dir = target_path.parent
+    if target_path.is_file() and source_skill_dir.is_dir():
+        shutil.copytree(
+            source_skill_dir,
+            candidate_dir,
+            symlinks=True,
+            dirs_exist_ok=True,
+        )
+    else:
+        candidate_dir.mkdir(parents=True, exist_ok=True)
     candidate_skill_path = candidate_dir / "SKILL.md"
     candidate_skill_path.write_text(candidate.content, encoding="utf-8")
+    applied_files = _apply_candidate_files(candidate_dir, candidate)
+    candidate_skill_package_fingerprint = fingerprint_skill_package(candidate_dir)
 
     metadata_path = shadow_root.parent / "overlay.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,8 +93,11 @@ def create_candidate_skill_overlay(
         "candidate_id": candidate.candidate_id,
         "target": to_json_dict(candidate.target),
         "target_fingerprint": candidate.target_fingerprint,
+        "candidate_package_fingerprint": candidate_package_fingerprint(candidate),
+        "candidate_skill_package_fingerprint": candidate_skill_package_fingerprint,
         "target_skill_path": str(target_path),
         "candidate_skill_path": str(candidate_skill_path),
+        "candidate_files": applied_files,
         "shadow_root": str(shadow_root),
         "baseline_skill_roots": [str(root) for root in roots],
     }
@@ -92,6 +112,7 @@ def create_candidate_skill_overlay(
         candidate_skill_path=candidate_skill_path,
         metadata_path=metadata_path,
         baseline_skill_roots=tuple(str(root) for root in roots),
+        candidate_skill_package_fingerprint=candidate_skill_package_fingerprint,
     )
 
 
@@ -129,6 +150,51 @@ def _skill_file(skill_dir: Path) -> Path | None:
         if path.exists() and path.is_file():
             return path
     return None
+
+
+def _apply_candidate_files(
+    candidate_dir: Path,
+    candidate: CandidateVariant,
+) -> list[dict[str, object]]:
+    applied: list[dict[str, object]] = []
+    for item in validate_candidate_files(candidate.files):
+        destination = candidate_dir.joinpath(*Path(item.path).parts)
+        _assert_overlay_destination(candidate_dir, destination)
+        if item.operation == "delete":
+            if destination.is_dir() and not destination.is_symlink():
+                raise ValueError(
+                    f"candidate file delete cannot remove a directory: {item.path}"
+                )
+            destination.unlink(missing_ok=True)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _assert_overlay_destination(candidate_dir, destination)
+            destination.write_text(item.content or "", encoding="utf-8")
+            mode = destination.stat().st_mode
+            destination.chmod((mode | 0o111) if item.executable else (mode & ~0o111))
+        applied.append(
+            {
+                "path": item.path,
+                "operation": item.operation,
+                "executable": item.executable,
+            }
+        )
+    return applied
+
+
+def _assert_overlay_destination(root: Path, destination: Path) -> None:
+    try:
+        relative = destination.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("candidate file destination escapes skill overlay") from exc
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(
+                "candidate file destination cannot traverse a symlink: "
+                f"{relative.as_posix()}"
+            )
 
 
 def _safe_path(value: str) -> str:

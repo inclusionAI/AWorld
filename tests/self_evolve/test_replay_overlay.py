@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import socket
 import subprocess
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -31,7 +34,19 @@ from aworld.self_evolve.replay import (
     _member_baseline_replay_dir,
 )
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationCompiler
-from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef
+from aworld.self_evolve.replay_adaptation import ReplayAdapterBinding
+from aworld.self_evolve.replay_capability import (
+    FrozenReplayCapability,
+    FrozenReplayFile,
+    ReplayReadinessProbe,
+    ReplayServiceSpec,
+)
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    DatasetRecipe,
+    SelfEvolveTargetRef,
+)
 from aworld.skills.compat_provider import build_compat_registry
 
 
@@ -78,6 +93,7 @@ def test_candidate_skill_overlay_materializes_shadow_root_without_mutating_real_
     assert overlay.candidate_skill_path.read_text(encoding="utf-8") == candidate_demo
     assert (overlay.shadow_root / "helper" / "SKILL.md").exists()
     assert demo_path.read_text(encoding="utf-8") == original_demo
+    assert overlay.candidate_skill_package_fingerprint.startswith("sha256:")
 
     registry = build_compat_registry(overlay.shadow_root)
     descriptors = {descriptor.skill_name: descriptor for descriptor in registry.list_descriptors()}
@@ -86,6 +102,55 @@ def test_candidate_skill_overlay_materializes_shadow_root_without_mutating_real_
     assert "Candidate." in loaded_demo.usage
     assert "Original." not in loaded_demo.usage
     assert "Helper" in loaded_helper.usage
+
+
+def test_candidate_overlay_applies_replay_package_on_copy_of_target_skill(
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "skills"
+    skill_root = skills_root / "demo"
+    skill_path = skill_root / "SKILL.md"
+    replay_root = skill_root / "replay"
+    replay_root.mkdir(parents=True)
+    skill_path.write_text("# Original\n", encoding="utf-8")
+    (skill_root / "reference.md").write_text("keep\n", encoding="utf-8")
+    (replay_root / "obsolete.py").write_text("old\n", encoding="utf-8")
+    candidate = CandidateVariant(
+        candidate_id="cand-package",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Candidate\n",
+        rationale="add replay capability",
+        target_fingerprint="sha256:old",
+        files=(
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="print('compile')\n",
+                executable=True,
+            ),
+            CandidateFileDelta(
+                path="replay/obsolete.py",
+                operation="delete",
+            ),
+        ),
+    )
+
+    overlay = create_candidate_skill_overlay(
+        workspace_root=tmp_path,
+        run_id="run-package",
+        candidate=candidate,
+        target_skill_path=skill_path,
+        baseline_skill_roots=(skills_root,),
+    )
+
+    candidate_root = overlay.candidate_skill_path.parent
+    assert overlay.candidate_skill_path.read_text(encoding="utf-8") == "# Candidate\n"
+    assert (candidate_root / "reference.md").read_text(encoding="utf-8") == "keep\n"
+    assert (candidate_root / "replay/compiler.py").read_text(encoding="utf-8") == (
+        "print('compile')\n"
+    )
+    assert (candidate_root / "replay/compiler.py").stat().st_mode & 0o111
+    assert not (candidate_root / "replay/obsolete.py").exists()
+    assert (replay_root / "obsolete.py").read_text(encoding="utf-8") == "old\n"
 
 
 def test_cleanup_self_evolve_overlays_retains_latest_runs(tmp_path: Path) -> None:
@@ -104,6 +169,192 @@ def test_cleanup_self_evolve_overlays_retains_latest_runs(tmp_path: Path) -> Non
     assert cleanup["removed_run_count"] == 1
     assert not (root / "run-old" / "overlays").exists()
     assert (root / "run-new" / "overlays").exists()
+
+
+@pytest.mark.asyncio
+async def test_skill_owned_replay_service_is_isolated_per_variant(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "frozen" / "runtime" / "replay" / "runtime.py"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text(
+        """
+import argparse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--port', required=True, type=int)
+args = parser.parse_args()
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'candidate-controlled-response')
+    def log_message(self, *args):
+        pass
+
+HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+""",
+        encoding="utf-8",
+    )
+    fixtures = tmp_path / "frozen" / "fixtures"
+    fixtures.mkdir(parents=True)
+    response_fixture = fixtures / "recording.txt"
+    response_fixture.write_bytes(b"recorded")
+    frozen = FrozenReplayCapability(
+        capability_id="recorded-http",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(tmp_path / "frozen"),
+        handled_requirements=("requirement-local",),
+        unhandled_requirements=(),
+        evidence_refs={"requirement-local": ("context:task-1",)},
+        fixture_evidence_refs={"recording.txt": ("context:task-1",)},
+        fixtures=(
+            FrozenReplayFile(
+                path="recording.txt",
+                sha256="sha256:"
+                + hashlib.sha256(response_fixture.read_bytes()).hexdigest(),
+                size=response_fixture.stat().st_size,
+            ),
+        ),
+        runtime_files=(
+            FrozenReplayFile(
+                path="replay/runtime.py",
+                sha256="sha256:" + hashlib.sha256(runtime.read_bytes()).hexdigest(),
+                size=runtime.stat().st_size,
+            ),
+        ),
+        endpoint_replacements={
+            "http://127.0.0.1:9222": "recorded-http",
+        },
+        services=(
+            ReplayServiceSpec(
+                service_id="recorded-http",
+                requirement_id="requirement-local",
+                transport="http_fixture",
+                response_fixture="recording.txt",
+                readiness=ReplayReadinessProbe(kind="tcp", timeout_seconds=2),
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+    frozen_payload = {
+        "schema_version": "aworld.replay.capability_result.v1",
+        "capability_id": frozen.capability_id,
+        "capability_package_fingerprint": frozen.capability_package_fingerprint,
+        "request_fingerprint": frozen.request_fingerprint,
+        "handled_requirements": list(frozen.handled_requirements),
+        "unhandled_requirements": list(frozen.unhandled_requirements),
+        "evidence_refs": frozen.evidence_refs,
+        "fixture_evidence_refs": frozen.fixture_evidence_refs,
+        "fixtures": [asdict(item) for item in frozen.fixtures],
+        "runtime_files": [asdict(item) for item in frozen.runtime_files],
+        "endpoint_replacements": frozen.endpoint_replacements,
+        "services": [asdict(item) for item in frozen.services],
+        "deterministic": frozen.deterministic,
+    }
+    frozen_fingerprint = "sha256:" + hashlib.sha256(
+        json.dumps(
+            frozen_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    frozen = replace(frozen, fingerprint=frozen_fingerprint)
+    (tmp_path / "frozen/frozen_manifest.json").write_text(
+        json.dumps(
+            {**frozen_payload, "fingerprint": frozen_fingerprint},
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    class LocalEndpointAdapter:
+        adapter_id = "test.local-endpoint"
+
+        def bind(self, dependency, *, context):
+            if dependency.kind != "local_endpoint":
+                return None
+            return ReplayAdapterBinding(
+                adapter_id=self.adapter_id,
+                dependency_id=dependency.identifier,
+                deterministic=True,
+            )
+
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="task-1",
+                input={"content": "Inspect http://127.0.0.1:9222"},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    adaptation = ReplayAdaptationCompiler(
+        adapters=(LocalEndpointAdapter(),)
+    ).compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "adaptation",
+    )
+    adaptation = replace(adaptation, replay_capability=frozen)
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-service-isolation",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=adaptation,
+    )
+    observed_ports: list[int] = []
+
+    async def fake_executor(
+        execution_request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        url = execution_request.task_input["content"].split()[-1]
+        port = int(url.rsplit(":", 1)[1])
+        observed_ports.append(port)
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
+            connection.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            response = connection.recv(4096)
+            assert b"recorded" in response
+            assert str(execution_request.artifact_dir).encode() not in response
+            assert b"baseline" not in response
+            assert b"cand-1" not in response
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": execution_request.variant_id}}],
+        )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(request, candidate=candidate, dataset=dataset)
+
+    assert result.succeeded is True
+    assert result.baseline.metrics["frozen_capability_fingerprint"] == (
+        result.candidate.metrics["frozen_capability_fingerprint"]
+    )
+    assert result.baseline.metrics["service_endpoint"] != (
+        result.candidate.metrics["service_endpoint"]
+    )
+    assert result.baseline.metrics["service_cleanup_status"] == "stopped"
+    assert result.candidate.metrics["service_cleanup_status"] == "stopped"
+    assert len(observed_ports) == 2
+    assert len(set(observed_ports)) == 2
+    for port in observed_ports:
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.1)
 
 
 def test_paired_replay_dataset_maps_baseline_and_candidate_trajectories() -> None:

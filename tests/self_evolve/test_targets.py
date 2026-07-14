@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
+from aworld.self_evolve.replay_capability import fingerprint_skill_package
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.targets import SkillTextTarget, WorkspaceArtifactTarget
-from aworld.self_evolve.types import CandidateVariant, SelfEvolveRun
+from aworld.self_evolve.targets import (
+    DraftSkillTextTarget,
+    SkillTextTarget,
+    WorkspaceArtifactTarget,
+)
+from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, SelfEvolveRun
 
 
 def _write_skill(tmp_path, name: str = "demo", body: str = "Original skill text.\n"):
@@ -74,6 +81,122 @@ def test_skill_text_target_apply_requires_allowlist_and_supports_rollback(tmp_pa
 
     allowlisted.rollback()
     assert skill_path.read_text(encoding="utf-8") == original_content
+
+
+def test_skill_text_target_applies_and_rolls_back_candidate_package(tmp_path) -> None:
+    skill_path = _write_skill(tmp_path)
+    replay_root = skill_path.parent / "replay"
+    replay_root.mkdir()
+    existing = replay_root / "existing.py"
+    existing.write_text("old\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="cand-package",
+        target=target.identity,
+        content=target.load_current_content().replace("Original", "Updated"),
+        rationale="add replay capability",
+        files=(
+            CandidateFileDelta(path="replay/existing.py", content="new\n"),
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="print('compile')\n",
+                executable=True,
+            ),
+        ),
+    )
+
+    target.apply_candidate_variant(candidate)
+
+    assert "Updated skill text." in skill_path.read_text(encoding="utf-8")
+    assert existing.read_text(encoding="utf-8") == "new\n"
+    assert (replay_root / "compiler.py").stat().st_mode & 0o111
+
+    target.rollback()
+
+    assert "Original skill text." in skill_path.read_text(encoding="utf-8")
+    assert existing.read_text(encoding="utf-8") == "old\n"
+    assert not (replay_root / "compiler.py").exists()
+
+
+def test_skill_package_apply_rejects_symlinked_skill_markdown(tmp_path) -> None:
+    external = tmp_path / "external.md"
+    external.write_text("# External\n", encoding="utf-8")
+    skill_root = tmp_path / "aworld-skills" / "demo"
+    skill_root.mkdir(parents=True)
+    skill_path = skill_root / "SKILL.md"
+    skill_path.symlink_to(external)
+    target = SkillTextTarget(
+        skill_path,
+        target_id="demo",
+        allow_auto_apply=True,
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-symlink",
+        target=target.identity,
+        content="# Candidate\n",
+        rationale="test symlink guard",
+    )
+
+    with pytest.raises(ValueError, match="symlink"):
+        target.apply_candidate_variant(candidate)
+
+    assert external.read_text(encoding="utf-8") == "# External\n"
+
+
+def test_skill_package_apply_rejects_changes_after_replay_verification(tmp_path) -> None:
+    skill_path = _write_skill(tmp_path)
+    helper = skill_path.parent / "helper.py"
+    helper.write_text("VERSION = 1\n", encoding="utf-8")
+    candidate_content = skill_path.read_text(encoding="utf-8").replace(
+        "Original",
+        "Updated",
+    )
+    expected_root = tmp_path / "expected-package"
+    shutil.copytree(skill_path.parent, expected_root)
+    (expected_root / "SKILL.md").write_text(candidate_content, encoding="utf-8")
+    expected_fingerprint = fingerprint_skill_package(expected_root)
+    helper.write_text("VERSION = 2\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="cand-stale",
+        target=target.identity,
+        content=candidate_content,
+        rationale="verify package freshness",
+    )
+
+    with pytest.raises(ValueError, match="changed after replay verification"):
+        target.apply_candidate_variant(
+            candidate,
+            expected_package_fingerprint=expected_fingerprint,
+        )
+
+    assert "Original skill text." in skill_path.read_text(encoding="utf-8")
+    assert helper.read_text(encoding="utf-8") == "VERSION = 2\n"
+
+
+def test_new_skill_package_rollback_atomically_retires_published_root(tmp_path) -> None:
+    release_path = tmp_path / "skills" / "new-skill" / "SKILL.md"
+    target = DraftSkillTextTarget(
+        tmp_path / "drafts" / "new-skill" / "SKILL.md",
+        target_id="new-skill",
+        release_path=release_path,
+        allow_auto_apply=True,
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-new",
+        target=target.identity,
+        content="# New skill\n",
+        rationale="publish new package",
+        files=(CandidateFileDelta(path="replay/compiler.py", content="# compiler\n"),),
+    )
+
+    target.apply_candidate_variant(candidate)
+    assert release_path.is_file()
+
+    target.rollback()
+
+    assert not release_path.parent.exists()
+    assert not tuple((tmp_path / "skills").glob(".new-skill.aworld-trash-*"))
 
 
 def test_workspace_artifact_target_rejects_protected_product_paths(tmp_path) -> None:

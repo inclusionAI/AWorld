@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import inspect
 import json
 import os
 import re
+import signal
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -26,7 +30,20 @@ from aworld.self_evolve.replay_adaptation import (
     REPLAY_ARTIFACT_PLACEHOLDER,
     REPLAY_WORKSPACE_PLACEHOLDER,
     ReplayAdaptationBundle,
+    ReplayAdapterBinding,
+    ReplayCaseAdaptation,
+    ReplayDependency,
     materialize_replay_workspace,
+)
+from aworld.self_evolve.replay_capability import (
+    FrozenReplayCapability,
+    build_replay_sandboxed_command,
+    FrozenReplayFile,
+    ReplayReadinessProbe,
+    ReplayServiceSpec,
+    replay_process_memory_bytes,
+    replay_process_resource_limiter,
+    verify_frozen_replay_capability,
 )
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
@@ -43,6 +60,14 @@ _REPLAY_PROVENANCE_METRIC_KEYS = (
     "baseline_skill_fingerprint",
     "adapter_determinism",
     "isolated_workspace_path",
+    "replay_capability_id",
+    "capability_package_fingerprint",
+    "frozen_capability_fingerprint",
+    "service_runtime_fingerprint",
+    "service_logical_ids",
+    "service_endpoint",
+    "service_startup_status",
+    "service_cleanup_status",
 )
 
 
@@ -70,6 +95,7 @@ class CandidateReplayRequest:
     adaptation_fingerprint: str | None = None
     workspace_seed_fingerprint: str | None = None
     task_input_fingerprint: str | None = None
+    verified_candidate_package_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +201,41 @@ def _candidate_replay_provenance_is_comparable(
                 return False
             if variant.metrics.get("adapter_determinism") != "deterministic":
                 return False
+        replay_capability = (
+            request.replay_adaptation.replay_capability
+            if request.replay_adaptation is not None
+            else None
+        )
+        if replay_capability is not None:
+            capability_expected = {
+                "replay_capability_id": replay_capability.capability_id,
+                "capability_package_fingerprint": (
+                    replay_capability.capability_package_fingerprint
+                ),
+                "frozen_capability_fingerprint": replay_capability.fingerprint,
+                "service_runtime_fingerprint": replay_capability.fingerprint,
+                "service_logical_ids": json.dumps(
+                    sorted(service.service_id for service in replay_capability.services),
+                    separators=(",", ":"),
+                ),
+                "service_startup_status": "ready",
+                "service_cleanup_status": "stopped",
+            }
+            for variant in (baseline, candidate):
+                if any(
+                    variant.metrics.get(key) != value
+                    for key, value in capability_expected.items()
+                ):
+                    return False
+            if replay_capability.services:
+                baseline_endpoints = _service_endpoint_values(baseline)
+                candidate_endpoints = _service_endpoint_values(candidate)
+                if (
+                    not baseline_endpoints
+                    or not candidate_endpoints
+                    or baseline_endpoints & candidate_endpoints
+                ):
+                    return False
         baseline_workspaces = _isolated_workspace_paths(baseline)
         candidate_workspaces = _isolated_workspace_paths(candidate)
         if (
@@ -203,6 +264,30 @@ def _isolated_workspace_paths(variant: ReplayVariantResult) -> tuple[str, ...]:
     if any(not value.strip() or not Path(value).is_absolute() for value in values):
         return ()
     return values
+
+
+def _service_endpoint_values(variant: ReplayVariantResult) -> set[str]:
+    raw_values = variant.metrics.get("service_endpoint_values")
+    if isinstance(raw_values, list):
+        values = raw_values
+    else:
+        direct = variant.metrics.get("service_endpoint")
+        values = [direct] if isinstance(direct, str) else []
+    endpoints: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, Mapping):
+            endpoints.update(
+                endpoint
+                for endpoint in payload.values()
+                if isinstance(endpoint, str) and endpoint.startswith("http://127.0.0.1:")
+            )
+    return endpoints
 
 
 def candidate_replay_pair_coverage(
@@ -423,6 +508,13 @@ class ReplayExecutionRequest:
     baseline_skill_fingerprint: str | None = None
     adapter_determinism: str | None = None
     isolated_workspace_path: str | None = None
+    replay_capability_id: str | None = None
+    capability_package_fingerprint: str | None = None
+    frozen_capability_fingerprint: str | None = None
+    service_runtime_fingerprint: str | None = None
+    service_logical_ids: str | None = None
+    service_endpoint: str | None = None
+    service_startup_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -440,6 +532,95 @@ class ReplayExecutionResult:
 
 
 ReplayExecutor = Callable[[ReplayExecutionRequest], Any]
+
+
+@dataclass
+class _ReplayServiceProcess:
+    process: subprocess.Popen[Any]
+    stdout_handle: Any
+    stderr_handle: Any
+    service_id: str
+    stdout_path: Path
+    stderr_path: Path
+
+
+@dataclass
+class _ReplayServiceSession:
+    endpoints: Mapping[str, str]
+    environment: Mapping[str, str]
+    processes: list[_ReplayServiceProcess]
+    private_root: Path
+    diagnostics_root: Path
+    monitor_task: asyncio.Task[None] | None = None
+    disk_limit_error: str | None = None
+
+    async def stop(self) -> None:
+        errors: list[str] = []
+        for item in reversed(self.processes):
+            process = item.process
+            if process.poll() is None:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.terminate()
+                except ProcessLookupError:
+                    pass
+                except Exception as exc:
+                    errors.append(f"terminate:{type(exc).__name__}:{exc}")
+        for item in reversed(self.processes):
+            process = item.process
+            if process.poll() is None:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(process.wait),
+                        timeout=3.0,
+                    )
+                except asyncio.TimeoutError:
+                    try:
+                        if os.name == "posix":
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.to_thread(process.wait),
+                            timeout=3.0,
+                        )
+                    except asyncio.TimeoutError:
+                        errors.append(f"wait_timeout:pid={process.pid}")
+                    except Exception as exc:
+                        errors.append(f"wait:{type(exc).__name__}:{exc}")
+                except Exception as exc:
+                    errors.append(f"stop:{type(exc).__name__}:{exc}")
+            try:
+                item.stdout_handle.close()
+                item.stderr_handle.close()
+            except Exception as exc:
+                errors.append(f"close:{type(exc).__name__}:{exc}")
+        if self.monitor_task is not None:
+            self.monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.monitor_task
+        for item in self.processes:
+            service_dir = self.diagnostics_root / _safe_path(item.service_id)
+            service_dir.mkdir(parents=True, exist_ok=True)
+            for source, name in (
+                (item.stdout_path, "stdout.txt"),
+                (item.stderr_path, "stderr.txt"),
+            ):
+                try:
+                    if source.is_file():
+                        shutil.copy2(source, service_dir / name)
+                except Exception as exc:
+                    errors.append(f"diagnostics:{type(exc).__name__}:{exc}")
+        shutil.rmtree(self.private_root, ignore_errors=True)
+        if self.disk_limit_error is not None:
+            errors.append(self.disk_limit_error)
+        if errors:
+            raise RuntimeError("replay service cleanup failed: " + "; ".join(errors))
 
 
 class AWorldCliCandidateReplayBackend:
@@ -815,6 +996,33 @@ class AWorldCliCandidateReplayBackend:
                 else "non_deterministic"
             )
             isolated_workspace_path = str(isolated_workspace)
+        service_session: _ReplayServiceSession | None = None
+        service_failure: Mapping[str, Any] | None = None
+        service_cleanup_status = "not_required"
+        service_cleanup_failure: Mapping[str, Any] | None = None
+        replay_capability = (
+            request.replay_adaptation.replay_capability
+            if request.replay_adaptation is not None
+            else None
+        )
+        if replay_capability is not None:
+            try:
+                service_session = await _start_replay_services(
+                    replay_capability,
+                    artifact_dir=artifact_dir,
+                )
+                endpoint_urls = {
+                    source: service_session.endpoints[service_id]
+                    for source, service_id in replay_capability.endpoint_replacements.items()
+                }
+                task_input = _replace_replay_endpoints(task_input, endpoint_urls)
+                environment.update(service_session.environment)
+            except Exception as exc:
+                service_failure = {
+                    "type": type(exc).__name__,
+                    "reason": str(exc),
+                    "outcome": "infrastructure_failure",
+                }
         execution_request = ReplayExecutionRequest(
             variant_id=variant_id,
             task_id=request.task_id,
@@ -837,13 +1045,63 @@ class AWorldCliCandidateReplayBackend:
             baseline_skill_fingerprint=request.baseline_skill_fingerprint,
             adapter_determinism=adapter_determinism,
             isolated_workspace_path=isolated_workspace_path,
+            replay_capability_id=(
+                replay_capability.capability_id
+                if replay_capability is not None
+                else None
+            ),
+            capability_package_fingerprint=(
+                replay_capability.capability_package_fingerprint
+                if replay_capability is not None
+                else None
+            ),
+            frozen_capability_fingerprint=(
+                replay_capability.fingerprint
+                if replay_capability is not None
+                else None
+            ),
+            service_runtime_fingerprint=(
+                replay_capability.fingerprint
+                if replay_capability is not None
+                else None
+            ),
+            service_logical_ids=(
+                json.dumps(
+                    sorted(service_session.endpoints),
+                    separators=(",", ":"),
+                )
+                if service_session is not None
+                else None
+            ),
+            service_endpoint=(
+                json.dumps(
+                    dict(sorted(service_session.endpoints.items())),
+                    separators=(",", ":"),
+                )
+                if service_session is not None
+                else None
+            ),
+            service_startup_status=(
+                "ready"
+                if service_session is not None
+                else "failed"
+                if replay_capability is not None
+                else None
+            ),
         )
         _write_json(artifact_dir / "execution_request.json", execution_request)
         started_at = time.monotonic()
         try:
-            execution_result = self.executor(execution_request)
-            if inspect.isawaitable(execution_result):
-                execution_result = await execution_result
+            if service_failure is not None:
+                execution_result = ReplayExecutionResult(
+                    status="failed",
+                    trajectory=[],
+                    failure=service_failure,
+                )
+            else:
+                execution_result = self.executor(execution_request)
+                if inspect.isawaitable(execution_result):
+                    execution_result = await execution_result
         except Exception as exc:
             execution_result = ReplayExecutionResult(
                 status="failed",
@@ -853,6 +1111,28 @@ class AWorldCliCandidateReplayBackend:
                     "reason": str(exc),
                 },
             )
+        finally:
+            if service_session is not None:
+                try:
+                    await service_session.stop()
+                    service_cleanup_status = "stopped"
+                except Exception as exc:
+                    service_cleanup_status = "failed"
+                    service_cleanup_failure = {
+                        "type": type(exc).__name__,
+                        "reason": str(exc),
+                        "outcome": "infrastructure_failure",
+                    }
+
+        if service_cleanup_failure is not None:
+            execution_result = ReplayExecutionResult(
+                status="failed",
+                trajectory=execution_result.trajectory,
+                metrics=execution_result.metrics,
+                stdout=execution_result.stdout,
+                stderr=execution_result.stderr,
+                failure=service_cleanup_failure,
+            )
         if not isinstance(execution_result, ReplayExecutionResult):
             raise ValueError("replay executor must return ReplayExecutionResult")
 
@@ -861,6 +1141,8 @@ class AWorldCliCandidateReplayBackend:
             **dict(execution_result.metrics),
             **_replay_execution_provenance(execution_request),
         }
+        if replay_capability is not None:
+            metrics["service_cleanup_status"] = service_cleanup_status
         status = execution_result.status
         failure = execution_result.failure
         if status == "succeeded" and not execution_result.trajectory:
@@ -1139,6 +1421,7 @@ def build_replay_request(
     candidate_repetitions: int = 1,
     baseline_replay_dir: str | Path | None = None,
     replay_adaptation: ReplayAdaptationBundle | None = None,
+    verified_candidate_package_fingerprint: str | None = None,
 ) -> CandidateReplayRequest:
     if not dataset.cases:
         raise ValueError("candidate replay requires at least one eval case")
@@ -1184,6 +1467,9 @@ def build_replay_request(
         adaptation_fingerprint=adaptation_fingerprint,
         workspace_seed_fingerprint=workspace_seed_fingerprint,
         task_input_fingerprint=task_input_fingerprint,
+        verified_candidate_package_fingerprint=(
+            verified_candidate_package_fingerprint
+        ),
     )
 
 
@@ -1245,6 +1531,22 @@ def _replay_execution_provenance(
             ("baseline_skill_fingerprint", request.baseline_skill_fingerprint),
             ("adapter_determinism", request.adapter_determinism),
             ("isolated_workspace_path", request.isolated_workspace_path),
+            ("replay_capability_id", request.replay_capability_id),
+            (
+                "capability_package_fingerprint",
+                request.capability_package_fingerprint,
+            ),
+            (
+                "frozen_capability_fingerprint",
+                request.frozen_capability_fingerprint,
+            ),
+            (
+                "service_runtime_fingerprint",
+                request.service_runtime_fingerprint,
+            ),
+            ("service_logical_ids", request.service_logical_ids),
+            ("service_endpoint", request.service_endpoint),
+            ("service_startup_status", request.service_startup_status),
         )
         if value is not None
     }
@@ -1294,6 +1596,240 @@ def _expand_replay_placeholders(
             )
             for item in value
         )
+    return value
+
+
+async def _start_replay_services(
+    capability: FrozenReplayCapability,
+    *,
+    artifact_dir: Path,
+) -> _ReplayServiceSession:
+    if not capability.ready or not capability.deterministic:
+        raise ValueError("skill-owned replay capability is not ready")
+    verify_frozen_replay_capability(capability)
+    source_frozen_root = Path(capability.frozen_root).expanduser().resolve()
+    if not (source_frozen_root / "runtime").is_dir() or not (
+        source_frozen_root / "fixtures"
+    ).is_dir():
+        raise ValueError("frozen replay capability directories are missing")
+    private_root = Path(tempfile.mkdtemp(prefix="aworld-replay-service-"))
+    frozen_root = private_root / "capability"
+    shutil.copytree(source_frozen_root, frozen_root, symlinks=False)
+    fixture_root = (frozen_root / "fixtures").resolve()
+    scratch_root = private_root / "scratch"
+    service_logs = scratch_root / "logs"
+    service_logs.mkdir(parents=True, exist_ok=True)
+    diagnostics_root = artifact_dir / "replay_services"
+    diagnostics_root.mkdir(parents=True, exist_ok=True)
+    session = _ReplayServiceSession(
+        endpoints={},
+        environment={},
+        processes=[],
+        private_root=private_root,
+        diagnostics_root=diagnostics_root,
+    )
+    session.monitor_task = asyncio.create_task(
+        _monitor_replay_service_disk(session, max_bytes=96 * 1024 * 1024)
+    )
+    endpoints: dict[str, str] = {}
+    environment: dict[str, str] = {}
+    fixture_service = Path(__file__).with_name("fixture_service.py").resolve()
+    try:
+        for service in capability.services:
+            port = _reserve_loopback_port()
+            fixture_path = (fixture_root / service.response_fixture).resolve(
+                strict=True
+            )
+            if not fixture_path.is_relative_to(fixture_root) or not fixture_path.is_file():
+                raise ValueError(
+                    f"replay service fixture escapes frozen fixtures: {service.service_id}"
+                )
+            command = [
+                sys.executable,
+                "-I",
+                str(fixture_service),
+                "--port",
+                str(port),
+                "--transport",
+                service.transport,
+                "--fixture",
+                str(fixture_path),
+            ]
+            command = build_replay_sandboxed_command(
+                command,
+                read_roots=(fixture_service, fixture_root),
+                writable_roots=(scratch_root,),
+                allow_loopback=True,
+            )
+            service_environment = {
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            service_dir = service_logs / _safe_path(service.service_id)
+            service_dir.mkdir(parents=True, exist_ok=True)
+            stdout_path = service_dir / "stdout.txt"
+            stderr_path = service_dir / "stderr.txt"
+            stdout_handle = stdout_path.open("wb")
+            stderr_handle = stderr_path.open("wb")
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=private_root,
+                    env=service_environment,
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                    start_new_session=True,
+                    preexec_fn=replay_process_resource_limiter(
+                        max_file_bytes=8 * 1024 * 1024,
+                        max_memory_bytes=512 * 1024 * 1024,
+                        cpu_seconds=600,
+                    ),
+                )
+            except Exception:
+                stdout_handle.close()
+                stderr_handle.close()
+                raise
+            session.processes.append(
+                _ReplayServiceProcess(
+                    process=process,
+                    stdout_handle=stdout_handle,
+                    stderr_handle=stderr_handle,
+                    service_id=service.service_id,
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                )
+            )
+            endpoint = f"http://127.0.0.1:{port}"
+            await _wait_for_replay_service(
+                process,
+                host="127.0.0.1",
+                port=port,
+                kind=service.readiness.kind,
+                path=service.readiness.path,
+                timeout_seconds=service.readiness.timeout_seconds,
+            )
+            endpoints[service.service_id] = endpoint
+            environment[
+                "AWORLD_REPLAY_ENDPOINT_"
+                + re.sub(r"[^A-Za-z0-9]+", "_", service.service_id).strip("_").upper()
+            ] = endpoint
+    except Exception:
+        await session.stop()
+        raise
+    session.endpoints = endpoints
+    session.environment = environment
+    return session
+
+
+async def _monitor_replay_service_disk(
+    session: _ReplayServiceSession,
+    *,
+    max_bytes: int,
+) -> None:
+    while True:
+        await asyncio.sleep(0.02)
+        if _directory_size_bytes(session.private_root) <= max_bytes:
+            memory_exceeded = any(
+                replay_process_memory_bytes(item.process.pid) > 512 * 1024 * 1024
+                for item in session.processes
+                if item.process.poll() is None
+            )
+            if not memory_exceeded:
+                continue
+            session.disk_limit_error = "replay service exceeded memory limit"
+        else:
+            session.disk_limit_error = "replay service exceeded total disk limit"
+        for item in session.processes:
+            if item.process.poll() is not None:
+                continue
+            with contextlib.suppress(ProcessLookupError):
+                if os.name == "posix":
+                    os.killpg(item.process.pid, signal.SIGKILL)
+                else:
+                    item.process.kill()
+        return
+
+
+def _directory_size_bytes(root: Path) -> int:
+    total = 0
+    for path in root.rglob("*"):
+        try:
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
+def _reserve_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+async def _wait_for_replay_service(
+    process: subprocess.Popen[Any],
+    *,
+    host: str,
+    port: int,
+    kind: str,
+    path: str,
+    timeout_seconds: float,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: OSError | None = None
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"replay service exited before readiness (exit={process.returncode})"
+            )
+        try:
+            await asyncio.to_thread(
+                _probe_replay_service,
+                host,
+                port,
+                kind,
+                path,
+            )
+            return
+        except OSError as exc:
+            last_error = exc
+            await asyncio.sleep(0.02)
+    raise TimeoutError(
+        f"replay service readiness timed out after {timeout_seconds}s: {last_error}"
+    )
+
+
+def _probe_replay_service(host: str, port: int, kind: str, path: str) -> None:
+    with socket.create_connection((host, port), timeout=0.25) as connection:
+        if kind == "http":
+            connection.sendall(
+                f"GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n".encode("ascii")
+            )
+            response = connection.recv(64)
+            if not response.startswith(b"HTTP/"):
+                raise OSError("HTTP readiness probe returned an invalid response")
+
+
+def _replace_replay_endpoints(value: Any, replacements: Mapping[str, str]) -> Any:
+    if isinstance(value, str):
+        result = value
+        for source, destination in replacements.items():
+            result = result.replace(source, destination)
+        return result
+    if isinstance(value, Mapping):
+        return {
+            str(key): _replace_replay_endpoints(item, replacements)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_replay_endpoints(item, replacements) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_replace_replay_endpoints(item, replacements) for item in value)
     return value
 
 
@@ -2388,6 +2924,213 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
             if payload.get("task_input_fingerprint") is not None
             else None
         ),
+        verified_candidate_package_fingerprint=(
+            str(payload.get("verified_candidate_package_fingerprint"))
+            if payload.get("verified_candidate_package_fingerprint") is not None
+            else None
+        ),
+        replay_adaptation=_replay_adaptation_from_mapping(
+            payload.get("replay_adaptation")
+        ),
+    )
+
+
+def _replay_adaptation_from_mapping(value: Any) -> ReplayAdaptationBundle | None:
+    if not isinstance(value, Mapping):
+        return None
+    raw_cases = value.get("cases")
+    if not isinstance(raw_cases, list):
+        raise ValueError("stored replay adaptation is missing cases")
+    cases: list[ReplayCaseAdaptation] = []
+    for raw_case in raw_cases:
+        if not isinstance(raw_case, Mapping):
+            raise ValueError("stored replay adaptation case must be an object")
+        dependencies = tuple(
+            ReplayDependency(
+                kind=str(item.get("kind") or ""),
+                identifier=str(item.get("identifier") or ""),
+                status=str(item.get("status") or ""),
+                deterministic=item.get("deterministic") is True,
+                adapter_id=(
+                    str(item.get("adapter_id"))
+                    if item.get("adapter_id") is not None
+                    else None
+                ),
+                detail=(
+                    str(item.get("detail"))
+                    if item.get("detail") is not None
+                    else None
+                ),
+            )
+            for item in raw_case.get("dependencies", ())
+            if isinstance(item, Mapping)
+        )
+        bindings = tuple(
+            ReplayAdapterBinding(
+                adapter_id=str(item.get("adapter_id") or ""),
+                dependency_id=str(item.get("dependency_id") or ""),
+                deterministic=item.get("deterministic") is True,
+                environment=(
+                    {
+                        str(key): str(entry)
+                        for key, entry in item.get("environment", {}).items()
+                    }
+                    if isinstance(item.get("environment"), Mapping)
+                    else {}
+                ),
+                fixture_paths=tuple(
+                    str(path)
+                    for path in item.get("fixture_paths", ())
+                    if isinstance(path, str)
+                ),
+            )
+            for item in raw_case.get("bindings", ())
+            if isinstance(item, Mapping)
+        )
+        cases.append(
+            ReplayCaseAdaptation(
+                case_id=str(raw_case.get("case_id") or ""),
+                adapted_task_input=raw_case.get("adapted_task_input"),
+                task_input_fingerprint=str(
+                    raw_case.get("task_input_fingerprint") or ""
+                ),
+                dependencies=dependencies,
+                bindings=bindings,
+                tool_names=tuple(
+                    str(item)
+                    for item in raw_case.get("tool_names", ())
+                    if isinstance(item, str)
+                ),
+                readiness=str(raw_case.get("readiness") or "unresolved"),
+                diagnostics=tuple(
+                    str(item)
+                    for item in raw_case.get("diagnostics", ())
+                    if isinstance(item, str)
+                ),
+            )
+        )
+    return ReplayAdaptationBundle(
+        schema_version=str(value.get("schema_version") or ""),
+        source_workspace_root=str(value.get("source_workspace_root") or ""),
+        workspace_seed=str(value.get("workspace_seed") or ""),
+        workspace_seed_fingerprint=str(
+            value.get("workspace_seed_fingerprint") or ""
+        ),
+        manifest_path=str(value.get("manifest_path") or ""),
+        environment_snapshot_path=str(
+            value.get("environment_snapshot_path") or ""
+        ),
+        environment_fingerprint=str(value.get("environment_fingerprint") or ""),
+        cases=tuple(cases),
+        adaptation_fingerprint=str(value.get("adaptation_fingerprint") or ""),
+        ready=value.get("ready") is True,
+        replay_capability=_frozen_replay_capability_from_mapping(
+            value.get("replay_capability")
+        ),
+    )
+
+
+def _frozen_replay_capability_from_mapping(
+    value: Any,
+) -> FrozenReplayCapability | None:
+    if not isinstance(value, Mapping):
+        return None
+    services: list[ReplayServiceSpec] = []
+    for raw_service in value.get("services", ()):
+        if not isinstance(raw_service, Mapping):
+            continue
+        raw_readiness = raw_service.get("readiness")
+        if not isinstance(raw_readiness, Mapping):
+            raise ValueError("stored replay service is missing readiness")
+        services.append(
+            ReplayServiceSpec(
+                service_id=str(raw_service.get("service_id") or ""),
+                requirement_id=str(raw_service.get("requirement_id") or ""),
+                transport=str(raw_service.get("transport") or ""),
+                response_fixture=str(
+                    raw_service.get("response_fixture") or ""
+                ),
+                readiness=ReplayReadinessProbe(
+                    kind=str(raw_readiness.get("kind") or ""),
+                    timeout_seconds=float(
+                        raw_readiness.get("timeout_seconds") or 0.0
+                    ),
+                    path=str(raw_readiness.get("path") or "/"),
+                ),
+            )
+        )
+
+    def files(key: str) -> tuple[FrozenReplayFile, ...]:
+        return tuple(
+            FrozenReplayFile(
+                path=str(item.get("path") or ""),
+                sha256=str(item.get("sha256") or ""),
+                size=int(item.get("size") or 0),
+            )
+            for item in value.get(key, ())
+            if isinstance(item, Mapping)
+        )
+
+    raw_evidence = value.get("evidence_refs")
+    evidence_refs = (
+        {
+            str(key): tuple(
+                str(item) for item in entries if isinstance(item, str)
+            )
+            for key, entries in raw_evidence.items()
+            if isinstance(entries, (list, tuple))
+        }
+        if isinstance(raw_evidence, Mapping)
+        else {}
+    )
+    raw_fixture_evidence = value.get("fixture_evidence_refs")
+    fixture_evidence_refs = (
+        {
+            str(key): tuple(
+                str(item) for item in entries if isinstance(item, str)
+            )
+            for key, entries in raw_fixture_evidence.items()
+            if isinstance(entries, (list, tuple))
+        }
+        if isinstance(raw_fixture_evidence, Mapping)
+        else {}
+    )
+    raw_replacements = value.get("endpoint_replacements")
+    replacements = (
+        {
+            str(key): str(item)
+            for key, item in raw_replacements.items()
+            if isinstance(key, str) and isinstance(item, str)
+        }
+        if isinstance(raw_replacements, Mapping)
+        else {}
+    )
+    return FrozenReplayCapability(
+        capability_id=str(value.get("capability_id") or ""),
+        capability_package_fingerprint=str(
+            value.get("capability_package_fingerprint") or ""
+        ),
+        request_fingerprint=str(value.get("request_fingerprint") or ""),
+        frozen_root=str(value.get("frozen_root") or ""),
+        handled_requirements=tuple(
+            str(item)
+            for item in value.get("handled_requirements", ())
+            if isinstance(item, str)
+        ),
+        unhandled_requirements=tuple(
+            str(item)
+            for item in value.get("unhandled_requirements", ())
+            if isinstance(item, str)
+        ),
+        evidence_refs=evidence_refs,
+        fixture_evidence_refs=fixture_evidence_refs,
+        fixtures=files("fixtures"),
+        runtime_files=files("runtime_files"),
+        endpoint_replacements=replacements,
+        services=tuple(services),
+        deterministic=value.get("deterministic") is True,
+        fingerprint=str(value.get("fingerprint") or ""),
+        ready=value.get("ready") is True,
     )
 
 
