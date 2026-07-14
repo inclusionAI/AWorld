@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import inspect
 import hashlib
+import inspect
 import json
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Callable, Any
 from pathlib import Path
 from typing import Mapping, Iterable
@@ -56,6 +56,7 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
+from aworld.self_evolve.candidate_package import candidate_package_fingerprint
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
@@ -81,6 +82,12 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
     ReplayAdaptationCompiler,
 )
+from aworld.self_evolve.replay_capability import (
+    FrozenReplayCapabilityAdapter,
+    ReplayCapabilityCompileRequest,
+    compile_and_freeze_capability,
+    discover_replay_capability,
+)
 from aworld.self_evolve.release_checks import (
     build_content_quality_diagnostics,
     build_release_checklist,
@@ -90,6 +97,7 @@ from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget, SkillTextTarget
 from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import (
+    CandidateFileDelta,
     CandidateVariant,
     DatasetRecipe,
     EvaluationSummary,
@@ -216,7 +224,7 @@ class SelfEvolveRunner:
             replay_adaptation_compiler or ReplayAdaptationCompiler()
         )
         self._replay_adaptation_cache: dict[
-            tuple[str, str],
+            tuple[str, str, str],
             tuple[ReplayAdaptationBundle | None, GateResult],
         ] = {}
 
@@ -554,6 +562,7 @@ class SelfEvolveRunner:
                     self._prepare_replay_adaptation(
                         run_id=run_id,
                         dataset=dataset,
+                        emit_progress=False,
                     )
                 )
                 if replay_adaptation_gate.passed and replay_adaptation is not None:
@@ -660,6 +669,11 @@ class SelfEvolveRunner:
                     run_id,
                     target,
                     selected_candidate,
+                    expected_package_fingerprint=(
+                        replay_result.request.verified_candidate_package_fingerprint
+                        if replay_result is not None
+                        else None
+                    ),
                     addressed_lesson_ids=_lineage_addressed_lesson_ids(
                         optimizer_lineage_paths_by_candidate.get(
                             selected_candidate.candidate_id
@@ -738,6 +752,9 @@ class SelfEvolveRunner:
         if replay_result is not None:
             report["replay"] = _replay_report(replay_result)
             report["replay_path"] = _replay_artifact_path(replay_result)
+            replay_capability_report = _replay_capability_report(replay_result)
+            if replay_capability_report is not None:
+                report["replay_capability"] = replay_capability_report
         evaluator_report_paths = _evaluator_report_paths(
             baseline_summary,
             candidate_summary,
@@ -1274,17 +1291,40 @@ class SelfEvolveRunner:
         *,
         run_id: str,
         dataset: SelfEvolveDataset,
+        capability_skill_root: str | Path | None = None,
+        candidate_package_fingerprint: str | None = None,
+        emit_progress: bool = True,
     ) -> tuple[ReplayAdaptationBundle | None, GateResult]:
         dataset_fingerprint = replay_dataset_fingerprint(dataset)
-        cache_key = (run_id, dataset_fingerprint)
+        requested_package_fingerprint = (
+            candidate_package_fingerprint or "framework-only"
+        )
+        capability = None
+        discovery_error: Exception | None = None
+        try:
+            capability = (
+                discover_replay_capability(capability_skill_root)
+                if capability_skill_root is not None
+                else None
+            )
+        except Exception as exc:
+            discovery_error = exc
+        discovered_package_fingerprint = (
+            capability.package_fingerprint if capability is not None else "none"
+        )
+        capability_cache_key = (
+            f"{requested_package_fingerprint}:{discovered_package_fingerprint}"
+        )
+        cache_key = (run_id, dataset_fingerprint, capability_cache_key)
         cached = self._replay_adaptation_cache.get(cache_key)
         if cached is not None:
             return cached
-        _emit_progress(
-            self.progress_callback,
-            "replay_adaptation",
-            "Compiling replay paths, workspace seed, and dependency bindings",
-        )
+        if emit_progress:
+            _emit_progress(
+                self.progress_callback,
+                "replay_adaptation",
+                "Compiling replay paths, workspace seed, and dependency bindings",
+            )
         replayable_cases = tuple(
             case for case in dataset.cases if _is_replayable_user_task_case(case)
         )
@@ -1296,12 +1336,72 @@ class SelfEvolveRunner:
             self.store.run_path(run_id)
             / "replay_adaptation"
             / dataset_fingerprint.removeprefix("sha256:")[:16]
+            / hashlib.sha256(capability_cache_key.encode("utf-8")).hexdigest()[:16]
         )
         try:
+            if discovery_error is not None:
+                raise discovery_error
+            preflight = self.replay_adaptation_compiler.preflight(
+                dataset=replayable_dataset,
+                workspace_root=self.store.workspace_root,
+            )
+            frozen_capability = None
+            additional_adapters = ()
+            if capability is not None and preflight.requirements:
+                context_root = artifact_root / "trajectory_context"
+                context_root.mkdir(parents=True, exist_ok=True)
+                context_snapshots: dict[str, str] = {}
+                context_fingerprints: list[str] = []
+                for case in replayable_dataset.cases:
+                    if case.context_snapshot is None:
+                        continue
+                    snapshot_path = context_root / f"{_safe_artifact_name(case.case_id)}.json"
+                    snapshot_path.write_text(
+                        json.dumps(
+                            asdict(case.context_snapshot),
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    context_snapshots[case.case_id] = str(snapshot_path)
+                    context_fingerprints.append(case.context_snapshot.fingerprint)
+                context_fingerprint = _stable_json_fingerprint(
+                    {
+                        "dataset_fingerprint": dataset_fingerprint,
+                        "context_fingerprints": sorted(context_fingerprints),
+                        "preflight_fingerprint": preflight.fingerprint,
+                    }
+                )
+                compile_request = ReplayCapabilityCompileRequest.create(
+                    requirements=preflight.requirements,
+                    context_snapshots=context_snapshots,
+                    task_inputs={
+                        case.case_id: case.input for case in replayable_dataset.cases
+                    },
+                    capability_root=capability.skill_root,
+                    capability_package_fingerprint=capability.package_fingerprint,
+                    context_fingerprint=context_fingerprint,
+                )
+                frozen_capability = compile_and_freeze_capability(
+                    capability,
+                    compile_request,
+                    artifact_root / "skill_replay_capability",
+                )
+                additional_adapters = (
+                    FrozenReplayCapabilityAdapter(
+                        capability=frozen_capability,
+                        requirements=preflight.requirements,
+                    ),
+                )
             bundle = self.replay_adaptation_compiler.compile(
                 dataset=replayable_dataset,
                 workspace_root=self.store.workspace_root,
                 artifact_root=artifact_root,
+                additional_adapters=additional_adapters,
+                replay_capability=frozen_capability,
             )
         except Exception as exc:
             result = (
@@ -1346,6 +1446,7 @@ class SelfEvolveRunner:
         bundle, gate = self._prepare_replay_adaptation(
             run_id=run_id,
             dataset=dataset,
+            emit_progress=False,
         )
         if bundle is None or not gate.passed:
             return {
@@ -1421,9 +1522,20 @@ class SelfEvolveRunner:
             if candidate_repetitions is not None
             else self.candidate_replay_repetitions
         )
+        overlay = create_candidate_skill_overlay(
+            workspace_root=self.store.workspace_root,
+            run_id=run_id,
+            candidate=selected_candidate,
+            target_skill_path=target.identity.path,
+            baseline_skill_roots=getattr(target, "baseline_skill_roots", ()),
+        )
         replay_adaptation, adaptation_gate = self._prepare_replay_adaptation(
             run_id=run_id,
             dataset=dataset,
+            capability_skill_root=overlay.candidate_skill_path.parent,
+            candidate_package_fingerprint=candidate_package_fingerprint(
+                selected_candidate
+            ),
         )
         if replay_adaptation is None or not adaptation_gate.passed:
             return None, None, adaptation_gate
@@ -1435,14 +1547,6 @@ class SelfEvolveRunner:
                 f"(baseline x{effective_baseline_repetitions}, "
                 f"candidate x{effective_candidate_repetitions})"
             ),
-        )
-
-        overlay = create_candidate_skill_overlay(
-            workspace_root=self.store.workspace_root,
-            run_id=run_id,
-            candidate=selected_candidate,
-            target_skill_path=target.identity.path,
-            baseline_skill_roots=getattr(target, "baseline_skill_roots", ()),
         )
         try:
             request = build_replay_request(
@@ -1460,6 +1564,9 @@ class SelfEvolveRunner:
                 candidate_repetitions=effective_candidate_repetitions,
                 baseline_replay_dir=baseline_replay_dir,
                 replay_adaptation=replay_adaptation,
+                verified_candidate_package_fingerprint=(
+                    overlay.candidate_skill_package_fingerprint
+                ),
             )
         except ValueError as exc:
             return (
@@ -1512,6 +1619,7 @@ class SelfEvolveRunner:
         run_id: str,
         target: SelfEvolveTarget,
         candidate: CandidateVariant,
+        expected_package_fingerprint: str | None = None,
         addressed_lesson_ids: tuple[str, ...] = (),
     ) -> dict[str, object]:
         if self.post_apply_evaluator is None:
@@ -1530,7 +1638,12 @@ class SelfEvolveRunner:
         self.store.update_apply_journal(
             journal_path,
             status="applying",
-            details={"candidate_id": candidate.candidate_id},
+            details={
+                "candidate_id": candidate.candidate_id,
+                "verified_candidate_package_fingerprint": (
+                    expected_package_fingerprint
+                ),
+            },
         )
         applied_candidate = candidate
         normalization_metrics: Mapping[str, Any] = {}
@@ -1574,12 +1687,65 @@ class SelfEvolveRunner:
                 candidate,
                 content=normalized_content,
             )
-        target.apply_candidate(applied_candidate.content)
-        summary = self.post_apply_evaluator(applied_candidate)
-        if inspect.isawaitable(summary):
-            summary = await summary
-        if not isinstance(summary, EvaluationSummary):
-            raise ValueError("post_apply_evaluator must return EvaluationSummary")
+        try:
+            if (
+                applied_candidate.target.target_type == "skill"
+                and hasattr(target, "apply_candidate_variant")
+            ):
+                target.apply_candidate_variant(
+                    applied_candidate,
+                    expected_package_fingerprint=expected_package_fingerprint,
+                    verified_content=candidate.content,
+                )
+            else:
+                target.apply_candidate(applied_candidate.content)
+        except Exception as exc:
+            self.store.update_apply_journal(
+                journal_path,
+                status="rolled_back",
+                details={
+                    "post_apply_passed": False,
+                    "apply_error": str(exc),
+                },
+            )
+            return {
+                "status": "rolled_back",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "apply_error": str(exc),
+                },
+                "dataset_split": "post_apply",
+                "backup_path": str(backup_path),
+                "journal_path": str(journal_path),
+            }
+        try:
+            summary = self.post_apply_evaluator(applied_candidate)
+            if inspect.isawaitable(summary):
+                summary = await summary
+            if not isinstance(summary, EvaluationSummary):
+                raise ValueError(
+                    "post_apply_evaluator must return EvaluationSummary"
+                )
+        except Exception as exc:
+            target.rollback()
+            self.store.update_apply_journal(
+                journal_path,
+                status="rolled_back",
+                details={
+                    "post_apply_passed": False,
+                    "post_apply_error": str(exc),
+                },
+            )
+            return {
+                "status": "rolled_back",
+                "metrics": {
+                    "post_apply_passed": False,
+                    "post_apply_error": str(exc),
+                },
+                "dataset_split": "post_apply",
+                "backup_path": str(backup_path),
+                "journal_path": str(journal_path),
+            }
         if summary.metrics.get("post_apply_passed") is True:
             activation_result: Any = None
             if self.runtime_skill_activator is not None:
@@ -1614,14 +1780,53 @@ class SelfEvolveRunner:
                     }
             refresh_result: Any = None
             if self.runtime_registry_refresher is not None:
-                refresh_result = self.runtime_registry_refresher(applied_candidate)
-                if inspect.isawaitable(refresh_result):
-                    refresh_result = await refresh_result
-            self.store.update_apply_journal(
-                journal_path,
-                status="accepted",
-                details={"post_apply_passed": True, "release_state": "verified"},
-            )
+                try:
+                    refresh_result = self.runtime_registry_refresher(applied_candidate)
+                    if inspect.isawaitable(refresh_result):
+                        refresh_result = await refresh_result
+                except Exception as exc:
+                    target.rollback()
+                    self.store.update_apply_journal(
+                        journal_path,
+                        status="rolled_back",
+                        details={
+                            "post_apply_passed": True,
+                            "registry_refresh_passed": False,
+                            "registry_refresh_error": str(exc),
+                        },
+                    )
+                    metrics = dict(summary.metrics)
+                    metrics.update(
+                        {
+                            "registry_refresh_passed": False,
+                            "registry_refresh_error": str(exc),
+                        }
+                    )
+                    return {
+                        "status": "rolled_back",
+                        "metrics": metrics,
+                        "dataset_split": summary.dataset_split,
+                        "backup_path": str(backup_path),
+                        "journal_path": str(journal_path),
+                    }
+            try:
+                self.store.update_apply_journal(
+                    journal_path,
+                    status="accepted",
+                    details={
+                        "post_apply_passed": True,
+                        "release_state": "verified",
+                    },
+                )
+            except Exception:
+                target.rollback()
+                raise
+            package_cleanup_error: str | None = None
+            if hasattr(target, "commit_candidate_variant"):
+                try:
+                    target.commit_candidate_variant()
+                except Exception as exc:
+                    package_cleanup_error = str(exc)
             result = {
                 "status": "accepted",
                 "metrics": {**dict(summary.metrics), **dict(normalization_metrics)},
@@ -1630,6 +1835,8 @@ class SelfEvolveRunner:
                 "journal_path": str(journal_path),
                 "release_state": "verified",
             }
+            if package_cleanup_error is not None:
+                result["package_cleanup_error"] = package_cleanup_error
             if activation_result is not None:
                 result["activation"] = (
                     dict(activation_result)
@@ -2183,6 +2390,25 @@ def _target_package_inventory(target: SelfEvolveTarget) -> tuple[str, ...]:
     )
 
 
+def _safe_artifact_name(value: str) -> str:
+    readable = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "-"
+        for character in value
+    ).strip("-")[:48] or "case"
+    suffix = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+    return f"{readable}-{suffix}"
+
+
+def _stable_json_fingerprint(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def _artifact_retention_report(
     store: FilesystemSelfEvolveStore,
     run_id: str,
@@ -2421,6 +2647,20 @@ def _load_candidate_variant(path: Path) -> CandidateVariant:
             if payload.get("target_fingerprint") is not None
             else None
         ),
+        files=tuple(
+            CandidateFileDelta(
+                path=str(item.get("path") or ""),
+                operation=str(item.get("operation") or "upsert"),
+                content=(
+                    str(item.get("content"))
+                    if item.get("content") is not None
+                    else None
+                ),
+                executable=item.get("executable") is True,
+            )
+            for item in payload.get("files", ())
+            if isinstance(item, Mapping)
+        ),
     )
 
 
@@ -2574,6 +2814,9 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
                 for case in adaptation.cases
             ],
         }
+        capability_report = _replay_capability_report(replay_result)
+        if capability_report is not None:
+            report["replay_capability"] = capability_report
     if replay_result.member_results:
         report["members"] = [
             {
@@ -2588,6 +2831,42 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             for member in replay_result.member_results
         ]
     return report
+
+
+def _replay_capability_report(
+    replay_result: CandidateReplayResult,
+) -> dict[str, object] | None:
+    adaptation = replay_result.request.replay_adaptation
+    capability = adaptation.replay_capability if adaptation is not None else None
+    if capability is None:
+        return None
+    frozen_root = Path(capability.frozen_root)
+    return {
+        "source": "candidate",
+        "capability_id": capability.capability_id,
+        "capability_package_fingerprint": (
+            capability.capability_package_fingerprint
+        ),
+        "request_fingerprint": capability.request_fingerprint,
+        "frozen_capability_fingerprint": capability.fingerprint,
+        "deterministic": capability.deterministic,
+        "ready": capability.ready,
+        "handled_requirements": list(capability.handled_requirements),
+        "unhandled_requirements": list(capability.unhandled_requirements),
+        "frozen_root": capability.frozen_root,
+        "compile_a_path": str(frozen_root.parent / "compile-a"),
+        "compile_b_path": str(frozen_root.parent / "compile-b"),
+        "frozen_manifest_path": str(frozen_root / "frozen_manifest.json"),
+        "fixtures": [
+            {"path": item.path, "sha256": item.sha256, "size": item.size}
+            for item in capability.fixtures
+        ],
+        "runtime_files": [
+            {"path": item.path, "sha256": item.sha256, "size": item.size}
+            for item in capability.runtime_files
+        ],
+        "service_ids": [item.service_id for item in capability.services],
+    }
 
 
 def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
@@ -3749,7 +4028,7 @@ def _replay_adaptation_details(
     readiness: str,
     artifact_root: Path,
 ) -> dict[str, object]:
-    return {
+    details: dict[str, object] = {
         "schema_version": bundle.schema_version,
         "readiness": readiness,
         "ready": bundle.ready,
@@ -3781,6 +4060,20 @@ def _replay_adaptation_details(
             for case in bundle.cases
         ],
     }
+    if bundle.replay_capability is not None:
+        capability = bundle.replay_capability
+        details["replay_capability"] = {
+            "source": "candidate",
+            "capability_id": capability.capability_id,
+            "capability_package_fingerprint": (
+                capability.capability_package_fingerprint
+            ),
+            "frozen_capability_fingerprint": capability.fingerprint,
+            "ready": capability.ready,
+            "handled_requirements": list(capability.handled_requirements),
+            "unhandled_requirements": list(capability.unhandled_requirements),
+        }
+    return details
 
 
 def _baseline_preflight_blocks_population(

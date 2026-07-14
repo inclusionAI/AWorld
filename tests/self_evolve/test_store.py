@@ -4,6 +4,7 @@ import json
 
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import (
+    CandidateFileDelta,
     CandidateVariant,
     DatasetRecipe,
     EvaluationSummary,
@@ -166,3 +167,63 @@ def test_store_recovers_interrupted_apply_from_backup_journal(tmp_path) -> None:
     saved_journal = _read_json(journal_path)
     assert saved_journal["status"] == "recovered_rolled_back"
     assert saved_journal["recovery"]["restored_from_backup"] is True
+
+
+def test_store_persists_and_recovers_multi_file_skill_candidate(tmp_path) -> None:
+    target_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    replay_path = target_path.parent / "replay" / "runtime.py"
+    replay_path.parent.mkdir(parents=True)
+    target_path.write_text("# Original\n", encoding="utf-8")
+    replay_path.write_text("old runtime\n", encoding="utf-8")
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(target_path),
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-package",
+        target=target,
+        content="# Candidate\n",
+        rationale="package candidate",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="new runtime\n",
+            ),
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="print('compile')\n",
+            ),
+        ),
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.create_run(SelfEvolveRun(run_id="run-package", target=target))
+
+    store.write_candidate("run-package", candidate)
+    package_root = store.run_path("run-package") / "candidates" / "cand-package"
+    assert (package_root / "SKILL.md").is_file()
+    assert (package_root / "replay/runtime.py").read_text(encoding="utf-8") == (
+        "new runtime\n"
+    )
+    assert (package_root / "replay/compiler.py").is_file()
+
+    _backup_path, journal_path = store.write_apply_backup(
+        "run-package",
+        candidate=candidate,
+        original_content="# Original\n",
+        target_path=str(target_path),
+    )
+    store.update_apply_journal(journal_path, status="applying")
+    target_path.write_text("# Candidate\n", encoding="utf-8")
+    replay_path.write_text("new runtime\n", encoding="utf-8")
+    (replay_path.parent / "compiler.py").write_text(
+        "print('compile')\n",
+        encoding="utf-8",
+    )
+
+    recovery = store.recover_interrupted_apply(journal_path)
+
+    assert recovery["status"] == "recovered_rolled_back"
+    assert target_path.read_text(encoding="utf-8") == "# Original\n"
+    assert replay_path.read_text(encoding="utf-8") == "old runtime\n"
+    assert not (replay_path.parent / "compiler.py").exists()

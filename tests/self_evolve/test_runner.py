@@ -4531,7 +4531,17 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
     )
 
     async def mutate(prompt: str) -> dict:
-        return {"content": candidate_content, "rationale": "Regressing candidate."}
+        return {
+            "content": candidate_content,
+            "rationale": "Regressing candidate.",
+            "files": [
+                {
+                    "path": "replay/compiler.py",
+                    "content": "print('candidate compiler')\n",
+                    "executable": True,
+                }
+            ],
+        }
 
     async def post_apply(candidate):
         return EvaluationSummary(
@@ -4581,6 +4591,7 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
 
     assert result.run.status.value == "rejected"
     assert skill_path.read_text(encoding="utf-8") == original_content
+    assert not (skill_path.parent / "replay/compiler.py").exists()
     report = json.loads((store.run_path("run-auto-rollback") / "report.json").read_text(encoding="utf-8"))
     assert report["post_apply"]["status"] == "rolled_back"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is False

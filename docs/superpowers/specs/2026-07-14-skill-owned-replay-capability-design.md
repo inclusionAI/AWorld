@@ -165,7 +165,7 @@ The initial manifest schema contains:
   "protocol": "aworld.replay.subprocess.v1",
   "entrypoint": "replay/compiler.py",
   "handles": ["local_endpoint", "http_resource", "stateful_tool"],
-  "runtime_files": ["replay/runtime.py"]
+  "runtime_files": []
 }
 ```
 
@@ -201,16 +201,19 @@ The compiler writes a result manifest containing:
 - handled and unhandled requirement ids;
 - source evidence references for every handled requirement;
 - fixture paths relative to its output root;
+- evidence references that bind every fixture byte-for-byte to a recorded context
+  value or task input;
 - endpoint replacements limited to identifiers present in requirements;
 - generic service specifications;
 - bounded diagnostics and a deterministic declaration.
 
-A service specification may declare an argv list, relative working directory,
-fixture references, a TCP or HTTP readiness probe, a startup timeout, and a logical
-endpoint placeholder. It may not add arbitrary agent prompts, change expected
-outputs, change verification commands, or inject unrestricted environment variables.
-Only framework-reserved replay variables and declared service endpoints cross into a
-rollout.
+A service specification declares a framework-owned generic fixture transport, a
+provenance-verified response fixture, a TCP or HTTP readiness probe, a startup
+timeout, and a logical endpoint placeholder. Candidate-owned runtime code is never
+executed during evaluation; the skill owns compilation into a generic recorded
+transport plan, while the framework owns the byte-serving process. It may not add
+arbitrary agent prompts, change expected outputs, change verification commands, or
+inject environment variables.
 
 The subprocess runs with a minimal environment, an isolated working directory,
 bounded time and output, and no shell interpolation. Execution and isolation are
@@ -232,14 +235,15 @@ compares:
 - evidence-reference mappings.
 
 Any difference rejects the capability as non-deterministic. The framework also
-rejects undeclared files, path escapes, missing evidence refs, attempts to handle
+rejects undeclared files, path escapes, missing evidence refs, fixture bytes that do
+not exactly match a value in the cited context/input evidence, attempts to handle
 unknown requirement ids, unrestricted task mutations, and unresolved required
 dependencies.
 
 On success, one canonical result is copied into an immutable frozen capability
 bundle. Its fingerprint covers the capability package, context snapshots,
-requirements, compiler output, fixtures, service runtime files, and generic workspace
-seed. Replay cache keys include this fingerprint and therefore cannot reuse an
+requirements, compiler output, provenance-bound fixtures, generic service plans, and
+the workspace seed. Replay cache keys include this fingerprint and therefore cannot reuse an
 adaptation compiled by a different candidate capability.
 
 ## Paired Rollout Lifecycle
@@ -250,19 +254,20 @@ bundle is never recompiled between variants or repetitions.
 Each repetition receives:
 
 - a clean copy of the same workspace seed;
-- a clean copy of the same frozen fixtures and runtime files;
+- a clean copy of the same frozen fixtures;
 - the same adapted task input and logical endpoint replacements;
 - an independently started service instance with a repetition-local port;
 - identical limits and readiness rules;
 - a guaranteed shutdown attempt after completion, timeout, or cancellation.
 
-Service processes and writable state are never shared across variants. A port number
-may differ, but the logical service id, frozen runtime fingerprint, fixture
+Framework-owned service processes and writable state are never shared across
+variants, cannot initiate outbound connections, and cannot read or write rollout
+workspaces/evidence. A port number may differ, but the logical service id, frozen bundle fingerprint, fixture
 fingerprint, and adapted task-input fingerprint must match. Startup failure is a
 replay infrastructure failure, not candidate feedback.
 
 Paired replay is comparable only if every baseline/candidate repetition records the
-same context, requirement, capability, frozen bundle, workspace seed, runtime,
+same context, requirement, capability, frozen bundle, workspace seed,
 fixture, and task-input fingerprints. Variant-specific capability compilation or
 bindings fail the comparability gate.
 

@@ -10,9 +10,12 @@ import stat
 import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+
+if TYPE_CHECKING:
+    from aworld.self_evolve.replay_capability import FrozenReplayCapability
 
 
 REPLAY_ADAPTATION_SCHEMA_VERSION = "aworld.self_evolve.replay_adaptation.v1"
@@ -176,6 +179,7 @@ class ReplayAdaptationBundle:
     cases: tuple[ReplayCaseAdaptation, ...]
     adaptation_fingerprint: str
     ready: bool
+    replay_capability: FrozenReplayCapability | None = None
 
     def case(self, case_id: str) -> ReplayCaseAdaptation:
         for item in self.cases:
@@ -268,6 +272,8 @@ class ReplayAdaptationCompiler:
         dataset: SelfEvolveDataset,
         workspace_root: str | Path,
         artifact_root: str | Path,
+        additional_adapters: Sequence[ReplayDependencyAdapter] = (),
+        replay_capability: FrozenReplayCapability | None = None,
     ) -> ReplayAdaptationBundle:
         workspace = Path(workspace_root).expanduser().resolve()
         if not workspace.is_dir():
@@ -287,6 +293,7 @@ class ReplayAdaptationCompiler:
                     workspace_root=workspace,
                     workspace_seed=seed,
                     artifact_root=artifact,
+                    adapters=(*self.adapters, *additional_adapters),
                 )
                 for case in dataset.cases
             )
@@ -311,6 +318,11 @@ class ReplayAdaptationCompiler:
             "workspace_seed_fingerprint": seed_fingerprint,
             "environment_fingerprint": environment_fingerprint,
             "cases": [asdict(case) for case in cases],
+            "replay_capability_fingerprint": (
+                replay_capability.fingerprint
+                if replay_capability is not None
+                else None
+            ),
         }
         bundle = ReplayAdaptationBundle(
             schema_version=REPLAY_ADAPTATION_SCHEMA_VERSION,
@@ -323,6 +335,7 @@ class ReplayAdaptationCompiler:
             cases=cases,
             adaptation_fingerprint=_json_fingerprint(adaptation_payload),
             ready=bool(cases) and all(case.readiness == "ready" for case in cases),
+            replay_capability=replay_capability,
         )
         _write_json_atomic(artifact / "bundle.json", bundle.to_dict())
         return bundle
@@ -334,6 +347,7 @@ class ReplayAdaptationCompiler:
         workspace_root: Path,
         workspace_seed: Path,
         artifact_root: Path,
+        adapters: Sequence[ReplayDependencyAdapter],
     ) -> ReplayCaseAdaptation:
         task_input = _normalize_value(
             case.input,
@@ -363,7 +377,11 @@ class ReplayAdaptationCompiler:
         bindings: list[ReplayAdapterBinding] = []
         adapted_dependencies: list[ReplayDependency] = []
         for dependency in dependencies:
-            binding = self._bind_dependency(dependency, context=context)
+            binding = self._bind_dependency(
+                dependency,
+                context=context,
+                adapters=adapters,
+            )
             if binding is None:
                 adapted_dependencies.append(dependency)
                 continue
@@ -463,8 +481,9 @@ class ReplayAdaptationCompiler:
         dependency: ReplayDependency,
         *,
         context: ReplayAdapterContext,
+        adapters: Sequence[ReplayDependencyAdapter],
     ) -> ReplayAdapterBinding | None:
-        for adapter in self.adapters:
+        for adapter in adapters:
             binding = adapter.bind(dependency, context=context)
             if binding is not None:
                 return binding

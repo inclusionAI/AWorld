@@ -35,7 +35,11 @@ from aworld.self_evolve.runner import (
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
-from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    SelfEvolveTargetRef,
+)
 
 
 def _dataset(task: str, *, task_id: str = "task-1"):
@@ -828,6 +832,28 @@ def _result_with_request_provenance(request, candidate_id: str) -> CandidateRepl
         "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
         "adapter_determinism": "deterministic",
     }
+    capability = (
+        request.replay_adaptation.replay_capability
+        if request.replay_adaptation is not None
+        else None
+    )
+    if capability is not None:
+        metrics.update(
+            {
+                "replay_capability_id": capability.capability_id,
+                "capability_package_fingerprint": (
+                    capability.capability_package_fingerprint
+                ),
+                "frozen_capability_fingerprint": capability.fingerprint,
+                "service_runtime_fingerprint": capability.fingerprint,
+                "service_logical_ids": json.dumps(
+                    sorted(service.service_id for service in capability.services),
+                    separators=(",", ":"),
+                ),
+                "service_startup_status": "ready",
+                "service_cleanup_status": "stopped",
+            }
+        )
     workspace_base = Path(request.workspace_root).resolve() / ".fake_replay_workspaces"
     return CandidateReplayResult(
         request=request,
@@ -838,6 +864,16 @@ def _result_with_request_provenance(request, candidate_id: str) -> CandidateRepl
             metrics={
                 **metrics,
                 "isolated_workspace_path": str(workspace_base / "baseline"),
+                **(
+                    {
+                        "service_endpoint": json.dumps(
+                            {"recorded-http": "http://127.0.0.1:41001"},
+                            separators=(",", ":"),
+                        )
+                    }
+                    if capability is not None
+                    else {}
+                ),
             },
         ),
         candidate=ReplayVariantResult(
@@ -847,6 +883,16 @@ def _result_with_request_provenance(request, candidate_id: str) -> CandidateRepl
             metrics={
                 **metrics,
                 "isolated_workspace_path": str(workspace_base / candidate_id),
+                **(
+                    {
+                        "service_endpoint": json.dumps(
+                            {"recorded-http": "http://127.0.0.1:41002"},
+                            separators=(",", ":"),
+                        )
+                    }
+                    if capability is not None
+                    else {}
+                ),
             },
         ),
     )
@@ -894,7 +940,7 @@ async def test_runner_compiles_adaptation_before_building_replay_request(
         apply_policy="proposal",
     )
 
-    assert replay_result is not None
+    assert replay_result is not None, gate
     assert paired_dataset is not None
     assert gate is not None and gate.passed is True
     request = backend.requests[0]
@@ -951,6 +997,115 @@ async def test_runner_blocks_unresolved_adaptation_before_rollout(
         assert gate.gate_name == "replay_adaptation"
         assert gate.passed is False
         assert gate.details["readiness"] == "runtime_required"
+
+
+@pytest.mark.asyncio
+async def test_runner_loads_replay_capability_from_candidate_overlay(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path)
+    manifest = {
+        "schema_version": "aworld.skill.replay_capability.v1",
+        "capability_id": "recorded-local",
+        "protocol": "aworld.replay.subprocess.v1",
+        "entrypoint": "replay/compiler.py",
+        "handles": ["local_endpoint"],
+        "runtime_files": ["replay/runtime.py"],
+    }
+    compiler = """
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--request', required=True)
+parser.add_argument('--output', required=True)
+args = parser.parse_args()
+request = json.loads(Path(args.request).read_text(encoding='utf-8'))
+output = Path(args.output)
+output.mkdir(parents=True, exist_ok=True)
+(output / 'recording.json').write_text('historical result', encoding='utf-8')
+requirement = request['requirements'][0]
+result = {
+    'schema_version': 'aworld.replay.capability_result.v1',
+    'capability_id': 'recorded-local',
+    'deterministic': True,
+    'handled_requirements': [requirement['requirement_id']],
+    'unhandled_requirements': [],
+    'evidence_refs': {
+        requirement['requirement_id']: requirement['evidence_refs'],
+    },
+    'fixture_evidence_refs': {
+        'recording.json': requirement['evidence_refs'],
+    },
+    'fixtures': ['recording.json'],
+    'endpoint_replacements': {requirement['identifier']: 'recorded-http'},
+    'services': [{
+        'service_id': 'recorded-http',
+        'requirement_id': requirement['requirement_id'],
+        'transport': 'http_fixture',
+        'response_fixture': 'recording.json',
+        'readiness': {'kind': 'tcp', 'timeout_seconds': 2},
+    }],
+}
+(output / 'result.json').write_text(json.dumps(result, sort_keys=True), encoding='utf-8')
+"""
+    candidate = CandidateVariant(
+        candidate_id="cand-capability",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\nImproved.\n",
+        rationale="supply recorded local endpoint",
+        target_fingerprint=target.fingerprint_current_content(),
+        files=(
+            CandidateFileDelta(
+                path="replay/capability.json",
+                content=json.dumps(manifest),
+            ),
+            CandidateFileDelta(path="replay/compiler.py", content=compiler),
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('runtime')\n",
+            ),
+        ),
+    )
+
+    class CapturingBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
+            return _result_with_request_provenance(request, candidate.candidate_id)
+
+    backend = CapturingBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=object(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+    )
+
+    replay_result, paired_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-capability",
+        target=target,
+        dataset=_dataset("Inspect http://127.0.0.1:9222"),
+        selected_candidate=candidate,
+        apply_policy="proposal",
+    )
+
+    assert replay_result is not None, gate
+    assert paired_dataset is not None
+    assert gate is not None and gate.passed is True
+    adaptation = backend.requests[0].replay_adaptation
+    assert adaptation is not None and adaptation.ready is True
+    assert adaptation.replay_capability is not None
+    assert adaptation.replay_capability.capability_id == "recorded-local"
+    assert adaptation.replay_capability.ready is True
+    assert adaptation.case("task-1").dependencies[0].status == "adapter_bound"
+    assert not (skill_path.parent / "replay").exists()
 
 
 @pytest.mark.asyncio

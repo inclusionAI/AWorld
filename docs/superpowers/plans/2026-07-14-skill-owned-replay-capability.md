@@ -326,9 +326,9 @@ the compiler result at a declared JSON output path.
 - [ ] **Step 4: Implement validation, double compilation, and freezing**
 
 Run the executor twice with distinct clean output roots. Validate exact requirement
-ids, evidence refs, endpoint replacements, fixture containment, service argv paths,
-and reserved environment keys. Compare canonical manifests plus SHA-256 fixture and
-runtime file manifests. Copy one matching result to `frozen/` and write a frozen
+ids, evidence refs, endpoint replacements, fixture containment, byte-level fixture
+provenance, and framework-owned service transport declarations. Compare canonical manifests plus SHA-256 fixture
+manifests. Copy one matching result to `frozen/` and write a frozen
 manifest whose fingerprint includes capability package and request fingerprints.
 
 - [ ] **Step 5: Run focused tests and commit**
@@ -442,10 +442,10 @@ Expected: FAIL because replay does not start frozen services.
 
 - [ ] **Step 3: Implement service materialization and readiness**
 
-For every repetition, copy frozen files into that repetition workspace, allocate a
-loopback port for each logical service, expand only reserved service placeholders,
-start argv without a shell, and wait for bounded TCP or HTTP readiness. Rewrite only
-the declared dependency identifiers in task input.
+For every repetition, copy frozen files into a private service root, allocate a
+loopback port for each logical service, start the trusted generic fixture transport
+without outbound network access, and wait for bounded TCP or HTTP readiness. Rewrite
+only the declared dependency identifiers in task input.
 
 - [ ] **Step 4: Guarantee cleanup and comparability provenance**
 
