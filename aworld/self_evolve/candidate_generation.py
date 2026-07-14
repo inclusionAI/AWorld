@@ -5,6 +5,7 @@ from typing import Any
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
+from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
 from aworld.core.event.base import Message
@@ -108,6 +109,7 @@ class CandidateGenerationAgent(Agent):
         )
         self.conf.llm_config.params = model_params
         self.conf.llm_config.llm_stream_call = False
+        Swarm.register_agent([self])
 
     @property
     def llm(self) -> Any:
