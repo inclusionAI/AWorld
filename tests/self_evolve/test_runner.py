@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.replay import (
     CandidateReplayMemberResult,
     CandidateReplayRequest,
-    CandidateReplayResult,
+    CandidateReplayResult as _CandidateReplayResult,
     ReplayVariantResult,
     _member_artifact_name,
 )
@@ -54,6 +55,69 @@ from aworld.self_evolve.types import (
     OptimizerLineage,
     SelfEvolveTargetRef,
 )
+
+
+_REPLAY_PROVENANCE_KEYS = (
+    "adaptation_fingerprint",
+    "workspace_seed_fingerprint",
+    "task_input_fingerprint",
+    "dataset_fingerprint",
+    "baseline_skill_fingerprint",
+)
+
+
+def CandidateReplayResult(*args, **kwargs):
+    """Build a fake backend result that honours the replay provenance contract."""
+
+    result = _CandidateReplayResult(*args, **kwargs)
+    if result.request.adaptation_fingerprint is None:
+        return result
+
+    def attested(variant: ReplayVariantResult, request: CandidateReplayRequest):
+        repetition_count = int(variant.metrics.get("repetition_count", 1))
+        workspace_base = (
+            Path(request.workspace_root).resolve()
+            / ".fake_replay_workspaces"
+            / request.task_id
+            / variant.variant_id
+        )
+        workspace_metrics = (
+            {"isolated_workspace_path": str(workspace_base / "1")}
+            if repetition_count == 1
+            else {
+                "isolated_workspace_path_values": [
+                    str(workspace_base / str(index))
+                    for index in range(1, repetition_count + 1)
+                ]
+            }
+        )
+        return replace(
+            variant,
+            metrics={
+                **dict(variant.metrics),
+                **{
+                    key: getattr(request, key)
+                    for key in _REPLAY_PROVENANCE_KEYS
+                },
+                "adapter_determinism": "deterministic",
+                **workspace_metrics,
+            },
+        )
+
+    members = tuple(
+        replace(
+            member,
+            baseline=attested(member.baseline, member.request),
+            candidate=attested(member.candidate, member.request),
+        )
+        for member in result.member_results
+    )
+    return replace(
+        result,
+        baseline=attested(result.baseline, result.request),
+        candidate=attested(result.candidate, result.request),
+        member_results=members,
+    )
 
 
 class EmptyOptimizer:

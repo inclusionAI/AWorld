@@ -77,15 +77,17 @@ seed. Baseline and candidate repetitions each start from a separate copy of that
 seed. This isolates skill changes from workspace mutations and host drift.
 
 Stateful external resources require a deterministic registered adapter. An unbound
-live URL, local endpoint, missing continuation context, secret-like file, or unknown
-external path fails the `replay_adaptation` gate before rollout. The candidate remains
-available in `proposal` mode, but cannot pass `auto_verified`.
+live URL, local endpoint, stateful browser/tool name observed in the source trace,
+missing continuation context, secret-like file, or unknown external path fails the
+`replay_adaptation` gate before rollout. The candidate remains available in
+`proposal` mode, but cannot pass `auto_verified`.
 
 Strict baseline reuse requires the same target, current-skill fingerprint, dataset
 fingerprint, adaptation fingerprint, workspace-seed fingerprint, cases, and requested
-repetition coverage. Legacy replay artifacts can still be opened or used by the
-evaluator-resume flow, but are not reused as a new strict baseline when this provenance
-is absent.
+repetition count (an exact match). Legacy replay artifacts can still be opened for
+inspection, but an evaluator-resume that could authorize verified apply requires adapted
+replay provenance. Rerun the full optimize flow for legacy artifacts; they are not reused
+as a new strict baseline.
 
 ## Options
 

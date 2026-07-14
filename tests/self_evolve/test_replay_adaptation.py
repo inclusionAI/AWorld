@@ -7,12 +7,15 @@ from pathlib import Path
 import pytest
 
 from aworld.self_evolve.datasets import (
+    EvalCase,
+    SelfEvolveDataset,
     SelfEvolveEvalSourceConfig,
     build_dataset_from_source,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
     ReplayAdaptationCompiler,
+    ReplayAdaptationError,
     ReplayDependency,
     materialize_replay_workspace,
 )
@@ -120,6 +123,158 @@ def test_compiler_marks_unbound_local_endpoint_runtime_required(tmp_path: Path) 
     assert bundle.ready is False
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    (
+        "browser.open",
+        "chromium.navigate",
+        "puppeteer.goto",
+        "firefox.open",
+        "safari.click",
+        "web.search",
+        "computer_use.click",
+    ),
+)
+def test_compiler_marks_stateful_trace_tool_runtime_required(
+    tmp_path: Path,
+    tool_name: str,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    trajectory = [
+        {
+            "meta": {"task_id": "task-browser", "step": 1},
+            "state": {"input": {"content": "Inspect the active tab."}},
+            "action": {
+                "content": "historical result",
+                "tool_calls": [
+                    {"function": {"name": tool_name}},
+                ],
+            },
+            "reward": {"status": "success"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-browser",
+    )
+
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    dependency = next(
+        item
+        for item in bundle.case("task-browser").dependencies
+        if item.kind == "stateful_tool"
+    )
+    assert dependency.identifier == tool_name
+    assert dependency.status == "runtime_required"
+    assert bundle.ready is False
+
+
+@pytest.mark.parametrize("tool_name", ("web_parser", "computer_vision"))
+def test_compiler_does_not_treat_deterministic_tool_names_as_stateful(
+    tmp_path: Path,
+    tool_name: str,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    trajectory = [
+        {
+            "meta": {"task_id": "task-tool", "step": 1},
+            "state": {"input": {"content": "Transform the local fixture."}},
+            "action": {
+                "content": "historical result",
+                "tool_calls": [{"function": {"name": tool_name}}],
+            },
+            "reward": {"status": "success"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-tool",
+    )
+
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    assert not any(
+        item.kind == "stateful_tool"
+        for item in bundle.case("task-tool").dependencies
+    )
+    assert bundle.ready is True
+
+
+def test_compiler_marks_generic_missing_absolute_path_unresolved(tmp_path: Path) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Read /aworld-replay-source-only/missing.csv"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    case = bundle.case("task-1")
+    dependency = next(item for item in case.dependencies if item.kind == "local_file")
+    assert dependency.status == "unresolved"
+    assert "${AWORLD_REPLAY_UNRESOLVED_PATH}" in case.adapted_task_input["content"]
+    assert bundle.ready is False
+
+
+def test_compiler_leaves_workspace_relative_paths_portable(tmp_path: Path) -> None:
+    workspace = tmp_path / "demo"
+    fixture = workspace / "fixtures" / "input.txt"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("seed", encoding="utf-8")
+
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Read ./fixtures/input.txt"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    case = bundle.case("task-1")
+    assert case.adapted_task_input["content"] == "Read ./fixtures/input.txt"
+    assert not any(item.kind == "local_file" for item in case.dependencies)
+    assert bundle.ready is True
+
+
+@pytest.mark.parametrize(
+    "task",
+    (
+        "Implement GET /users/{id}",
+        "Handle API route /users/me",
+        "Use regex pattern /foo/bar/ for validation",
+    ),
+)
+def test_compiler_does_not_treat_routes_or_regex_as_local_files(
+    tmp_path: Path,
+    task: str,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset(task),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    case = bundle.case("task-1")
+    assert case.adapted_task_input["content"] == task
+    assert not any(item.kind == "local_file" for item in case.dependencies)
+    assert bundle.ready is True
+
+
 def test_compiler_snapshots_explicit_bounded_external_file(tmp_path: Path) -> None:
     workspace = tmp_path / "source" / "demo"
     workspace.mkdir(parents=True)
@@ -141,6 +296,45 @@ def test_compiler_snapshots_explicit_bounded_external_file(tmp_path: Path) -> No
     relative = adapted_path.removeprefix("${AWORLD_REPLAY_WORKSPACE}/")
     assert (Path(bundle.workspace_seed) / relative).read_text(encoding="utf-8") == "recorded input"
     assert bundle.ready is True
+
+
+def test_compiler_counts_external_fixtures_toward_workspace_limits(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    (workspace / "seed.txt").write_text("seed", encoding="utf-8")
+    external = tmp_path / "inputs" / "article.txt"
+    external.parent.mkdir()
+    external.write_text("recorded input", encoding="utf-8")
+
+    with pytest.raises(ReplayAdaptationError, match="file limit exceeded"):
+        ReplayAdaptationCompiler(max_workspace_files=1).compile(
+            dataset=_dataset(f"Summarize {external}"),
+            workspace_root=workspace,
+            artifact_root=tmp_path / "run" / "adaptation",
+        )
+    fixture_root = tmp_path / "run" / "adaptation" / "workspace_seed" / ".aworld_replay_fixtures"
+    assert not fixture_root.exists() or not any(fixture_root.iterdir())
+
+
+def test_compiler_rejects_external_fixture_before_exceeding_byte_limit(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    external = tmp_path / "inputs" / "large.txt"
+    external.parent.mkdir()
+    external.write_text("x" * 200, encoding="utf-8")
+
+    with pytest.raises(ReplayAdaptationError, match="byte limit exceeded"):
+        ReplayAdaptationCompiler(max_workspace_bytes=50).compile(
+            dataset=_dataset(f"Summarize {external}"),
+            workspace_root=workspace,
+            artifact_root=tmp_path / "run" / "adaptation",
+        )
+    fixture_root = tmp_path / "run" / "adaptation" / "workspace_seed" / ".aworld_replay_fixtures"
+    assert not fixture_root.exists() or not any(fixture_root.iterdir())
 
 
 def test_compiler_does_not_snapshot_secret_like_external_file(tmp_path: Path) -> None:
@@ -227,6 +421,113 @@ def test_materialize_replay_workspace_replaces_dirty_destination(tmp_path: Path)
     assert not (destination / "dirty.txt").exists()
 
 
+def test_absolute_workspace_symlink_is_rebased_into_each_rollout(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    original = workspace / "input.txt"
+    original.write_text("seed", encoding="utf-8")
+    (workspace / "alias.txt").symlink_to(original)
+    original_directory = workspace / "records"
+    original_directory.mkdir()
+    original_nested = original_directory / "nested.txt"
+    original_nested.write_text("nested seed", encoding="utf-8")
+    (workspace / "records-alias").symlink_to(
+        original_directory,
+        target_is_directory=True,
+    )
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset(f"Read {workspace}/alias.txt"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    baseline = materialize_replay_workspace(bundle, tmp_path / "baseline")
+    candidate = materialize_replay_workspace(bundle, tmp_path / "candidate")
+    (baseline / "alias.txt").write_text("baseline mutation", encoding="utf-8")
+    (baseline / "records-alias" / "nested.txt").write_text(
+        "nested baseline mutation",
+        encoding="utf-8",
+    )
+
+    assert original.read_text(encoding="utf-8") == "seed"
+    assert original_nested.read_text(encoding="utf-8") == "nested seed"
+    assert (candidate / "alias.txt").read_text(encoding="utf-8") == "seed"
+    assert (
+        candidate / "records-alias" / "nested.txt"
+    ).read_text(encoding="utf-8") == "nested seed"
+    assert (baseline / "input.txt").read_text(encoding="utf-8") == "baseline mutation"
+
+
+def test_materialize_replay_workspace_unlinks_destination_symlink_only(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    (workspace / "input.txt").write_text("seed", encoding="utf-8")
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset(f"Read {workspace}/input.txt"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    destination = tmp_path / "rollout"
+    destination.symlink_to(external, target_is_directory=True)
+
+    materialize_replay_workspace(bundle, destination)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert destination.is_symlink() is False
+    assert (destination / "input.txt").read_text(encoding="utf-8") == "seed"
+
+
+def test_materialize_replay_workspace_rejects_symlinked_parent(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    (workspace / "input.txt").write_text("seed", encoding="utf-8")
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset(f"Read {workspace}/input.txt"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+    external = tmp_path / "external"
+    rollout = external / "rollout"
+    rollout.mkdir(parents=True)
+    sentinel = rollout / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    alias_parent = tmp_path / "alias-parent"
+    alias_parent.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(ReplayAdaptationError, match="symlinked parent"):
+        materialize_replay_workspace(bundle, alias_parent / "rollout")
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_materialize_replay_workspace_rejects_destination_inside_seed(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Replay task"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    with pytest.raises(ReplayAdaptationError, match="cannot overlap"):
+        materialize_replay_workspace(
+            bundle,
+            Path(bundle.workspace_seed) / "nested-rollout",
+        )
+
+
 @pytest.mark.asyncio
 async def test_each_variant_and_repetition_starts_from_same_clean_seed(
     tmp_path: Path,
@@ -259,6 +560,8 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
         assert str(isolated_workspace / "input.txt") in request.task_text
         assert request.workspace_seed_fingerprint == bundle.workspace_seed_fingerprint
         assert request.adaptation_fingerprint == bundle.adaptation_fingerprint
+        assert request.adapter_determinism == "deterministic"
+        assert request.isolated_workspace_path == request.workspace_root
         (isolated_workspace / "mutation.txt").write_text(
             request.variant_id,
             encoding="utf-8",
@@ -298,6 +601,48 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
         Path(call.workspace_root).parents[1].name for call in calls
     } == {"baseline", "cand-1"}
     assert candidate_replay_is_comparable(dataset=dataset, replay_result=result) is True
+    assert result.baseline.metrics["adapter_determinism"] == "deterministic"
+    assert len(result.baseline.metrics["isolated_workspace_path_values"]) == 2
+
+    legacy_request = replace(
+        result.request,
+        replay_adaptation=None,
+        adaptation_fingerprint=None,
+        workspace_seed_fingerprint=None,
+        task_input_fingerprint=None,
+    )
+    legacy_result = replace(result, request=legacy_request)
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=legacy_result,
+    ) is True
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=legacy_result,
+        require_adapted=True,
+    ) is False
+
+    missing_workspace_provenance = {
+        key: value
+        for key, value in result.baseline.metrics.items()
+        if not key.startswith("isolated_workspace_path")
+    }
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replace(
+            result,
+            baseline=replace(
+                result.baseline,
+                metrics=missing_workspace_provenance,
+            ),
+        ),
+    ) is False
+
+    missing_provenance_baseline = replace(result.baseline, metrics={})
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replace(result, baseline=missing_provenance_baseline),
+    ) is False
 
     mismatched_candidate = replace(
         result.candidate,
@@ -324,6 +669,9 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
     }
     assert _find_reusable_baseline_replay_dir(**lookup) is not None
     assert _find_reusable_baseline_replay_dir(
+        **{**lookup, "baseline_repetitions": 1}
+    ) is None
+    assert _find_reusable_baseline_replay_dir(
         **{**lookup, "baseline_skill_fingerprint": "sha256:changed-skill"}
     ) is None
     assert _find_reusable_baseline_replay_dir(
@@ -334,6 +682,77 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
     ) is None
 
 
+@pytest.mark.asyncio
+async def test_multi_case_baseline_reuse_requires_exact_root_repetition_count(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    first = _dataset("Replay task A", task_id="task-a")
+    dataset = SelfEvolveDataset(
+        cases=(
+            first.cases[0],
+            EvalCase(case_id="task-b", input={"content": "Replay task B"}),
+        ),
+        recipe=first.recipe,
+    )
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    candidate = CandidateVariant(
+        candidate_id="cand-multi",
+        target=target,
+        content="---\nname: demo\n---\n# Demo\n",
+        rationale="test",
+        target_fingerprint="sha256:baseline",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id="run-multi",
+        workspace_root=workspace,
+        target=target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=bundle,
+        baseline_repetitions=3,
+        candidate_repetitions=1,
+    )
+    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    lookup = {
+        "store": FilesystemSelfEvolveStore(workspace),
+        "run_id": "next-run",
+        "target": target,
+        "dataset": dataset,
+        "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+        "dataset_fingerprint": request.dataset_fingerprint,
+        "adaptation_fingerprint": request.adaptation_fingerprint,
+        "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+    }
+
+    assert _find_reusable_baseline_replay_dir(
+        **lookup,
+        baseline_repetitions=3,
+    ) is not None
+    assert _find_reusable_baseline_replay_dir(
+        **lookup,
+        baseline_repetitions=4,
+    ) is None
+
+
 def _result_with_request_provenance(request, candidate_id: str) -> CandidateReplayResult:
     metrics = {
         "adaptation_fingerprint": request.adaptation_fingerprint,
@@ -341,20 +760,28 @@ def _result_with_request_provenance(request, candidate_id: str) -> CandidateRepl
         "task_input_fingerprint": request.task_input_fingerprint,
         "dataset_fingerprint": request.dataset_fingerprint,
         "baseline_skill_fingerprint": request.baseline_skill_fingerprint,
+        "adapter_determinism": "deterministic",
     }
+    workspace_base = Path(request.workspace_root).resolve() / ".fake_replay_workspaces"
     return CandidateReplayResult(
         request=request,
         baseline=ReplayVariantResult(
             variant_id="baseline",
             status="succeeded",
             trajectory=[{"action": {"content": "baseline"}}],
-            metrics=metrics,
+            metrics={
+                **metrics,
+                "isolated_workspace_path": str(workspace_base / "baseline"),
+            },
         ),
         candidate=ReplayVariantResult(
             variant_id=candidate_id,
             status="succeeded",
             trajectory=[{"action": {"content": candidate_id}}],
-            metrics=metrics,
+            metrics={
+                **metrics,
+                "isolated_workspace_path": str(workspace_base / candidate_id),
+            },
         ),
     )
 

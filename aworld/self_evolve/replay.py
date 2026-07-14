@@ -41,6 +41,8 @@ _REPLAY_PROVENANCE_METRIC_KEYS = (
     "task_input_fingerprint",
     "dataset_fingerprint",
     "baseline_skill_fingerprint",
+    "adapter_determinism",
+    "isolated_workspace_path",
 )
 
 
@@ -116,8 +118,12 @@ def candidate_replay_is_comparable(
     *,
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
+    require_adapted: bool = False,
 ) -> bool:
-    if not _candidate_replay_provenance_is_comparable(replay_result):
+    if not _candidate_replay_provenance_is_comparable(
+        replay_result,
+        require_adapted=require_adapted,
+    ):
         return False
     coverage = candidate_replay_pair_coverage(
         dataset=dataset,
@@ -131,9 +137,16 @@ def candidate_replay_is_comparable(
 
 def _candidate_replay_provenance_is_comparable(
     replay_result: CandidateReplayResult,
+    *,
+    require_adapted: bool,
 ) -> bool:
     if replay_result.request.adaptation_fingerprint is None:
-        return True
+        return not require_adapted
+    if (
+        replay_result.request.replay_adaptation is not None
+        and not replay_result.request.replay_adaptation.ready
+    ):
+        return False
     if replay_result.member_results:
         pairs = tuple(
             (member.request, member.baseline, member.candidate)
@@ -158,17 +171,38 @@ def _candidate_replay_provenance_is_comparable(
         if any(value is None for value in expected.values()):
             return False
         for variant in (baseline, candidate):
-            has_provenance_metrics = any(
-                key in variant.metrics for key in expected
-            )
-            if not has_provenance_metrics:
-                # Alternate replay backends attest to the request contract by
-                # returning the same request object. The built-in backend emits
-                # per-execution provenance and therefore takes the strict path.
-                continue
             if any(variant.metrics.get(key) != value for key, value in expected.items()):
                 return False
+            if variant.metrics.get("adapter_determinism") != "deterministic":
+                return False
+        baseline_workspaces = _isolated_workspace_paths(baseline)
+        candidate_workspaces = _isolated_workspace_paths(candidate)
+        if (
+            not baseline_workspaces
+            or not candidate_workspaces
+            or set(baseline_workspaces) & set(candidate_workspaces)
+        ):
+            return False
     return True
+
+
+def _isolated_workspace_paths(variant: ReplayVariantResult) -> tuple[str, ...]:
+    direct = variant.metrics.get("isolated_workspace_path")
+    raw_values = variant.metrics.get("isolated_workspace_path_values")
+    if isinstance(raw_values, list):
+        values = tuple(value for value in raw_values if isinstance(value, str))
+    elif isinstance(direct, str):
+        values = (direct,)
+    else:
+        return ()
+    repetition_count = variant.metrics.get("repetition_count", len(values))
+    if not isinstance(repetition_count, (int, float)):
+        return ()
+    if int(repetition_count) != len(values) or len(set(values)) != len(values):
+        return ()
+    if any(not value.strip() or not Path(value).is_absolute() for value in values):
+        return ()
+    return values
 
 
 def candidate_replay_pair_coverage(
@@ -387,6 +421,8 @@ class ReplayExecutionRequest:
     task_input_fingerprint: str | None = None
     dataset_fingerprint: str | None = None
     baseline_skill_fingerprint: str | None = None
+    adapter_determinism: str | None = None
+    isolated_workspace_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -736,6 +772,8 @@ class AWorldCliCandidateReplayBackend:
         adaptation_fingerprint: str | None = None
         workspace_seed_fingerprint: str | None = None
         task_input_fingerprint: str | None = None
+        adapter_determinism: str | None = None
+        isolated_workspace_path: str | None = None
         if request.replay_adaptation is not None:
             case_adaptation = request.replay_adaptation.case(request.task_id)
             isolated_workspace = materialize_replay_workspace(
@@ -770,6 +808,13 @@ class AWorldCliCandidateReplayBackend:
                 request.replay_adaptation.workspace_seed_fingerprint
             )
             task_input_fingerprint = case_adaptation.task_input_fingerprint
+            adapter_determinism = (
+                "deterministic"
+                if case_adaptation.readiness == "ready"
+                and all(binding.deterministic for binding in case_adaptation.bindings)
+                else "non_deterministic"
+            )
+            isolated_workspace_path = str(isolated_workspace)
         execution_request = ReplayExecutionRequest(
             variant_id=variant_id,
             task_id=request.task_id,
@@ -790,6 +835,8 @@ class AWorldCliCandidateReplayBackend:
             task_input_fingerprint=task_input_fingerprint,
             dataset_fingerprint=request.dataset_fingerprint,
             baseline_skill_fingerprint=request.baseline_skill_fingerprint,
+            adapter_determinism=adapter_determinism,
+            isolated_workspace_path=isolated_workspace_path,
         )
         _write_json(artifact_dir / "execution_request.json", execution_request)
         started_at = time.monotonic()
@@ -875,10 +922,34 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
         or stored.target.target_id != request.target.target_id
     ):
         return False
-    return all(
+    if stored.baseline_repetitions != request.baseline_repetitions:
+        return False
+    if not all(
         getattr(stored, key) == getattr(request, key)
         for key in provenance_keys
+    ):
+        return False
+    try:
+        baseline = _load_variant_result_from_dir(
+            Path(request.baseline_replay_dir),
+            base_variant_id="baseline",
+        )
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        return False
+    return (
+        baseline.succeeded
+        and _successful_repetition_count(baseline)
+        == request.baseline_repetitions
     )
+
+
+def _successful_repetition_count(result: ReplayVariantResult) -> int:
+    count = result.metrics.get("successful_repetition_count")
+    if isinstance(count, (int, float)):
+        return int(count)
+    if result.repetition_results:
+        return sum(1 for repetition in result.repetition_results if repetition.succeeded)
+    return 1 if result.succeeded else 0
 
 
 class AWorldCliReplayExecutor:
@@ -1167,6 +1238,8 @@ def _replay_execution_provenance(
             ("task_input_fingerprint", request.task_input_fingerprint),
             ("dataset_fingerprint", request.dataset_fingerprint),
             ("baseline_skill_fingerprint", request.baseline_skill_fingerprint),
+            ("adapter_determinism", request.adapter_determinism),
+            ("isolated_workspace_path", request.isolated_workspace_path),
         )
         if value is not None
     }

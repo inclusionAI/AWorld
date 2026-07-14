@@ -54,7 +54,30 @@ _LOCAL_ENDPOINT = re.compile(
 )
 _HTTP_RESOURCE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _ABSOLUTE_LOCAL_PATH = re.compile(
-    r"(?<![\w${])/(?:Users|home|private|var|tmp)/[^\s\"'<>|;,)}\]]+"
+    r"(?<![.:/\w${}])/(?!/)[^\s\"'<>|;,)}\]]+"
+)
+_NON_FILE_PATH_CONTEXT = re.compile(
+    r"(?i)(?:"
+    r"\b(?:get|post|put|patch|delete|head|options)"
+    r"|\b(?:api\s+)?(?:route|endpoint|url|uri)"
+    r"|\b(?:regex|pattern)"
+    r")\s*(?::|=)?\s*$"
+)
+_STATEFUL_BROWSER_TOOL_TOKENS = frozenset(
+    {
+        "browser",
+        "chrome",
+        "chromium",
+        "firefox",
+        "safari",
+        "playwright",
+        "selenium",
+        "puppeteer",
+        "cdp",
+    }
+)
+_STATEFUL_WEB_ACTION_TOKENS = frozenset(
+    {"run", "search", "fetch", "open", "navigate", "click"}
 )
 _CONTINUATION_MARKERS = (
     "continue the current task",
@@ -175,19 +198,28 @@ class ReplayAdaptationCompiler:
         artifact = Path(artifact_root).expanduser().resolve()
         artifact.mkdir(parents=True, exist_ok=True)
         seed = artifact / "workspace_seed"
-        if seed.exists():
+        if seed.is_symlink():
+            seed.unlink()
+        elif seed.exists():
             shutil.rmtree(seed)
-        self._copy_workspace_seed(workspace, seed, artifact_root=artifact)
-
-        cases = tuple(
-            self._compile_case(
-                case,
-                workspace_root=workspace,
-                workspace_seed=seed,
-                artifact_root=artifact,
+        try:
+            self._copy_workspace_seed(workspace, seed, artifact_root=artifact)
+            cases = tuple(
+                self._compile_case(
+                    case,
+                    workspace_root=workspace,
+                    workspace_seed=seed,
+                    artifact_root=artifact,
+                )
+                for case in dataset.cases
             )
-            for case in dataset.cases
-        )
+            self._assert_workspace_seed_limits(seed)
+        except Exception:
+            if seed.is_symlink():
+                seed.unlink()
+            elif seed.exists():
+                shutil.rmtree(seed)
+            raise
         manifest_path = artifact / "workspace_manifest.json"
         manifest = _workspace_manifest(seed)
         _write_json_atomic(manifest_path, manifest)
@@ -274,13 +306,28 @@ class ReplayAdaptationCompiler:
                 )
             )
 
-        for raw_path in tuple(dict.fromkeys(_ABSOLUTE_LOCAL_PATH.findall(task_text))):
+        for raw_path in _absolute_local_path_references(task_text):
             task_input, dependency = self._adapt_external_path(
                 task_input,
                 raw_path=raw_path,
                 workspace_seed=workspace_seed,
             )
             dependencies.append(dependency)
+
+        tool_names = _case_tool_names(case)
+        for tool_name in tool_names:
+            if _is_stateful_tool_name(tool_name):
+                dependencies.append(
+                    ReplayDependency(
+                        kind="stateful_tool",
+                        identifier=tool_name,
+                        status="runtime_required",
+                        deterministic=False,
+                        detail=(
+                            "stateful trace tool requires a registered replay adapter"
+                        ),
+                    )
+                )
 
         context = ReplayAdapterContext(
             case_id=case.case_id,
@@ -317,7 +364,6 @@ class ReplayAdaptationCompiler:
         readiness = _case_readiness(adapted_dependencies)
         if readiness != "ready":
             diagnostics.append(f"replay adaptation is {readiness}")
-        tool_names = _case_tool_names(case)
         return ReplayCaseAdaptation(
             case_id=case.case_id,
             adapted_task_input=task_input,
@@ -342,6 +388,7 @@ class ReplayAdaptationCompiler:
         ).hexdigest()[:16]
         if (
             not source.is_file()
+            or source.is_symlink()
             or _is_sensitive_path(source)
             or source.stat().st_size > self.max_external_file_bytes
         ):
@@ -363,8 +410,18 @@ class ReplayAdaptationCompiler:
         )
         relative = Path(".aworld_replay_fixtures") / fixture_name
         destination = workspace_seed / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        if not destination.exists():
+            self._ensure_workspace_seed_capacity(
+                workspace_seed,
+                additional_files=1,
+                additional_bytes=source.stat().st_size,
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(source, destination)
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise
         replacement = f"{REPLAY_WORKSPACE_PLACEHOLDER}/{relative.as_posix()}"
         return (
             _replace_in_value(task_input, raw_path, replacement),
@@ -404,6 +461,7 @@ class ReplayAdaptationCompiler:
             source = Path(raw_path).expanduser()
             if (
                 not source.is_file()
+                or source.is_symlink()
                 or _is_sensitive_path(source)
                 or source.stat().st_size > self.max_external_file_bytes
             ):
@@ -419,9 +477,18 @@ class ReplayAdaptationCompiler:
                 / fixture_name
             )
             destination = workspace_seed / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
             if not destination.exists():
-                shutil.copy2(source, destination)
+                self._ensure_workspace_seed_capacity(
+                    workspace_seed,
+                    additional_files=1,
+                    additional_bytes=len(content),
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(source, destination)
+                except Exception:
+                    destination.unlink(missing_ok=True)
+                    raise
             fixture_ref = f"{REPLAY_WORKSPACE_PLACEHOLDER}/{relative.as_posix()}"
             snapshotted_paths.append(fixture_ref)
             environment = {
@@ -446,16 +513,35 @@ class ReplayAdaptationCompiler:
         byte_count = 0
         for current_root, directory_names, file_names in os.walk(source):
             current = Path(current_root)
-            directory_names[:] = [
-                name
-                for name in directory_names
-                if name not in _IGNORED_DIRECTORY_NAMES
-                and not _is_within(current / name, artifact_root)
-                and not _is_sensitive_path(current / name)
-            ]
             relative_root = current.relative_to(source)
             target_root = destination / relative_root
             target_root.mkdir(parents=True, exist_ok=True)
+            retained_directories: list[str] = []
+            for name in directory_names:
+                source_path = current / name
+                if (
+                    name in _IGNORED_DIRECTORY_NAMES
+                    or _is_within(source_path, artifact_root)
+                    or _is_sensitive_path(source_path)
+                ):
+                    continue
+                try:
+                    metadata = source_path.lstat()
+                except OSError as exc:
+                    raise ReplayAdaptationError(
+                        f"cannot inspect replay seed input: {source_path.name}: {exc}"
+                    ) from exc
+                if stat.S_ISLNK(metadata.st_mode):
+                    self._copy_internal_symlink(
+                        source_path,
+                        source_root=source,
+                        destination_root=destination,
+                        destination_path=target_root / name,
+                        target_is_directory=True,
+                    )
+                    continue
+                retained_directories.append(name)
+            directory_names[:] = retained_directories
             for file_name in file_names:
                 source_path = current / file_name
                 if (
@@ -471,11 +557,13 @@ class ReplayAdaptationCompiler:
                         f"cannot inspect replay seed input: {source_path.name}: {exc}"
                     ) from exc
                 if stat.S_ISLNK(metadata.st_mode):
-                    resolved = source_path.resolve()
-                    if not _is_within(resolved, source):
-                        continue
-                    target_path = target_root / file_name
-                    target_path.symlink_to(os.readlink(source_path))
+                    self._copy_internal_symlink(
+                        source_path,
+                        source_root=source,
+                        destination_root=destination,
+                        destination_path=target_root / file_name,
+                        target_is_directory=False,
+                    )
                     continue
                 if not stat.S_ISREG(metadata.st_mode):
                     continue
@@ -487,6 +575,72 @@ class ReplayAdaptationCompiler:
                     raise ReplayAdaptationError("workspace snapshot byte limit exceeded")
                 shutil.copy2(source_path, target_root / file_name)
 
+        self._assert_workspace_seed_limits(destination)
+
+    def _copy_internal_symlink(
+        self,
+        source_path: Path,
+        *,
+        source_root: Path,
+        destination_root: Path,
+        destination_path: Path,
+        target_is_directory: bool,
+    ) -> None:
+        try:
+            resolved = source_path.resolve(strict=True)
+        except OSError:
+            return
+        if not _is_within(resolved, source_root) or _is_sensitive_path(resolved):
+            return
+        relative_target = resolved.relative_to(source_root.resolve())
+        seeded_target = destination_root / relative_target
+        rebased_target = os.path.relpath(seeded_target, start=destination_path.parent)
+        destination_path.symlink_to(
+            rebased_target,
+            target_is_directory=target_is_directory,
+        )
+
+    def _assert_workspace_seed_limits(self, seed: Path) -> None:
+        file_count, byte_count = self._workspace_seed_usage(seed)
+        if file_count > self.max_workspace_files:
+            raise ReplayAdaptationError("workspace snapshot file limit exceeded")
+        if byte_count > self.max_workspace_bytes:
+            raise ReplayAdaptationError("workspace snapshot byte limit exceeded")
+
+    def _ensure_workspace_seed_capacity(
+        self,
+        seed: Path,
+        *,
+        additional_files: int,
+        additional_bytes: int,
+    ) -> None:
+        file_count, byte_count = self._workspace_seed_usage(seed)
+        if file_count + additional_files > self.max_workspace_files:
+            raise ReplayAdaptationError("workspace snapshot file limit exceeded")
+        if byte_count + additional_bytes > self.max_workspace_bytes:
+            raise ReplayAdaptationError("workspace snapshot byte limit exceeded")
+
+    @staticmethod
+    def _workspace_seed_usage(seed: Path) -> tuple[int, int]:
+        file_count = 0
+        byte_count = 0
+        for path in seed.rglob("*"):
+            try:
+                metadata = path.lstat()
+            except OSError as exc:
+                raise ReplayAdaptationError(
+                    f"cannot inspect replay seed output: {path.name}: {exc}"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode):
+                file_count += 1
+                byte_count += metadata.st_size
+            elif stat.S_ISREG(metadata.st_mode):
+                file_count += 1
+                byte_count += metadata.st_size
+            else:
+                continue
+        return file_count, byte_count
+
 
 def materialize_replay_workspace(
     bundle: ReplayAdaptationBundle,
@@ -495,18 +649,30 @@ def materialize_replay_workspace(
     """Create a clean rollout workspace from a verified adaptation seed."""
 
     seed = Path(bundle.workspace_seed).expanduser().resolve()
-    target = Path(destination).expanduser().resolve()
+    target = Path(os.path.abspath(str(Path(destination).expanduser())))
     if not seed.is_dir():
         raise ReplayAdaptationError(f"replay workspace seed does not exist: {seed}")
-    if target == seed or _is_within(seed, target):
-        raise ReplayAdaptationError("rollout workspace cannot contain the replay seed")
+    if any(parent.is_symlink() for parent in target.parents):
+        raise ReplayAdaptationError(
+            "rollout workspace cannot have a symlinked parent"
+        )
+    if (
+        target == seed
+        or _is_within(target, seed)
+        or _is_within(seed, target)
+    ):
+        raise ReplayAdaptationError(
+            "rollout workspace and replay seed cannot overlap"
+        )
     current_fingerprint = _json_fingerprint(_workspace_manifest(seed))
     if current_fingerprint != bundle.workspace_seed_fingerprint:
         raise ReplayAdaptationError(
             "replay workspace seed changed after adaptation compilation"
         )
-    if target.exists():
-        if target.is_dir() and not target.is_symlink():
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists():
+        if target.is_dir():
             shutil.rmtree(target)
         else:
             target.unlink()
@@ -522,6 +688,20 @@ def _normalize_workspace_paths(text: str, *, workspace_root: Path) -> str:
         rf"/(?:Users|home)/[^/\s]+/Documents/workspace/{repository_name}"
     )
     return re.sub(stale_pattern, REPLAY_WORKSPACE_PLACEHOLDER, normalized)
+
+
+def _absolute_local_path_references(text: str) -> tuple[str, ...]:
+    paths: list[str] = []
+    for match in _ABSOLUTE_LOCAL_PATH.finditer(text):
+        raw_path = match.group(0)
+        prefix = text[max(0, match.start() - 64) : match.start()]
+        if "{" in raw_path or "}" in raw_path:
+            continue
+        if _NON_FILE_PATH_CONTEXT.search(prefix):
+            continue
+        if raw_path not in paths:
+            paths.append(raw_path)
+    return tuple(paths)
 
 
 def _normalize_value(value: Any, transform) -> Any:
@@ -561,6 +741,21 @@ def _case_tool_names(case: EvalCase) -> tuple[str, ...]:
             if name
         )
     )
+
+
+def _is_stateful_tool_name(tool_name: str) -> bool:
+    tokens = tuple(
+        token
+        for token in re.split(r"[._:/-]+", tool_name.lower())
+        if token
+    )
+    if any(token in _STATEFUL_BROWSER_TOOL_TOKENS for token in tokens):
+        return True
+    return any(
+        (token == "computer" and next_token == "use")
+        or (token == "web" and next_token in _STATEFUL_WEB_ACTION_TOKENS)
+        for token, next_token in zip(tokens, tokens[1:])
+    ) or tokens == ("web",)
 
 
 def _case_readiness(dependencies: Sequence[ReplayDependency]) -> str:
