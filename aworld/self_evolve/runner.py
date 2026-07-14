@@ -71,6 +71,7 @@ from aworld.self_evolve.replay import (
     candidate_replay_pair_coverage,
     load_candidate_replay_result,
     replay_dataset_fingerprint,
+    _distributed_member_repetitions,
     _load_variant_result_from_dir,
     _is_replayable_user_task_case,
     _select_replay_case,
@@ -1469,6 +1470,7 @@ class SelfEvolveRunner:
         if not candidate_replay_is_comparable(
             dataset=dataset,
             replay_result=replay_result,
+            require_adapted=True,
         ):
             return (
                 replay_result,
@@ -2226,6 +2228,7 @@ def _rerun_evaluator_from_stored_run(
     if not candidate_replay_is_comparable(
         dataset=built_dataset,
         replay_result=replay_result,
+        require_adapted=True,
     ):
         raise ValueError(
             "stored replay did not produce comparable paired outcomes; "
@@ -2633,13 +2636,19 @@ def _find_reusable_baseline_replay_dir(
                 expected=expected_provenance,
             ):
                 continue
+            if replay_result.request.baseline_repetitions != baseline_repetitions:
+                continue
             if replay_result.member_results:
                 member_case_ids = tuple(member.case_id for member in replay_result.member_results)
                 if set(member_case_ids) != set(case_ids):
                     continue
+                member_repetitions = _distributed_member_repetitions(
+                    baseline_repetitions,
+                    member_count=len(case_ids),
+                )
                 if all(
                     member.baseline.succeeded
-                    and _successful_replay_count(member.baseline) >= baseline_repetitions
+                    and _successful_replay_count(member.baseline) == member_repetitions
                     for member in replay_result.member_results
                 ):
                     members_dir = replay_dir / "members"
@@ -2650,7 +2659,7 @@ def _find_reusable_baseline_replay_dir(
                 continue
             if (
                 replay_result.baseline.succeeded
-                and _successful_replay_count(replay_result.baseline) >= baseline_repetitions
+                and _successful_replay_count(replay_result.baseline) == baseline_repetitions
             ):
                 baseline_dir = replay_dir / "baseline"
                 if baseline_dir.exists():

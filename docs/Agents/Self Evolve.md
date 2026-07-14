@@ -49,7 +49,8 @@ Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace p
 to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment
 snapshot, fingerprints both, and classifies external dependencies. Explicit bounded
 local files may be copied into the seed. Live HTTP resources, local endpoints,
-continuation context, browser state, authenticated profiles, and other stateful
+continuation context, stateful browser/tool names observed in the source trace,
+authenticated profiles, and other stateful
 dependencies require a registered deterministic adapter; the compiler never invents
 a successful mock for an unknown dependency.
 
@@ -58,7 +59,9 @@ seed as its working directory. Writes from one rollout therefore cannot change t
 initial state of another rollout. A pair is comparable only when its adaptation,
 workspace-seed, task-input, dataset, and baseline-skill provenance agree. Cached
 baselines are reused only when target identity and all relevant fingerprints still
-match; older replay artifacts without provenance remain readable but are not reused.
+match and the stored successful repetition count is exactly the requested count;
+older replay artifacts without provenance remain readable but are not reused and cannot
+resume an evaluator path that authorizes verified apply.
 
 Unresolved adaptation produces a failed `replay_adaptation` gate before a rollout is
 started. Proposal mode still preserves the generated candidate and diagnostics.
