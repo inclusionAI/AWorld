@@ -8,8 +8,15 @@ from typing import Any, Iterable, Mapping
 
 from aworld.self_evolve.trace_pack import (
     TracePack,
+    TrajectoryLogRecord,
     build_trace_pack,
-    trace_packs_from_trajectory_log,
+    load_trajectory_log_records,
+)
+from aworld.self_evolve.trajectory_context import (
+    TrajectoryContextSnapshot,
+    build_trajectory_context_snapshots,
+    context_snapshot_for_current_trajectory,
+    input_with_reconstructed_context,
 )
 from aworld.self_evolve.types import DatasetRecipe
 
@@ -63,6 +70,7 @@ class EvalCase:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     trace_pack: TracePack | None = None
     source: Mapping[str, Any] = field(default_factory=dict)
+    context_snapshot: TrajectoryContextSnapshot | None = None
 
 
 @dataclass(frozen=True)
@@ -133,10 +141,15 @@ def build_dataset_from_source(
     if source_config.kind == "current_trajectory":
         if current_trajectory is None:
             raise ValueError("current_trajectory eval source requires current_trajectory")
+        trajectory_items = list(current_trajectory)
         trace_pack = build_trace_pack(
-            current_trajectory,
+            trajectory_items,
             source_kind="current_trajectory",
             task_id=task_id,
+        )
+        context_snapshot = context_snapshot_for_current_trajectory(
+            trajectory_items,
+            task_id=trace_pack.task_id,
         )
         cases = (
             EvalCase(
@@ -147,6 +160,7 @@ def build_dataset_from_source(
                     trace_pack=trace_pack,
                 ),
                 trace_pack=trace_pack,
+                context_snapshot=context_snapshot,
                 source={
                     "kind": "current_trajectory",
                     "task_id": trace_pack.task_id,
@@ -170,7 +184,17 @@ def build_dataset_from_source(
         if source_config.path is None:
             raise ValueError("trajectory_log eval source requires path")
         trajectory_path = Path(source_config.path).expanduser()
-        packs = trace_packs_from_trajectory_log(trajectory_path)
+        records = load_trajectory_log_records(trajectory_path)
+        packs = [
+            build_trace_pack(
+                record.trajectory,
+                source_kind="trajectory_log",
+                task_id=record.task_id,
+            )
+            for record in records
+        ]
+        snapshots = build_trajectory_context_snapshots(records)
+        snapshots_by_task = {snapshot.case_id: snapshot for snapshot in snapshots}
         framework_packs = tuple(pack for pack in packs if is_framework_meta_trace_pack(pack))
         user_packs = tuple(pack for pack in packs if not is_framework_meta_trace_pack(pack))
         effective_packs = user_packs if framework_packs else tuple(packs)
@@ -179,7 +203,10 @@ def build_dataset_from_source(
             (
                 EvalCase(
                     case_id=pack.task_id,
-                    input=_trace_pack_input(pack),
+                    input=input_with_reconstructed_context(
+                        _trace_pack_input(pack),
+                        snapshots_by_task[pack.task_id],
+                    ),
                     metadata={
                         **_baseline_trajectory_set_metadata(
                             set_id=set_id,
@@ -192,6 +219,7 @@ def build_dataset_from_source(
                         ),
                     },
                     trace_pack=pack,
+                    context_snapshot=snapshots_by_task[pack.task_id],
                     source={
                         "kind": "trajectory_log",
                         "path": str(trajectory_path),
@@ -330,18 +358,46 @@ def load_session_eval_cases(
     max_cases: int | None = None,
 ) -> list[EvalCase]:
     session_path = _resolve_session_path(Path(workspace_or_session_path).expanduser(), session_id=session_id)
-    cases: list[EvalCase] = []
+    payloads: list[tuple[int, Mapping[str, Any]]] = []
     for line_number, raw_line in enumerate(
         session_path.read_text(encoding="utf-8").splitlines(),
         start=1,
     ):
-        if max_cases is not None and len(cases) >= max_cases:
-            break
         if not raw_line.strip():
             continue
         payload = json.loads(raw_line)
         if not isinstance(payload, Mapping):
             raise ValueError(f"session log line {line_number} must be an object")
+        payloads.append((line_number, payload))
+    records = tuple(
+        TrajectoryLogRecord(
+            record_index=index,
+            task_id=_session_case_id(
+                payload,
+                session_id=session_id,
+                line_number=line_number,
+            ),
+            record_metadata={
+                **dict(payload),
+                "session_id": str(payload.get("session_id") or session_id),
+            },
+            trajectory=_trajectory_from_session_payload(
+                payload,
+                task_id=_session_case_id(
+                    payload,
+                    session_id=session_id,
+                    line_number=line_number,
+                ),
+            ),
+        )
+        for index, (line_number, payload) in enumerate(payloads)
+    )
+    snapshots = build_trajectory_context_snapshots(records, source_kind="session")
+    snapshots_by_task = {snapshot.case_id: snapshot for snapshot in snapshots}
+    cases: list[EvalCase] = []
+    for line_number, payload in payloads:
+        if max_cases is not None and len(cases) >= max_cases:
+            break
         case_id = _session_case_id(payload, session_id=session_id, line_number=line_number)
         trace_pack = _trace_pack_from_session_payload(payload, task_id=case_id)
         cases.append(
@@ -351,6 +407,7 @@ def load_session_eval_cases(
                 expected_output=payload.get("final_answer"),
                 metadata=_session_metadata(payload),
                 trace_pack=trace_pack,
+                context_snapshot=snapshots_by_task[case_id],
                 source={
                     "kind": "session",
                     "path": str(session_path),
@@ -427,7 +484,20 @@ def load_trajectory_set_eval_cases(path: str | Path) -> list[EvalCase]:
             set_path=set_path,
             field=f"members[{index}].trajectory_path",
         )
-        packs = trace_packs_from_trajectory_log(trajectory_path)
+        records = load_trajectory_log_records(trajectory_path)
+        packs = [
+            build_trace_pack(
+                record.trajectory,
+                source_kind="trajectory_log",
+                task_id=record.task_id,
+            )
+            for record in records
+        ]
+        snapshots = build_trajectory_context_snapshots(
+            records,
+            source_kind="trajectory_set",
+        )
+        snapshots_by_task = {snapshot.case_id: snapshot for snapshot in snapshots}
         matching_pack = next((pack for pack in packs if pack.task_id == task_id), None)
         if matching_pack is None:
             raise ValueError(
@@ -456,7 +526,10 @@ def load_trajectory_set_eval_cases(path: str | Path) -> list[EvalCase]:
         cases.append(
             EvalCase(
                 case_id=task_id,
-                input=_trace_pack_input(matching_pack),
+                input=input_with_reconstructed_context(
+                    _trace_pack_input(matching_pack),
+                    snapshots_by_task[task_id],
+                ),
                 metadata={
                     "trajectory_set": {
                         "set_id": set_id,
@@ -465,6 +538,7 @@ def load_trajectory_set_eval_cases(path: str | Path) -> list[EvalCase]:
                     }
                 },
                 trace_pack=matching_pack,
+                context_snapshot=snapshots_by_task[task_id],
                 source=source,
             )
         )
@@ -637,6 +711,11 @@ def _cases_fingerprint(cases: tuple[EvalCase, ...]) -> str:
             "verification_command": case.verification_command,
             "metadata": case.metadata,
             "source": case.source,
+            "context_snapshot_fingerprint": (
+                case.context_snapshot.fingerprint
+                if case.context_snapshot is not None
+                else None
+            ),
         }
         for case in cases
     ]
@@ -770,20 +849,33 @@ def _trace_pack_from_session_payload(
     *,
     task_id: str,
 ) -> TracePack:
+    return build_trace_pack(
+        _trajectory_from_session_payload(payload, task_id=task_id),
+        source_kind="session",
+        task_id=task_id,
+    )
+
+
+def _trajectory_from_session_payload(
+    payload: Mapping[str, Any],
+    *,
+    task_id: str,
+) -> tuple[Mapping[str, Any], ...]:
     trajectory = payload.get("trajectory")
     if isinstance(trajectory, str):
         trajectory = json.loads(trajectory)
     if isinstance(trajectory, list):
-        return build_trace_pack(
-            [item for item in trajectory if isinstance(item, Mapping)],
-            source_kind="session",
-            task_id=task_id,
+        return tuple(
+            item for item in trajectory if isinstance(item, Mapping)
         )
 
-    return build_trace_pack(
-        [
+    return (
             {
-                "meta": {"step": 1, "task_id": task_id},
+                "meta": {
+                    "step": 1,
+                    "task_id": task_id,
+                    "session_id": payload.get("session_id"),
+                },
                 "state": {"input": payload.get("input")},
                 "action": {
                     "content": _string_or_none(payload.get("final_answer")),
@@ -791,10 +883,7 @@ def _trace_pack_from_session_payload(
                     "is_agent_finished": True,
                 },
                 "reward": {"status": payload.get("task_status")},
-            }
-        ],
-        source_kind="session",
-        task_id=task_id,
+            },
     )
 
 

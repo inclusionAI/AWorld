@@ -143,8 +143,15 @@ from aworld.self_evolve.scheduler import (
 from aworld.self_evolve.trace_pack import (
     TraceEvidenceStep,
     TracePack,
+    TrajectoryLogRecord,
     build_trace_pack,
+    load_trajectory_log_records,
     trace_packs_from_trajectory_log,
+)
+from aworld.self_evolve.trajectory_context import (
+    TrajectoryContextSnapshot,
+    TrajectoryContextTurn,
+    build_trajectory_context_snapshots,
 )
 from aworld.self_evolve.types import (
     CandidateFileDelta,
@@ -248,6 +255,9 @@ __all__ = [
     "TargetSelectionReport",
     "TraceEvidenceStep",
     "TracePack",
+    "TrajectoryContextSnapshot",
+    "TrajectoryContextTurn",
+    "TrajectoryLogRecord",
     "TraceReflectiveLLMMutator",
     "TrajectoryQualityBackend",
     "TrustProvenanceGate",

@@ -147,6 +147,7 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
         EvalCase(
             case_id="current-task",
             input={"content": "Fix generated report."},
+            context_snapshot=current_dataset.cases[0].context_snapshot,
             trace_pack=current_dataset.cases[0].trace_pack,
             metadata={
                 "trajectory_set": {
@@ -169,6 +170,7 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
         ),
     )
     assert current_dataset.cases[0].trace_pack.task_id == "current-task"
+    assert current_dataset.cases[0].context_snapshot.case_id == "current-task"
     assert current_dataset.recipe.source["kind"] == "current_trajectory"
 
     fixture_log = (
@@ -184,6 +186,7 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
 
     assert len(log_dataset.cases) == 2
     assert log_dataset.cases[0].trace_pack.source_kind == "trajectory_log"
+    assert log_dataset.cases[0].context_snapshot.source_kind == "trajectory_log"
     assert log_dataset.cases[0].source["role"] == "baseline"
     assert log_dataset.cases[0].metadata["trajectory_set"]["member"]["role"] == "baseline"
     assert str(log_dataset.cases[0].metadata["trajectory_set"]["set_id"]).startswith(
@@ -368,6 +371,8 @@ def test_build_dataset_from_trajectory_set_v1_contract(tmp_path) -> None:
     assert [case.case_id for case in dataset.cases] == ["task-a"]
     assert dataset.cases[0].trace_pack is not None
     assert dataset.cases[0].trace_pack.task_id == "task-a"
+    assert dataset.cases[0].context_snapshot is not None
+    assert dataset.cases[0].context_snapshot.source_kind == "trajectory_set"
     assert dataset.cases[0].source["kind"] == "trajectory_set"
     assert dataset.cases[0].source["set_id"] == "set-a"
     assert dataset.cases[0].source["member_id"] == "baseline-a"
@@ -563,6 +568,8 @@ def test_build_dataset_from_session_source_reads_explicit_workspace_session_log(
     assert dataset.cases[0].trace_pack is not None
     assert dataset.cases[0].trace_pack.source_kind == "session"
     assert dataset.cases[0].trace_pack.task_id == "task-1"
+    assert dataset.cases[0].context_snapshot is not None
+    assert dataset.cases[0].context_snapshot.source_kind == "session"
     assert dataset.cases[0].metadata["task_status"] == "completed"
     assert dataset.recipe.source["kind"] == "session"
     assert dataset.recipe.source["session_id"] == "session-1"

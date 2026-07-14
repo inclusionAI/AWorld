@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -36,6 +37,30 @@ class TracePack:
             return None
         content = self.steps[-1].action.get("content")
         return content if isinstance(content, str) else None
+
+
+@dataclass(frozen=True)
+class TrajectoryLogRecord:
+    record_index: int
+    task_id: str
+    record_metadata: Mapping[str, Any]
+    trajectory: tuple[Mapping[str, Any], ...]
+
+    @property
+    def source_fingerprint(self) -> str:
+        payload = {
+            "record_index": self.record_index,
+            "task_id": self.task_id,
+            "record_metadata": dict(self.record_metadata),
+            "trajectory": list(self.trajectory),
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def build_trace_pack(
@@ -85,24 +110,53 @@ def trace_packs_from_trajectory_log(
     max_steps: int = 8,
     max_text_chars: int = 2000,
 ) -> list[TracePack]:
-    packs: list[TracePack] = []
+    return [
+        build_trace_pack(
+            record.trajectory,
+            source_kind="trajectory_log",
+            task_id=record.task_id,
+            max_steps=max_steps,
+            max_text_chars=max_text_chars,
+        )
+        for record in load_trajectory_log_records(path)
+    ]
+
+
+def load_trajectory_log_records(path: str | Path) -> list[TrajectoryLogRecord]:
+    records: list[TrajectoryLogRecord] = []
     for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
         if not raw_line.strip():
             continue
-        record = _trajectory_log_record(raw_line)
-        if record is None:
+        payload = _trajectory_log_record(raw_line)
+        if payload is None:
             continue
-        trajectory = json.loads(record["trajectory"])
-        packs.append(
-            build_trace_pack(
-                trajectory,
-                source_kind="trajectory_log",
-                task_id=record.get("task_id"),
-                max_steps=max_steps,
-                max_text_chars=max_text_chars,
+        raw_trajectory = payload.get("trajectory")
+        try:
+            trajectory = (
+                json.loads(raw_trajectory)
+                if isinstance(raw_trajectory, str)
+                else raw_trajectory
+            )
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(trajectory, list):
+            continue
+        task_id = str(payload.get("task_id") or "")
+        records.append(
+            TrajectoryLogRecord(
+                record_index=len(records),
+                task_id=task_id,
+                record_metadata={
+                    str(key): value
+                    for key, value in payload.items()
+                    if key != "trajectory"
+                },
+                trajectory=tuple(
+                    item for item in trajectory if isinstance(item, Mapping)
+                ),
             )
         )
-    return packs
+    return records
 
 
 def _trajectory_log_record(raw_line: str) -> Mapping[str, Any] | None:
