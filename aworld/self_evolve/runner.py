@@ -3414,7 +3414,7 @@ def _summary_with_replay_evidence_metrics(
     merged_metrics = dict(summary.metrics)
     for metric_name in evidence_metric_names:
         if metric_name in replay_metrics:
-            merged_metrics[metric_name] = replay_metrics[metric_name]
+            merged_metrics.setdefault(metric_name, replay_metrics[metric_name])
             merged_metrics[f"replay_{metric_name}"] = replay_metrics[metric_name]
     failure_summary = _replay_failure_summary(replay_metrics.get("repetition_failures"))
     merged_metrics.update(failure_summary)
@@ -3665,7 +3665,6 @@ def _iteration_validation_feedback(
                 variant_id=held_out_summary.variant_id,
                 metrics={
                     **dict(held_out_summary.metrics),
-                    **comparison_metrics,
                     "failed_gates": [gate.gate_name for gate in failed_gates],
                 },
                 dataset_split=held_out_summary.dataset_split,

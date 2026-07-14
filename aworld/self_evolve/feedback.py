@@ -101,6 +101,7 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
     evidence = _evidence_summary(metrics)
     failed_gates = _string_list(metrics.get("failed_gates"))
     required_behaviors = _required_behaviors(
+        dataset_split=feedback.dataset_split,
         failed_gates=failed_gates,
         evidence=evidence,
         metrics=metrics,
@@ -160,6 +161,7 @@ def _evidence_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
 
 def _required_behaviors(
     *,
+    dataset_split: str,
     failed_gates: list[str],
     evidence: Mapping[str, Any],
     metrics: Mapping[str, Any],
@@ -289,6 +291,14 @@ def _required_behaviors(
             [
                 "preserve_or_improve_efficiency",
                 "avoid_extra_steps_without_score_gain",
+            ]
+        )
+    if dataset_split == "held_out" and failed_gates:
+        behaviors.extend(
+            [
+                "generalize_runtime_behavior_across_task_variants",
+                "preserve_validation_gains_on_held_out",
+                "repair_held_out_regression_before_release",
             ]
         )
     return list(dict.fromkeys(behaviors))

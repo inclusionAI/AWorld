@@ -601,6 +601,29 @@ def test_feedback_normalization_requires_stronger_evidence_repair_for_veto_and_m
     assert "raise_groundedness_before_breadth" in summary["required_behaviors"]
 
 
+def test_feedback_normalization_turns_held_out_failure_into_generalization_constraints() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-held-out-regression",
+            dataset_split="held_out",
+            metrics={
+                "score": 63.0,
+                "A1_groundedness": 2.0,
+                "evidence_incomplete": True,
+                "failed_gates": [
+                    "required_verification",
+                    "global_regression_benchmark",
+                ],
+            },
+        )
+    )
+
+    assert summary["dataset_split"] == "held_out"
+    assert "generalize_runtime_behavior_across_task_variants" in summary["required_behaviors"]
+    assert "preserve_validation_gains_on_held_out" in summary["required_behaviors"]
+    assert "repair_held_out_regression_before_release" in summary["required_behaviors"]
+
+
 def test_feedback_normalization_preserves_lesson_memory_behaviors() -> None:
     summary = normalize_feedback_summary(
         EvaluationSummary(
