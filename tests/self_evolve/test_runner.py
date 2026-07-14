@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from aworld.config.conf import ModelConfig
+
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -34,6 +36,7 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _include_prior_run_cases,
     _iteration_validation_feedback,
+    _parse_candidate_mutation_model_output,
     _rank_candidate_population,
     _rejected_candidate_ids_from_report,
     _replay_confidence_gate,
@@ -4768,6 +4771,65 @@ async def test_runner_auto_verified_rejects_skill_candidate_when_replay_backend_
 
 
 @pytest.mark.asyncio
+async def test_candidate_preflight_uses_only_replayable_user_cases(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="user-case",
+                input={"content": "Summarize the supplied deterministic fixture."},
+            ),
+            EvalCase(
+                case_id="framework-case",
+                input={"content": "Inspect http://127.0.0.1:9222"},
+                metadata={"framework_meta_trajectory": True},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["user-case", "framework-case"]},
+        ),
+    )
+    optimizer_requests: list[OptimizerRequest] = []
+
+    class CapturingOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            optimizer_requests.append(request)
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=CapturingOptimizer(),
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-filtered-preflight",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    assert len(optimizer_requests) == 1
+    assert optimizer_requests[0].replay_requirements == ()
+    persisted = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-filtered-preflight"
+            / "replay_requirements.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted["requirements"] == []
+
+
+@pytest.mark.asyncio
 async def test_runner_rejects_when_replay_dataset_has_only_framework_tasks(
     tmp_path,
 ) -> None:
@@ -6063,6 +6125,118 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
     assert "After one failed tool or evidence path" in candidate_content
     assert "browser-login-task" not in candidate_content
     assert "Self-Evolve Trace Guidance" not in candidate_content
+
+
+def test_optimize_cli_request_uses_model_generated_candidate_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {
+                "input": {"content": "Summarize https://example.com/report"},
+                "messages": [],
+            },
+            "action": {"content": "The live dependency was unavailable."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trajectory_log = tmp_path / "trajectory.log"
+    trajectory_log.write_text(
+        repr({"task_id": "demo-task", "trajectory": json.dumps(trajectory)}) + "\n",
+        encoding="utf-8",
+    )
+    model_calls: list[tuple[ModelConfig, str]] = []
+    manifest = {
+        "schema_version": "aworld.skill.replay_capability.v1",
+        "capability_id": "recorded-http",
+        "protocol": "aworld.replay.subprocess.v1",
+        "entrypoint": "replay/compiler.py",
+        "handles": ["http_resource"],
+    }
+    model_output = {
+        "content": "---\nname: demo\n---\n# Demo\n\nUse recorded replay inputs.\n",
+        "rationale": "Add a skill-owned deterministic replay capability.",
+        "files": [
+            {
+                "path": "replay/capability.json",
+                "content": json.dumps(manifest, sort_keys=True),
+            },
+            {
+                "path": "replay/compiler.py",
+                "content": "print('compile recorded input')\n",
+                "executable": True,
+            },
+        ],
+    }
+
+    async def fake_call(model_config: ModelConfig, prompt: str) -> str:
+        model_calls.append((model_config, prompt))
+        if len(model_calls) == 1:
+            return json.dumps(
+                {
+                    "content": model_output["content"],
+                    "rationale": "Invalid package path must trigger repair.",
+                    "files": [{"path": "../escape.py", "content": "bad"}],
+                }
+            )
+        return "```json\n" + json.dumps(model_output) + "\n```"
+
+    monkeypatch.setattr(
+        runner_module,
+        "_call_candidate_mutation_model",
+        fake_call,
+        raising=False,
+    )
+    mutation_model_config = ModelConfig(
+        llm_provider="openai",
+        llm_model_name="mutation-model",
+        llm_api_key="test-key",
+    )
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        from_trajectory=str(trajectory_log),
+        apply_policy="proposal",
+        mutation_model_config=mutation_model_config,
+        replay_candidate_limit=1,
+    )
+
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    candidate_id = report["selected_candidate_id"]
+    candidate_package = Path(report_summary["report_path"]).parent / "candidates" / candidate_id
+    candidate_json = json.loads(
+        (candidate_package / "candidate.json").read_text(encoding="utf-8")
+    )
+    assert len(model_calls) == 2
+    assert all(call[0] is mutation_model_config for call in model_calls)
+    assert '"replay_requirements"' in model_calls[0][1]
+    assert "previous response violated the candidate output contract" in model_calls[1][1]
+    assert [item["path"] for item in candidate_json["files"]] == [
+        "replay/capability.json",
+        "replay/compiler.py",
+    ]
+    assert (candidate_package / "replay" / "capability.json").is_file()
+    assert (candidate_package / "replay" / "compiler.py").is_file()
+
+
+def test_candidate_model_parser_rejects_invalid_patch_intent_before_optimizer() -> None:
+    with pytest.raises(ValueError, match="patch_intent.operations"):
+        _parse_candidate_mutation_model_output(
+            {
+                "patch_intent": {},
+                "rationale": "invalid patch",
+                "files": [],
+            },
+            current_content="---\nname: demo\n---\n# Demo\n",
+        )
 
 
 def test_default_cli_skill_candidate_ignores_non_actionable_iteration_feedback() -> None:

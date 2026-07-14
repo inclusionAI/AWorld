@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import re
 from dataclasses import asdict, dataclass, replace
 from typing import Callable, Any
 from pathlib import Path
 from typing import Mapping, Iterable
 
-from aworld.config.conf import SelfEvolveJudgeConfig
+from aworld.config.conf import ModelConfig, SelfEvolveJudgeConfig
 from aworld.logs.util import logger
 from aworld.self_evolve.credit_assignment import (
     TargetInventoryEntry,
@@ -56,10 +57,14 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
-from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.candidate_package import (
+    candidate_package_fingerprint,
+    validate_candidate_files,
+)
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
@@ -358,7 +363,7 @@ class SelfEvolveRunner:
             )
         )
         replay_preflight = self.replay_adaptation_compiler.preflight(
-            dataset=dataset,
+            dataset=_replayable_user_task_dataset(dataset),
             workspace_root=self.store.workspace_root,
         )
         self.store.write_replay_requirements(run_id, replay_preflight)
@@ -1325,13 +1330,7 @@ class SelfEvolveRunner:
                 "replay_adaptation",
                 "Compiling replay paths, workspace seed, and dependency bindings",
             )
-        replayable_cases = tuple(
-            case for case in dataset.cases if _is_replayable_user_task_case(case)
-        )
-        replayable_dataset = SelfEvolveDataset(
-            cases=replayable_cases,
-            recipe=dataset.recipe,
-        )
+        replayable_dataset = _replayable_user_task_dataset(dataset)
         artifact_root = (
             self.store.run_path(run_id)
             / "replay_adaptation"
@@ -1345,6 +1344,32 @@ class SelfEvolveRunner:
                 dataset=replayable_dataset,
                 workspace_root=self.store.workspace_root,
             )
+            if (
+                preflight.requirements
+                and capability is None
+                and not self.replay_adaptation_compiler.adapters
+            ):
+                result = (
+                    None,
+                    GateResult(
+                        gate_name="replay_capability",
+                        passed=False,
+                        reason=(
+                            "replay requirements exist but the selected skill candidate "
+                            "does not provide a skill-owned replay capability"
+                        ),
+                        details={
+                            "requirement_count": len(preflight.requirements),
+                            "requirement_kinds": sorted(
+                                {item.kind for item in preflight.requirements}
+                            ),
+                            "preflight_fingerprint": preflight.fingerprint,
+                            "artifact_root": str(artifact_root),
+                        },
+                    ),
+                )
+                self._replay_adaptation_cache[cache_key] = result
+                return result
             frozen_capability = None
             additional_adapters = ()
             if capability is not None and preflight.requirements:
@@ -1928,6 +1953,7 @@ def optimize_from_cli_request(
     min_score_delta: float = 0.0,
     auto_apply_target_types: tuple[str, ...] = ("skill",),
     judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None = None,
+    mutation_model_config: ModelConfig | None = None,
     replay_enabled: bool = False,
     candidate_replay_backend: CandidateReplayBackend | None = None,
     replay_timeout_seconds: int = 600,
@@ -2144,8 +2170,42 @@ def optimize_from_cli_request(
             current_run_id=run_id,
         )
 
-    async def _cli_default_mutation(prompt: str) -> dict[str, str]:
+    async def _cli_default_mutation(prompt: str) -> Mapping[str, Any]:
         current_content = target_adapter.load_current_content()
+        if mutation_model_config is not None:
+            model_prompt = prompt
+            for attempt in range(2):
+                try:
+                    raw_output = await _call_candidate_mutation_model(
+                        mutation_model_config,
+                        model_prompt,
+                    )
+                    return _parse_candidate_mutation_model_output(
+                        raw_output,
+                        current_content=current_content,
+                    )
+                except ValueError as exc:
+                    if attempt == 0:
+                        model_prompt = (
+                            prompt
+                            + "\n\nThe previous response violated the candidate output "
+                            "contract ("
+                            + str(exc)
+                            + "). Return only one valid JSON object with content or "
+                            "patch_intent, rationale, and a files array."
+                        )
+                        continue
+                    logger.warning(
+                        "self_evolve.mutation.invalid_model_output "
+                        f"error_type={type(exc).__name__}"
+                    )
+                    return {}
+                except Exception as exc:
+                    logger.warning(
+                        "self_evolve.mutation.model_call_failed "
+                        f"error_type={type(exc).__name__}"
+                    )
+                    return {}
         candidate_content = _default_cli_skill_candidate(
             current_content=current_content,
             trace_packs=trace_packs,
@@ -2256,6 +2316,100 @@ def optimize_from_cli_request(
                 item for item in gate_results if isinstance(item, Mapping)
             ]
     return summary
+
+
+async def _call_candidate_mutation_model(
+    model_config: ModelConfig,
+    prompt: str,
+) -> str:
+    """Call the CLI-selected mutation model without depending on CLI modules."""
+
+    from aworld.models.llm import acall_llm_model, get_llm_model
+
+    model = get_llm_model(model_config)
+    response = await acall_llm_model(
+        model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You generate one self-evolve candidate package. Return only a JSON "
+                    "object matching the candidate_output_contract in the user prompt. "
+                    "Do not wrap the JSON in prose. Keep domain-specific replay behavior "
+                    "inside candidate-owned files and do not invent unavailable recordings."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=model_config.llm_temperature,
+    )
+    content = getattr(response, "content", None)
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("mutation model returned no text content")
+    return content
+
+
+def _parse_candidate_mutation_model_output(
+    raw_output: Any,
+    *,
+    current_content: str,
+) -> Mapping[str, Any]:
+    if isinstance(raw_output, Mapping):
+        payload = dict(raw_output)
+    elif isinstance(raw_output, str):
+        text = raw_output.strip()
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if fenced is not None:
+            text = fenced.group(1).strip()
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("mutation model output is not valid JSON") from exc
+        if not isinstance(decoded, Mapping):
+            raise ValueError("mutation model output must be a JSON object")
+        payload = dict(decoded)
+    else:
+        raise ValueError("mutation model output must be text or a mapping")
+
+    content = payload.get("content")
+    patch_intent = payload.get("patch_intent")
+    if not isinstance(content, str) and not isinstance(patch_intent, Mapping):
+        raise ValueError("mutation model output requires content or patch_intent")
+    if isinstance(content, str) and not content.strip():
+        raise ValueError("mutation model content must not be empty")
+    if isinstance(patch_intent, Mapping):
+        apply_skill_patch_intent(current_content, patch_intent)
+    rationale = payload.get("rationale", "")
+    if not isinstance(rationale, str):
+        raise ValueError("mutation model rationale must be text")
+    files = payload.get("files", [])
+    if not isinstance(files, list) or any(not isinstance(item, Mapping) for item in files):
+        raise ValueError("mutation model files must be an array of objects")
+    validate_candidate_files(
+        CandidateFileDelta(
+            path=str(item.get("path") or ""),
+            operation=str(item.get("operation") or "upsert"),
+            content=item.get("content") if isinstance(item.get("content"), str) else None,
+            executable=bool(item.get("executable", False)),
+        )
+        for item in files
+    )
+    payload["rationale"] = rationale
+    payload["files"] = files
+    return payload
+
+
+def _replayable_user_task_dataset(dataset: SelfEvolveDataset) -> SelfEvolveDataset:
+    return SelfEvolveDataset(
+        cases=tuple(
+            case for case in dataset.cases if _is_replayable_user_task_case(case)
+        ),
+        recipe=dataset.recipe,
+    )
 
 
 def _evaluation_backend_from_judge_config(

@@ -205,7 +205,17 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         ],
         "target_package_inventory": list(request.target_package_inventory),
         "candidate_output_contract": {
-            "content": "complete SKILL.md text or patch_intent",
+            "content": "complete SKILL.md text; omit when patch_intent is used",
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "replace_section or append_section",
+                        "heading": "existing or new Markdown heading",
+                        "content": "replacement section body",
+                    }
+                ]
+            },
+            "rationale": "concise explanation of the reusable behavior delta",
             "files": [
                 {
                     "path": "replay/<relative-path>",

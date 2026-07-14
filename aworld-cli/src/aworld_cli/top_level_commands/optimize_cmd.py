@@ -303,6 +303,9 @@ def run_optimize_cli(
         judge_backend_ref=judge_backend_ref,
         judge_model_profile=judge_model_profile,
     )
+    mutation_model_config = (
+        None if rerun_evaluator else _default_mutation_model_config()
+    )
     if progress_callback is not None:
         progress_callback("prepare", "Preparing self-evolve optimize request")
     return self_evolve.optimize_from_cli_request(
@@ -322,6 +325,7 @@ def run_optimize_cli(
         infer_target=infer_target,
         workspace_root=workspace_root,
         judge_config=judge_config,
+        mutation_model_config=mutation_model_config,
         **_judge_options(
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
@@ -338,6 +342,17 @@ def run_optimize_cli(
             candidate_replay_repetitions=candidate_replay_repetitions,
         ),
     )
+
+
+def _default_mutation_model_config():
+    """Resolve mutation independently from all judge-specific CLI options."""
+
+    from aworld_cli.core.model_profiles import resolve_model_profile
+
+    try:
+        return resolve_model_profile("default")
+    except KeyError:
+        return None
 
 
 def _default_runtime_skill_activator() -> Callable[[Any], Mapping[str, Any]]:

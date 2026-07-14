@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from aworld.config.conf import ModelConfig
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli import main as main_module
@@ -708,6 +710,105 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["judge_config"].mode == "agent_md"
     assert calls["judge_config"].agent_path == "agent.md"
     assert calls["judge_config"].model_profile == "judge"
+
+
+def test_run_optimize_cli_injects_default_mutation_model_independent_of_judge(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+    resolved_profiles: list[str | None] = []
+    mutation_model_config = ModelConfig(
+        llm_provider="openai",
+        llm_model_name="mutation-model",
+        llm_api_key="test-key",
+    )
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    def fake_resolve_model_profile(profile_name):
+        resolved_profiles.append(profile_name)
+        return mutation_model_config
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        fake_resolve_model_profile,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:workflow-helper",
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=1,
+        apply="auto_verified",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        judge_agent="judge.md",
+        judge_model_profile="judge-profile",
+    )
+
+    assert resolved_profiles == ["default"]
+    assert calls["mutation_model_config"] is mutation_model_config
+    assert calls["judge_config"].model_profile == "judge-profile"
+
+
+def test_run_optimize_cli_does_not_resolve_mutation_model_for_evaluator_rerun(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    def fail_resolve_model_profile(profile_name):
+        pytest.fail(f"evaluator-only rerun must not resolve mutation profile: {profile_name}")
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        fail_resolve_model_profile,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=None,
+        apply="auto_verified",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        from_run="cli-prior",
+        rerun_evaluator=True,
+    )
+
+    assert calls["mutation_model_config"] is None
 
 
 def test_run_optimize_cli_forwards_runtime_registry_refresher(

@@ -222,6 +222,7 @@ async def test_trace_reflective_llm_mutator_prompt_contains_replay_requirements(
     assert "req-local-endpoint" in prompts[0]
     assert '"target_package_inventory": ["SKILL.md"]' in prompts[0]
     assert '"files"' in prompts[0]
+    assert '"patch_intent"' in prompts[0]
 
 
 @pytest.mark.asyncio
