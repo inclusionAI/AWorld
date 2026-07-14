@@ -349,6 +349,12 @@ class SelfEvolveRunner:
                 current_run_id=run_id,
             )
         )
+        replay_preflight = self.replay_adaptation_compiler.preflight(
+            dataset=dataset,
+            workspace_root=self.store.workspace_root,
+        )
+        self.store.write_replay_requirements(run_id, replay_preflight)
+        target_package_inventory = _target_package_inventory(target)
 
         baseline_preflight_blocked = False
         for iteration_index in range(self.max_iterations):
@@ -382,6 +388,8 @@ class SelfEvolveRunner:
                         rejected_candidate_ids=rejected_candidate_ids,
                         accepted_candidate_ids=accepted_candidate_ids,
                     ),
+                    replay_requirements=replay_preflight.requirements,
+                    target_package_inventory=target_package_inventory,
                 )
             )
             filtered_known_duplicates = _known_duplicate_candidate_count(
@@ -2159,6 +2167,20 @@ def _target_runtime_skill_path(target: SelfEvolveTarget) -> Path | None:
     if runtime_path is not None:
         return Path(runtime_path).resolve()
     return Path(target.identity.path).resolve() if target.identity.path else None
+
+
+def _target_package_inventory(target: SelfEvolveTarget) -> tuple[str, ...]:
+    target_path = _target_runtime_skill_path(target)
+    if target_path is None or not target_path.exists():
+        return ()
+    root = target_path.parent
+    return tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        )
+    )
 
 
 def _artifact_retention_report(

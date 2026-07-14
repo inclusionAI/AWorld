@@ -8,6 +8,7 @@ from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
+from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import (
     CandidateFileDelta,
@@ -183,6 +184,44 @@ async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> No
             executable=True,
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_trace_reflective_llm_mutator_prompt_contains_replay_requirements() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nAdd replay behavior.\n",
+            "rationale": "Handle the unresolved replay requirement.",
+        }
+
+    requirement = ReplayCapabilityRequirement(
+        requirement_id="req-local-endpoint",
+        kind="local_endpoint",
+        identifier="http://127.0.0.1:9222",
+        case_ids=("train-1",),
+        evidence_refs=("context:train-1:sha256:context",),
+        status="runtime_required",
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(requirement,),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+
+    await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert '"replay_requirements"' in prompts[0]
+    assert "req-local-endpoint" in prompts[0]
+    assert '"target_package_inventory": ["SKILL.md"]' in prompts[0]
+    assert '"files"' in prompts[0]
 
 
 @pytest.mark.asyncio

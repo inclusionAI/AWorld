@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.replay_adaptation import ReplayPreflightReport
 from aworld.self_evolve.judge import JudgeRecord
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
 from aworld.self_evolve.types import (
@@ -62,6 +63,15 @@ class FilesystemSelfEvolveStore:
     def write_dataset_recipe(self, run_id: str, recipe: DatasetRecipe) -> Path:
         path = self.run_path(run_id) / "dataset_recipe.json"
         self._write_json(path, recipe)
+        return path
+
+    def write_replay_requirements(
+        self,
+        run_id: str,
+        report: ReplayPreflightReport,
+    ) -> Path:
+        path = self.run_path(run_id) / "replay_requirements.json"
+        self._write_json(path, report)
         return path
 
     def write_target_provenance(self, run_id: str, provenance: TargetProvenance) -> Path:

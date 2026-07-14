@@ -120,9 +120,11 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
     ReplayAdaptationCompiler,
     ReplayAdaptationError,
+    ReplayCapabilityRequirement,
     ReplayCaseAdaptation,
     ReplayDependency,
     ReplayDependencyAdapter,
+    ReplayPreflightReport,
     materialize_replay_workspace,
 )
 from aworld.self_evolve.runner import (
@@ -223,9 +225,11 @@ __all__ = [
     "ReplayAdaptationBundle",
     "ReplayAdaptationCompiler",
     "ReplayAdaptationError",
+    "ReplayCapabilityRequirement",
     "ReplayCaseAdaptation",
     "ReplayDependency",
     "ReplayDependencyAdapter",
+    "ReplayPreflightReport",
     "ReplayExecutionRequest",
     "ReplayExecutionResult",
     "ReplayVariantResult",

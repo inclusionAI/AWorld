@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Protocol
+from typing import TYPE_CHECKING, Mapping, Protocol
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.lessons import LessonRecord
@@ -12,6 +12,9 @@ from aworld.self_evolve.types import (
     OptimizerLineage,
     SelfEvolveTargetRef,
 )
+
+if TYPE_CHECKING:
+    from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,8 @@ class OptimizerRequest:
     lesson_records: tuple[LessonRecord, ...] = ()
     trainable_cases: tuple[EvalCase, ...] = ()
     max_candidates: int = 1
+    replay_requirements: tuple[ReplayCapabilityRequirement, ...] = ()
+    target_package_inventory: tuple[str, ...] = ()
 
     @classmethod
     def from_dataset(
@@ -39,6 +44,8 @@ class OptimizerRequest:
         lesson_records: tuple[LessonRecord, ...] = (),
         dataset: SelfEvolveDataset,
         max_candidates: int = 1,
+        replay_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
+        target_package_inventory: tuple[str, ...] = (),
     ) -> "OptimizerRequest":
         trainable_ids = set(dataset.recipe.trainable_case_ids)
         return cls(
@@ -53,6 +60,8 @@ class OptimizerRequest:
                 case for case in dataset.cases if case.case_id in trainable_ids
             ),
             max_candidates=max_candidates,
+            replay_requirements=tuple(replay_requirements),
+            target_package_inventory=tuple(target_package_inventory),
         )
 
 

@@ -17,6 +17,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationCompiler,
     ReplayAdaptationError,
     ReplayDependency,
+    ReplayCapabilityRequirement,
     materialize_replay_workspace,
 )
 from aworld.self_evolve.replay import (
@@ -121,6 +122,71 @@ def test_compiler_marks_unbound_local_endpoint_runtime_required(tmp_path: Path) 
     assert dependency.status == "runtime_required"
     assert dependency.deterministic is False
     assert bundle.ready is False
+
+
+def test_preflight_returns_unresolved_requirements_without_compiling_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=_dataset("Connect to http://[::1]:9222 and inspect the page."),
+        workspace_root=workspace,
+    )
+
+    assert len(report.requirements) == 1
+    requirement = report.requirements[0]
+    assert isinstance(requirement, ReplayCapabilityRequirement)
+    assert requirement.kind == "local_endpoint"
+    assert requirement.identifier == "http://[::1]:9222"
+    assert requirement.case_ids == ("task-1",)
+    assert requirement.evidence_refs[0].startswith("context:task-1:sha256:")
+    assert report.fingerprint.startswith("sha256:")
+
+
+def test_preflight_does_not_require_context_when_snapshot_reconstructed(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    trajectory_log = tmp_path / "trajectory.log"
+    first = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "Start the task."}},
+            "action": {"content": "Recorded result.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    continuation = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "Continue the current task."}},
+            "action": {"content": "Done.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trajectory_log.write_text(
+        repr({"task_id": "first", "trajectory": json.dumps(first)})
+        + "\n"
+        + repr({"task_id": "next", "trajectory": json.dumps(continuation)})
+        + "\n",
+        encoding="utf-8",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(
+            kind="trajectory_log",
+            path=str(trajectory_log),
+        )
+    )
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=dataset,
+        workspace_root=workspace,
+    )
+
+    assert not any(item.kind == "conversation_context" for item in report.requirements)
 
 
 @pytest.mark.parametrize(

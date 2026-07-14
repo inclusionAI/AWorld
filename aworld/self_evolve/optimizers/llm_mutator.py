@@ -191,9 +191,33 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
             }
             for case in request.trainable_cases
         ],
+        "replay_requirements": [
+            {
+                "requirement_id": item.requirement_id,
+                "kind": item.kind,
+                "identifier": item.identifier,
+                "case_ids": list(item.case_ids),
+                "evidence_refs": list(item.evidence_refs),
+                "status": item.status,
+                "detail": item.detail,
+            }
+            for item in request.replay_requirements
+        ],
+        "target_package_inventory": list(request.target_package_inventory),
+        "candidate_output_contract": {
+            "content": "complete SKILL.md text or patch_intent",
+            "files": [
+                {
+                    "path": "replay/<relative-path>",
+                    "operation": "upsert or delete",
+                    "content": "UTF-8 text for upsert",
+                    "executable": False,
+                }
+            ],
+        },
     }
     return (
-        "Propose one concise text-only self-evolve candidate. "
+        "Propose one concise self-evolve skill candidate. "
         "Use trace evidence and trainable cases only; do not assume held-out data. "
         "Prefer the smallest useful change: encode a minimal behavior delta that directly "
         "addresses the observed failure, include a preserve list naming behavior that must "
@@ -204,6 +228,9 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "Use trace-driven reflective optimization: identify why the prior run lost score, "
         "then encode reusable procedural guidance that can improve task quality, tool economy, "
         "latency, and completion reliability. "
+        "When replay_requirements are present, the candidate may include skill-owned files "
+        "under replay/ using candidate_output_contract. Domain-specific replay behavior must "
+        "live in those candidate files, not in framework assumptions. "
         "If validation_feedback or prior_feedback mentions evidence_quality, "
         "evidence_compacted, or evidence_incomplete, the candidate must include general "
         "evidence-preservation guidance. Make it actionable and tool-agnostic: avoid "
