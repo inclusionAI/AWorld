@@ -2,10 +2,11 @@
 
 ## Status
 
-Approved architecture for implementation planning. This document supersedes the
-lightweight direct-invocation portion of the earlier model-backed candidate
-generation design. It does not change the replay-capability ownership boundary:
-domain adapters remain skill-owned.
+Architecture approved; the extension-class and `Task.runner_cls` revision is
+pending written-design review. This document supersedes the lightweight
+direct-invocation portion of the earlier model-backed candidate generation
+design. It does not change the replay-capability ownership boundary: domain
+adapters remain skill-owned.
 
 ## Problem
 
@@ -47,6 +48,8 @@ self-evolve domain state machine into an autonomous LLM workflow.
    - an aworld-cli main agent delegating an entire self-evolve run as a subtask.
 7. Preserve backward compatibility for existing agents that use the global
    memory factory and do not opt into prompt budgeting.
+8. Deliver AWorld capabilities as opt-in extension classes and additive APIs;
+   self-evolve is their first and only consumer in this change.
 
 ## Non-Goals
 
@@ -60,6 +63,9 @@ self-evolve domain state machine into an autonomous LLM workflow.
   deterministic orchestration and result ordering.
 - Moving Browser/CDP or other domain replay adapters into `aworld/self_evolve`.
 - Making the CLI history hook responsible for candidate prompt budgeting.
+- Changing the default behavior of `Agent`, `ApplicationContext`,
+  `Runners.run_task()`, or `LocalRuntime.execute()`.
+- Migrating unrelated AWorld agents to the new extension classes.
 
 ## Ownership Boundary
 
@@ -86,27 +92,36 @@ Self-evolve may label prompt sections with generic priority and reduction policy
 but it must not implement token counting, summary generation, truncation, or
 memory-store selection itself.
 
-## AWorld Framework Changes
+## AWorld Additive Extension APIs
 
-### 1. Prompt budget contract
+The implementation must use extension classes and additive APIs. Base classes
+retain their current default behavior. A minimal compatibility seam may be added
+to a base factory only when existing callers receive exactly the same object and
+semantics when no extension scope is active.
 
-Add an opt-in `PromptBudgetConfig` to `AgentConfig`. Existing
-`max_input_tokens` remains the agent input ceiling; it is not duplicated in the
-new config. The new config controls activation, overflow behavior, and section
-reduction:
+### 1. `PromptBudgetedAgent`
+
+Add a generic `PromptBudgetedAgent(Agent)` extension and a
+`PromptBudgetPolicy`. Existing `max_input_tokens` remains the agent input
+ceiling; the policy controls overflow handling and section reduction without
+adding behavior to the base `Agent`:
 
 ```python
-class PromptBudgetConfig(BaseModel):
-    enabled: bool = False
+class PromptBudgetPolicy(BaseModel):
     overflow_strategy: Literal["compact_then_error", "error"] = "compact_then_error"
     minimum_remaining_tokens: int = 0
+
+
+class PromptBudgetedAgent(Agent):
+    def __init__(self, *, prompt_budget_policy: PromptBudgetPolicy, **kwargs): ...
 ```
 
-Candidate-generation agents enable the feature. Existing agents remain unchanged
-until they opt in.
+`CandidateGenerationAgent` inherits from `PromptBudgetedAgent`. Unrelated agents
+continue inheriting directly from `Agent` and do no additional token counting or
+reduction.
 
-The effective budget is resolved after prompt assembly and before the provider
-call:
+The extension resolves the effective budget after prompt assembly and before the
+provider call:
 
 ```text
 reserved_output_tokens = effective max_tokens or max_completion_tokens
@@ -114,181 +129,210 @@ model_input_capacity = ModelConfig.max_model_len - reserved_output_tokens
 input_budget = min(AgentConfig.max_input_tokens, model_input_capacity)
 ```
 
-The calculation includes messages, tool schemas, and model/provider message
-overhead. Invalid configurations where the output reservation consumes the
-model context window fail before provider invocation.
+Messages, tool schemas, and model/provider overhead count toward the budget. The
+output-token parameter is resolved once and shared by budgeting and the provider
+request. Invalid configurations fail before provider invocation.
 
-The output-token parameter is resolved once and shared by the budget processor
-and provider request, preventing the two calculations from diverging.
+The extension performs a final assertion in its `invoke_model()` override. It
+never changes base `Agent.invoke_model()` behavior.
 
-### 2. Structured prompt sections
+### 2. `BudgetedPromptAssemblyProvider`
 
-Extend `PromptSection`/`PromptAssemblyPlan` with budget metadata:
+Add a provider decorator rather than modifying the existing assembly providers:
 
 ```python
-@dataclass
-class PromptSection:
-    name: str
-    kind: str
-    stability: str
-    content: Any
-    priority: int = 50
-    required: bool = False
-    compressible: bool = True
-    reducer: str | None = None
-    original_tokens: int | None = None
-    final_tokens: int | None = None
+class BudgetedPromptAssemblyProvider(PromptAssemblyProvider):
+    def __init__(self, delegate: PromptAssemblyProvider, policy: PromptBudgetPolicy): ...
 ```
 
-The default assembly provider assigns safe generic policies:
+`PromptBudgetedAgent` wraps the provider returned by the existing Context/Agent
+resolution path. The decorator builds the normal plan first, applies generic
+budget sections, and returns a compatible `PromptAssemblyPlan` with reduced
+messages and bounded observability.
 
-- system instructions and the current user turn are required;
-- tool schemas are required unless the owning Agent explicitly marks tools
-  optional;
-- conversation history, summaries, retrieved knowledge, and tool results are
-  compressible;
-- stable-prefix metadata and provider cache behavior are preserved after
-  reduction.
+Budget metadata is represented by extension types such as
+`BudgetedPromptSection`/`BudgetedPromptAssemblyPlan`; existing `PromptSection`
+and `PromptAssemblyPlan` constructors do not change. Candidate callers supply
+generic section hints through plan metadata:
 
-Callers may supply section hints through the existing prompt-assembly metadata.
-Hints describe generic properties only. A reducer never imports or branches on
-self-evolve types.
+- `priority`;
+- `required`;
+- `compressible`;
+- reducer name.
 
-### 3. Prompt budget processor
+System instructions and the current task are required. History, summaries,
+retrieved knowledge, tool results, and explicitly optional evidence may be
+reduced. No reducer imports or branches on self-evolve types.
 
-Add a generic `PromptBudgetProcessor` at the Agent request boundary. The standard
-`Agent.async_policy()` flow becomes:
+The decorator applies reducers by ascending priority and stable section order.
+The initial reusable reducers are complete-turn history trimming, reuse of an
+existing Memory summary, existing tool-result compaction/offload, bounded
+head/tail reduction with an omission marker, and optional-section removal.
+Reducers do not mutate source Context or dataset objects.
+
+After reduction, the decorator rebuilds the plan through the delegate so stable
+hashes and provider prompt-cache keys describe the final request rather than the
+pre-reduction request. Diagnostics contain token counts, section names, reducer
+names, and omission counts, never section contents.
+
+### 3. `LocalMemoryScope`
+
+Reuse the existing `MemoryBase`, `MemoryFactory.from_config()`, and
+`InMemoryMemoryStore`. Add a local async-task scope backed by `contextvars`:
+
+```python
+class LocalMemoryScope:
+    def __init__(self, memory: MemoryBase): ...
+    async def __aenter__(self): ...
+    async def __aexit__(self, exc_type, exc, tb): ...
+    @classmethod
+    def current(cls) -> MemoryBase | None: ...
+```
+
+The only compatibility seam in `MemoryFactory.instance()` is:
+
+```python
+scoped = LocalMemoryScope.current()
+if scoped is not None:
+    return scoped
+```
+
+When no scope is active, the existing cached/global path executes unchanged.
+This avoids replacing all Agent memory call sites and avoids calling
+`MemoryFactory.init()` for a candidate. Python `contextvars` isolate concurrent
+local Tasks and are inherited by their child async tasks.
+
+This scoped override is runtime-only, is not serialized, and is rejected by the
+self-evolve execution adapter for non-local runtimes. It does not change Memory
+storage, filters, summaries, retrieval, or provider implementations.
+
+### 4. `LocalIsolatedApplicationContext`
+
+Add an `ApplicationContext` extension that owns one local resource bundle:
+
+```python
+class LocalIsolatedApplicationContext(ApplicationContext):
+    memory: MemoryBase
+    checkpoint_repository: InMemoryCheckpointRepository
+    execution_scope: str
+```
+
+Its factory constructs memory with the existing `InMemoryMemoryStore`, disables
+workspace persistence unless explicitly supplied, and creates child contexts
+with new owned memory when sibling isolation is requested. It never changes
+`ApplicationContext.create()` defaults.
+
+For a candidate worker:
 
 ```text
-build_llm_input
-  -> prompt assembly plan
-  -> prompt budget processor
-  -> record request observability
-  -> invoke_model
-```
-
-The processor performs these steps in a stable order:
-
-1. Count the assembled request.
-2. Return unchanged when it fits.
-3. Emit `BEFORE_CONTEXT_COMPACT` when reduction is required.
-4. Reduce optional sections by ascending priority and stable section order.
-5. Recount after each reduction phase.
-6. Emit `AFTER_CONTEXT_COMPACT` with bounded diagnostics.
-7. Raise `PromptBudgetExceededError` if required sections still do not fit.
-
-The initial generic reducer registry contains only reusable policies:
-
-- conversation-history trimming by complete turn;
-- existing Memory summary reuse;
-- existing tool-result compaction/offload;
-- bounded head/tail reduction with an explicit omission marker;
-- optional-section removal.
-
-Reducers return a new plan and diagnostics; they do not mutate shared context or
-the source dataset. The processor records section names, token counts, reducer
-names, and omission counts, but never records full prompt content in its
-diagnostic event.
-
-`Agent.invoke_model()` also performs a final budget assertion. This is a guard
-against custom Agents bypassing `async_policy()`, not an alternative processing
-path. It never performs a second reduction.
-
-### 4. Local Context runtime resources
-
-Add `ContextRuntimeResources` as an optional runtime-only property of `Context`:
-
-```python
-@dataclass
-class ContextRuntimeResources:
-    memory: MemoryBase | None = None
-    checkpoint_repository: CheckpointRepository | None = None
-    workspace: WorkSpace | None = None
-    owned: bool = False
-```
-
-These resources are not serialized into distributed task payloads. They are
-supported only by the local runtime in this change.
-
-Add a declarative local resource configuration to `AmniContextConfig`:
-
-```python
-class LocalContextResourceConfig(BaseModel):
-    memory_scope: Literal["global", "task_local"] = "global"
-    checkpoint_scope: Literal["default", "task_local"] = "default"
-    workspace_mode: Literal["default", "disabled"] = "default"
-```
-
-When `memory_scope="task_local"`, the local Context factory constructs a
-`MemoryBase` using the existing `InMemoryMemoryStore`. It does not call
-`MemoryFactory.init()` and therefore does not replace the main agent's global
-memory. Child contexts fork owned task-local resources when isolation is
-requested; they never reuse another candidate worker's memory instance.
-
-### 5. Context-aware memory resolution
-
-Add one framework resolver:
-
-```python
-def resolve_memory(context: Context | None) -> MemoryBase:
-    if context and context.runtime_resources.memory is not None:
-        return context.runtime_resources.memory
-    return MemoryFactory.instance()
-```
-
-Replace direct global-memory access along the standard Agent/Runner path with
-this resolver, including:
-
-- Agent message transformation and history reads;
-- Agent memory writes and cleanup;
-- `DefaultMemoryHandler`;
-- `ApplicationContext.MemoryService`.
-
-The fallback preserves current behavior for every Context without a local
-resource. Existing Memory implementations, schemas, filters, summary logic, and
-retrieval code remain unchanged.
-
-For a local candidate worker, the selected policy is:
-
-```text
-memory scope: task_local
-store: existing InMemoryMemoryStore
+memory: existing MemoryBase + InMemoryMemoryStore
 history scope: task
-summary: disabled for the initial one-shot candidate task
-checkpoint: task-local in-memory
+summary: disabled
+checkpoint: in-memory
 workspace persistence: disabled
+execution scope: self_evolve
 ```
 
-Schema repair belongs to the same population slot. The invalid response and
-repair instruction are passed explicitly in the repair Task input, so correctness
-does not depend on hidden conversation history.
+Schema repair remains in the same population slot, but its invalid response and
+repair instruction are explicit Task input. Correctness does not depend on
+hidden history.
 
-### 6. Hook applicability
+### 5. `ExecutionScopedHook`
 
-Add an execution-scope marker to Context and an optional applicability method to
-hooks. The initial scopes are `cli_interactive`, `self_evolve`, and `generic`.
-Hooks without a predicate retain current behavior.
+Add an optional hook extension whose `exec()` method first checks an execution
+scope predicate. Existing hooks continue inheriting from `Hook` and therefore run
+unchanged.
 
-`PreLlmCostHook` applies only to `cli_interactive` contexts with a CLI history
-session. Candidate tasks use the AWorld prompt budget processor and therefore do
-not emit empty CLI-history reports. Generic before/after LLM hooks continue to
-run for candidate tasks.
+`PreLlmCostHook` adopts the extension and applies only to `cli_interactive`
+contexts with a CLI history session. Candidate Tasks use
+`execution_scope="self_evolve"` and therefore do not emit empty CLI-history
+reports. Generic before/after LLM hooks continue to run.
 
-### 7. Local bounded task execution
+### 6. `DeterministicTaskBatchExecutor`
 
-The local runtime already accepts a list of Tasks and executes coroutine runners
-concurrently. Extend its local batch policy with:
+Add an independent local batch API instead of changing `LocalRuntime.execute()`
+or `Runners.run_task()`:
 
-- `max_concurrency`;
-- stable input-order result collection;
-- cancellation of queued and in-flight higher-index tasks on fail-fast;
-- structured per-task failure results;
-- no process-global environment mutation.
+```python
+class DeterministicTaskBatchExecutor:
+    async def run(
+        self,
+        tasks: list[Task],
+        *,
+        max_concurrency: int,
+        failure_policy: Literal["indexed_fail_fast", "collect_all"],
+    ) -> list[TaskBatchResult]: ...
+```
 
-The default behavior remains compatible. Self-evolve opts into bounded
-concurrency and indexed fail-fast semantics.
+The executor invokes the existing `Runners.run_task()` for each Task, uses a
+local semaphore for bounded concurrency, preserves input-order results, and
+cancels queued/in-flight higher-index Tasks under indexed fail-fast. Existing
+runtime and Runner APIs are not modified. Self-evolve is the only consumer in
+this change.
 
 ## Self-Evolve Execution Architecture
+
+### `Task.runner_cls` adapters
+
+Self-evolve uses the existing `Task.runner_cls` extension point at two levels.
+Neither class changes default Runner selection.
+
+`SelfEvolveTaskRunner(TaskRunner)` is the outer AWorld adapter for one complete
+self-evolve run. Its constructor accepts the `run_conf` keyword supplied by
+`choose_runners()`, stores it for local-runtime validation, and calls
+`TaskRunner.__init__(task, agent_oriented=False)`. Its `do_run()` delegates
+domain execution to the existing deterministic `SelfEvolveRunner` and maps
+progress, cancellation, artifacts, and the final run report into
+`TaskResponse`. It implements the required `streaming()` contract by forwarding
+the self-evolve progress stream when streaming is enabled. It does not
+reimplement dataset, replay, evaluation, gate, or apply logic.
+
+Both entry modes submit the same outer Task:
+
+```python
+Task(
+    input=self_evolve_request,
+    runner_cls="aworld.self_evolve.runtime.SelfEvolveTaskRunner",
+)
+```
+
+`SelfEvolveCandidateTaskRunner(TaskEventRunner)` is the inner adapter for one
+candidate-generation slot. It reuses the standard event-driven Agent lifecycle,
+enters the slot Context's `LocalMemoryScope`, and releases owned resources in
+`post_run()`. The candidate Task selects it explicitly through `runner_cls`.
+Its constructor also accepts and removes `run_conf` before delegating to
+`TaskEventRunner`, because the base event Runner does not currently accept that
+keyword.
+
+The construction contract is therefore explicit:
+
+```python
+class SelfEvolveTaskRunner(TaskRunner):
+    def __init__(self, task: Task, *, run_conf: RunConfig | None = None):
+        self.run_conf = run_conf
+        super().__init__(task, agent_oriented=False)
+
+
+class SelfEvolveCandidateTaskRunner(TaskEventRunner):
+    def __init__(self, task: Task, *, run_conf: RunConfig | None = None):
+        self.run_conf = run_conf
+        super().__init__(task)
+```
+
+This matches the existing `choose_runners()` call
+`new_instance(task.runner_cls, task=task, run_conf=run_conf)` without widening
+the constructor of any default Runner.
+
+The inner Runner waits for or cancels owned background tasks before leaving the
+scope. Candidate summary is disabled initially, so no summary task should
+outlive the worker Task. Schema parsing and repair scheduling remain in the
+self-evolve coordinator; one inner Task performs one standard Agent execution.
+
+The Runner adapters live under `aworld/self_evolve` because they encode
+self-evolve Task/result semantics. They compose AWorld's generic extension APIs
+(`PromptBudgetedAgent`, `LocalMemoryScope`,
+`LocalIsolatedApplicationContext`, and `DeterministicTaskBatchExecutor`) rather
+than adding self-evolve branches to the default Runner.
 
 ### Deterministic control plane
 
@@ -321,6 +365,8 @@ with slots `0..N-1`. Each slot receives:
 
 Each agent is run through `Runners.run_task(Task(...))`. Candidate generation no
 longer directly calls `invoke_model()` or manually constructs a base Context.
+Each candidate Task explicitly selects `SelfEvolveCandidateTaskRunner` through
+`Task.runner_cls`.
 
 The worker Task uses structured prompt sections for the output contract, target
 content, replay requirements, trajectory evidence, lessons, and prior feedback.
@@ -355,17 +401,19 @@ effective budgets, and response usage so model nondeterminism remains auditable.
 
 ### Independent/offline mode
 
-The CLI or Python caller creates `SelfEvolveRunner` directly. It constructs the
-fixed candidate worker execution plan and runs it on AWorld's local runtime. No
-main agent or CLI conversation Context is required.
+The CLI or Python caller submits an outer Task selecting
+`SelfEvolveTaskRunner`. That adapter invokes the existing `SelfEvolveRunner`,
+constructs the fixed candidate worker execution plan, and runs it on AWorld's
+local runtime. No main agent or CLI conversation Context is required.
 
 ### Main-agent subtask mode
 
 The aworld-cli main agent delegates an entire self-evolve request to a
 `SelfEvolveCoordinatorAgent` or equivalent registered subtask entry. The entry
-validates the request and invokes the same `SelfEvolveRunner`; it does not perform
-candidate selection itself. The main agent may start, cancel, and inspect the run
-but cannot modify stage ordering or gate outcomes.
+validates the request and submits the same outer Task selecting
+`SelfEvolveTaskRunner`; it does not perform candidate selection itself. The main
+agent may start, cancel, and inspect the run but cannot modify stage ordering or
+gate outcomes.
 
 Both entry modes produce the same execution plan, artifacts, and reports for the
 same explicit inputs.
@@ -404,20 +452,24 @@ lineage and gate artifacts.
 
 Implementation proceeds in two layers:
 
-1. AWorld framework layer:
-   prompt budget, structured section policies, local Context runtime resources,
-   context-aware memory resolution, hook applicability, and bounded local task
-   execution.
+1. AWorld additive extension layer:
+   `PromptBudgetedAgent`, `BudgetedPromptAssemblyProvider`,
+   `LocalMemoryScope`, `LocalIsolatedApplicationContext`,
+   `ExecutionScopedHook`, and `DeterministicTaskBatchExecutor`.
 2. Self-evolve layer:
-   replace direct candidate invocation with standard Tasks, build the fixed worker
-   plan, add structured prompt hints, and integrate ordered fail-fast results.
+   add the two `Task.runner_cls` adapters, replace direct candidate invocation
+   with standard Tasks, build the fixed worker plan, add structured prompt hints,
+   and integrate ordered fail-fast results.
 
 Compatibility rules:
 
-- prompt budgeting is initially opt-in;
-- global memory remains the default;
-- non-local runtimes reject `task_local` resource configuration with a clear
+- only agents inheriting `PromptBudgetedAgent` receive prompt-budget behavior;
+- `MemoryFactory.instance()` returns the exact existing global instance whenever
+  no `LocalMemoryScope` is active;
+- non-local self-evolve execution rejects `LocalMemoryScope` with a clear
   configuration error rather than silently sharing or serializing local objects;
+- existing `Agent`, `ApplicationContext`, `TaskRunner`, `Runners.run_task()`, and
+  `LocalRuntime.execute()` defaults remain unchanged;
 - existing agents, swarms, and CLI sessions retain current behavior;
 - the earlier no-model deterministic proposal path remains available.
 
@@ -429,22 +481,34 @@ security, and performance tests.
 
 ### AWorld framework tests
 
+- a base `Agent` never invokes prompt-budget extension code;
 - budget resolution reserves the effective output limit and includes tools;
 - required sections are never silently removed;
 - reducers execute in stable priority/order and produce bounded diagnostics;
 - over-budget required content fails before provider invocation;
-- before/after context-compaction hooks fire exactly once when reduction occurs;
+- reduction rebuilds stable hashes and provider cache keys from final messages;
+- `MemoryFactory.instance()` is object-identical to its prior global result when
+  no local scope is active;
 - task-local memory uses distinct existing `InMemoryMemoryStore` instances;
 - a task-local candidate does not read or mutate global main-agent memory;
 - child candidate contexts do not share memory with sibling contexts;
 - global-memory agents remain backward compatible;
 - `PreLlmCostHook` skips non-interactive self-evolve contexts;
 - local batch results are ordered by input slot and cancellation is bounded;
-- non-local runtimes reject task-local resources.
+- existing `Runners.run_task()` and `LocalRuntime.execute()` behavior is unchanged;
+- non-local self-evolve execution rejects local memory scope;
+- both custom Runner constructors accept the `run_conf` keyword supplied by
+  `choose_runners()` without forwarding it to default Runner constructors;
+- the outer Runner fulfills both `do_run()` and `streaming()` contracts while
+  retaining `TaskRunner.run()` lifecycle and cleanup behavior.
 
 ### Self-evolve tests
 
 - every model-backed mutation is executed through `Runners.run_task`;
+- outer offline and main-agent requests select `SelfEvolveTaskRunner` through
+  `Task.runner_cls`;
+- each candidate slot selects `SelfEvolveCandidateTaskRunner` through
+  `Task.runner_cls`;
 - candidate prompts pass through prompt-budget processing before the fake
   provider;
 - candidate slots use isolated local Context resources;
@@ -474,3 +538,4 @@ The design is complete when:
    `SelfEvolveRunner`.
 6. Offline and main-agent-subtask modes execute the same deterministic plan.
 7. Existing non-opt-in AWorld agents remain behaviorally compatible.
+8. Default Runner and LocalRuntime execution paths contain no self-evolve branch.
