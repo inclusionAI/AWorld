@@ -61,6 +61,7 @@ from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayBackend,
+    CandidateReplayRequest,
     CandidateReplayResult,
     ReplayVariantResult,
     build_paired_replay_dataset,
@@ -2406,7 +2407,19 @@ def _find_reusable_baseline_replay_dir(
     target: SelfEvolveTargetRef,
     dataset: SelfEvolveDataset,
     baseline_repetitions: int,
+    baseline_skill_fingerprint: str | None = None,
+    dataset_fingerprint: str | None = None,
+    adaptation_fingerprint: str | None = None,
+    workspace_seed_fingerprint: str | None = None,
 ) -> str | None:
+    expected_provenance = {
+        "baseline_skill_fingerprint": baseline_skill_fingerprint,
+        "dataset_fingerprint": dataset_fingerprint,
+        "adaptation_fingerprint": adaptation_fingerprint,
+        "workspace_seed_fingerprint": workspace_seed_fingerprint,
+    }
+    if any(value is None for value in expected_provenance.values()):
+        return None
     root = store.artifact_root
     if not root.exists():
         return None
@@ -2429,16 +2442,13 @@ def _find_reusable_baseline_replay_dir(
             try:
                 replay_result = load_candidate_replay_result(replay_dir)
             except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
-                legacy_baseline_dir = _legacy_member_baseline_replay_dir(
-                    replay_dir=replay_dir,
-                    target=target,
-                    case_ids=case_ids,
-                    baseline_repetitions=baseline_repetitions,
-                )
-                if legacy_baseline_dir is not None:
-                    return legacy_baseline_dir
                 continue
             if not _replay_target_matches(replay_result.request.target, target):
+                continue
+            if not _replay_request_provenance_matches(
+                replay_result.request,
+                expected=expected_provenance,
+            ):
                 continue
             if replay_result.member_results:
                 member_case_ids = tuple(member.case_id for member in replay_result.member_results)
@@ -2463,6 +2473,17 @@ def _find_reusable_baseline_replay_dir(
                 if baseline_dir.exists():
                     return str(baseline_dir)
     return None
+
+
+def _replay_request_provenance_matches(
+    request: CandidateReplayRequest,
+    *,
+    expected: Mapping[str, str | None],
+) -> bool:
+    return all(
+        value is not None and getattr(request, key, None) == value
+        for key, value in expected.items()
+    )
 
 
 def _legacy_member_baseline_replay_dir(
