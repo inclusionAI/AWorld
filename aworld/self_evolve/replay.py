@@ -275,40 +275,12 @@ def _baseline_comparison_trajectory(
     case: EvalCase,
     baseline: ReplayVariantResult,
 ) -> tuple[list[Mapping[str, Any]], str]:
+    del case
     if baseline.trajectory:
         return list(baseline.trajectory), (
             "replay" if baseline.succeeded else "failed_replay"
         )
-    metadata = case.metadata if isinstance(case.metadata, Mapping) else {}
-    baseline_trajectory = metadata.get("baseline_trajectory")
-    if isinstance(baseline_trajectory, list):
-        mapped = [item for item in baseline_trajectory if isinstance(item, Mapping)]
-        if mapped:
-            return mapped, "source_trajectory"
-    if case.trace_pack is not None:
-        trajectory = _trace_pack_to_trajectory(case.trace_pack)
-        if trajectory:
-            return trajectory, "source_trajectory"
     return [], "unavailable"
-
-
-def _trace_pack_to_trajectory(trace_pack: Any) -> list[Mapping[str, Any]]:
-    trajectory: list[Mapping[str, Any]] = []
-    for index, step in enumerate(trace_pack.steps, start=1):
-        meta = {
-            "step": index,
-            "agent_id": step.agent_id,
-            "pre_agent": step.pre_agent,
-        }
-        trajectory.append(
-            {
-                "meta": {key: value for key, value in meta.items() if value is not None},
-                "state": dict(step.state),
-                "action": dict(step.action),
-                "reward": dict(step.reward),
-            }
-        )
-    return trajectory
 
 
 class CandidateReplayBackend(Protocol):
@@ -777,6 +749,16 @@ class AWorldCliCandidateReplayBackend:
                 artifact_dir=artifact_dir,
             )
             environment = _adapter_environment(case_adaptation.bindings)
+            environment = {
+                key: str(
+                    _expand_replay_placeholders(
+                        value,
+                        workspace_root=isolated_workspace,
+                        artifact_dir=artifact_dir,
+                    )
+                )
+                for key, value in environment.items()
+            }
             environment.update(
                 {
                     "AWORLD_REPLAY_WORKSPACE": str(isolated_workspace),

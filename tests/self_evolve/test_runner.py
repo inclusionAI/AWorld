@@ -280,7 +280,7 @@ def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
     timeout = ReplayVariantResult(
         variant_id="baseline",
         status="failed",
-        trajectory=[],
+        trajectory=baseline_trajectory,
         failure={"type": "TimeoutExpired", "reason": "replay timed out"},
     )
     replay = CandidateReplayResult(
