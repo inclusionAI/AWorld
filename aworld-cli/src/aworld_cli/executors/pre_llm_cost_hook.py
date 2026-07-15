@@ -20,6 +20,7 @@ from aworld.core.event.base import Message
 from aworld.logs.util import logger
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook
+from aworld.runners.hook.scoped import ExecutionScopedHook
 from aworld.core.agent.base import AgentFactory, BaseAgent
 
 try:
@@ -51,7 +52,7 @@ def _context_current_agent_id(context: Context = None) -> str | None:
 
 
 @HookFactory.register(name="PreLlmCostHook")
-class PreLlmCostHook(PreLLMCallHook):
+class PreLlmCostHook(ExecutionScopedHook, PreLLMCallHook):
     """
     Checks token consumption for the current query/session before each LLM call.
 
@@ -67,7 +68,9 @@ class PreLlmCostHook(PreLLMCallHook):
     Only active in CLI environment (when history file exists and console is available).
     """
 
-    async def exec(self, message: Message, context: Context = None) -> Message:
+    allowed_execution_scopes = frozenset({"cli_interactive"})
+
+    async def _exec_scoped(self, message: Message, context: Context = None) -> Message:
         """
         Displays token consumption for the current session before each LLM call
         (same logic as the /cost command).

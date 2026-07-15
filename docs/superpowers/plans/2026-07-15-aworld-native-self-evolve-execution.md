@@ -118,11 +118,11 @@ class PreLlmCostHook(ExecutionScopedHook, PreLLMCallHook):
     allowed_execution_scopes = frozenset({"cli_interactive"})
 ```
 
-- [ ] Write a failing test showing a `self_evolve` Context returns before CLI history and console lookup, while `cli_interactive` preserves current behavior.
-- [ ] Run the targeted hook tests; expect `ExecutionScopedHook` import failure.
-- [ ] Implement `ExecutionScopedHook` as an opt-in mixin with `applies_to(context)` and a protected `_exec_scoped()` method; migrate only `PreLlmCostHook` and require `execution_scope == "cli_interactive"`.
-- [ ] Re-run hook tests; expect existing non-opt-in hooks unchanged.
-- [ ] Commit `feat(hooks): scope interactive CLI cost checks`.
+- [x] Write a failing test showing a `self_evolve` Context returns before CLI history and console lookup, while `cli_interactive` preserves current behavior.
+- [x] Run the targeted hook tests; expect `ExecutionScopedHook` import failure.
+- [x] Implement `ExecutionScopedHook` as an opt-in mixin with `applies_to(context)` and a protected `_exec_scoped()` method; migrate only `PreLlmCostHook` and require `execution_scope == "cli_interactive"`.
+- [x] Re-run hook tests; expect existing non-opt-in hooks unchanged.
+- [x] Commit `feat(hooks): scope interactive CLI cost checks`.
 
 ### Task 5: Self-evolve Runner adapters and candidate Task lifecycle
 
