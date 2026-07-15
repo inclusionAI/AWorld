@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from aworld.self_evolve.sanitization import sanitize_text
+from aworld.self_evolve.sanitization import sanitize_metric_value, sanitize_text
 from aworld.self_evolve.types import EvaluationSummary
 
 _MAX_TEXT_CHARS = 240
@@ -68,6 +68,9 @@ _SCALAR_METRIC_KEYS = {
     "failed_repetition_count",
     "replay_failed_repetition_count",
     "replay_evidence_manifest_invalid_entry_count",
+    "failure_class",
+    "repairable",
+    "candidate_protocol_invalid_count",
 }
 
 _EVIDENCE_METRIC_KEYS = {
@@ -112,7 +115,7 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         metrics=metrics,
         required_behaviors=required_behaviors,
     )
-    return {
+    result = {
         "variant_id": feedback.variant_id,
         "dataset_split": feedback.dataset_split,
         "metrics": _metric_summary(metrics),
@@ -121,6 +124,14 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         "required_behaviors": required_behaviors,
         "repair_plan": repair_plan,
     }
+    diagnostics = metrics.get("candidate_validation_diagnostics")
+    if isinstance(diagnostics, list):
+        result["candidate_validation_diagnostics"] = [
+            sanitize_metric_value(item)
+            for item in diagnostics[:16]
+            if isinstance(item, Mapping)
+        ]
+    return result
 
 
 def _metric_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
