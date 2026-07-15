@@ -56,6 +56,45 @@ def test_execution_telemetry_aggregates_only_bounded_stage_metadata() -> None:
     assert "prompt" not in json.dumps(report)
 
 
+def test_execution_telemetry_aggregates_repair_accounting_and_bounded_usage() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+    telemetry.record(
+        "candidate_generation",
+        {
+            "item_count": 1,
+            "repair_attempt_count": 1,
+            "repair_success_count": 1,
+            "repair_protocol_invalid_count": 0,
+            "repair_infrastructure_failure_count": 0,
+            "initial_queue_wait_seconds": 0.1,
+            "initial_execution_seconds": 0.2,
+            "repair_queue_wait_seconds": 0.3,
+            "repair_execution_seconds": 0.4,
+            "initial_discarded_count": 0,
+            "repair_discarded_count": 0,
+            "token_usage": {
+                "prompt_tokens": 40,
+                "completion_tokens": 20,
+                "total_tokens": 60,
+                "raw_response": "must-not-be-recorded",
+            },
+        },
+    )
+
+    report = telemetry.to_report()["candidate_generation"]
+
+    assert report["repair_attempt_count"] == 1
+    assert report["repair_success_count"] == 1
+    assert report["initial_execution_seconds"] == pytest.approx(0.2)
+    assert report["repair_execution_seconds"] == pytest.approx(0.4)
+    assert report["token_usage"] == {
+        "completion_tokens": 20,
+        "prompt_tokens": 40,
+        "total_tokens": 60,
+    }
+    assert "raw_response" not in json.dumps(report)
+
+
 def test_all_ones_policy_is_the_serial_rollback() -> None:
     policy = SelfEvolveConcurrencyPolicy(
         max_total_concurrency=1,

@@ -238,6 +238,49 @@ async def test_schema_repair_reuses_the_same_slot_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_repair_telemetry_counts_attempt_success_and_tokens() -> None:
+    async def run_task(task: Task):
+        if task.id.endswith("-repair"):
+            answer = json.dumps(
+                {
+                    "content": "# Demo\n\nRepaired candidate.\n",
+                    "rationale": "repaired",
+                }
+            )
+            usage = {"prompt_tokens": 25, "completion_tokens": 15, "total_tokens": 40}
+        else:
+            answer = "not-json"
+            usage = {"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20}
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer=answer,
+                usage=usage,
+            )
+        }
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=json.loads,
+        repair_prompt_builder=lambda invalid, error: f"repair: {invalid}: {error}",
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    diagnostics = (await executor.run(["candidate prompt"], max_concurrency=1)).diagnostics
+
+    assert diagnostics["repair_attempt_count"] == 1
+    assert diagnostics["repair_success_count"] == 1
+    assert diagnostics["repair_protocol_invalid_count"] == 0
+    assert diagnostics["repair_infrastructure_failure_count"] == 0
+    assert diagnostics["initial_token_usage"]["total_tokens"] == 20
+    assert diagnostics["repair_token_usage"]["total_tokens"] == 40
+    assert diagnostics["token_usage"]["total_tokens"] == 60
+    assert diagnostics["initial_execution_seconds"] >= 0
+    assert diagnostics["repair_execution_seconds"] >= 0
+
+
+@pytest.mark.asyncio
 async def test_schema_repair_builder_receives_invalid_output_not_original_prompt() -> None:
     captured_repair_inputs: list[str] = []
 

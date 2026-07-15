@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Awaitable, Callable, Literal, Mapping
 
 from aworld.core.task import Task, TaskResponse
@@ -45,6 +45,7 @@ class TaskBatchResult:
     queue_wait_seconds: float = 0.0
     execution_seconds: float = 0.0
     serialized_by_resource: bool = False
+    usage_metadata: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def succeeded(self) -> bool:
@@ -223,6 +224,7 @@ class DeterministicTaskBatchExecutor:
                         queue_wait_seconds=execution_started - queued_at,
                         execution_seconds=time.monotonic() - execution_started,
                         serialized_by_resource=serialized_by_resource,
+                        usage_metadata=_bounded_usage(response),
                     )
                     if status == "failed":
                         await record_failure(item.index)
@@ -323,3 +325,28 @@ class DeterministicTaskBatchExecutor:
             "elapsed_seconds": time.monotonic() - started_at,
         }
         return output
+
+
+_ALLOWED_USAGE_KEYS = frozenset(
+    {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "input_tokens",
+        "output_tokens",
+    }
+)
+
+
+def _bounded_usage(response: TaskResponse | None) -> dict[str, int]:
+    usage = response.usage if response is not None else None
+    if not isinstance(usage, Mapping):
+        return {}
+    return {
+        key: value
+        for key, value in sorted(usage.items())
+        if key in _ALLOWED_USAGE_KEYS
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    }
