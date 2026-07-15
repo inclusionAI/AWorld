@@ -139,16 +139,19 @@ class ReplayAdapterBinding:
     binding_fingerprint: str | None = None
 
 
+REPLAY_BINDING_CONCURRENCY_MODES = (
+    "exclusive",
+    "isolated",
+    "shared_read_only",
+)
+
+
 def validate_replay_binding_concurrency(
     binding: ReplayAdapterBinding,
 ) -> ReplayAdapterBinding:
     """Validate generic skill-owned scheduling metadata and fill safe defaults."""
 
-    if binding.concurrency_mode not in {
-        "isolated",
-        "shared_read_only",
-        "exclusive",
-    }:
+    if binding.concurrency_mode not in REPLAY_BINDING_CONCURRENCY_MODES:
         raise ValueError(
             f"unsupported replay binding concurrency mode: {binding.concurrency_mode}"
         )

@@ -69,6 +69,33 @@ def test_release_checklist_marks_missing_checks_as_not_run_without_blocking_prop
     assert checks["candidate_shape"]["status"] == "passed"
 
 
+def test_all_skipped_release_groups_are_not_run() -> None:
+    checklist = build_release_checklist(
+        apply_policy="auto_verified",
+        gate_results=[],
+    )
+
+    assert checklist["status"] == "not_run"
+    assert checklist["blocking_failed_checks"] == []
+    assert all(check["status"] == "not_run" for check in checklist["checks"])
+
+
+def test_candidate_capability_failure_blocks_evidence_integrity() -> None:
+    checklist = build_release_checklist(
+        apply_policy="auto_verified",
+        gate_results=[
+            {
+                "gate_name": "candidate_capability_replay",
+                "passed": False,
+                "reason": "candidate package violates registered capability contract",
+            }
+        ],
+    )
+
+    assert checklist["status"] == "blocked"
+    assert checklist["blocking_failed_checks"] == ["evidence_integrity"]
+
+
 def test_content_quality_diagnostics_flags_supported_content_risks() -> None:
     diagnostics = build_content_quality_diagnostics(
         {

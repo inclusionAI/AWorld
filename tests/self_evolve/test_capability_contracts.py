@@ -46,6 +46,30 @@ def test_replay_authoring_contract_is_derived_from_public_protocol_constants() -
         "--output",
         "<output-directory>",
     ]
+    assert contract["manifest"]["field_constraints"]["entrypoint"] == {
+        "type": "relative_file_path",
+        "suffix": ".py",
+        "must_exist": True,
+        "command_prefix_allowed": False,
+    }
+    assert contract["manifest"]["field_constraints"]["runtime_files"][
+        "items"
+    ]["file_only"] is True
+    assert contract["manifest"]["field_constraints"]["concurrency_mode"][
+        "enum"
+    ] == ["exclusive", "isolated", "shared_read_only"]
+    result_shape = contract["compiler"]["result_shape"]
+    assert result_shape["handled_requirements"]["items"] == "requirement_id"
+    assert result_shape["evidence_refs"]["type"] == "object"
+    assert result_shape["fixture_evidence_refs"]["keys"] == "fixture_path"
+    assert result_shape["endpoint_replacements"]["values"] == "service_id"
+    assert result_shape["services"]["items"]["transport"]["enum"] == [
+        "http_fixture",
+        "tcp_fixture",
+    ]
+    assert contract["validation"]["fixture_bytes"] == (
+        "byte-for-byte recorded evidence derivation"
+    )
     lowered = json.dumps(contract, ensure_ascii=False, sort_keys=True).lower()
     assert "browser" not in lowered
     assert "cdp" not in lowered
@@ -151,4 +175,5 @@ def test_replay_provider_returns_typed_candidate_diagnostic_for_invalid_manifest
         "failure_class": "candidate",
         "repairable": True,
         "field_path": "replay/capability.json",
+        "reason": "unsupported replay capability schema: unsupported",
     }

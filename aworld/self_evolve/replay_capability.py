@@ -49,6 +49,13 @@ _MAX_FIXTURE_FILE_BYTES = 16 * 1024 * 1024
 _MAX_FIXTURE_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_READINESS_TIMEOUT_SECONDS = 30.0
 
+REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS = tuple(
+    sorted(_SUPPORTED_READINESS_KINDS)
+)
+REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS = tuple(
+    sorted(_SUPPORTED_SERVICE_TRANSPORTS)
+)
+
 
 class ReplayCapabilityError(RuntimeError):
     """Raised when a skill-owned replay capability violates the protocol."""

@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from aworld.core.factory import Factory
-from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
+from aworld.self_evolve.replay_adaptation import (
+    REPLAY_BINDING_CONCURRENCY_MODES,
+    ReplayCapabilityRequirement,
+)
 from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_MANIFEST_PATH,
     REPLAY_CAPABILITY_PROTOCOL_VERSION,
@@ -14,9 +17,12 @@ from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
     REPLAY_CAPABILITY_SCHEMA_VERSION,
     REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS,
+    REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS,
+    REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS,
     ReplayCapabilityError,
     discover_replay_capability,
 )
+from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.types import CandidateVariant
 
 
@@ -30,6 +36,7 @@ class CandidateValidationDiagnostic:
     failure_class: FailureClass
     repairable: bool
     field_path: str | None = None
+    reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -40,6 +47,8 @@ class CandidateValidationDiagnostic:
         }
         if self.field_path is not None:
             result["field_path"] = self.field_path
+        if self.reason is not None:
+            result["reason"] = sanitize_text(self.reason, max_chars=240)
         return result
 
 
@@ -121,6 +130,35 @@ class ReplayCapabilityContractProvider:
                 "supported_requirement_kinds": list(
                     REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS
                 ),
+                "field_constraints": {
+                    "entrypoint": {
+                        "type": "relative_file_path",
+                        "suffix": ".py",
+                        "must_exist": True,
+                        "command_prefix_allowed": False,
+                    },
+                    "handles": {
+                        "type": "array",
+                        "items": {
+                            "enum": list(
+                                REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS
+                            )
+                        },
+                        "min_items": 1,
+                    },
+                    "runtime_files": {
+                        "type": "array",
+                        "items": {
+                            "type": "relative_file_path",
+                            "must_exist": True,
+                            "file_only": True,
+                        },
+                    },
+                    "concurrency_mode": {
+                        "enum": list(REPLAY_BINDING_CONCURRENCY_MODES),
+                        "default": "exclusive",
+                    },
+                },
             },
             "compiler": {
                 "protocol_version": REPLAY_CAPABILITY_PROTOCOL_VERSION,
@@ -156,6 +194,62 @@ class ReplayCapabilityContractProvider:
                     "endpoint_replacements",
                     "services",
                 ],
+                "result_shape": {
+                    "schema_version": {
+                        "const": REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
+                    },
+                    "capability_id": "same value as manifest capability_id",
+                    "deterministic": {"type": "boolean", "const": True},
+                    "handled_requirements": {
+                        "type": "array",
+                        "items": "requirement_id",
+                    },
+                    "unhandled_requirements": {
+                        "type": "array",
+                        "items": "requirement_id",
+                    },
+                    "evidence_refs": {
+                        "type": "object",
+                        "keys": "handled requirement_id",
+                        "values": "non-empty array of that request requirement's evidence_refs",
+                    },
+                    "fixture_evidence_refs": {
+                        "type": "object",
+                        "keys": "fixture_path",
+                        "values": "non-empty array of recorded evidence_refs",
+                    },
+                    "fixtures": {
+                        "type": "array",
+                        "items": "relative output file path",
+                    },
+                    "endpoint_replacements": {
+                        "type": "object",
+                        "keys": "handled requirement identifier",
+                        "values": "service_id",
+                    },
+                    "services": {
+                        "type": "array",
+                        "items": {
+                            "service_id": "identifier",
+                            "requirement_id": "handled requirement_id",
+                            "transport": {
+                                "enum": list(
+                                    REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS
+                                )
+                            },
+                            "response_fixture": "declared fixture_path",
+                            "readiness": {
+                                "kind": {
+                                    "enum": list(
+                                        REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS
+                                    )
+                                },
+                                "timeout_seconds": "number in (0, 30]",
+                                "path": "optional absolute URL path beginning with /",
+                            },
+                        },
+                    },
+                },
             },
             "validation": {
                 "compile_repetitions": 2,
@@ -163,6 +257,22 @@ class ReplayCapabilityContractProvider:
                 "must_classify_every_requirement": True,
                 "must_preserve_evidence_provenance": True,
                 "candidate_code_imported_by_framework": False,
+                "entrypoint_invocation": (
+                    "framework Python -I <entrypoint> --request <request-json> "
+                    "--output <output-directory>"
+                ),
+                "fixture_bytes": "byte-for-byte recorded evidence derivation",
+                "fixture_derivation_sources": [
+                    "cited context snapshot task_input descendant",
+                    "cited context snapshot steps descendant",
+                    "cited context snapshot prior_turns descendant",
+                    "cited request task_inputs descendant",
+                ],
+                "fixture_derivation_encoding": (
+                    "raw UTF-8 string or compact sorted JSON UTF-8 bytes"
+                ),
+                "every_fixture_requires_one_service": True,
+                "handled_local_endpoint_requires_endpoint_replacement": True,
             },
         }
 
@@ -175,7 +285,7 @@ class ReplayCapabilityContractProvider:
         if skill_root is not None:
             try:
                 capability = discover_replay_capability(skill_root)
-            except (ReplayCapabilityError, OSError, ValueError):
+            except (ReplayCapabilityError, OSError, ValueError) as exc:
                 return CapabilityValidationResult(
                     capability_type=self.capability_type,
                     passed=False,
@@ -186,6 +296,7 @@ class ReplayCapabilityContractProvider:
                             failure_class="candidate",
                             repairable=True,
                             field_path=REPLAY_CAPABILITY_MANIFEST_PATH,
+                            reason=str(exc),
                         ),
                     ),
                 )
