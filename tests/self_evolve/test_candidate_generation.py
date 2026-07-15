@@ -7,7 +7,12 @@ from aworld.agents.llm_agent import Agent
 from aworld.config.conf import ModelConfig
 from aworld.core.agent.base import AgentFactory
 from aworld.core.context.base import Context
+from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.common import TaskStatusValue
+from aworld.core.task import TaskResponse
 from aworld.models.model_response import ModelResponse
+from aworld.runner import Runners
+from aworld.self_evolve.runtime import SelfEvolveCandidateTaskRunner
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
@@ -25,6 +30,50 @@ def test_candidate_generation_agent_registers_with_aworld_runtime() -> None:
     )
 
     assert AgentFactory.agent_instance(agent.id()) is agent
+
+
+@pytest.mark.asyncio
+async def test_candidate_generation_submits_standard_isolated_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    async def fake_run_task(task, run_conf=None):
+        captured["task"] = task
+        captured["run_conf"] = run_conf
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer='{"content":"# Candidate"}',
+                status=TaskStatusValue.SUCCESS,
+            )
+        }
+
+    async def unexpected_direct_invoke(*args, **kwargs):
+        raise AssertionError("generate() must use Runners.run_task()")
+
+    monkeypatch.setattr(Runners, "run_task", fake_run_task)
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="candidate-model",
+            llm_api_key="test-key",
+        )
+    )
+    monkeypatch.setattr(agent, "invoke_model", unexpected_direct_invoke)
+
+    output = await agent.generate("candidate evidence")
+
+    task = captured["task"]
+    assert output == '{"content":"# Candidate"}'
+    assert task.agent is agent
+    assert task.input == "candidate evidence"
+    assert task.runner_cls == "aworld.self_evolve.runtime.SelfEvolveCandidateTaskRunner"
+    assert isinstance(task.context, LocalIsolatedApplicationContext)
+    assert task.context.execution_scope == "self_evolve"
+    assert captured["run_conf"] is None
+    assert SelfEvolveCandidateTaskRunner is not None
 
 
 @pytest.mark.asyncio

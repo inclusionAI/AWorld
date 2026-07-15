@@ -269,6 +269,10 @@ __all__ = [
     "ReplayVariantResult",
     "RankedCandidateStrategy",
     "SelfEvolveRunner",
+    "SelfEvolveTaskRunner",
+    "SelfEvolveCandidateTaskRunner",
+    "SelfEvolveReplayTaskRunner",
+    "SelfEvolveEvaluationTaskRunner",
     "SelfEvolveRunnerResult",
     "SelfEvolveDataset",
     "SelfEvolveEvalSourceConfig",
@@ -343,3 +347,17 @@ __all__ = [
     "materialize_replay_workspace",
     "trace_packs_from_trajectory_log",
 ]
+
+
+def __getattr__(name: str):
+    runtime_names = {
+        "SelfEvolveTaskRunner",
+        "SelfEvolveCandidateTaskRunner",
+        "SelfEvolveReplayTaskRunner",
+        "SelfEvolveEvaluationTaskRunner",
+    }
+    if name in runtime_names:
+        from aworld.self_evolve import runtime
+
+        return getattr(runtime, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
