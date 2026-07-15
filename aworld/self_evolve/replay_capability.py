@@ -18,6 +18,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterContext,
     ReplayCapabilityRequirement,
     ReplayDependency,
+    validate_replay_binding_concurrency,
 )
 
 
@@ -72,6 +73,9 @@ class ReplayCapabilityManifest:
     entrypoint: str
     handles: tuple[str, ...]
     runtime_files: tuple[str, ...] = ()
+    concurrency_mode: str = "exclusive"
+    resource_key: str | None = None
+    binding_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +176,9 @@ class ReplayCapabilityCompileResult:
     fixtures: tuple[str, ...]
     endpoint_replacements: Mapping[str, str]
     services: tuple[ReplayServiceSpec, ...]
+    concurrency_mode: str = "exclusive"
+    resource_key: str | None = None
+    binding_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +205,9 @@ class FrozenReplayCapability:
     deterministic: bool
     fingerprint: str
     ready: bool
+    concurrency_mode: str = "exclusive"
+    resource_key: str | None = None
+    binding_fingerprint: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -231,6 +241,9 @@ class FrozenReplayCapabilityAdapter:
             adapter_id=self.adapter_id,
             dependency_id=dependency.identifier,
             deterministic=self.capability.deterministic,
+            concurrency_mode=self.capability.concurrency_mode,
+            resource_key=self.capability.resource_key,
+            binding_fingerprint=self.capability.binding_fingerprint,
         )
 
 
@@ -467,6 +480,10 @@ def verify_frozen_replay_capability(capability: FrozenReplayCapability) -> None:
                 raise ReplayCapabilityError(
                     f"frozen replay capability file changed: {category}/{item.path}"
                 )
+    manifest = _read_json_object(
+        root / "frozen_manifest.json",
+        label="frozen replay capability manifest",
+    )
     payload = {
         "schema_version": REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
         "capability_id": capability.capability_id,
@@ -484,12 +501,19 @@ def verify_frozen_replay_capability(capability: FrozenReplayCapability) -> None:
         "services": [asdict(item) for item in capability.services],
         "deterministic": capability.deterministic,
     }
+    if any(
+        key in manifest
+        for key in ("concurrency_mode", "resource_key", "binding_fingerprint")
+    ):
+        payload.update(
+            {
+                "concurrency_mode": capability.concurrency_mode,
+                "resource_key": capability.resource_key,
+                "binding_fingerprint": capability.binding_fingerprint,
+            }
+        )
     if _json_fingerprint(payload) != capability.fingerprint:
         raise ReplayCapabilityError("frozen replay capability fingerprint mismatch")
-    manifest = _read_json_object(
-        root / "frozen_manifest.json",
-        label="frozen replay capability manifest",
-    )
     if manifest.get("fingerprint") != capability.fingerprint:
         raise ReplayCapabilityError("frozen replay capability manifest mismatch")
 
@@ -522,6 +546,33 @@ def _parse_manifest(raw: Mapping[str, Any]) -> ReplayCapabilityManifest:
     )
     if len(set(runtime_files)) != len(runtime_files):
         raise ReplayCapabilityError("replay capability runtime_files contain duplicates")
+    concurrency_mode = str(raw.get("concurrency_mode") or "exclusive")
+    resource_key = _optional_bounded_string(raw.get("resource_key"), "resource_key")
+    binding_fingerprint = _optional_bounded_string(
+        raw.get("binding_fingerprint"),
+        "binding_fingerprint",
+    )
+    try:
+        validated_binding = validate_replay_binding_concurrency(
+            ReplayAdapterBinding(
+                adapter_id=f"skill-replay:{capability_id}",
+                dependency_id="manifest",
+                deterministic=True,
+                concurrency_mode=concurrency_mode,
+                resource_key=(
+                    resource_key
+                    if resource_key is not None
+                    else (
+                        None
+                        if concurrency_mode == "isolated"
+                        else f"replay-capability:{capability_id}"
+                    )
+                ),
+                binding_fingerprint=binding_fingerprint,
+            )
+        )
+    except ValueError as exc:
+        raise ReplayCapabilityError(str(exc)) from exc
     return ReplayCapabilityManifest(
         schema_version=schema_version,
         capability_id=capability_id,
@@ -529,6 +580,9 @@ def _parse_manifest(raw: Mapping[str, Any]) -> ReplayCapabilityManifest:
         entrypoint=entrypoint,
         handles=tuple(sorted(set(handles))),
         runtime_files=runtime_files,
+        concurrency_mode=validated_binding.concurrency_mode,
+        resource_key=validated_binding.resource_key,
+        binding_fingerprint=binding_fingerprint,
     )
 
 
@@ -663,6 +717,42 @@ def _parse_compile_result(
         raise ReplayCapabilityError(
             "handled local endpoint lacks a declared endpoint replacement"
         )
+    result_mode = str(
+        raw.get("concurrency_mode") or capability.manifest.concurrency_mode
+    )
+    result_resource_key = _optional_bounded_string(
+        raw.get("resource_key"),
+        "result resource_key",
+    )
+    if "resource_key" not in raw:
+        result_resource_key = capability.manifest.resource_key
+    result_binding_fingerprint = _optional_bounded_string(
+        raw.get("binding_fingerprint"),
+        "result binding_fingerprint",
+    )
+    if result_binding_fingerprint is None:
+        result_binding_fingerprint = capability.manifest.binding_fingerprint
+    if result_binding_fingerprint is None:
+        result_binding_fingerprint = _json_fingerprint(
+            {
+                "capability_package_fingerprint": capability.package_fingerprint,
+                "request_fingerprint": request.request_fingerprint,
+                "handled_requirements": list(handled),
+            }
+        )
+    try:
+        validated_binding = validate_replay_binding_concurrency(
+            ReplayAdapterBinding(
+                adapter_id=f"skill-replay:{capability_id}",
+                dependency_id="compile-result",
+                deterministic=deterministic,
+                concurrency_mode=result_mode,
+                resource_key=result_resource_key,
+                binding_fingerprint=result_binding_fingerprint,
+            )
+        )
+    except ValueError as exc:
+        raise ReplayCapabilityError(str(exc)) from exc
     return ReplayCapabilityCompileResult(
         schema_version=schema_version,
         capability_id=capability_id,
@@ -674,6 +764,9 @@ def _parse_compile_result(
         fixtures=fixtures,
         endpoint_replacements=dict(sorted(replacements_raw.items())),
         services=services,
+        concurrency_mode=validated_binding.concurrency_mode,
+        resource_key=validated_binding.resource_key,
+        binding_fingerprint=validated_binding.binding_fingerprint,
     )
 
 
@@ -946,6 +1039,9 @@ def _freeze_compile_result(
         "endpoint_replacements": result.endpoint_replacements,
         "services": [asdict(item) for item in result.services],
         "deterministic": result.deterministic,
+        "concurrency_mode": result.concurrency_mode,
+        "resource_key": result.resource_key,
+        "binding_fingerprint": result.binding_fingerprint,
     }
     fingerprint = _json_fingerprint(payload)
     manifest = {**payload, "fingerprint": fingerprint}
@@ -966,6 +1062,9 @@ def _freeze_compile_result(
         deterministic=result.deterministic,
         fingerprint=fingerprint,
         ready=result.deterministic and not result.unhandled_requirements,
+        concurrency_mode=result.concurrency_mode,
+        resource_key=result.resource_key,
+        binding_fingerprint=result.binding_fingerprint,
     )
 
 
@@ -1068,6 +1167,17 @@ def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReplayCapabilityError(f"{label} must contain a JSON object")
     return value
+
+
+def _optional_bounded_string(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ReplayCapabilityError(f"{label} must be a non-empty string")
+    normalized = value.strip()
+    if len(normalized) > 512 or any(ord(character) < 32 for character in normalized):
+        raise ReplayCapabilityError(f"{label} exceeds the safe string contract")
+    return normalized
 
 
 def _validate_declared_output_files(

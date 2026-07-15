@@ -226,12 +226,12 @@ class ReplayAdapterBinding:
     binding_fingerprint: str | None = None
 ```
 
-- [ ] Write failing tests for manifest modes `isolated`, `shared_read_only`, and `exclusive`; absent metadata derives one capability-scoped exclusive key; contradictory isolated bindings fail preflight.
-- [ ] Write failing tests that eligible replay repetitions use `SelfEvolveReplayTaskRunner`, share the initial snapshot fingerprint, use distinct materialized workspace paths, and aggregate by case/repetition index.
-- [ ] Implement optional manifest/result binding fields `concurrency_mode`, opaque `resource_key`, and binding identity fingerprint with backward-compatible parsing/defaults.
-- [ ] Implement replay Task inputs and fan-out in `_run_repetitions()`. Use effective concurrency `1` for exclusive claims and the policy limit for verified isolated/read-only bindings. Keep each evidence-retry chain inside one repetition Task.
-- [ ] Re-run replay capability/adaptation/concurrency tests and existing replay integration tests.
-- [ ] Commit `feat(self-evolve): run isolated replay tasks concurrently`.
+- [x] Write failing tests for manifest modes `isolated`, `shared_read_only`, and `exclusive`; absent metadata derives one capability-scoped exclusive key; contradictory isolated bindings fail preflight.
+- [x] Write failing tests that eligible replay repetitions use `SelfEvolveReplayTaskRunner`, share the initial snapshot fingerprint, use distinct materialized workspace paths, and aggregate by case/repetition index.
+- [x] Implement optional manifest/result binding fields `concurrency_mode`, opaque `resource_key`, and binding identity fingerprint with backward-compatible parsing/defaults.
+- [x] Implement replay Task inputs and fan-out in `_run_repetitions()`. Use effective concurrency `1` for exclusive claims and the policy limit for verified isolated/read-only bindings. Keep each evidence-retry chain inside one repetition Task.
+- [x] Re-run replay capability/adaptation/concurrency tests and existing replay integration tests.
+- [x] Commit `feat(self-evolve): run isolated replay tasks concurrently`.
 
 ### Task 9: Evaluation Tasks and safe judge concurrency
 

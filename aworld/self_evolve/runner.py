@@ -2238,7 +2238,9 @@ def optimize_from_cli_request(
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
     if replay_enabled and candidate_replay_backend is None:
-        candidate_replay_backend = AWorldCliCandidateReplayBackend()
+        candidate_replay_backend = AWorldCliCandidateReplayBackend(
+            concurrency_policy=effective_concurrency_policy
+        )
 
     self_evolve_runner = SelfEvolveRunner(
         store=store,
