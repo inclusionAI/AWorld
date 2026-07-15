@@ -270,6 +270,7 @@ __all__ = [
     "RankedCandidateStrategy",
     "SelfEvolveRunner",
     "SelfEvolveTaskRunner",
+    "SelfEvolveTaskRequest",
     "SelfEvolveCandidateTaskRunner",
     "SelfEvolveReplayTaskRunner",
     "SelfEvolveEvaluationTaskRunner",
@@ -322,6 +323,7 @@ __all__ = [
     "build_judge_backend",
     "build_paired_replay_dataset",
     "build_replay_request",
+    "build_self_evolve_task",
     "replay_dataset_fingerprint",
     "cleanup_self_evolve_overlays",
     "compile_and_freeze_capability",
@@ -352,6 +354,8 @@ __all__ = [
 def __getattr__(name: str):
     runtime_names = {
         "SelfEvolveTaskRunner",
+        "SelfEvolveTaskRequest",
+        "build_self_evolve_task",
         "SelfEvolveCandidateTaskRunner",
         "SelfEvolveReplayTaskRunner",
         "SelfEvolveEvaluationTaskRunner",
