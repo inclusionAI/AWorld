@@ -6179,8 +6179,11 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
             },
         ],
     }
+    original_run_task = Runners.run_task
 
     async def fake_run_task(task, run_conf=None):
+        if task.runner_cls == "aworld.self_evolve.runtime.SelfEvolveTaskRunner":
+            return await original_run_task(task, run_conf=run_conf)
         agent = task.agent
         prompt = task.input
         model_calls.append((agent, prompt))
@@ -6272,9 +6275,12 @@ def test_optimize_cli_request_stops_population_after_model_runtime_failure(
         encoding="utf-8",
     )
     model_call_count = 0
+    original_run_task = Runners.run_task
 
     async def fake_run_task(task, run_conf=None):
         nonlocal model_call_count
+        if task.runner_cls == "aworld.self_evolve.runtime.SelfEvolveTaskRunner":
+            return await original_run_task(task, run_conf=run_conf)
         model_call_count += 1
         task.agent._task_failures[task.id] = {
             "code": "candidate_generation_infrastructure_error",

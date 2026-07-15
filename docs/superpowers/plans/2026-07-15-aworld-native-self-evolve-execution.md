@@ -197,12 +197,12 @@ outer_task = Task(
 response = Runners.sync_run_task(outer_task)[outer_task.id]
 ```
 
-- [ ] Write failing tests showing both offline CLI and main-agent subtask inputs select `SelfEvolveTaskRunner`, and iteration 2 cannot start until iteration 1 feedback is reduced.
-- [ ] Run targeted tests; expect `optimize_from_cli_request()` still directly constructs `SelfEvolveRunner` inside `asyncio.run()`.
-- [ ] Add a local-only immutable outer request carrying the constructed deterministic runner and `run_explicit_target()` arguments. Make `SelfEvolveTaskRunner.do_run()` execute it and map the result to `TaskResponse`.
-- [ ] Replace that direct call with `Runners.sync_run_task(outer_task)` where `outer_task.runner_cls` is `aworld.self_evolve.runtime.SelfEvolveTaskRunner`; preserve summary/report output and keep all stage planning inside `SelfEvolveRunner`.
-- [ ] Re-run targeted CLI/runner tests.
-- [ ] Commit `feat(self-evolve): add outer task runner entry`.
+- [x] Write failing tests showing both offline CLI and main-agent subtask inputs select `SelfEvolveTaskRunner`, and iteration 2 cannot start until iteration 1 feedback is reduced.
+- [x] Run targeted tests; expect `optimize_from_cli_request()` still directly constructs `SelfEvolveRunner` inside `asyncio.run()`.
+- [x] Add a local-only immutable outer request carrying the constructed deterministic runner and `run_explicit_target()` arguments. Make `SelfEvolveTaskRunner.do_run()` execute it and map the result to `TaskResponse`.
+- [x] Replace that direct call with `Runners.sync_run_task(outer_task)` where `outer_task.runner_cls` is `aworld.self_evolve.runtime.SelfEvolveTaskRunner`; preserve summary/report output and keep all stage planning inside `SelfEvolveRunner`.
+- [x] Re-run targeted CLI/runner tests.
+- [x] Commit `feat(self-evolve): add outer task runner entry`.
 
 ### Task 8: Skill-owned replay concurrency and replay Tasks
 

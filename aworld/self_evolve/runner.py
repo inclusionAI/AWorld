@@ -11,6 +11,7 @@ from typing import Mapping, Iterable
 
 from aworld.config.conf import ModelConfig, SelfEvolveJudgeConfig
 from aworld.logs.util import logger
+from aworld.runner import Runners
 from aworld.self_evolve.credit_assignment import (
     TargetInventoryEntry,
     TargetSelectionReport,
@@ -100,6 +101,10 @@ from aworld.self_evolve.replay_capability import (
     ReplayCapabilityCompileRequest,
     compile_and_freeze_capability,
     discover_replay_capability,
+)
+from aworld.self_evolve.runtime import (
+    SelfEvolveTaskRequest,
+    build_self_evolve_task,
 )
 from aworld.self_evolve.release_checks import (
     build_content_quality_diagnostics,
@@ -2235,52 +2240,60 @@ def optimize_from_cli_request(
     if replay_enabled and candidate_replay_backend is None:
         candidate_replay_backend = AWorldCliCandidateReplayBackend()
 
-    import asyncio
-
-    result = asyncio.run(
-        SelfEvolveRunner(
-            store=store,
-            optimizer=TraceReflectiveLLMMutator(
-                mutate_text=_cli_default_mutation,
-                population_callable=(
-                    _cli_candidate_population
-                    if candidate_population_executor is not None
-                    else None
-                ),
-                concurrency_policy=effective_concurrency_policy,
+    self_evolve_runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(
+            mutate_text=_cli_default_mutation,
+            population_callable=(
+                _cli_candidate_population
+                if candidate_population_executor is not None
+                else None
             ),
-            evaluation_backend=evaluation_backend,
-            post_apply_evaluator=post_apply_evaluator,
-            min_score_delta=min_score_delta,
-            max_iterations=iterations or 1,
-            min_eval_cases=min_eval_cases,
-            judge_repetitions=judge_repetitions,
-            max_run_tokens=max_run_tokens,
-            auto_apply_target_types=auto_apply_target_types,
-            replay_enabled=replay_enabled,
-            candidate_replay_backend=candidate_replay_backend,
-            replay_timeout_seconds=replay_timeout_seconds,
-            replay_max_steps=replay_max_steps,
-            replay_candidate_limit=replay_candidate_limit,
-            baseline_replay_repetitions=baseline_replay_repetitions,
-            candidate_replay_repetitions=candidate_replay_repetitions,
-            replay_stability_margin=replay_stability_margin,
-            replay_adaptation_compiler=replay_adaptation_compiler,
-            replay_agent=agent,
-            runtime_registry_refresher=runtime_registry_refresher,
-            runtime_skill_activator=runtime_skill_activator,
-            progress_callback=progress_callback,
             concurrency_policy=effective_concurrency_policy,
-        ).run_explicit_target(
-            run_id=run_id,
-            target=target_adapter,
-            dataset=built_dataset,
-            trace_packs=trace_packs,
-            apply_policy=apply_policy,
-            target_selection_report=target_selection_report,
-            target_provenance=target_provenance,
-        )
+        ),
+        evaluation_backend=evaluation_backend,
+        post_apply_evaluator=post_apply_evaluator,
+        min_score_delta=min_score_delta,
+        max_iterations=iterations or 1,
+        min_eval_cases=min_eval_cases,
+        judge_repetitions=judge_repetitions,
+        max_run_tokens=max_run_tokens,
+        auto_apply_target_types=auto_apply_target_types,
+        replay_enabled=replay_enabled,
+        candidate_replay_backend=candidate_replay_backend,
+        replay_timeout_seconds=replay_timeout_seconds,
+        replay_max_steps=replay_max_steps,
+        replay_candidate_limit=replay_candidate_limit,
+        baseline_replay_repetitions=baseline_replay_repetitions,
+        candidate_replay_repetitions=candidate_replay_repetitions,
+        replay_stability_margin=replay_stability_margin,
+        replay_adaptation_compiler=replay_adaptation_compiler,
+        replay_agent=agent,
+        runtime_registry_refresher=runtime_registry_refresher,
+        runtime_skill_activator=runtime_skill_activator,
+        progress_callback=progress_callback,
+        concurrency_policy=effective_concurrency_policy,
     )
+    outer_task = build_self_evolve_task(
+        SelfEvolveTaskRequest(
+            runner=self_evolve_runner,
+            run_kwargs={
+                "run_id": run_id,
+                "target": target_adapter,
+                "dataset": built_dataset,
+                "trace_packs": trace_packs,
+                "apply_policy": apply_policy,
+                "target_selection_report": target_selection_report,
+                "target_provenance": target_provenance,
+            },
+        ),
+        task_id=f"{run_id}-self-evolve",
+    )
+    outer_responses = Runners.sync_run_task(outer_task)
+    outer_response = outer_responses.get(outer_task.id)
+    if outer_response is None or not outer_response.success:
+        raise RuntimeError("self-evolve outer Task did not complete successfully")
+    result = outer_response.answer
     run_path = store.run_path(run_id)
     if target_selection_report is not None:
         target_selection_path = run_path / "target_selection.json"
@@ -2668,49 +2681,57 @@ def _rerun_evaluator_from_stored_run(
         f"Reusing replay artifacts from {source_run_id} for candidate {candidate.candidate_id}",
     )
 
-    import asyncio
-
-    result = asyncio.run(
-        SelfEvolveRunner(
-            store=store,
-            optimizer=_FixedCandidateOptimizer(
-                candidate=candidate,
-                source_run_id=source_run_id,
-            ),
-            evaluation_backend=evaluation_backend,
-            post_apply_evaluator=post_apply_evaluator,
-            min_score_delta=min_score_delta,
-            max_iterations=1,
-            min_eval_cases=min_eval_cases,
-            judge_repetitions=judge_repetitions,
-            max_run_tokens=max_run_tokens,
-            auto_apply_target_types=auto_apply_target_types,
-            replay_enabled=True,
-            candidate_replay_backend=_StoredCandidateReplayBackend(
-                replay_result=replay_result,
-                source_replay_path=str(replay_path),
-            ),
-            replay_timeout_seconds=replay_timeout_seconds,
-            replay_max_steps=replay_max_steps,
-            replay_candidate_limit=replay_candidate_limit,
-            baseline_replay_repetitions=baseline_replay_repetitions,
-            candidate_replay_repetitions=candidate_replay_repetitions,
-            replay_stability_margin=replay_stability_margin,
-            replay_agent=agent,
-            runtime_registry_refresher=runtime_registry_refresher,
-            runtime_skill_activator=runtime_skill_activator,
-            progress_callback=progress_callback,
-            skip_duplicate_rejected_candidate_gate=True,
-            concurrency_policy=concurrency_policy,
-        ).run_explicit_target(
-            run_id=run_id,
-            target=target_adapter,
-            dataset=built_dataset,
-            trace_packs=trace_packs,
-            apply_policy=apply_policy,
-            target_selection_report=target_selection_report,
-        )
+    self_evolve_runner = SelfEvolveRunner(
+        store=store,
+        optimizer=_FixedCandidateOptimizer(
+            candidate=candidate,
+            source_run_id=source_run_id,
+        ),
+        evaluation_backend=evaluation_backend,
+        post_apply_evaluator=post_apply_evaluator,
+        min_score_delta=min_score_delta,
+        max_iterations=1,
+        min_eval_cases=min_eval_cases,
+        judge_repetitions=judge_repetitions,
+        max_run_tokens=max_run_tokens,
+        auto_apply_target_types=auto_apply_target_types,
+        replay_enabled=True,
+        candidate_replay_backend=_StoredCandidateReplayBackend(
+            replay_result=replay_result,
+            source_replay_path=str(replay_path),
+        ),
+        replay_timeout_seconds=replay_timeout_seconds,
+        replay_max_steps=replay_max_steps,
+        replay_candidate_limit=replay_candidate_limit,
+        baseline_replay_repetitions=baseline_replay_repetitions,
+        candidate_replay_repetitions=candidate_replay_repetitions,
+        replay_stability_margin=replay_stability_margin,
+        replay_agent=agent,
+        runtime_registry_refresher=runtime_registry_refresher,
+        runtime_skill_activator=runtime_skill_activator,
+        progress_callback=progress_callback,
+        skip_duplicate_rejected_candidate_gate=True,
+        concurrency_policy=concurrency_policy,
     )
+    outer_task = build_self_evolve_task(
+        SelfEvolveTaskRequest(
+            runner=self_evolve_runner,
+            run_kwargs={
+                "run_id": run_id,
+                "target": target_adapter,
+                "dataset": built_dataset,
+                "trace_packs": trace_packs,
+                "apply_policy": apply_policy,
+                "target_selection_report": target_selection_report,
+            },
+        ),
+        task_id=f"{run_id}-self-evolve",
+    )
+    outer_responses = Runners.sync_run_task(outer_task)
+    outer_response = outer_responses.get(outer_task.id)
+    if outer_response is None or not outer_response.success:
+        raise RuntimeError("self-evolve outer Task did not complete successfully")
+    result = outer_response.answer
     run_path = store.run_path(run_id)
     report_path = run_path / "report.json"
     selected_candidate_id = (
