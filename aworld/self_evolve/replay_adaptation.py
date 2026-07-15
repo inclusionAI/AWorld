@@ -10,7 +10,7 @@ import stat
 import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, Sequence
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 
@@ -132,6 +132,59 @@ class ReplayAdapterBinding:
     deterministic: bool
     environment: Mapping[str, str] = field(default_factory=dict)
     fixture_paths: tuple[str, ...] = ()
+    concurrency_mode: Literal[
+        "isolated", "shared_read_only", "exclusive"
+    ] = "exclusive"
+    resource_key: str | None = None
+    binding_fingerprint: str | None = None
+
+
+def validate_replay_binding_concurrency(
+    binding: ReplayAdapterBinding,
+) -> ReplayAdapterBinding:
+    """Validate generic skill-owned scheduling metadata and fill safe defaults."""
+
+    if binding.concurrency_mode not in {
+        "isolated",
+        "shared_read_only",
+        "exclusive",
+    }:
+        raise ValueError(
+            f"unsupported replay binding concurrency mode: {binding.concurrency_mode}"
+        )
+    resource_key = binding.resource_key
+    if resource_key is not None:
+        resource_key = resource_key.strip()
+        if not resource_key:
+            raise ValueError("replay binding resource_key must not be empty")
+    if binding.concurrency_mode == "isolated":
+        if resource_key is not None:
+            raise ValueError(
+                "isolated replay binding cannot declare a shared resource_key"
+            )
+        if not binding.deterministic:
+            raise ValueError("isolated replay binding must be deterministic")
+    elif resource_key is None:
+        resource_key = f"replay-adapter:{binding.adapter_id}"
+    binding_fingerprint = binding.binding_fingerprint
+    if binding_fingerprint is not None:
+        binding_fingerprint = binding_fingerprint.strip()
+        if not binding_fingerprint:
+            raise ValueError("replay binding fingerprint must not be empty")
+    if binding_fingerprint is None:
+        binding_fingerprint = _json_fingerprint(
+            {
+                "adapter_id": binding.adapter_id,
+                "dependency_id": binding.dependency_id,
+                "deterministic": binding.deterministic,
+                "fixture_paths": list(binding.fixture_paths),
+            }
+        )
+    return replace(
+        binding,
+        resource_key=resource_key,
+        binding_fingerprint=binding_fingerprint,
+    )
 
 
 @dataclass(frozen=True)
@@ -397,12 +450,14 @@ class ReplayAdaptationCompiler:
             if binding is None:
                 adapted_dependencies.append(dependency)
                 continue
-            safe_binding = self._snapshot_adapter_fixtures(
-                replace(
-                    binding,
-                    environment=_safe_adapter_environment(binding.environment),
-                ),
-                workspace_seed=workspace_seed,
+            safe_binding = validate_replay_binding_concurrency(
+                self._snapshot_adapter_fixtures(
+                    replace(
+                        binding,
+                        environment=_safe_adapter_environment(binding.environment),
+                    ),
+                    workspace_seed=workspace_seed,
+                )
             )
             bindings.append(safe_binding)
             adapted_dependencies.append(

@@ -19,8 +19,16 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
+from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.task import Task
 from aworld.logs.util import logger
 from aworld.memory.tool_call_compaction import REPLAY_COMPACTED_ARGUMENT_FAILURE
+from aworld.runners.batch import (
+    DeterministicTaskBatchExecutor,
+    TaskBatchItem,
+    TaskResourceClaim,
+)
+from aworld.self_evolve.concurrency import SelfEvolveConcurrencyPolicy
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -33,6 +41,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
     ReplayCaseAdaptation,
     ReplayDependency,
+    validate_replay_binding_concurrency,
     materialize_replay_workspace,
 )
 from aworld.self_evolve.replay_capability import (
@@ -534,6 +543,47 @@ class ReplayExecutionResult:
 ReplayExecutor = Callable[[ReplayExecutionRequest], Any]
 
 
+@dataclass(frozen=True)
+class ReplayRepetitionTaskInput:
+    backend: "AWorldCliCandidateReplayBackend"
+    request: CandidateReplayRequest
+    variant_id: str
+    skill_root: str | None
+    artifact_dir: Path
+
+    async def execute(self) -> ReplayVariantResult:
+        return await self.backend._run_variant_with_evidence_retries(
+            self.request,
+            variant_id=self.variant_id,
+            skill_root=self.skill_root,
+            artifact_dir=self.artifact_dir,
+        )
+
+
+def _replay_resource_claims(
+    request: CandidateReplayRequest,
+) -> tuple[TaskResourceClaim, ...]:
+    adaptation = request.replay_adaptation
+    if adaptation is None:
+        return ()
+    bindings = adaptation.case(request.task_id).bindings
+    claims_by_key: dict[str, bool] = {}
+    for raw_binding in bindings:
+        binding = validate_replay_binding_concurrency(raw_binding)
+        if binding.concurrency_mode == "isolated":
+            continue
+        if binding.resource_key is None:  # pragma: no cover - validator fills it
+            raise ValueError("non-isolated replay binding requires resource_key")
+        exclusive = binding.concurrency_mode == "exclusive"
+        claims_by_key[binding.resource_key] = (
+            claims_by_key.get(binding.resource_key, False) or exclusive
+        )
+    return tuple(
+        TaskResourceClaim(key=key, exclusive=exclusive)
+        for key, exclusive in sorted(claims_by_key.items())
+    )
+
+
 @dataclass
 class _ReplayServiceProcess:
     process: subprocess.Popen[Any]
@@ -628,8 +678,15 @@ class AWorldCliCandidateReplayBackend:
         self,
         *,
         executor: ReplayExecutor | None = None,
+        concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
+        task_batch_executor: DeterministicTaskBatchExecutor | None = None,
     ) -> None:
         self.executor = executor or AWorldCliReplayExecutor()
+        self.concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
+        self.task_batch_executor = (
+            task_batch_executor or DeterministicTaskBatchExecutor()
+        )
+        self.last_replay_batch_observability: Mapping[str, Any] = {}
 
     async def replay_candidate(
         self,
@@ -852,12 +909,12 @@ class AWorldCliCandidateReplayBackend:
     ) -> ReplayVariantResult:
         if repetitions <= 0:
             raise ValueError("replay repetitions must be positive")
-        results: list[ReplayVariantResult] = []
         logger.info(
             "self_evolve.replay.repetitions.start "
             f"run_id={request.run_id} task_id={request.task_id} "
             f"variant_id={base_variant_id} repetitions={repetitions}"
         )
+        task_items: list[TaskBatchItem] = []
         for index in range(1, repetitions + 1):
             variant_id = base_variant_id if repetitions == 1 else f"{base_variant_id}-{index}"
             repetition_dir = artifact_dir if repetitions == 1 else artifact_dir / str(index)
@@ -866,14 +923,60 @@ class AWorldCliCandidateReplayBackend:
                 f"run_id={request.run_id} task_id={request.task_id} "
                 f"variant_id={variant_id} index={index}/{repetitions}"
             )
-            results.append(
-                await self._run_variant_with_evidence_retries(
-                    request,
-                    variant_id=variant_id,
-                    skill_root=skill_root,
-                    artifact_dir=repetition_dir,
+            task_input = ReplayRepetitionTaskInput(
+                backend=self,
+                request=request,
+                variant_id=variant_id,
+                skill_root=skill_root,
+                artifact_dir=repetition_dir,
+            )
+            task_id = (
+                f"self-evolve-replay-{_safe_path(request.run_id)}-"
+                f"{_safe_path(request.task_id)}-{_safe_path(variant_id)}"
+            )
+            task_items.append(
+                TaskBatchItem(
+                    index=index - 1,
+                    task=Task(
+                        id=task_id,
+                        session_id=task_id,
+                        input=task_input,
+                        context=LocalIsolatedApplicationContext.create(
+                            task_id=task_id,
+                            session_id=task_id,
+                            task_content="isolated self-evolve replay repetition",
+                        ),
+                        runner_cls=(
+                            "aworld.self_evolve.runtime.SelfEvolveReplayTaskRunner"
+                        ),
+                    ),
+                    resource_claims=_replay_resource_claims(request),
                 )
             )
+        batch_results = await self.task_batch_executor.run(
+            task_items,
+            max_concurrency=self.concurrency_policy.effective_limit(
+                "replay",
+                item_count=len(task_items),
+            ),
+            failure_policy="collect_all",
+        )
+        self.last_replay_batch_observability = dict(
+            self.task_batch_executor.last_run_observability
+        )
+        results: list[ReplayVariantResult] = []
+        for index, batch_result in enumerate(batch_results, start=1):
+            if (
+                batch_result.status != "succeeded"
+                or batch_result.response is None
+                or not isinstance(batch_result.response.answer, ReplayVariantResult)
+            ):
+                raise RuntimeError(
+                    "required replay repetition failed "
+                    f"at index {index} ({batch_result.error_type or 'TaskFailed'})"
+                )
+            results.append(batch_result.response.answer)
+            variant_id = results[-1].variant_id
             logger.info(
                 "self_evolve.replay.repetition.end "
                 f"run_id={request.run_id} task_id={request.task_id} "
@@ -2966,23 +3069,38 @@ def _replay_adaptation_from_mapping(value: Any) -> ReplayAdaptationBundle | None
             if isinstance(item, Mapping)
         )
         bindings = tuple(
-            ReplayAdapterBinding(
-                adapter_id=str(item.get("adapter_id") or ""),
-                dependency_id=str(item.get("dependency_id") or ""),
-                deterministic=item.get("deterministic") is True,
-                environment=(
-                    {
-                        str(key): str(entry)
-                        for key, entry in item.get("environment", {}).items()
-                    }
-                    if isinstance(item.get("environment"), Mapping)
-                    else {}
-                ),
-                fixture_paths=tuple(
-                    str(path)
-                    for path in item.get("fixture_paths", ())
-                    if isinstance(path, str)
-                ),
+            validate_replay_binding_concurrency(
+                ReplayAdapterBinding(
+                    adapter_id=str(item.get("adapter_id") or ""),
+                    dependency_id=str(item.get("dependency_id") or ""),
+                    deterministic=item.get("deterministic") is True,
+                    environment=(
+                        {
+                            str(key): str(entry)
+                            for key, entry in item.get("environment", {}).items()
+                        }
+                        if isinstance(item.get("environment"), Mapping)
+                        else {}
+                    ),
+                    fixture_paths=tuple(
+                        str(path)
+                        for path in item.get("fixture_paths", ())
+                        if isinstance(path, str)
+                    ),
+                    concurrency_mode=str(
+                        item.get("concurrency_mode") or "exclusive"
+                    ),
+                    resource_key=(
+                        str(item.get("resource_key"))
+                        if item.get("resource_key") is not None
+                        else None
+                    ),
+                    binding_fingerprint=(
+                        str(item.get("binding_fingerprint"))
+                        if item.get("binding_fingerprint") is not None
+                        else None
+                    ),
+                )
             )
             for item in raw_case.get("bindings", ())
             if isinstance(item, Mapping)
@@ -3131,6 +3249,17 @@ def _frozen_replay_capability_from_mapping(
         deterministic=value.get("deterministic") is True,
         fingerprint=str(value.get("fingerprint") or ""),
         ready=value.get("ready") is True,
+        concurrency_mode=str(value.get("concurrency_mode") or "exclusive"),
+        resource_key=(
+            str(value.get("resource_key"))
+            if value.get("resource_key") is not None
+            else None
+        ),
+        binding_fingerprint=(
+            str(value.get("binding_fingerprint"))
+            if value.get("binding_fingerprint") is not None
+            else None
+        ),
     )
 
 
