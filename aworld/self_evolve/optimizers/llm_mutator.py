@@ -18,6 +18,7 @@ from aworld.self_evolve.concurrency import (
     CandidatePopulationResult,
     SelfEvolveConcurrencyPolicy,
 )
+from aworld.self_evolve.evolution_context import compile_evolution_context
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
@@ -217,158 +218,15 @@ class TraceReflectiveLLMMutator:
 
 
 def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -> str:
-    population_strategy = _population_strategy(candidate_index)
-    candidate_strategy = _candidate_strategy_record(request, candidate_index=candidate_index)
-    payload = {
-        "candidate_index": candidate_index,
-        "population_strategy": population_strategy,
-        "candidate_strategy": candidate_strategy,
-        "target": {
-            "target_type": request.target.target_type,
-            "target_id": request.target.target_id,
-            "path": request.target.path,
-            "fingerprint": request.target_fingerprint,
-        },
-        "current_content": request.current_content,
-        "trace_evidence": [
-            {
-                "pack_id": pack.pack_id,
-                "task_id": pack.task_id,
-                "evidence_step_ids": [step.evidence_id for step in pack.steps],
-                "final_action_excerpt": pack.final_action_excerpt,
-            }
-            for pack in request.trace_packs
-        ],
-        "validation_feedback": [
-            {"feedback_summary": normalize_feedback_summary(feedback)}
-            for feedback in request.validation_feedback
-        ],
-        "prior_feedback": [
-            {"feedback_summary": normalize_feedback_summary(feedback)}
-            for feedback in request.prior_feedback
-        ],
-        "lesson_records": [
-            {
-                "lesson_id": lesson.lesson_id,
-                "lesson_type": lesson.lesson_type,
-                "title": lesson.title,
-                "summary": lesson.summary,
-                "confidence": lesson.confidence,
-                "evidence_refs": list(lesson.evidence_refs[:8]),
-                "metrics": lesson.metrics,
-            }
-            for lesson in request.lesson_records
-        ],
-        "trainable_cases": [
-            {
-                "case_id": case.case_id,
-                "input": case.input,
-                "expected_output": case.expected_output,
-                "metadata": case.metadata,
-            }
-            for case in request.trainable_cases
-        ],
-        "replay_requirements": [
-            {
-                "requirement_id": item.requirement_id,
-                "kind": item.kind,
-                "identifier": item.identifier,
-                "case_ids": list(item.case_ids),
-                "evidence_refs": list(item.evidence_refs),
-                "status": item.status,
-                "detail": item.detail,
-            }
-            for item in request.replay_requirements
-        ],
-        "target_package_inventory": list(request.target_package_inventory),
-        "candidate_output_contract": {
-            "content": "complete SKILL.md text; omit when patch_intent is used",
-            "patch_intent": {
-                "operations": [
-                    {
-                        "op": "replace_section or append_section",
-                        "heading": "existing or new Markdown heading",
-                        "content": "replacement section body",
-                    }
-                ]
-            },
-            "rationale": "concise explanation of the reusable behavior delta",
-            "files": [
-                {
-                    "path": "replay/<relative-path>",
-                    "operation": "upsert or delete",
-                    "content": "UTF-8 text for upsert",
-                    "executable": False,
-                }
-            ],
-        },
-    }
+    context = request.evolution_context or compile_evolution_context(request)
+    payload = context.to_prompt_payload(candidate_index=candidate_index)
     return (
-        "Propose one concise self-evolve skill candidate. "
-        "Use trace evidence and trainable cases only; do not assume held-out data. "
-        "Prefer the smallest useful change: encode a minimal behavior delta that directly "
-        "addresses the observed failure, include a preserve list naming behavior that must "
-        "stay unchanged, and include an acceptance check that would prove the delta helped. "
-        f"Use this candidate population strategy: {population_strategy['name']} - "
-        f"{population_strategy['instruction']} "
-        "Do not rewrite the whole target when a local addition or replacement is enough. "
-        "Use trace-driven reflective optimization: identify why the prior run lost score, "
-        "then encode reusable procedural guidance that can improve task quality, tool economy, "
-        "latency, and completion reliability. "
-        "When replay_requirements are present, the candidate may include skill-owned files "
-        "under replay/ using candidate_output_contract. Domain-specific replay behavior must "
-        "live in those candidate files, not in framework assumptions. "
-        "If validation_feedback or prior_feedback mentions evidence_quality, "
-        "evidence_compacted, or evidence_incomplete, the candidate must include general "
-        "evidence-preservation guidance. Make it actionable and tool-agnostic: avoid "
-        "large raw tool outputs, persist raw evidence to files or artifacts first, emit "
-        "only bounded structured summaries with source locations and short excerpts, "
-        "treat compacted/truncated raw outputs without artifact-backed extracts as "
-        "unusable evidence, keep an evidence ledger, and require a claim-by-claim "
-        "artifact-backed or bounded-extract evidence check before final answers. "
-        "If feedback mentions invalid manifest entries, veto_triggered, low A1_groundedness, "
-        "or required_behaviors such as manifest_schema_compliance, pre_final_veto_check, "
-        "support_every_claim_with_artifact_reference, or raise_groundedness_before_breadth, "
-        "the candidate must include generic evidence-repair guidance: validate artifact "
-        "manifest entries before final answers, preserve artifact reference integrity, "
-        "run a pre-final veto check, support every factual claim with an artifact reference "
-        "or minimal source span, remove or qualify unsupported claims, and improve "
-        "groundedness before expanding answer breadth. "
-        "If feedback shows more evidence blocks, higher evidence_incomplete, or longer "
-        "latency without score improvement, the candidate must reduce scope instead of "
-        "broadening synthesis: prefer fewer verified claims over broad synthesis, do not "
-        "expand answer breadth until each claim is verifiable, optimize verifiability per "
-        "evidence block, avoid collecting more evidence without a verifiability gain, and "
-        "cap evidence acquisition and summarization cost. "
-        "If feedback mentions score_improvement, B2_efficiency, or required_behaviors such as "
-        "plan_before_tools, prefer_direct_structured_extraction, minimize_failed_attempts, "
-        "avoid_repeated_paths, or stop_after_sufficient_evidence, the candidate must include "
-        "general efficiency-improvement guidance: plan the shortest viable evidence path before "
-        "tool calls, prefer direct structured extraction over broad exploration, minimize failed "
-        "attempts, avoid repeated paths after one unsuccessful try, stop after sufficient evidence "
-        "is captured, and compare against the baseline on quality, tool economy, latency, and "
-        "completion reliability. "
-        "If feedback mentions compacted tool arguments, compacted_string_field, invalid tool "
-        "arguments, or required_behaviors such as avoid_compacted_tool_arguments, "
-        "regenerate_schema_valid_tool_arguments, stop_repeating_invalid_tool_calls, or "
-        "switch_to_artifact_read_after_invalid_tool_argument, the candidate must include generic "
-        "tool-argument hygiene: never execute replay placeholders as real tool inputs, regenerate "
-        "the smallest schema-valid tool arguments from the current task context, read saved "
-        "artifacts when the original argument was compacted, and do not repeat the same invalid "
-        "tool call after one schema failure. "
-        "If feedback shows a high-scoring baseline with candidate_score <= baseline_score, "
-        "do not propose broad extra guidance. Preserve the baseline strengths and encode a "
-        "small explicit behavior delta: what execution behavior should change, what behavior "
-        "should stay unchanged, and what acceptance check proves the candidate beats the "
-        "baseline on score, compliance, efficiency, or robustness.\n"
-        "If feedback mentions high_baseline_without_efficiency_gain, "
-        "replace_broad_validation_with_efficiency_delta, "
-        "candidate_uses_no_more_steps_than_baseline, or "
-        "use_efficiency_delta_for_high_baseline, the candidate must improve by doing less "
-        "at the same quality: preserve the baseline claim set, answer structure, and source "
-        "references; do not add new verification loops, new evidence paths, or new external "
-        "claims; reduce or cap tool/evidence steps and pass only if groundedness and "
-        "completeness stay no worse than baseline.\n"
+        "Generate one candidate package from this bounded EvolutionContext. "
+        "Follow its population_strategy, required_behaviors, preserved_behaviors, "
+        "capability_contracts, and acceptance_constraints. Prefer the smallest reusable "
+        "behavior delta and keep domain implementations inside candidate-owned files. "
+        "Return the value of expected_output as exactly one JSON object; do not wrap it, "
+        "and use exactly one of content or patch_intent.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
 
@@ -386,7 +244,7 @@ def _candidate_strategy_record(
     *,
     candidate_index: int,
 ) -> dict[str, Any]:
-    population_strategy = _population_strategy(candidate_index)
+    population_strategy = _population_strategy(request, candidate_index)
     addressed_lessons = _addressed_lesson_ids(request)
     preserved_success_behaviors = _preserved_success_behaviors(request)
     risk_notes = _risk_notes(request)
@@ -408,31 +266,33 @@ def _candidate_strategy_record(
     }
 
 
-def _population_strategy(candidate_index: int) -> dict[str, str]:
-    strategies = (
-        {
-            "name": "conservative_preserve_then_delta",
-            "instruction": (
-                "keep high-scoring baseline behavior explicit, then add only one targeted "
-                "behavior delta with a no-worse-than-baseline acceptance check"
-            ),
-        },
-        {
-            "name": "evidence_integrity_delta",
-            "instruction": (
-                "focus on evidence fidelity and verification behavior while preserving "
-                "answer breadth, groundedness, and completeness"
-            ),
-        },
-        {
-            "name": "score_dimension_repair_delta",
-            "instruction": (
-                "repair the lowest regressed scoring dimensions from feedback, especially "
-                "A1/A2/B2 deltas, without adding broad unrelated guidance"
-            ),
-        },
-    )
-    return strategies[candidate_index % len(strategies)]
+def _population_strategy(
+    request: OptimizerRequest,
+    candidate_index: int,
+) -> dict[str, str]:
+    context = request.evolution_context or compile_evolution_context(request)
+    names = context.population_strategies or ("minimal_behavior_delta",)
+    name = names[candidate_index % len(names)]
+    instructions = {
+        "minimal_behavior_delta": (
+            "preserve existing strengths and add the smallest behavior change that "
+            "satisfies the typed acceptance constraints"
+        ),
+        "missing_capability_completion": (
+            "publish candidate-owned files that satisfy every applicable capability "
+            "authoring contract"
+        ),
+        "quality_regression_repair": (
+            "repair the typed failed gates and required behaviors without unrelated scope"
+        ),
+        "efficiency_and_robustness": (
+            "improve reliability and resource economy while preserving required quality"
+        ),
+    }
+    return {
+        "name": name,
+        "instruction": instructions[name],
+    }
 
 
 def _preserved_success_behaviors(request: OptimizerRequest) -> list[str]:

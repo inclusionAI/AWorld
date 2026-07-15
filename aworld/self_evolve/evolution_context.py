@@ -133,7 +133,9 @@ def _deduplicate_feedback(
     values: list[Mapping[str, object]] = []
     seen: set[str] = set()
     for feedback in feedback_items:
-        normalized = sanitize_metric_value(normalize_feedback_summary(feedback))
+        normalized = _bounded_feedback_summary(
+            normalize_feedback_summary(feedback)
+        )
         fingerprint = hashlib.sha256(
             json.dumps(
                 normalized,
@@ -149,6 +151,33 @@ def _deduplicate_feedback(
         if len(values) >= MAX_CONTEXT_FEEDBACK_ITEMS:
             break
     return tuple(values)
+
+
+def _bounded_feedback_summary(
+    summary: Mapping[str, Any],
+) -> Mapping[str, object]:
+    normalized = dict(sanitize_metric_value(summary))
+    for key, limit in (("failed_gates", 16), ("required_behaviors", 32)):
+        raw = summary.get(key)
+        if isinstance(raw, list):
+            normalized[key] = [
+                sanitize_text(item, max_chars=160)
+                for item in raw[:limit]
+                if str(item).strip()
+            ]
+    repair_plan = summary.get("repair_plan")
+    if isinstance(repair_plan, Mapping):
+        normalized_plan = dict(sanitize_metric_value(repair_plan))
+        for key in ("issues", "actions", "acceptance_criteria"):
+            raw = repair_plan.get(key)
+            if isinstance(raw, list):
+                normalized_plan[key] = [
+                    sanitize_text(item, max_chars=200)
+                    for item in raw[:24]
+                    if str(item).strip()
+                ]
+        normalized["repair_plan"] = normalized_plan
+    return normalized
 
 
 def _trainable_case_payloads(
@@ -253,7 +282,11 @@ def _feedback_string_values(
 def _preserved_behaviors(lessons: Sequence[object]) -> tuple[str, ...]:
     values: set[str] = set()
     for lesson in lessons:
-        if lesson.lesson_type == "success_memory":
+        if lesson.lesson_type in {
+            "lean_solution_path",
+            "trajectory_success_memory",
+            "success_memory",
+        }:
             values.add(sanitize_text(lesson.summary, max_chars=240))
         raw = lesson.metrics.get("preserved_behaviors")
         if isinstance(raw, (list, tuple)):
