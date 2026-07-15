@@ -252,6 +252,126 @@ def _non_negative_int(value: Any) -> int:
     return 0
 
 
+def _default_iteration_budget(
+    *,
+    apply_policy: str,
+    explicit_iterations: int | None,
+) -> int:
+    if explicit_iterations is not None:
+        if isinstance(explicit_iterations, bool) or explicit_iterations <= 0:
+            raise ValueError("iterations must be positive")
+        return explicit_iterations
+    return 2 if apply_policy == "auto_verified" else 1
+
+
+def _optimizer_iteration_diagnostics(
+    optimizer_diagnostics: Iterable[Mapping[str, object]],
+) -> Iterable[Mapping[str, object]]:
+    for item in optimizer_diagnostics:
+        diagnostics = item.get("diagnostics")
+        if isinstance(diagnostics, Mapping):
+            yield diagnostics
+
+
+def _status_without_selected_candidate(
+    optimizer_diagnostics: list[dict[str, object]],
+) -> SelfEvolveRunStatus:
+    infrastructure_failure = False
+    candidate_owned_outcome = False
+    candidate_outcome_keys = {
+        "candidate_protocol_invalid_count",
+        "filtered_invalid_patch_candidates",
+        "filtered_noop_candidates",
+        "filtered_high_baseline_regression_candidates",
+        "filtered_duplicate_candidates",
+        "filtered_known_duplicate_candidates",
+        "filtered_semantic_lesson_duplicate_candidates",
+    }
+    for diagnostics in _optimizer_iteration_diagnostics(optimizer_diagnostics):
+        if isinstance(diagnostics.get("candidate_generation_failure"), Mapping):
+            infrastructure_failure = True
+        if any(
+            _non_negative_int(diagnostics.get(key)) > 0
+            for key in candidate_outcome_keys
+        ):
+            candidate_owned_outcome = True
+    if infrastructure_failure and not candidate_owned_outcome:
+        return SelfEvolveRunStatus.FAILED
+    return SelfEvolveRunStatus.REJECTED
+
+
+def _infrastructure_prevented_comparable_evaluation(
+    failed_gates: Iterable[GateResult],
+    *,
+    baseline_summary: EvaluationSummary | None,
+    candidate_summary: EvaluationSummary | None,
+) -> bool:
+    if baseline_summary is not None and candidate_summary is not None:
+        return False
+    gates = tuple(failed_gates)
+    has_infrastructure_failure = any(
+        isinstance(gate.details, Mapping)
+        and gate.details.get("failure_class") == "infrastructure"
+        for gate in gates
+    )
+    has_candidate_owned_failure = any(
+        not isinstance(gate.details, Mapping)
+        or gate.details.get("failure_class") != "infrastructure"
+        for gate in gates
+    )
+    return has_infrastructure_failure and not has_candidate_owned_failure
+
+
+def _terminal_cause(
+    *,
+    final_status: SelfEvolveRunStatus,
+    optimizer_diagnostics: list[dict[str, object]],
+    gate_results: Iterable[GateResult],
+) -> dict[str, object] | None:
+    if final_status is not SelfEvolveRunStatus.FAILED:
+        return None
+    for diagnostics in reversed(
+        list(_optimizer_iteration_diagnostics(optimizer_diagnostics))
+    ):
+        failure = diagnostics.get("candidate_generation_failure")
+        if not isinstance(failure, Mapping):
+            continue
+        cause: dict[str, object] = {
+            "failure_class": "infrastructure",
+            "stage": "candidate_generation",
+            "code": str(
+                failure.get("code")
+                or "candidate_generation_infrastructure_error"
+            ),
+        }
+        error_type = failure.get("error_type")
+        if isinstance(error_type, str) and error_type:
+            cause["error_type"] = error_type
+        return cause
+    for gate in gate_results:
+        details = gate.details
+        if (
+            gate.passed
+            or not isinstance(details, Mapping)
+            or details.get("failure_class") != "infrastructure"
+        ):
+            continue
+        cause = {
+            "failure_class": "infrastructure",
+            "stage": gate.gate_name,
+            "code": str(details.get("code") or "infrastructure_error"),
+        }
+        error_type = details.get("type")
+        if isinstance(error_type, str) and error_type:
+            cause["error_type"] = error_type
+        return cause
+    return {
+        "failure_class": "infrastructure",
+        "stage": "self_evolve",
+        "code": "infrastructure_error",
+    }
+
+
 class SelfEvolveRunner:
     def __init__(
         self,
@@ -576,6 +696,49 @@ class SelfEvolveRunner:
                 ),
             )
             if not candidate_population:
+                generation_failure = optimizer_result.diagnostics.get(
+                    "candidate_generation_failure"
+                )
+                if isinstance(generation_failure, Mapping):
+                    iteration_reports.append(
+                        {
+                            "iteration": iteration_index + 1,
+                            "candidate_id": None,
+                            "status": "infrastructure_failed",
+                            "failed_gates": ["candidate_generation"],
+                        }
+                    )
+                    break
+                protocol_invalid_count = _non_negative_int(
+                    optimizer_result.diagnostics.get(
+                        "candidate_protocol_invalid_count"
+                    )
+                )
+                if protocol_invalid_count:
+                    validation_feedback = (
+                        EvaluationSummary(
+                            variant_id=f"candidate-protocol-{iteration_index + 1}",
+                            dataset_split="validation",
+                            metrics={
+                                "failed_gates": ["candidate_protocol"],
+                                "candidate_status": "rejected",
+                                "failure_class": "candidate",
+                                "repairable": True,
+                                "candidate_protocol_invalid_count": (
+                                    protocol_invalid_count
+                                ),
+                            },
+                        ),
+                    )
+                    iteration_reports.append(
+                        {
+                            "iteration": iteration_index + 1,
+                            "candidate_id": None,
+                            "status": "protocol_invalid",
+                            "failed_gates": ["candidate_protocol"],
+                        }
+                    )
+                    continue
                 skipped_feedback: list[EvaluationSummary] = []
                 skipped_duplicates = [
                     candidate
@@ -772,11 +935,21 @@ class SelfEvolveRunner:
         post_apply: dict[str, object] | None = None
         final_status = SelfEvolveRunStatus.SUCCEEDED
         if selected_candidate is None:
-            final_status = SelfEvolveRunStatus.REJECTED
+            final_status = _status_without_selected_candidate(
+                optimizer_diagnostics
+            )
         elif apply_policy == "auto_verified":
             failed_gates = [gate for gate in gate_results if not gate.passed]
             if failed_gates:
-                final_status = SelfEvolveRunStatus.REJECTED
+                final_status = (
+                    SelfEvolveRunStatus.FAILED
+                    if _infrastructure_prevented_comparable_evaluation(
+                        failed_gates,
+                        baseline_summary=baseline_summary,
+                        candidate_summary=candidate_summary,
+                    )
+                    else SelfEvolveRunStatus.REJECTED
+                )
             else:
                 post_apply = await self._apply_auto_verified(
                     run_id,
@@ -838,6 +1011,13 @@ class SelfEvolveRunner:
                 ),
             },
         }
+        terminal_cause = _terminal_cause(
+            final_status=final_status,
+            optimizer_diagnostics=optimizer_diagnostics,
+            gate_results=gate_results,
+        )
+        if terminal_cause is not None:
+            report["terminal_cause"] = terminal_cause
         trajectory_set_report = _trajectory_set_report(dataset)
         if trajectory_set_report is not None:
             report["trajectory_set"] = trajectory_set_report
@@ -1349,6 +1529,8 @@ class SelfEvolveRunner:
                             passed=False,
                             reason="evaluation backend failed",
                             details={
+                                "failure_class": "infrastructure",
+                                "code": "evaluation_infrastructure_error",
                                 "type": type(exc).__name__,
                                 "reason": str(exc),
                             },
@@ -1360,6 +1542,10 @@ class SelfEvolveRunner:
                     gate_name="auto_verified_evaluation",
                     passed=False,
                     reason="auto_verified apply policy requires evaluation backend",
+                    details={
+                        "failure_class": "infrastructure",
+                        "code": "evaluation_backend_missing",
+                    },
                 )
             )
 
@@ -2111,6 +2297,10 @@ def optimize_from_cli_request(
     effective_concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
+    effective_iteration_budget = _default_iteration_budget(
+        apply_policy=apply_policy,
+        explicit_iterations=iterations,
+    )
     if rerun_evaluator:
         if not from_run:
             raise ValueError("--rerun-evaluator requires --from-run")
@@ -2383,7 +2573,7 @@ def optimize_from_cli_request(
         evaluation_backend=evaluation_backend,
         post_apply_evaluator=post_apply_evaluator,
         min_score_delta=min_score_delta,
-        max_iterations=iterations or 1,
+        max_iterations=effective_iteration_budget,
         min_eval_cases=min_eval_cases,
         judge_repetitions=judge_repetitions,
         max_run_tokens=max_run_tokens,

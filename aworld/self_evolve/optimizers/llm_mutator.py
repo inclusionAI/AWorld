@@ -71,6 +71,7 @@ class TraceReflectiveLLMMutator:
         require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
         candidate_generation_failure: dict[str, str] | None = None
+        candidate_protocol_invalid_count = 0
         candidate_outputs: list[tuple[int, Any]] = []
         population_diagnostics: dict[str, Any]
         population_started_at = time.monotonic()
@@ -93,6 +94,8 @@ class TraceReflectiveLLMMutator:
                     candidate_outputs.append((slot.index, slot.output))
                 elif slot.status == "failed" and candidate_generation_failure is None:
                     candidate_generation_failure = dict(slot.failure or {})
+                elif slot.status == "protocol_invalid":
+                    candidate_protocol_invalid_count += 1
         else:
             statuses = ["discarded"] * request.max_candidates
             failure_cutoff: int | None = None
@@ -206,6 +209,7 @@ class TraceReflectiveLLMMutator:
             "filtered_invalid_patch_candidates": filtered_invalid_patch_count,
             "candidate_strategies": candidate_strategy_records,
             "candidate_population_execution": population_diagnostics,
+            "candidate_protocol_invalid_count": candidate_protocol_invalid_count,
         }
         if candidate_generation_failure is not None:
             diagnostics["candidate_generation_failure"] = candidate_generation_failure

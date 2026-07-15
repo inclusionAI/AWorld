@@ -275,6 +275,36 @@ async def test_schema_repair_builder_receives_invalid_output_not_original_prompt
 
 
 @pytest.mark.asyncio
+async def test_second_schema_violation_is_a_typed_candidate_outcome() -> None:
+    async def run_task(task: Task):
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer="still not valid json",
+            )
+        }
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=json.loads,
+        repair_prompt_builder=lambda invalid, error: f"repair: {invalid}: {error}",
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    result = await executor.run(["candidate prompt"], max_concurrency=1)
+
+    assert result.slots[0].status == "protocol_invalid"
+    assert result.slots[0].failure == {
+        "code": "candidate_protocol_invalid",
+        "stage": "candidate_protocol",
+        "failure_class": "candidate",
+        "repairable": True,
+    }
+    assert result.diagnostics["protocol_invalid_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_custom_mutator_remains_serial_without_population_callable() -> None:
     active = 0
     max_active = 0
