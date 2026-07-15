@@ -124,6 +124,53 @@ async def test_indexed_fail_fast_discards_higher_indexes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_discarded_completed_result_retains_usage_without_response() -> None:
+    higher_index_completed = asyncio.Event()
+
+    async def run_task(task: Task):
+        if task.input == 1:
+            await higher_index_completed.wait()
+            return {
+                task.id: TaskResponse(
+                    id=task.id,
+                    success=False,
+                    msg="boom",
+                    usage={"total_tokens": 20},
+                )
+            }
+        if task.input == 2:
+            higher_index_completed.set()
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer=task.input,
+                usage={
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                    "total_tokens": 30,
+                    "provider_payload": "must-not-be-retained",
+                },
+            )
+        }
+
+    results = await DeterministicTaskBatchExecutor(run_task=run_task).run(
+        [_item(0), _item(1), _item(2)],
+        max_concurrency=3,
+        failure_policy="indexed_fail_fast",
+    )
+
+    discarded = results[2]
+    assert discarded.status == "discarded"
+    assert discarded.response is None
+    assert discarded.usage_metadata == {
+        "completion_tokens": 20,
+        "prompt_tokens": 10,
+        "total_tokens": 30,
+    }
+
+
+@pytest.mark.asyncio
 async def test_exclusive_resource_claims_serialize_same_key() -> None:
     active_by_key: dict[str, int] = {}
     max_by_key: dict[str, int] = {}
