@@ -45,12 +45,14 @@ from aworld.self_evolve.runner import (
     _rank_candidate_population,
     _rejected_candidate_ids_from_report,
     _replay_confidence_gate,
+    _replay_adaptation_exception_details,
     _replay_report,
     _source_config_from_stored_dataset_recipe,
     _summary_with_replay_evidence_metrics,
     optimize_explicit_target,
     optimize_from_cli_request,
 )
+from aworld.self_evolve.replay_capability import ReplayCapabilityError
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
@@ -199,6 +201,25 @@ def test_iteration_budget_rejects_non_positive_explicit_values() -> None:
             apply_policy="auto_verified",
             explicit_iterations=0,
         )
+
+
+def test_candidate_replay_capability_compile_error_is_typed_repair_feedback() -> None:
+    details = _replay_adaptation_exception_details(
+        ReplayCapabilityError("unsupported replay binding concurrency mode: sequential"),
+        candidate_capability=True,
+    )
+
+    assert details["failure_class"] == "candidate"
+    assert details["repairable"] is True
+    assert details["diagnostics"] == [
+        {
+            "code": "invalid_replay_capability_compile",
+            "stage": "capability_compile",
+            "failure_class": "candidate",
+            "repairable": True,
+            "reason": "unsupported replay binding concurrency mode: sequential",
+        }
+    ]
 
 
 def test_duplicate_only_rejection_does_not_create_new_blacklist_record() -> None:

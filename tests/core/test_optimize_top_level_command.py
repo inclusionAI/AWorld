@@ -451,7 +451,7 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     assert calls["judge_timeout_seconds"] == 120
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
-    assert calls["iterations"] == 1
+    assert calls["iterations"] is None
 
 
 def test_run_optimize_cli_can_forward_progress_callback(

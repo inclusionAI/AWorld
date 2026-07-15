@@ -107,6 +107,7 @@ from aworld.self_evolve.replay_adaptation import (
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapabilityAdapter,
     ReplayCapabilityCompileRequest,
+    ReplayCapabilityError,
     compile_and_freeze_capability,
     discover_replay_capability,
 )
@@ -324,6 +325,32 @@ def _infrastructure_prevented_comparable_evaluation(
         for gate in gates
     )
     return has_infrastructure_failure and not has_candidate_owned_failure
+
+
+def _replay_adaptation_exception_details(
+    exc: Exception,
+    *,
+    candidate_capability: bool,
+) -> dict[str, object]:
+    reason = sanitize_text(str(exc), max_chars=240)
+    if candidate_capability and isinstance(exc, ReplayCapabilityError):
+        diagnostic = {
+            "code": "invalid_replay_capability_compile",
+            "stage": "capability_compile",
+            "failure_class": "candidate",
+            "repairable": True,
+            "reason": reason,
+        }
+        return {
+            "failure_class": "candidate",
+            "repairable": True,
+            "diagnostics": [diagnostic],
+        }
+    return {
+        "failure_class": "infrastructure",
+        "repairable": False,
+        "code": "replay_adaptation_infrastructure_error",
+    }
 
 
 def _terminal_cause(
@@ -1838,6 +1865,10 @@ class SelfEvolveRunner:
                 replay_capability=frozen_capability,
             )
         except Exception as exc:
+            failure_details = _replay_adaptation_exception_details(
+                exc,
+                candidate_capability=capability_skill_root is not None,
+            )
             result = (
                 None,
                 GateResult(
@@ -1845,8 +1876,9 @@ class SelfEvolveRunner:
                     passed=False,
                     reason="replay adaptation compilation failed",
                     details={
+                        **failure_details,
                         "type": type(exc).__name__,
-                        "reason": str(exc),
+                        "reason": sanitize_text(str(exc), max_chars=240),
                         "artifact_root": str(artifact_root),
                     },
                 ),
