@@ -357,7 +357,11 @@ class AWorldCandidatePopulationExecutor:
             try:
                 outputs[result.index] = self._parse_output(raw_output)
             except ValueError as exc:
-                repair_inputs[result.index] = (raw_output, exc)
+                diagnostic = _candidate_protocol_diagnostic(exc)
+                if diagnostic.get("repairable") is False:
+                    protocol_failures[result.index] = diagnostic
+                else:
+                    repair_inputs[result.index] = (raw_output, exc)
 
         repaired_indexes: set[int] = set()
         successful_repair_indexes: set[int] = set()

@@ -11,6 +11,7 @@ from aworld.runners.batch import DeterministicTaskBatchExecutor
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationInfrastructureError,
 )
+from aworld.self_evolve.candidate_protocol import CandidateProtocolError
 from aworld.self_evolve.concurrency import (
     AWorldCandidatePopulationExecutor,
     SelfEvolveConcurrencyPolicy,
@@ -344,6 +345,43 @@ async def test_second_schema_violation_is_a_typed_candidate_outcome() -> None:
         "failure_class": "candidate",
         "repairable": True,
     }
+    assert result.diagnostics["protocol_invalid_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_non_repairable_protocol_failure_skips_repair_task() -> None:
+    task_ids: list[str] = []
+
+    async def run_task(task: Task):
+        task_ids.append(task.id)
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                answer="invalid candidate",
+            )
+        }
+
+    def parse_output(raw_output: str):
+        raise CandidateProtocolError(
+            "multiple_json_objects",
+            "candidate response must contain exactly one JSON object",
+            repairable=False,
+        )
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=parse_output,
+        repair_prompt_builder=lambda invalid, error: "must-not-run",
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    result = await executor.run(["candidate prompt"], max_concurrency=1)
+
+    assert len(task_ids) == 1
+    assert not any(task_id.endswith("-repair") for task_id in task_ids)
+    assert result.slots[0].status == "protocol_invalid"
+    assert result.diagnostics["repair_attempt_count"] == 0
     assert result.diagnostics["protocol_invalid_count"] == 1
 
 
