@@ -133,11 +133,14 @@ class DeterministicTaskBatchExecutor:
             raise ValueError("task batch item indexes must be unique")
         if not ordered:
             self.last_run_observability = {
+                "item_count": 0,
                 "configured_concurrency": max_concurrency,
                 "effective_concurrency": 0,
                 "max_observed_concurrency": 0,
                 "failure_cutoff_index": None,
                 "resource_serialized_count": 0,
+                "queue_wait_seconds": 0.0,
+                "execution_seconds": 0.0,
                 "elapsed_seconds": 0.0,
             }
             return []
@@ -303,12 +306,19 @@ class DeterministicTaskBatchExecutor:
 
         output = [results[item.index] for item in ordered]
         self.last_run_observability = {
+            "item_count": len(output),
             "configured_concurrency": max_concurrency,
             "effective_concurrency": min(max_concurrency, len(ordered)),
             "max_observed_concurrency": max_observed_concurrency,
             "failure_cutoff_index": failure_cutoff,
             "resource_serialized_count": sum(
                 1 for result in output if result.serialized_by_resource
+            ),
+            "queue_wait_seconds": sum(
+                result.queue_wait_seconds for result in output
+            ),
+            "execution_seconds": sum(
+                result.execution_seconds for result in output
             ),
             "elapsed_seconds": time.monotonic() - started_at,
         }

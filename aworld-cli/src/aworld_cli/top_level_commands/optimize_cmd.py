@@ -326,6 +326,7 @@ def run_optimize_cli(
         workspace_root=workspace_root,
         judge_config=judge_config,
         mutation_model_config=mutation_model_config,
+        concurrency_policy=self_evolve.SelfEvolveConcurrencyPolicy(),
         **_judge_options(
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
