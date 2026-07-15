@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-import re
 from dataclasses import asdict, dataclass, replace
 from typing import Callable, Any
 from pathlib import Path
@@ -60,10 +59,8 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
-from aworld.self_evolve.candidate_package import (
-    candidate_package_fingerprint,
-    validate_candidate_files,
-)
+from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.candidate_protocol import normalize_candidate_output
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
@@ -76,7 +73,6 @@ from aworld.self_evolve.concurrency import (
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
-from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
@@ -2496,53 +2492,10 @@ def _parse_candidate_mutation_model_output(
     *,
     current_content: str,
 ) -> Mapping[str, Any]:
-    if isinstance(raw_output, Mapping):
-        payload = dict(raw_output)
-    elif isinstance(raw_output, str):
-        text = raw_output.strip()
-        fenced = re.fullmatch(
-            r"```(?:json)?\s*(.*?)\s*```",
-            text,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        if fenced is not None:
-            text = fenced.group(1).strip()
-        try:
-            decoded = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ValueError("mutation model output is not valid JSON") from exc
-        if not isinstance(decoded, Mapping):
-            raise ValueError("mutation model output must be a JSON object")
-        payload = dict(decoded)
-    else:
-        raise ValueError("mutation model output must be text or a mapping")
-
-    content = payload.get("content")
-    patch_intent = payload.get("patch_intent")
-    if not isinstance(content, str) and not isinstance(patch_intent, Mapping):
-        raise ValueError("mutation model output requires content or patch_intent")
-    if isinstance(content, str) and not content.strip():
-        raise ValueError("mutation model content must not be empty")
-    if isinstance(patch_intent, Mapping):
-        apply_skill_patch_intent(current_content, patch_intent)
-    rationale = payload.get("rationale", "")
-    if not isinstance(rationale, str):
-        raise ValueError("mutation model rationale must be text")
-    files = payload.get("files", [])
-    if not isinstance(files, list) or any(not isinstance(item, Mapping) for item in files):
-        raise ValueError("mutation model files must be an array of objects")
-    validate_candidate_files(
-        CandidateFileDelta(
-            path=str(item.get("path") or ""),
-            operation=str(item.get("operation") or "upsert"),
-            content=item.get("content") if isinstance(item.get("content"), str) else None,
-            executable=bool(item.get("executable", False)),
-        )
-        for item in files
+    return normalize_candidate_output(
+        raw_output,
+        current_content=current_content,
     )
-    payload["rationale"] = rationale
-    payload["files"] = files
-    return payload
 
 
 def _replayable_user_task_dataset(dataset: SelfEvolveDataset) -> SelfEvolveDataset:
