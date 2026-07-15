@@ -3,14 +3,16 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from aworld.agents.llm_agent import Agent
+from aworld.agents.prompt_budgeted_agent import PromptBudgetedAgent
 from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import Swarm
+from aworld.core.common import TaskStatusValue
+from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
 from aworld.core.context.base import Context
-from aworld.core.context.session import Session
-from aworld.core.event.base import Message
 from aworld.core.task import Task
 from aworld.logs.util import logger
+from aworld.runner import Runners
 
 
 DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT = 8192
@@ -57,7 +59,7 @@ class _SanitizingProvider:
             ) from None
 
 
-class CandidateGenerationAgent(Agent):
+class CandidateGenerationAgent(PromptBudgetedAgent):
     """AWorld agent used for one bounded self-evolve candidate generation call."""
 
     def __init__(
@@ -69,27 +71,11 @@ class CandidateGenerationAgent(Agent):
         if isinstance(output_token_limit, bool) or output_token_limit <= 0:
             raise ValueError("output_token_limit must be positive")
         framework_output_limit = int(output_token_limit)
-        super().__init__(
-            name="self-evolve-candidate-generator",
-            conf=AgentConfig(
-                llm_config=model_config.model_copy(deep=True),
-                max_steps=1,
-            ),
-            system_prompt=(
-                "You generate one self-evolve candidate package. Return only a JSON "
-                "object matching the candidate_output_contract in the task. Do not wrap "
-                "the JSON in prose. Keep domain-specific replay behavior inside "
-                "candidate-owned files and do not invent unavailable recordings."
-            ),
-            tool_names=[],
-            llm_max_attempts=1,
-        )
-        model_params = dict(self.conf.llm_config.params or {})
         configured_max_tokens = _positive_token_limit(
-            model_params.pop("max_tokens", None)
+            (model_config.params or {}).get("max_tokens")
         )
         configured_max_completion_tokens = _positive_token_limit(
-            model_params.pop("max_completion_tokens", None)
+            (model_config.params or {}).get("max_completion_tokens")
         )
         configured_limits = [
             item
@@ -107,7 +93,37 @@ class CandidateGenerationAgent(Agent):
             if configured_max_completion_tokens is not None
             else "max_tokens"
         )
-        self.conf.llm_config.params = model_params
+        super().__init__(
+            name="self-evolve-candidate-generator",
+            conf=AgentConfig(
+                llm_config=model_config.model_copy(deep=True),
+                max_steps=1,
+            ),
+            prompt_budget_policy=PromptBudgetPolicy(
+                reserved_output_tokens=self.output_token_limit,
+            ),
+            prompt_budget_section_hints=[
+                {
+                    "name": "candidate_output_contract",
+                    "required": True,
+                    "compressible": False,
+                },
+                {
+                    "name": "current_task",
+                    "required": True,
+                    "compressible": False,
+                },
+            ],
+            system_prompt=(
+                "You generate one self-evolve candidate package. Return only a JSON "
+                "object matching the candidate_output_contract in the task. Do not wrap "
+                "the JSON in prose. Keep domain-specific replay behavior inside "
+                "candidate-owned files and do not invent unavailable recordings."
+            ),
+            tool_names=[],
+            llm_max_attempts=1,
+        )
+        self._task_failures: dict[str, dict[str, str]] = {}
         self.conf.llm_config.llm_stream_call = False
         Swarm.register_agent([self])
 
@@ -124,18 +140,39 @@ class CandidateGenerationAgent(Agent):
         message: Any = None,
         **kwargs: Any,
     ) -> Any:
-        requested_limits = [
-            item
-            for item in (
-                _positive_token_limit(kwargs.pop("max_tokens", None)),
-                _positive_token_limit(kwargs.pop("max_completion_tokens", None)),
+        try:
+            return await super().invoke_model(messages or [], message=message, **kwargs)
+        except CandidateGenerationInfrastructureError as exc:
+            self._record_infrastructure_failure(message, exc)
+            raise
+        except Exception as exc:
+            typed_failure = _find_infrastructure_failure(exc)
+            failure = (
+                CandidateGenerationInfrastructureError(
+                    stage=typed_failure.stage,
+                    error_type=typed_failure.error_type,
+                )
+                if typed_failure is not None
+                else CandidateGenerationInfrastructureError(
+                    stage="agent_runtime",
+                    error_type=type(exc).__name__,
+                )
             )
-            if item is not None
-        ]
-        kwargs[self.output_token_parameter] = min(
-            [self.output_token_limit, *requested_limits]
-        )
-        return await super().invoke_model(messages or [], message=message, **kwargs)
+            self._record_infrastructure_failure(message, failure)
+            raise failure from None
+
+    def _record_infrastructure_failure(
+        self,
+        message: Any,
+        failure: CandidateGenerationInfrastructureError,
+    ) -> None:
+        context = getattr(message, "context", None)
+        context_info = getattr(context, "context_info", None)
+        if context_info is not None:
+            context_info["candidate_generation_failure"] = failure.to_diagnostic()
+        task_id = getattr(context, "task_id", None)
+        if isinstance(task_id, str) and task_id:
+            self._task_failures[task_id] = failure.to_diagnostic()
 
     async def _save_failed_request_context(
         self,
@@ -163,34 +200,41 @@ class CandidateGenerationAgent(Agent):
 
     async def generate(self, prompt: str) -> str:
         invocation_id = uuid.uuid4().hex
-        context = Context(
-            task_id=f"self-evolve-candidate-{invocation_id}",
-            session=Session(session_id=f"self-evolve-candidate-{invocation_id}"),
+        task_id = f"self-evolve-candidate-{invocation_id}"
+        context = LocalIsolatedApplicationContext.create(
+            task_id=task_id,
+            session_id=task_id,
+            task_content=prompt,
         )
-        context.set_task(Task(id=context.task_id, input=prompt, context=context))
-        context.agent_info.current_agent_id = self.id()
-        message = Message(headers={"context": context})
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": prompt},
-        ]
-        _, assembled_messages, _ = self._build_prompt_assembly_state(
+        task = Task(
+            id=task_id,
+            session_id=task_id,
+            input=prompt,
+            agent=self,
             context=context,
-            messages=messages,
-            tools=None,
-            request_kwargs={
-                self.output_token_parameter: self.output_token_limit,
-            },
+            runner_cls="aworld.self_evolve.runtime.SelfEvolveCandidateTaskRunner",
         )
         try:
-            response = await self.invoke_model(
-                assembled_messages,
-                message=message,
-                stream=False,
-            )
-        except CandidateGenerationInfrastructureError:
+            responses = await Runners.run_task(task)
+        except CandidateGenerationInfrastructureError as exc:
+            recorded_failure = self._task_failures.pop(task.id, None)
+            if isinstance(recorded_failure, dict):
+                raise CandidateGenerationInfrastructureError(
+                    stage=str(recorded_failure.get("stage") or exc.stage),
+                    error_type=str(
+                        recorded_failure.get("error_type") or exc.error_type
+                    ),
+                ) from None
             raise
         except Exception as exc:
+            recorded_failure = self._task_failures.pop(task.id, None)
+            if isinstance(recorded_failure, dict):
+                raise CandidateGenerationInfrastructureError(
+                    stage=str(recorded_failure.get("stage") or "agent_runtime"),
+                    error_type=str(
+                        recorded_failure.get("error_type") or type(exc).__name__
+                    ),
+                ) from None
             typed_failure = _find_infrastructure_failure(exc)
             if typed_failure is not None:
                 raise CandidateGenerationInfrastructureError(
@@ -202,7 +246,29 @@ class CandidateGenerationAgent(Agent):
                 error_type=type(exc).__name__,
             ) from None
 
-        content = getattr(response, "content", None)
+        response = responses.get(task.id) if isinstance(responses, dict) else None
+        recorded_failure = self._task_failures.pop(task.id, None)
+        if recorded_failure is None:
+            recorded_failure = context.context_info.get("candidate_generation_failure")
+        if isinstance(recorded_failure, dict):
+            raise CandidateGenerationInfrastructureError(
+                stage=str(recorded_failure.get("stage") or "agent_runtime"),
+                error_type=str(recorded_failure.get("error_type") or "RuntimeError"),
+            ) from None
+        if response is None:
+            raise CandidateGenerationInfrastructureError(
+                stage="task_runner",
+                error_type="MissingTaskResponse",
+            )
+        if not response.success or response.status not in {
+            TaskStatusValue.SUCCESS,
+            "finished",
+        }:
+            raise CandidateGenerationInfrastructureError(
+                stage="task_runner",
+                error_type="CandidateTaskFailed",
+            )
+        content = response.answer
         if not isinstance(content, str) or not content.strip():
             raise CandidateGenerationInfrastructureError(
                 stage="agent_response",

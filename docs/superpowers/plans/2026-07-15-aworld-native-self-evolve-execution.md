@@ -146,12 +146,12 @@ task = Task(
 responses = await Runners.run_task(task)
 ```
 
-- [ ] Write failing tests that `choose_runners()` constructs all four self-evolve adapters with `run_conf`, the outer adapter is non-agent-oriented, and candidate generation invokes `Runners.run_task()` with `SelfEvolveCandidateTaskRunner`.
-- [ ] Run the targeted tests; expect missing Runner classes and the old direct `invoke_model()` path.
-- [ ] Implement `SelfEvolveTaskRunner`, `SelfEvolveCandidateTaskRunner`, `SelfEvolveReplayTaskRunner`, and `SelfEvolveEvaluationTaskRunner`. Enter `LocalMemoryScope` before candidate `TaskEventRunner.pre_run()` and release it after `post_run()`.
-- [ ] Change `CandidateGenerationAgent` to inherit `PromptBudgetedAgent`. Its `generate()` creates a fresh `LocalIsolatedApplicationContext`, a standard `Task` whose `runner_cls` is `aworld.self_evolve.runtime.SelfEvolveCandidateTaskRunner`, awaits `Runners.run_task()`, validates the `TaskResponse`, and preserves typed/sanitized failures.
-- [ ] Re-run candidate/runtime tests; expect no direct manual `Context` or `invoke_model()` orchestration in `generate()`.
-- [ ] Commit `feat(self-evolve): run candidate generation as AWorld task`.
+- [x] Write failing tests that `choose_runners()` constructs all four self-evolve adapters with `run_conf`, the outer adapter is non-agent-oriented, and candidate generation invokes `Runners.run_task()` with `SelfEvolveCandidateTaskRunner`.
+- [x] Run the targeted tests; expect missing Runner classes and the old direct `invoke_model()` path.
+- [x] Implement `SelfEvolveTaskRunner`, `SelfEvolveCandidateTaskRunner`, `SelfEvolveReplayTaskRunner`, and `SelfEvolveEvaluationTaskRunner`. Enter `LocalMemoryScope` before candidate `TaskEventRunner.pre_run()` and release it after `post_run()`.
+- [x] Change `CandidateGenerationAgent` to inherit `PromptBudgetedAgent`. Its `generate()` creates a fresh `LocalIsolatedApplicationContext`, a standard `Task` whose `runner_cls` is `aworld.self_evolve.runtime.SelfEvolveCandidateTaskRunner`, awaits `Runners.run_task()`, validates the `TaskResponse`, and preserves typed/sanitized failures.
+- [x] Re-run candidate/runtime tests; expect no direct manual `Context` or `invoke_model()` orchestration in `generate()`.
+- [x] Commit `feat(self-evolve): run candidate generation as AWorld task`.
 
 ### Task 6: Model-backed candidate population batches
 
