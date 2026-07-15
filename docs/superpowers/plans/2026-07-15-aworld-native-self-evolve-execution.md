@@ -69,12 +69,12 @@ context = LocalIsolatedApplicationContext.create(
 )
 ```
 
-- [ ] Write failing tests proving concurrent scopes resolve different memory objects, child async tasks inherit their scope, and no-scope `MemoryFactory.instance()` returns the exact prior global object.
-- [ ] Run both new test files; expect missing imports.
-- [ ] Implement `LocalMemoryScope` with a `ContextVar[MemoryBase | None]`, token-based reset, and nested-scope restoration. Add only `scoped = LocalMemoryScope.current()` to the start of `MemoryFactory.instance()`.
-- [ ] Implement `LocalIsolatedApplicationContext.create()` using `MemoryFactory.from_config(config=MemoryConfig(provider="aworld"), memory_store=InMemoryMemoryStore())`, `InMemoryCheckpointRepository`, summary-disabled Amni config, `execution_scope="self_evolve"`, and no persisted workspace.
-- [ ] Re-run both new test files plus existing memory/context tests selected by `rg --files tests | rg '(memory|context)'`; expect all selected tests pass.
-- [ ] Commit `feat(context): add isolated local memory scope`.
+- [x] Write failing tests proving concurrent scopes resolve different memory objects, child async tasks inherit their scope, and no-scope `MemoryFactory.instance()` returns the exact prior global object.
+- [x] Run both new test files; expect missing imports.
+- [x] Implement `LocalMemoryScope` with a `ContextVar[MemoryBase | None]`, token-based reset, and nested-scope restoration. Add only `scoped = LocalMemoryScope.current()` to the start of `MemoryFactory.instance()`.
+- [x] Implement `LocalIsolatedApplicationContext.create()` using `MemoryFactory.from_config(config=MemoryConfig(provider="aworld"), memory_store=InMemoryMemoryStore())`, `InMemoryCheckpointRepository`, summary-disabled Amni config, `execution_scope="self_evolve"`, and no persisted workspace.
+- [x] Re-run both new test files plus existing memory/context tests selected by `rg --files tests | rg '(memory|context)'`; expect all selected tests pass.
+- [x] Commit `feat(context): add isolated local memory scope`.
 
 ### Task 3: Opt-in prompt budgeting
 
