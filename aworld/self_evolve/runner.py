@@ -66,6 +66,9 @@ from aworld.self_evolve.candidate_protocol import (
     CandidateProtocolError,
     normalize_candidate_output,
 )
+from aworld.self_evolve.capability_contracts import (
+    validate_applicable_capabilities,
+)
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
@@ -99,6 +102,7 @@ from aworld.self_evolve.replay import (
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
     ReplayAdaptationCompiler,
+    ReplayCapabilityRequirement,
 )
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapabilityAdapter,
@@ -587,6 +591,7 @@ class SelfEvolveRunner:
         target_package_inventory = _target_package_inventory(target)
 
         baseline_preflight_blocked = False
+        infrastructure_blocked = False
         for iteration_index in range(self.max_iterations):
             _emit_progress(
                 self.progress_callback,
@@ -871,6 +876,7 @@ class SelfEvolveRunner:
                     rejected_candidate_ids=rejected_candidate_ids,
                     accepted_candidate_ids=accepted_candidate_ids,
                     baseline_replay_dir=reusable_baseline_replay_dir,
+                    capability_requirements=replay_preflight.requirements,
                 )
                 iteration_reports.append(report_item)
                 iteration_states.append(state)
@@ -892,10 +898,24 @@ class SelfEvolveRunner:
                 ):
                     baseline_preflight_blocked = True
                     break
+                failed_state_gates = [
+                    gate for gate in state["gate_results"] if not gate.passed
+                ]
+                if _infrastructure_prevented_comparable_evaluation(
+                    failed_state_gates,
+                    baseline_summary=state.get("baseline_summary"),
+                    candidate_summary=state.get("candidate_summary"),
+                ):
+                    infrastructure_blocked = True
+                    break
                 if state["status"] == "accepted":
                     accepted_in_iteration = True
                     break
-            if accepted_in_iteration or baseline_preflight_blocked:
+            if (
+                accepted_in_iteration
+                or baseline_preflight_blocked
+                or infrastructure_blocked
+            ):
                 break
 
         selected_state = _select_iteration_state(iteration_states)
@@ -1294,6 +1314,7 @@ class SelfEvolveRunner:
         rejected_candidate_ids: set[str],
         accepted_candidate_ids: set[str],
         baseline_replay_dir: str | None = None,
+        capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
     ) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
@@ -1383,16 +1404,28 @@ class SelfEvolveRunner:
                 )
             )
         )
-        replay_result, replay_dataset, replay_gate = await self._replay_selected_candidate(
+        capability_gates = self._validate_candidate_capabilities(
             run_id=run_id,
             target=target,
             dataset=dataset,
-            selected_candidate=candidate,
-            apply_policy=apply_policy,
-            baseline_replay_dir=baseline_replay_dir,
+            candidate=candidate,
+            requirements=capability_requirements,
         )
-        if replay_gate is not None:
-            gate_results.append(replay_gate)
+        gate_results.extend(capability_gates)
+        capability_blocked = any(not gate.passed for gate in capability_gates)
+        if not capability_blocked:
+            replay_result, replay_dataset, replay_gate = (
+                await self._replay_selected_candidate(
+                    run_id=run_id,
+                    target=target,
+                    dataset=dataset,
+                    selected_candidate=candidate,
+                    apply_policy=apply_policy,
+                    baseline_replay_dir=baseline_replay_dir,
+                )
+            )
+            if replay_gate is not None:
+                gate_results.append(replay_gate)
         replay_confidence_gate = _replay_confidence_gate(
             replay_result,
             dataset=dataset,
@@ -1602,6 +1635,70 @@ class SelfEvolveRunner:
             status=status,
         )
         return state, report_item, feedback
+
+    def _validate_candidate_capabilities(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+        candidate: CandidateVariant,
+        requirements: tuple[ReplayCapabilityRequirement, ...],
+    ) -> list[GateResult]:
+        if (
+            not self.replay_enabled
+            or not requirements
+            or target.identity.path is None
+        ):
+            return []
+        framework_adaptation, framework_gate = self._prepare_replay_adaptation(
+            run_id=run_id,
+            dataset=dataset,
+            emit_progress=False,
+        )
+        if framework_gate.passed and framework_adaptation is not None:
+            return []
+        overlay = create_candidate_skill_overlay(
+            workspace_root=self.store.workspace_root,
+            run_id=run_id,
+            candidate=candidate,
+            target_skill_path=target.identity.path,
+            baseline_skill_roots=getattr(target, "baseline_skill_roots", ()),
+        )
+        results = validate_applicable_capabilities(
+            requirements=requirements,
+            candidate=candidate,
+            skill_root=overlay.candidate_skill_path.parent,
+        )
+        gates: list[GateResult] = []
+        for result in results:
+            diagnostics = [item.to_dict() for item in result.diagnostics]
+            gates.append(
+                GateResult(
+                    gate_name=f"candidate_capability_{result.capability_type}",
+                    passed=result.passed,
+                    reason=(
+                        "candidate package satisfies registered capability contract"
+                        if result.passed
+                        else "candidate package violates registered capability contract"
+                    ),
+                    details={
+                        "capability_type": result.capability_type,
+                        "failure_class": (
+                            diagnostics[0]["failure_class"]
+                            if diagnostics
+                            else None
+                        ),
+                        "repairable": (
+                            all(bool(item.get("repairable")) for item in diagnostics)
+                            if diagnostics
+                            else False
+                        ),
+                        "diagnostics": diagnostics,
+                    },
+                )
+            )
+        return gates
 
     def _prepare_replay_adaptation(
         self,
@@ -4698,6 +4795,7 @@ def _iteration_validation_feedback(
     failed_gates: list[GateResult],
 ) -> tuple[EvaluationSummary, ...]:
     feedback: list[EvaluationSummary] = []
+    typed_gate_metrics = _typed_gate_feedback_metrics(failed_gates)
     comparison_metrics = _baseline_comparison_feedback_metrics(
         baseline_summary=baseline_summary,
         candidate_summary=candidate_summary,
@@ -4709,6 +4807,7 @@ def _iteration_validation_feedback(
                 metrics={
                     **dict(candidate_summary.metrics),
                     **comparison_metrics,
+                    **typed_gate_metrics,
                     "failed_gates": [gate.gate_name for gate in failed_gates],
                 },
                 dataset_split=candidate_summary.dataset_split,
@@ -4720,6 +4819,7 @@ def _iteration_validation_feedback(
                 variant_id=held_out_summary.variant_id,
                 metrics={
                     **dict(held_out_summary.metrics),
+                    **typed_gate_metrics,
                     "failed_gates": [gate.gate_name for gate in failed_gates],
                 },
                 dataset_split=held_out_summary.dataset_split,
@@ -4732,12 +4832,46 @@ def _iteration_validation_feedback(
             variant_id=candidate.candidate_id,
             metrics={
                 **comparison_metrics,
+                **typed_gate_metrics,
                 "failed_gates": [gate.gate_name for gate in failed_gates],
                 "candidate_status": "rejected" if failed_gates else "accepted",
             },
             dataset_split="validation",
         ),
     )
+
+
+def _typed_gate_feedback_metrics(
+    failed_gates: Iterable[GateResult],
+) -> dict[str, object]:
+    diagnostics: list[Mapping[str, object]] = []
+    failure_classes: set[str] = set()
+    repairable_values: list[bool] = []
+    for gate in failed_gates:
+        details = gate.details
+        if not isinstance(details, Mapping):
+            continue
+        failure_class = details.get("failure_class")
+        if isinstance(failure_class, str) and failure_class:
+            failure_classes.add(failure_class)
+        repairable = details.get("repairable")
+        if isinstance(repairable, bool):
+            repairable_values.append(repairable)
+        raw_diagnostics = details.get("diagnostics")
+        if isinstance(raw_diagnostics, list):
+            diagnostics.extend(
+                dict(item)
+                for item in raw_diagnostics[:16]
+                if isinstance(item, Mapping)
+            )
+    result: dict[str, object] = {}
+    if len(failure_classes) == 1:
+        result["failure_class"] = next(iter(failure_classes))
+    if repairable_values:
+        result["repairable"] = all(repairable_values)
+    if diagnostics:
+        result["candidate_validation_diagnostics"] = diagnostics[:16]
+    return result
 
 
 def _iteration_report_item(

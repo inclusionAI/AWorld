@@ -2377,6 +2377,106 @@ async def test_runner_stops_candidate_population_after_baseline_preflight_failur
 
 
 @pytest.mark.asyncio
+async def test_runner_validates_registered_capability_before_replay(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {
+                "input": {
+                    "content": "Read the recorded service at http://127.0.0.1:9888/data"
+                }
+            },
+            "action": {"content": "The service was unavailable."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="capability-validation-task",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="capability-validation-task",
+    )
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="candidate-without-required-capability",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\n\nNew guidance.\n",
+        rationale="candidate omitted its required capability",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    class ReplayBackend:
+        calls = 0
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.calls += 1
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="failed",
+                    trajectory=[],
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="failed",
+                    trajectory=[],
+                ),
+            )
+
+    replay_backend = ReplayBackend()
+    result = await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+    ).run_explicit_target(
+        run_id="run-capability-validation",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-capability-validation"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert replay_backend.calls == 0
+    assert result.run.status.value == "rejected"
+    capability_gate = next(
+        gate
+        for gate in report["gate_results"]
+        if gate["gate_name"] == "candidate_capability_replay"
+    )
+    assert capability_gate["passed"] is False
+    assert capability_gate["details"]["diagnostics"][0]["code"] == (
+        "missing_capability_manifest"
+    )
+
+
+@pytest.mark.asyncio
 async def test_runner_screens_population_on_representative_member_before_full_replay(
     tmp_path: Path,
 ) -> None:

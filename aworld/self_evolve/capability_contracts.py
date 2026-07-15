@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from aworld.core.factory import Factory
@@ -13,6 +14,8 @@ from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
     REPLAY_CAPABILITY_SCHEMA_VERSION,
     REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS,
+    ReplayCapabilityError,
+    discover_replay_capability,
 )
 from aworld.self_evolve.types import CandidateVariant
 
@@ -62,6 +65,8 @@ class CandidateCapabilityContractProvider(Protocol):
     def validate_candidate(
         self,
         candidate: CandidateVariant,
+        *,
+        skill_root: str | Path | None = None,
     ) -> CapabilityValidationResult:
         """Validate candidate-owned capability files without importing them."""
 
@@ -164,7 +169,32 @@ class ReplayCapabilityContractProvider:
     def validate_candidate(
         self,
         candidate: CandidateVariant,
+        *,
+        skill_root: str | Path | None = None,
     ) -> CapabilityValidationResult:
+        if skill_root is not None:
+            try:
+                capability = discover_replay_capability(skill_root)
+            except (ReplayCapabilityError, OSError, ValueError):
+                return CapabilityValidationResult(
+                    capability_type=self.capability_type,
+                    passed=False,
+                    diagnostics=(
+                        CandidateValidationDiagnostic(
+                            code="invalid_replay_capability_manifest",
+                            stage="capability_manifest",
+                            failure_class="candidate",
+                            repairable=True,
+                            field_path=REPLAY_CAPABILITY_MANIFEST_PATH,
+                        ),
+                    ),
+                )
+            if capability is None:
+                return self._missing_manifest_result()
+            return CapabilityValidationResult(
+                capability_type=self.capability_type,
+                passed=True,
+            )
         manifest = next(
             (
                 item
@@ -175,19 +205,7 @@ class ReplayCapabilityContractProvider:
             None,
         )
         if manifest is None:
-            return CapabilityValidationResult(
-                capability_type=self.capability_type,
-                passed=False,
-                diagnostics=(
-                    CandidateValidationDiagnostic(
-                        code="missing_capability_manifest",
-                        stage="capability_manifest",
-                        failure_class="candidate",
-                        repairable=True,
-                        field_path=REPLAY_CAPABILITY_MANIFEST_PATH,
-                    ),
-                ),
-            )
+            return self._missing_manifest_result()
         try:
             payload = json.loads(manifest.content or "")
         except json.JSONDecodeError:
@@ -230,6 +248,21 @@ class ReplayCapabilityContractProvider:
             passed=True,
         )
 
+    def _missing_manifest_result(self) -> CapabilityValidationResult:
+        return CapabilityValidationResult(
+            capability_type=self.capability_type,
+            passed=False,
+            diagnostics=(
+                CandidateValidationDiagnostic(
+                    code="missing_capability_manifest",
+                    stage="capability_manifest",
+                    failure_class="candidate",
+                    repairable=True,
+                    field_path=REPLAY_CAPABILITY_MANIFEST_PATH,
+                ),
+            ),
+        )
+
 
 def discover_applicable_capability_contracts(
     requirements: Sequence[object],
@@ -251,3 +284,15 @@ def applicable_capability_providers(
         if provider is not None and provider.applies_to(requirements):
             providers.append(provider)
     return tuple(providers)
+
+
+def validate_applicable_capabilities(
+    *,
+    requirements: Sequence[object],
+    candidate: CandidateVariant,
+    skill_root: str | Path,
+) -> tuple[CapabilityValidationResult, ...]:
+    return tuple(
+        provider.validate_candidate(candidate, skill_root=skill_root)
+        for provider in applicable_capability_providers(requirements)
+    )
