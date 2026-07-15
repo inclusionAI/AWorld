@@ -646,8 +646,6 @@ class SelfEvolveRunner:
                 dataset=dataset,
                 max_candidates=_candidate_generation_limit(
                     replay_candidate_limit=self.replay_candidate_limit,
-                    rejected_candidate_ids=rejected_candidate_ids,
-                    accepted_candidate_ids=accepted_candidate_ids,
                 ),
                 replay_requirements=replay_preflight.requirements,
                 target_package_inventory=target_package_inventory,
@@ -5361,12 +5359,8 @@ def _iteration_candidate_score(state: Mapping[str, object]) -> float:
 def _candidate_generation_limit(
     *,
     replay_candidate_limit: int,
-    rejected_candidate_ids: set[str],
-    accepted_candidate_ids: set[str],
 ) -> int:
-    replay_limit = max(1, replay_candidate_limit)
-    known_duplicate_count = len(rejected_candidate_ids) + len(accepted_candidate_ids)
-    return min(max(replay_limit + known_duplicate_count, replay_limit), replay_limit * 3)
+    return max(1, replay_candidate_limit)
 
 
 def _known_duplicate_candidate_count(

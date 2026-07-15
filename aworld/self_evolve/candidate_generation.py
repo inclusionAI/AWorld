@@ -15,7 +15,7 @@ from aworld.logs.util import logger
 from aworld.runner import Runners
 
 
-DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT = 8192
+DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT = 32_768
 
 
 class CandidateGenerationInfrastructureError(RuntimeError):
@@ -66,11 +66,17 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
         self,
         *,
         model_config: ModelConfig,
-        output_token_limit: int = DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT,
+        output_token_limit: int | None = None,
     ) -> None:
-        if isinstance(output_token_limit, bool) or output_token_limit <= 0:
+        if output_token_limit is not None and (
+            isinstance(output_token_limit, bool) or output_token_limit <= 0
+        ):
             raise ValueError("output_token_limit must be positive")
-        framework_output_limit = int(output_token_limit)
+        framework_output_limit = (
+            int(output_token_limit)
+            if output_token_limit is not None
+            else _model_aware_candidate_output_limit(model_config)
+        )
         configured_max_tokens = _positive_token_limit(
             (model_config.params or {}).get("max_tokens")
         )
@@ -314,3 +320,16 @@ def _positive_token_limit(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return value
+
+
+def _model_aware_candidate_output_limit(model_config: ModelConfig) -> int:
+    max_model_len = _positive_token_limit(model_config.max_model_len)
+    if max_model_len is None:
+        return DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT
+    return max(
+        1,
+        min(
+            DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT,
+            max_model_len // 8,
+        ),
+    )

@@ -39,6 +39,7 @@ from aworld.self_evolve.runner import (
     _default_cli_skill_candidate,
     _default_iteration_budget,
     _default_post_apply_evaluator,
+    _candidate_generation_limit,
     _include_prior_run_cases,
     _iteration_validation_feedback,
     _parse_candidate_mutation_model_output,
@@ -220,6 +221,10 @@ def test_candidate_replay_capability_compile_error_is_typed_repair_feedback() ->
             "reason": "unsupported replay binding concurrency mode: sequential",
         }
     ]
+
+
+def test_candidate_generation_does_not_prepay_for_historical_duplicates() -> None:
+    assert _candidate_generation_limit(replay_candidate_limit=2) == 2
 
 
 def test_duplicate_only_rejection_does_not_create_new_blacklist_record() -> None:
@@ -2976,7 +2981,7 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
     )
 
     assert result.run.status.value == "succeeded"
-    assert optimizer.requests[0].max_candidates > 2
+    assert optimizer.requests[0].max_candidates == 2
     assert replay_backend.candidate_ids == ["candidate-dup-2"]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-filter-duplicates" / "report.json").read_text(

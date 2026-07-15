@@ -32,6 +32,20 @@ def test_candidate_generation_agent_registers_with_aworld_runtime() -> None:
     assert AgentFactory.agent_instance(agent.id()) is agent
 
 
+def test_candidate_generation_default_output_budget_scales_with_model_window() -> None:
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="reasoning-candidate-model",
+            llm_api_key="test-key",
+            max_model_len=128_000,
+        )
+    )
+
+    assert agent.output_token_limit == 16_000
+    assert agent.prompt_budget_policy.reserved_output_tokens == 16_000
+
+
 @pytest.mark.asyncio
 async def test_candidate_generation_submits_standard_isolated_task(
     monkeypatch: pytest.MonkeyPatch,
