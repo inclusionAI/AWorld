@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
@@ -24,6 +26,10 @@ from aworld.self_evolve.types import (
 
 def _target() -> SelfEvolveTargetRef:
     return SelfEvolveTargetRef(target_type="skill", target_id="demo-skill", path="SKILL.md")
+
+
+def _prompt_payload(prompt: str) -> dict:
+    return json.loads(prompt.split("\n", 1)[1])
 
 
 def _trace_pack():
@@ -165,16 +171,16 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
     assert result.lineage[0].optimizer_name == "trace-reflective-llm-mutator"
     assert result.lineage[0].trainable_case_ids == ("train-1",)
     assert "optimizer-task:step-2" in prompts[0]
-    assert "prior_feedback" in prompts[0]
-    assert "candidate-previous" in prompts[0]
-    assert "evidence_quality" in prompts[0]
-    assert "evidence-preservation" in prompts[0]
-    assert "tool-agnostic" in prompts[0]
-    assert "persist raw evidence to files or artifacts first" in prompts[0]
-    assert "bounded structured summaries" in prompts[0]
-    assert "compacted/truncated raw outputs without artifact-backed extracts as unusable evidence" in prompts[0]
-    assert "evidence ledger" in prompts[0]
-    assert "claim-by-claim" in prompts[0]
+    payload = _prompt_payload(prompts[0])
+    assert {item["variant_id"] for item in payload["validation_feedback"]} == {
+        "baseline",
+        "candidate-previous",
+    }
+    assert "evidence_quality" in payload["observed_failures"]
+    assert "artifact_first" in payload["required_behaviors"]
+    assert "bounded_structured_summary" in payload["required_behaviors"]
+    assert "claim_evidence_ledger" in payload["required_behaviors"]
+    assert "claim_by_claim_verification" in payload["required_behaviors"]
     assert "held-1" not in prompts[0]
 
 
@@ -253,8 +259,9 @@ async def test_trace_reflective_llm_mutator_prompt_contains_replay_requirements(
 
     await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
-    assert '"replay_requirements"' in prompts[0]
+    assert '"capability_requirements"' in prompts[0]
     assert "req-local-endpoint" in prompts[0]
+    assert '"capability_type": "replay"' in prompts[0]
     assert '"target_package_inventory": ["SKILL.md"]' in prompts[0]
     assert '"files"' in prompts[0]
     assert '"patch_intent"' in prompts[0]
@@ -297,11 +304,10 @@ async def test_trace_reflective_llm_mutator_consumes_structured_lesson_records()
     assert "lesson-lean-1" in prompts[0]
     assert "lean_solution_path" in prompts[0]
     assert "Successful trajectory used one artifact read" in prompts[0]
-    assert "candidate_strategy" in prompts[0]
-    assert "addressed_lessons" in prompts[0]
-    assert "preserved_success_behaviors" in prompts[0]
-    assert "risk_notes" in prompts[0]
-    assert "replay_priority" in prompts[0]
+    payload = _prompt_payload(prompts[0])
+    assert payload["preserved_behaviors"] == [
+        "Successful trajectory used one artifact read before final answer."
+    ]
     assert result.lineage[0].addressed_lesson_ids == ("lesson-lean-1",)
     assert result.lineage[0].lesson_set_fingerprint is not None
     assert result.diagnostics["candidate_strategies"][0]["addressed_lessons"] == [
@@ -423,8 +429,10 @@ async def test_trace_reflective_llm_mutator_promotes_harness_diagnostic_to_strat
 
     assert "harness_diagnostic" in prompts[0]
     assert "artifact_lifecycle" in prompts[0]
-    assert "strategy_hints" in prompts[0]
-    assert "improve artifact lifecycle handling" in prompts[0]
+    payload = _prompt_payload(prompts[0])
+    assert payload["lesson_records"][0]["metrics"]["diagnostic_kind"] == (
+        "artifact_lifecycle"
+    )
     assert result.diagnostics["candidate_strategies"][0]["harness_diagnostics_considered"] == [
         "diagnostic-artifact-1"
     ]
@@ -488,12 +496,48 @@ async def test_llm_mutator_prompt_requires_minimal_delta_and_preserve_list() -> 
     optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
     await optimizer.propose(request)
 
-    prompt = prompts[0]
-    assert "minimal behavior delta" in prompt
-    assert "preserve list" in prompt
-    assert "must stay unchanged" in prompt
-    assert "Do not rewrite the whole target" in prompt
-    assert "acceptance check" in prompt
+    payload = _prompt_payload(prompts[0])
+    assert payload["population_strategy"] == "minimal_behavior_delta"
+    assert "preserve_unrelated_target_behavior" in payload["acceptance_constraints"]
+    assert "pass_isolated_baseline_candidate_comparison" in (
+        payload["acceptance_constraints"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_prompt_uses_canonical_compiled_context_contract() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nAdd one reusable behavior delta.\n",
+            "rationale": "bounded delta",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="task"),),
+        max_candidates=1,
+    )
+
+    await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    instruction, serialized = prompts[0].split("\n", 1)
+    payload = json.loads(serialized)
+    assert payload["schema_version"] == (
+        "aworld.self_evolve.evolution_context.v1"
+    )
+    assert payload["expected_output"]["schema_version"] == (
+        "aworld.self_evolve.candidate.v1"
+    )
+    assert payload["population_strategy"] == "minimal_behavior_delta"
+    assert "candidate_output_contract" not in payload
+    assert "If feedback mentions" not in instruction
+    assert "return the value of expected_output" in instruction.lower()
 
 
 @pytest.mark.asyncio
@@ -543,9 +587,15 @@ async def test_llm_mutator_prompts_population_with_distinct_strategy_slots() -> 
 
     assert len(result.candidates) == 3
     assert "population_strategy" in prompts[0]
-    assert "conservative_preserve_then_delta" in prompts[0]
-    assert "evidence_integrity_delta" in prompts[1]
-    assert "score_dimension_repair_delta" in prompts[2]
+    assert _prompt_payload(prompts[0])["population_strategy"] == (
+        "minimal_behavior_delta"
+    )
+    assert _prompt_payload(prompts[1])["population_strategy"] == (
+        "quality_regression_repair"
+    )
+    assert _prompt_payload(prompts[2])["population_strategy"] == (
+        "efficiency_and_robustness"
+    )
     assert "A1_groundedness_delta" in prompts[0]
     assert "A2_completeness_delta" in prompts[0]
 
@@ -596,7 +646,7 @@ async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
     optimizer = TraceReflectiveLLMMutator(mutate_text=mutate)
     await optimizer.propose(request)
 
-    assert "feedback_summary" in prompts[0]
+    assert "validation_feedback" in prompts[0]
     assert "required_behaviors" in prompts[0]
     assert "artifact_first" in prompts[0]
     assert "bounded_structured_summary" in prompts[0]
@@ -667,7 +717,8 @@ async def test_llm_mutator_turns_low_efficiency_feedback_into_generic_strategy()
 
     prompt = prompts[0]
     instruction_text = prompt[: prompt.find("{")]
-    assert "efficiency-improvement" in prompt
+    payload = _prompt_payload(prompt)
+    assert payload["population_strategy"] == "minimal_behavior_delta"
     assert "score_improvement" in prompt
     assert "B2_efficiency" in prompt
     assert "plan_before_tools" in prompt
@@ -675,7 +726,6 @@ async def test_llm_mutator_turns_low_efficiency_feedback_into_generic_strategy()
     assert "avoid_repeated_paths" in prompt
     assert "stop_after_sufficient_evidence" in prompt
     assert "prefer_direct_structured_extraction" in prompt
-    assert "shortest viable evidence path" in prompt
     assert "xiaoyuzhou" not in instruction_text.lower()
     assert "podcast" not in instruction_text.lower()
     assert "curl" not in instruction_text.lower()
@@ -1024,12 +1074,13 @@ async def test_llm_mutator_turns_veto_and_invalid_manifest_feedback_into_generic
 
     prompt = prompts[0]
     instruction_text = prompt[: prompt.find("{")]
+    payload = _prompt_payload(prompt)
     assert "manifest_schema_compliance" in prompt
     assert "pre_final_veto_check" in prompt
     assert "support_every_claim_with_artifact_reference" in prompt
     assert "raise_groundedness_before_breadth" in prompt
-    assert "invalid manifest entries" in instruction_text
-    assert "veto" in instruction_text
+    assert "manifest_schema_compliance" in payload["required_behaviors"]
+    assert "pre_final_veto_check" in payload["required_behaviors"]
     assert "xiaoyuzhou" not in instruction_text.lower()
     assert "podcast" not in instruction_text.lower()
     assert "curl" not in instruction_text.lower()
@@ -1075,10 +1126,13 @@ async def test_llm_mutator_turns_compacted_tool_argument_feedback_into_generic_s
     await optimizer.propose(request)
 
     instruction_text = prompts[0][: prompts[0].find("{")]
-    assert "compacted tool arguments" in instruction_text
-    assert "schema-valid tool arguments" in instruction_text
-    assert "read saved artifacts" in instruction_text
-    assert "do not repeat" in instruction_text
+    payload = _prompt_payload(prompts[0])
+    assert "avoid_compacted_tool_arguments" in payload["required_behaviors"]
+    assert "regenerate_schema_valid_tool_arguments" in payload["required_behaviors"]
+    assert "switch_to_artifact_read_after_invalid_tool_argument" in (
+        payload["required_behaviors"]
+    )
+    assert "stop_repeating_invalid_tool_calls" in payload["required_behaviors"]
     assert "curl" not in instruction_text.lower()
     assert "podcast" not in instruction_text.lower()
 
@@ -1128,12 +1182,14 @@ async def test_llm_mutator_turns_scope_and_cost_regression_feedback_into_generic
 
     prompt = prompts[0]
     instruction_text = prompt[: prompt.find("{")]
+    payload = _prompt_payload(prompt)
     assert "reduce_answer_scope_to_verified_claims" in prompt
     assert "prefer_fewer_verified_claims_over_broad_synthesis" in prompt
     assert "cap_evidence_acquisition_and_summarization_cost" in prompt
-    assert "fewer verified claims" in instruction_text
-    assert "do not expand answer breadth" in instruction_text
-    assert "cap evidence acquisition and summarization cost" in instruction_text
+    assert "reduce_answer_scope_to_verified_claims" in payload["required_behaviors"]
+    assert "cap_evidence_acquisition_and_summarization_cost" in (
+        payload["required_behaviors"]
+    )
     assert "xiaoyuzhou" not in instruction_text.lower()
     assert "podcast" not in instruction_text.lower()
     assert "curl" not in instruction_text.lower()

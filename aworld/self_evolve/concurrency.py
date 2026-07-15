@@ -251,7 +251,7 @@ class AWorldCandidatePopulationExecutor:
             try:
                 outputs[result.index] = self._parse_output(raw_output)
             except ValueError as exc:
-                repair_inputs[result.index] = (prompts[result.index], exc)
+                repair_inputs[result.index] = (raw_output, exc)
 
         repaired_indexes: set[int] = set()
         repair_results: list[TaskBatchResult] = []
@@ -264,12 +264,12 @@ class AWorldCandidatePopulationExecutor:
         if eligible_repairs:
             repair_tasks = {
                 index: agents[index].build_task(
-                    self._repair_prompt_builder(original_prompt, error),
+                    self._repair_prompt_builder(invalid_output, error),
                     task_id=(
                         f"self-evolve-candidate-{population_id}-{index}-repair"
                     ),
                 )
-                for index, (original_prompt, error) in eligible_repairs.items()
+                for index, (invalid_output, error) in eligible_repairs.items()
             }
             repair_results = await self._task_batch_executor.run(
                 [

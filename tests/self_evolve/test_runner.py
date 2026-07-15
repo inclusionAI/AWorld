@@ -960,6 +960,8 @@ async def test_runner_passes_trace_lessons_to_candidate_generation(tmp_path) -> 
     )
 
     assert len(optimizer.requests) == 1
+    assert optimizer.requests[0].evolution_context is not None
+    assert optimizer.requests[0].evolution_context.trainable_cases
     lesson_types = [lesson.lesson_type for lesson in optimizer.requests[0].lesson_records]
     assert "trajectory_failure_memory" in lesson_types
     assert optimizer.requests[0].lesson_records[0].source_task_ids == ("lesson-task",)

@@ -238,6 +238,43 @@ async def test_schema_repair_reuses_the_same_slot_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_schema_repair_builder_receives_invalid_output_not_original_prompt() -> None:
+    captured_repair_inputs: list[str] = []
+
+    def repair_prompt_builder(invalid_output: str, error: ValueError) -> str:
+        captured_repair_inputs.append(invalid_output)
+        return f"repair only: {error}: {invalid_output}"
+
+    async def run_task(task: Task):
+        answer = (
+            json.dumps(
+                {
+                    "content": "# Demo\n\nRepaired candidate.\n",
+                    "rationale": "representation repaired",
+                }
+            )
+            if task.id.endswith("-repair")
+            else "invalid response sentinel"
+        )
+        return {task.id: TaskResponse(id=task.id, success=True, answer=answer)}
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=json.loads,
+        repair_prompt_builder=repair_prompt_builder,
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    result = await executor.run(
+        ["original trajectory sentinel"],
+        max_concurrency=1,
+    )
+
+    assert captured_repair_inputs == ["invalid response sentinel"]
+    assert result.slots[0].repaired is True
+
+
+@pytest.mark.asyncio
 async def test_custom_mutator_remains_serial_without_population_callable() -> None:
     active = 0
     max_active = 0

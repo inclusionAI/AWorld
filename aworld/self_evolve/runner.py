@@ -26,6 +26,7 @@ from aworld.self_evolve.datasets import (
     build_dataset_from_source,
 )
 from aworld.self_evolve.diagnostics import extract_harness_diagnostics
+from aworld.self_evolve.evolution_context import compile_evolution_context
 from aworld.self_evolve.evaluation import (
     AWorldTrajectoryEvaluatorBackend,
     EvaluationBackend,
@@ -60,7 +61,11 @@ from aworld.self_evolve.gates import (
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.candidate_package import candidate_package_fingerprint
-from aworld.self_evolve.candidate_protocol import normalize_candidate_output
+from aworld.self_evolve.candidate_protocol import (
+    CANDIDATE_OUTPUT_CONTRACT,
+    CandidateProtocolError,
+    normalize_candidate_output,
+)
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
@@ -478,25 +483,28 @@ class SelfEvolveRunner:
                     },
                     trace_packs=trace_packs,
                 )
-            optimizer_result = await self.optimizer.propose(
-                OptimizerRequest.from_dataset(
-                    target=target.identity,
-                    current_content=target.load_current_content(),
-                    target_fingerprint=target.fingerprint_current_content(),
-                    trace_packs=trace_packs,
-                    validation_feedback=validation_feedback,
-                    prior_feedback=prior_feedback,
-                    lesson_records=iteration_lesson_records,
-                    dataset=dataset,
-                    max_candidates=_candidate_generation_limit(
-                        replay_candidate_limit=self.replay_candidate_limit,
-                        rejected_candidate_ids=rejected_candidate_ids,
-                        accepted_candidate_ids=accepted_candidate_ids,
-                    ),
-                    replay_requirements=replay_preflight.requirements,
-                    target_package_inventory=target_package_inventory,
-                )
+            optimizer_request = OptimizerRequest.from_dataset(
+                target=target.identity,
+                current_content=target.load_current_content(),
+                target_fingerprint=target.fingerprint_current_content(),
+                trace_packs=trace_packs,
+                validation_feedback=validation_feedback,
+                prior_feedback=prior_feedback,
+                lesson_records=iteration_lesson_records,
+                dataset=dataset,
+                max_candidates=_candidate_generation_limit(
+                    replay_candidate_limit=self.replay_candidate_limit,
+                    rejected_candidate_ids=rejected_candidate_ids,
+                    accepted_candidate_ids=accepted_candidate_ids,
+                ),
+                replay_requirements=replay_preflight.requirements,
+                target_package_inventory=target_package_inventory,
             )
+            optimizer_request = replace(
+                optimizer_request,
+                evolution_context=compile_evolution_context(optimizer_request),
+            )
+            optimizer_result = await self.optimizer.propose(optimizer_request)
             population_execution = optimizer_result.diagnostics.get(
                 "candidate_population_execution"
             )
@@ -2477,13 +2485,29 @@ async def _run_candidate_generation_agent(
     return await agent.generate(prompt)
 
 
-def _candidate_mutation_repair_prompt(prompt: str, error: ValueError) -> str:
+def _candidate_mutation_repair_prompt(
+    invalid_output: str,
+    error: ValueError,
+) -> str:
+    diagnostic = (
+        error.to_diagnostic()
+        if isinstance(error, CandidateProtocolError)
+        else {
+            "code": "candidate_protocol_invalid",
+            "stage": "candidate_protocol",
+            "failure_class": "candidate",
+            "repairable": True,
+        }
+    )
+    payload = {
+        "candidate_schema": dict(CANDIDATE_OUTPUT_CONTRACT),
+        "diagnostics": [diagnostic],
+        "invalid_response": sanitize_text(invalid_output, max_chars=16_000),
+    }
     return (
-        prompt
-        + "\n\nThe previous response violated the candidate output contract ("
-        + str(error)
-        + "). Return only one valid JSON object with content or patch_intent, "
-        "rationale, and a files array."
+        "Repair representation only using the supplied schema and diagnostic. "
+        "Do not invent new task evidence. Return exactly one candidate JSON object.\n"
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
 
 
