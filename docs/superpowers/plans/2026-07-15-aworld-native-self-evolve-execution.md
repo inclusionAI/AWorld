@@ -44,11 +44,11 @@ class TaskBatchItem:
     resource_claims: tuple[TaskResourceClaim, ...] = ()
 ```
 
-- [ ] Write failing tests covering stable result order, concurrency cap, `indexed_fail_fast`, `collect_all`, and exclusive/shared resource claims. Use custom test `runner_cls` values so every work item goes through `Runners.run_task()`.
-- [ ] Run `conda run -n aworld_env python -m pytest tests/runners/test_deterministic_task_batch.py -q`; expect import failure for `aworld.runners.batch`.
-- [ ] Implement immutable `TaskResourceClaim`, `TaskBatchItem`, `TaskBatchResult`, and `DeterministicTaskBatchExecutor`. A conflict exists when keys match and either claim is exclusive. Return results by item index; cancel higher indexes after the lowest indexed fail-fast failure.
-- [ ] Re-run the test file and `tests/runners/test_tool_reset_compat.py`; expect all pass.
-- [ ] Commit `feat(runners): add deterministic task batch executor`.
+- [x] Write failing tests covering stable result order, concurrency cap, `indexed_fail_fast`, `collect_all`, and exclusive/shared resource claims. Use custom test `runner_cls` values so every work item goes through `Runners.run_task()`.
+- [x] Run `conda run -n aworld_env python -m pytest tests/runners/test_deterministic_task_batch.py -q`; expect import failure for `aworld.runners.batch`.
+- [x] Implement immutable `TaskResourceClaim`, `TaskBatchItem`, `TaskBatchResult`, and `DeterministicTaskBatchExecutor`. A conflict exists when keys match and either claim is exclusive. Return results by item index; cancel higher indexes after the lowest indexed fail-fast failure.
+- [x] Re-run the test file and `tests/runners/test_tool_reset_compat.py`; expect all pass.
+- [x] Commit `feat(runners): add deterministic task batch executor`.
 
 ### Task 2: Local memory and ApplicationContext isolation
 
