@@ -37,6 +37,7 @@ from aworld.self_evolve.runner import (
     _auto_group_trajectory_log_dataset,
     _baseline_replay_artifact_dir,
     _default_cli_skill_candidate,
+    _default_iteration_budget,
     _default_post_apply_evaluator,
     _include_prior_run_cases,
     _iteration_validation_feedback,
@@ -172,6 +173,32 @@ def test_replay_only_rejection_does_not_permanently_blacklist_candidate() -> Non
     }
 
     assert _rejected_candidate_ids_from_report(report) == set()
+
+
+def test_auto_verified_default_iteration_budget_allows_one_typed_repair_iteration() -> None:
+    assert _default_iteration_budget(
+        apply_policy="auto_verified",
+        explicit_iterations=None,
+    ) == 2
+
+
+def test_explicit_iteration_budget_is_the_exact_upper_bound() -> None:
+    assert _default_iteration_budget(
+        apply_policy="auto_verified",
+        explicit_iterations=1,
+    ) == 1
+    assert _default_iteration_budget(
+        apply_policy="proposal",
+        explicit_iterations=None,
+    ) == 1
+
+
+def test_iteration_budget_rejects_non_positive_explicit_values() -> None:
+    with pytest.raises(ValueError, match="iterations must be positive"):
+        _default_iteration_budget(
+            apply_policy="auto_verified",
+            explicit_iterations=0,
+        )
 
 
 def test_duplicate_only_rejection_does_not_create_new_blacklist_record() -> None:
@@ -4455,7 +4482,7 @@ async def test_runner_auto_verified_rejects_without_evaluation_backend(tmp_path)
         apply_policy="auto_verified",
     )
 
-    assert result.run.status.value == "rejected"
+    assert result.run.status.value == "failed"
     assert skill_path.read_text(encoding="utf-8") == original_content
     report = json.loads((store.run_path("run-auto-no-eval") / "report.json").read_text(encoding="utf-8"))
     assert any(
@@ -5983,7 +6010,7 @@ async def test_runner_rejects_auto_verified_candidate_when_evaluation_backend_fa
         apply_policy="auto_verified",
     )
 
-    assert result.run.status.value == "rejected"
+    assert result.run.status.value == "failed"
     assert skill_path.read_text(encoding="utf-8") == original_content
     report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-eval-failure" / "report.json").read_text())
     assert any(
@@ -6237,8 +6264,9 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
     assert len(model_calls) == 2
     assert all(call[0] is model_calls[0][0] for call in model_calls)
     assert model_calls[0][0].conf.llm_config.llm_model_name == "mutation-model"
-    assert '"replay_requirements"' in model_calls[0][1]
-    assert "previous response violated the candidate output contract" in model_calls[1][1]
+    assert '"capability_requirements"' in model_calls[0][1]
+    assert "Repair representation only" in model_calls[1][1]
+    assert "invalid_response" in model_calls[1][1]
     assert [item["path"] for item in candidate_json["files"]] == [
         "replay/capability.json",
         "replay/compiler.py",
@@ -6312,6 +6340,14 @@ def test_optimize_cli_request_stops_population_after_model_runtime_failure(
 
     report_text = Path(summary["report_path"]).read_text(encoding="utf-8")
     report = json.loads(report_text)
+    assert summary["status"] == "failed"
+    assert report["status"] == "failed"
+    assert report["terminal_cause"] == {
+        "failure_class": "infrastructure",
+        "stage": "candidate_generation",
+        "code": "candidate_generation_infrastructure_error",
+        "error_type": "RuntimeError",
+    }
     assert 1 <= model_call_count <= 2
     assert report["optimizer_diagnostics"]["candidate_generation_failure"] == {
         "code": "candidate_generation_infrastructure_error",
@@ -7512,8 +7548,8 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
 
     assert created["count"] == 1
-    assert replay_agents == ["Aworld", "Aworld"]
-    assert replay_max_steps == [1, 1]
+    assert replay_agents == ["Aworld"]
+    assert replay_max_steps == [1]
     assert report_summary["best_candidate_id"] is None
     assert report_summary["selected_candidate_id"] is not None
     assert any(
@@ -7522,7 +7558,8 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
-    assert report["optimizer_diagnostics"]["filtered_duplicate_candidates"] == 0
+    optimizer_iterations = report["optimizer_diagnostics"]["iterations"]
+    assert optimizer_iterations[0]["diagnostics"]["filtered_duplicate_candidates"] == 1
     assert report["population"]["generated_candidate_count"] == 2
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
 

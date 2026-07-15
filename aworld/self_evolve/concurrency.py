@@ -24,7 +24,12 @@ SelfEvolveStage = Literal[
     "replay",
     "evaluation",
 ]
-CandidatePopulationStatus = Literal["succeeded", "failed", "discarded"]
+CandidatePopulationStatus = Literal[
+    "succeeded",
+    "protocol_invalid",
+    "failed",
+    "discarded",
+]
 
 
 class SelfEvolveConcurrencyPolicy(BaseModel):
@@ -137,7 +142,7 @@ class CandidatePopulationSlotResult:
     index: int
     status: CandidatePopulationStatus
     output: Mapping[str, Any] | None = None
-    failure: Mapping[str, str] | None = None
+    failure: Mapping[str, Any] | None = None
     repaired: bool = False
 
 
@@ -204,6 +209,7 @@ class AWorldCandidatePopulationExecutor:
                     "failure_cutoff_index": None,
                     "statuses": [],
                     "repair_count": 0,
+                    "protocol_invalid_count": 0,
                     "queue_wait_seconds": 0.0,
                     "execution_seconds": 0.0,
                     "resource_serialized_count": 0,
@@ -231,6 +237,7 @@ class AWorldCandidatePopulationExecutor:
 
         outputs: dict[int, Mapping[str, Any]] = {}
         failures: dict[int, Mapping[str, str]] = {}
+        protocol_failures: dict[int, Mapping[str, Any]] = {}
         discarded: set[int] = {
             result.index for result in initial_results if result.status == "discarded"
         }
@@ -302,17 +309,15 @@ class AWorldCandidatePopulationExecutor:
                 repaired_indexes.add(index)
                 try:
                     outputs[index] = self._parse_output(raw_output)
-                except ValueError:
-                    # A second schema violation is a protocol-invalid candidate, not an
-                    # infrastructure failure. The mutator will count this bounded empty
-                    # payload as an invalid candidate.
-                    outputs[index] = {}
+                except ValueError as exc:
+                    protocol_failures[index] = _candidate_protocol_diagnostic(exc)
 
         if failure_cutoff is not None:
             for index in range(failure_cutoff + 1, len(prompts)):
                 discarded.add(index)
                 outputs.pop(index, None)
                 failures.pop(index, None)
+                protocol_failures.pop(index, None)
 
         slots: list[CandidatePopulationSlotResult] = []
         for index in range(len(prompts)):
@@ -328,6 +333,15 @@ class AWorldCandidatePopulationExecutor:
                         index=index,
                         status="failed",
                         failure=failures[index],
+                    )
+                )
+            elif index in protocol_failures:
+                slots.append(
+                    CandidatePopulationSlotResult(
+                        index=index,
+                        status="protocol_invalid",
+                        failure=protocol_failures[index],
+                        repaired=index in repaired_indexes,
                     )
                 )
             else:
@@ -354,6 +368,7 @@ class AWorldCandidatePopulationExecutor:
             "failure_cutoff_index": failure_cutoff,
             "statuses": [slot.status for slot in slots],
             "repair_count": len(repaired_indexes),
+            "protocol_invalid_count": len(protocol_failures),
             "queue_wait_seconds": sum(
                 result.queue_wait_seconds for result in initial_results
             ),
@@ -372,6 +387,20 @@ class AWorldCandidatePopulationExecutor:
             slots=tuple(slots),
             diagnostics=diagnostics,
         )
+
+
+def _candidate_protocol_diagnostic(error: ValueError) -> Mapping[str, Any]:
+    to_diagnostic = getattr(error, "to_diagnostic", None)
+    if callable(to_diagnostic):
+        diagnostic = to_diagnostic()
+        if isinstance(diagnostic, Mapping):
+            return dict(diagnostic)
+    return {
+        "code": "candidate_protocol_invalid",
+        "stage": "candidate_protocol",
+        "failure_class": "candidate",
+        "repairable": True,
+    }
 
 
 def _read_candidate_task_result(
