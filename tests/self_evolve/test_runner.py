@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from aworld.config.conf import ModelConfig
+from aworld.core.common import TaskStatusValue
+from aworld.core.task import TaskResponse
+from aworld.runner import Runners
 
 from aworld.self_evolve.candidate_generation import CandidateGenerationAgent
 from aworld.self_evolve.datasets import (
@@ -6177,22 +6180,33 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
         ],
     }
 
-    async def fake_call(agent: CandidateGenerationAgent, prompt: str) -> str:
+    async def fake_run_task(task, run_conf=None):
+        agent = task.agent
+        prompt = task.input
         model_calls.append((agent, prompt))
         if len(model_calls) == 1:
-            return json.dumps(
+            answer = json.dumps(
                 {
                     "content": model_output["content"],
                     "rationale": "Invalid package path must trigger repair.",
                     "files": [{"path": "../escape.py", "content": "bad"}],
                 }
             )
-        return "```json\n" + json.dumps(model_output) + "\n```"
+        else:
+            answer = "```json\n" + json.dumps(model_output) + "\n```"
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                status=TaskStatusValue.SUCCESS,
+                answer=answer,
+            )
+        }
 
     monkeypatch.setattr(
-        runner_module,
-        "_run_candidate_generation_agent",
-        fake_call,
+        Runners,
+        "run_task",
+        fake_run_task,
     )
     mutation_model_config = ModelConfig(
         llm_provider="openai",
@@ -6259,15 +6273,20 @@ def test_optimize_cli_request_stops_population_after_model_runtime_failure(
     )
     model_call_count = 0
 
-    async def fake_call(agent: CandidateGenerationAgent, prompt: str) -> str:
+    async def fake_run_task(task, run_conf=None):
         nonlocal model_call_count
         model_call_count += 1
+        task.agent._task_failures[task.id] = {
+            "code": "candidate_generation_infrastructure_error",
+            "stage": "model_call",
+            "error_type": "RuntimeError",
+        }
         raise RuntimeError("Authorization: Bearer should-not-leak")
 
     monkeypatch.setattr(
-        runner_module,
-        "_run_candidate_generation_agent",
-        fake_call,
+        Runners,
+        "run_task",
+        fake_run_task,
     )
 
     summary = optimize_from_cli_request(
@@ -6285,7 +6304,7 @@ def test_optimize_cli_request_stops_population_after_model_runtime_failure(
 
     report_text = Path(summary["report_path"]).read_text(encoding="utf-8")
     report = json.loads(report_text)
-    assert model_call_count == 1
+    assert 1 <= model_call_count <= 2
     assert report["optimizer_diagnostics"]["candidate_generation_failure"] == {
         "code": "candidate_generation_infrastructure_error",
         "stage": "model_call",

@@ -199,21 +199,7 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
         )
 
     async def generate(self, prompt: str) -> str:
-        invocation_id = uuid.uuid4().hex
-        task_id = f"self-evolve-candidate-{invocation_id}"
-        context = LocalIsolatedApplicationContext.create(
-            task_id=task_id,
-            session_id=task_id,
-            task_content=prompt,
-        )
-        task = Task(
-            id=task_id,
-            session_id=task_id,
-            input=prompt,
-            agent=self,
-            context=context,
-            runner_cls="aworld.self_evolve.runtime.SelfEvolveCandidateTaskRunner",
-        )
+        task = self.build_task(prompt)
         try:
             responses = await Runners.run_task(task)
         except CandidateGenerationInfrastructureError as exc:
@@ -247,14 +233,48 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
             ) from None
 
         response = responses.get(task.id) if isinstance(responses, dict) else None
+        return self.candidate_response_from_task(task, response)
+
+    def build_task(self, prompt: str, *, task_id: str | None = None) -> Task:
+        task_id = task_id or f"self-evolve-candidate-{uuid.uuid4().hex}"
+        context = LocalIsolatedApplicationContext.create(
+            task_id=task_id,
+            session_id=task_id,
+            task_content=prompt,
+        )
+        return Task(
+            id=task_id,
+            session_id=task_id,
+            input=prompt,
+            agent=self,
+            context=context,
+            runner_cls="aworld.self_evolve.runtime.SelfEvolveCandidateTaskRunner",
+        )
+
+    def pop_task_failure(
+        self,
+        task: Task,
+    ) -> CandidateGenerationInfrastructureError | None:
         recorded_failure = self._task_failures.pop(task.id, None)
         if recorded_failure is None:
-            recorded_failure = context.context_info.get("candidate_generation_failure")
+            recorded_failure = task.context.context_info.get(
+                "candidate_generation_failure"
+            )
         if isinstance(recorded_failure, dict):
-            raise CandidateGenerationInfrastructureError(
+            return CandidateGenerationInfrastructureError(
                 stage=str(recorded_failure.get("stage") or "agent_runtime"),
                 error_type=str(recorded_failure.get("error_type") or "RuntimeError"),
-            ) from None
+            )
+        return None
+
+    def candidate_response_from_task(
+        self,
+        task: Task,
+        response: Any,
+    ) -> str:
+        failure = self.pop_task_failure(task)
+        if failure is not None:
+            raise failure
         if response is None:
             raise CandidateGenerationInfrastructureError(
                 stage="task_runner",

@@ -4,7 +4,7 @@ import hashlib
 import inspect
 import json
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
@@ -13,6 +13,10 @@ from aworld.self_evolve.candidate_package import (
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationInfrastructureError,
 )
+from aworld.self_evolve.concurrency import (
+    CandidatePopulationResult,
+    SelfEvolveConcurrencyPolicy,
+)
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
@@ -20,14 +24,26 @@ from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, Optim
 
 
 MutateTextCallable = Callable[[str], Any]
+CandidatePopulationCallable = Callable[
+    [Sequence[str], int],
+    Awaitable[CandidatePopulationResult],
+]
 
 
 class TraceReflectiveLLMMutator:
     optimizer_name = "trace-reflective-llm-mutator"
     optimizer_version = "0"
 
-    def __init__(self, *, mutate_text: MutateTextCallable) -> None:
+    def __init__(
+        self,
+        *,
+        mutate_text: MutateTextCallable,
+        population_callable: CandidatePopulationCallable | None = None,
+        concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
+    ) -> None:
         self.mutate_text = mutate_text
+        self.population_callable = population_callable
+        self.concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
 
     async def propose(self, request: OptimizerRequest) -> OptimizerResult:
         if not _has_lesson_backed_delta_signal(request):
@@ -53,17 +69,55 @@ class TraceReflectiveLLMMutator:
         require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
         candidate_generation_failure: dict[str, str] | None = None
+        candidate_outputs: list[tuple[int, Any]] = []
+        population_diagnostics: dict[str, Any]
 
-        for index in range(request.max_candidates):
-            prompt = _build_mutation_prompt(request, candidate_index=index)
+        if self.population_callable is not None:
+            prompts = tuple(
+                _build_mutation_prompt(request, candidate_index=index)
+                for index in range(request.max_candidates)
+            )
+            population = await self.population_callable(
+                prompts,
+                self.concurrency_policy.effective_limit(
+                    "candidate_generation",
+                    item_count=len(prompts),
+                ),
+            )
+            population_diagnostics = dict(population.diagnostics)
+            for slot in population.slots:
+                if slot.status == "succeeded":
+                    candidate_outputs.append((slot.index, slot.output))
+                elif slot.status == "failed" and candidate_generation_failure is None:
+                    candidate_generation_failure = dict(slot.failure or {})
+        else:
+            statuses = ["discarded"] * request.max_candidates
+            failure_cutoff: int | None = None
+            for index in range(request.max_candidates):
+                prompt = _build_mutation_prompt(request, candidate_index=index)
+                try:
+                    output = self.mutate_text(prompt)
+                    if inspect.isawaitable(output):
+                        output = await output
+                except CandidateGenerationInfrastructureError as exc:
+                    candidate_generation_failure = exc.to_diagnostic()
+                    statuses[index] = "failed"
+                    failure_cutoff = index
+                    break
+                statuses[index] = "succeeded"
+                candidate_outputs.append((index, output))
+            population_diagnostics = {
+                "mode": "custom_serial",
+                "configured_concurrency": 1,
+                "effective_concurrency": min(1, request.max_candidates),
+                "max_observed_concurrency": min(1, len(candidate_outputs)),
+                "failure_cutoff_index": failure_cutoff,
+                "statuses": statuses,
+                "repair_count": 0,
+            }
+
+        for index, output in candidate_outputs:
             strategy_record = _candidate_strategy_record(request, candidate_index=index)
-            try:
-                output = self.mutate_text(prompt)
-                if inspect.isawaitable(output):
-                    output = await output
-            except CandidateGenerationInfrastructureError as exc:
-                candidate_generation_failure = exc.to_diagnostic()
-                break
             try:
                 content, rationale, materialization, files = _materialize_mutator_output(
                     output,
@@ -140,6 +194,7 @@ class TraceReflectiveLLMMutator:
             "filtered_duplicate_candidates": filtered_duplicate_count,
             "filtered_invalid_patch_candidates": filtered_invalid_patch_count,
             "candidate_strategies": candidate_strategy_records,
+            "candidate_population_execution": population_diagnostics,
         }
         if candidate_generation_failure is not None:
             diagnostics["candidate_generation_failure"] = candidate_generation_failure

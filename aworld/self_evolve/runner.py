@@ -65,6 +65,10 @@ from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
 )
+from aworld.self_evolve.concurrency import (
+    AWorldCandidatePopulationExecutor,
+    SelfEvolveConcurrencyPolicy,
+)
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
@@ -204,6 +208,7 @@ class SelfEvolveRunner:
         progress_callback: Callable[[str, str], Any] | None = None,
         skip_duplicate_rejected_candidate_gate: bool = False,
         replay_adaptation_compiler: ReplayAdaptationCompiler | None = None,
+        concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -232,6 +237,7 @@ class SelfEvolveRunner:
         self.replay_adaptation_compiler = (
             replay_adaptation_compiler or ReplayAdaptationCompiler()
         )
+        self.concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
         self._replay_adaptation_cache: dict[
             tuple[str, str, str],
             tuple[ReplayAdaptationBundle | None, GateResult],
@@ -1970,7 +1976,9 @@ def optimize_from_cli_request(
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None = None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
+    concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
 ) -> Mapping[str, Any]:
+    effective_concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
     if rerun_evaluator:
@@ -2000,6 +2008,7 @@ def optimize_from_cli_request(
             runtime_registry_refresher=runtime_registry_refresher,
             runtime_skill_activator=runtime_skill_activator,
             progress_callback=progress_callback,
+            concurrency_policy=effective_concurrency_policy,
         )
     if (
         not dataset
@@ -2174,59 +2183,8 @@ def optimize_from_cli_request(
             current_run_id=run_id,
         )
 
-    candidate_generation_agent = (
-        CandidateGenerationAgent(model_config=mutation_model_config)
-        if mutation_model_config is not None
-        else None
-    )
-
     async def _cli_default_mutation(prompt: str) -> Mapping[str, Any]:
         current_content = target_adapter.load_current_content()
-        if candidate_generation_agent is not None:
-            model_prompt = prompt
-            for attempt in range(2):
-                try:
-                    raw_output = await _run_candidate_generation_agent(
-                        candidate_generation_agent,
-                        model_prompt,
-                    )
-                except CandidateGenerationInfrastructureError as exc:
-                    logger.warning(
-                        "self_evolve.mutation.agent_runtime_failed "
-                        f"stage={exc.stage} error_type={exc.error_type}"
-                    )
-                    raise
-                except Exception as exc:
-                    logger.warning(
-                        "self_evolve.mutation.agent_runtime_failed "
-                        f"stage=model_call error_type={type(exc).__name__}"
-                    )
-                    raise CandidateGenerationInfrastructureError(
-                        stage="model_call",
-                        error_type=type(exc).__name__,
-                    ) from exc
-
-                try:
-                    return _parse_candidate_mutation_model_output(
-                        raw_output,
-                        current_content=current_content,
-                    )
-                except ValueError as exc:
-                    if attempt == 0:
-                        model_prompt = (
-                            prompt
-                            + "\n\nThe previous response violated the candidate output "
-                            "contract ("
-                            + str(exc)
-                            + "). Return only one valid JSON object with content or "
-                            "patch_intent, rationale, and a files array."
-                        )
-                        continue
-                    logger.warning(
-                        "self_evolve.mutation.invalid_model_output "
-                        f"error_type={type(exc).__name__}"
-                    )
-                    return {}
         candidate_content = _default_cli_skill_candidate(
             current_content=current_content,
             trace_packs=trace_packs,
@@ -2241,6 +2199,29 @@ def optimize_from_cli_request(
                 else "No trajectory evidence available; preserved proposal-only baseline."
             ),
         }
+
+    candidate_population_executor = (
+        AWorldCandidatePopulationExecutor(
+            agent_factory=lambda _slot: CandidateGenerationAgent(
+                model_config=mutation_model_config
+            ),
+            parse_output=lambda raw_output: _parse_candidate_mutation_model_output(
+                raw_output,
+                current_content=target_adapter.load_current_content(),
+            ),
+            repair_prompt_builder=_candidate_mutation_repair_prompt,
+        )
+        if mutation_model_config is not None
+        else None
+    )
+
+    async def _cli_candidate_population(prompts, max_concurrency):
+        if candidate_population_executor is None:
+            raise RuntimeError("candidate population executor is not configured")
+        return await candidate_population_executor.run(
+            prompts,
+            max_concurrency=max_concurrency,
+        )
 
     if apply_policy == "auto_verified" and evaluation_backend is None:
         evaluation_backend = _evaluation_backend_from_judge_config(
@@ -2259,7 +2240,15 @@ def optimize_from_cli_request(
     result = asyncio.run(
         SelfEvolveRunner(
             store=store,
-            optimizer=TraceReflectiveLLMMutator(mutate_text=_cli_default_mutation),
+            optimizer=TraceReflectiveLLMMutator(
+                mutate_text=_cli_default_mutation,
+                population_callable=(
+                    _cli_candidate_population
+                    if candidate_population_executor is not None
+                    else None
+                ),
+                concurrency_policy=effective_concurrency_policy,
+            ),
             evaluation_backend=evaluation_backend,
             post_apply_evaluator=post_apply_evaluator,
             min_score_delta=min_score_delta,
@@ -2281,6 +2270,7 @@ def optimize_from_cli_request(
             runtime_registry_refresher=runtime_registry_refresher,
             runtime_skill_activator=runtime_skill_activator,
             progress_callback=progress_callback,
+            concurrency_policy=effective_concurrency_policy,
         ).run_explicit_target(
             run_id=run_id,
             target=target_adapter,
@@ -2346,6 +2336,16 @@ async def _run_candidate_generation_agent(
     """Run one request through the optimize-scoped AWorld candidate agent."""
 
     return await agent.generate(prompt)
+
+
+def _candidate_mutation_repair_prompt(prompt: str, error: ValueError) -> str:
+    return (
+        prompt
+        + "\n\nThe previous response violated the candidate output contract ("
+        + str(error)
+        + "). Return only one valid JSON object with content or patch_intent, "
+        "rationale, and a files array."
+    )
 
 
 def _parse_candidate_mutation_model_output(
@@ -2608,6 +2608,7 @@ def _rerun_evaluator_from_stored_run(
     runtime_registry_refresher: Callable[[CandidateVariant], Any] | None,
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None,
     progress_callback: Callable[[str, str], Any] | None,
+    concurrency_policy: SelfEvolveConcurrencyPolicy,
 ) -> Mapping[str, Any]:
     store = FilesystemSelfEvolveStore(workspace_root)
     source_run_path = _resolve_stored_run_path(store, from_run)
@@ -2700,6 +2701,7 @@ def _rerun_evaluator_from_stored_run(
             runtime_skill_activator=runtime_skill_activator,
             progress_callback=progress_callback,
             skip_duplicate_rejected_candidate_gate=True,
+            concurrency_policy=concurrency_policy,
         ).run_explicit_target(
             run_id=run_id,
             target=target_adapter,
