@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
@@ -49,6 +50,86 @@ class SelfEvolveConcurrencyPolicy(BaseModel):
             "evaluation": self.judge_concurrency,
         }[stage]
         return min(self.max_total_concurrency, stage_limit, item_count)
+
+
+class SelfEvolveExecutionTelemetry:
+    """Bounded, content-free observability for self-evolve stage batches."""
+
+    def __init__(self) -> None:
+        self._records: dict[str, list[dict[str, Any]]] = {}
+
+    def record(self, stage: SelfEvolveStage, observability: Mapping[str, Any]) -> None:
+        allowed = {
+            "item_count",
+            "configured_concurrency",
+            "effective_concurrency",
+            "max_observed_concurrency",
+            "failure_cutoff_index",
+            "resource_serialized_count",
+            "queue_wait_seconds",
+            "execution_seconds",
+            "elapsed_seconds",
+            "mode",
+            "repair_count",
+        }
+        record = {
+            key: value
+            for key, value in observability.items()
+            if key in allowed and isinstance(value, (str, int, float, type(None)))
+        }
+        self._records.setdefault(stage, []).append(record)
+
+    def to_report(self) -> dict[str, Mapping[str, Any]]:
+        report: dict[str, Mapping[str, Any]] = {}
+        for stage, records in self._records.items():
+            report[stage] = {
+                "batch_count": len(records),
+                "item_count": sum(_telemetry_int(item, "item_count") for item in records),
+                "configured_concurrency": max(
+                    (_telemetry_int(item, "configured_concurrency") for item in records),
+                    default=0,
+                ),
+                "effective_concurrency": max(
+                    (_telemetry_int(item, "effective_concurrency") for item in records),
+                    default=0,
+                ),
+                "max_observed_concurrency": max(
+                    (_telemetry_int(item, "max_observed_concurrency") for item in records),
+                    default=0,
+                ),
+                "resource_serialized_count": sum(
+                    _telemetry_int(item, "resource_serialized_count")
+                    for item in records
+                ),
+                "queue_wait_seconds": sum(
+                    _telemetry_float(item, "queue_wait_seconds") for item in records
+                ),
+                "execution_seconds": sum(
+                    _telemetry_float(item, "execution_seconds") for item in records
+                ),
+                "elapsed_seconds": sum(
+                    _telemetry_float(item, "elapsed_seconds") for item in records
+                ),
+                "failure_cutoff_indexes": [
+                    item["failure_cutoff_index"]
+                    for item in records
+                    if isinstance(item.get("failure_cutoff_index"), int)
+                ],
+                "batches": records,
+            }
+        return report
+
+
+def _telemetry_int(value: Mapping[str, Any], key: str) -> int:
+    item = value.get(key)
+    return item if isinstance(item, int) and not isinstance(item, bool) else 0
+
+
+def _telemetry_float(value: Mapping[str, Any], key: str) -> float:
+    item = value.get(key)
+    if isinstance(item, (int, float)) and not isinstance(item, bool):
+        return float(item)
+    return 0.0
 
 
 @dataclass(frozen=True)
@@ -110,17 +191,23 @@ class AWorldCandidatePopulationExecutor:
         *,
         max_concurrency: int,
     ) -> CandidatePopulationResult:
+        started_at = time.monotonic()
         if not prompts:
             return CandidatePopulationResult(
                 slots=(),
                 diagnostics={
                     "mode": "model_task_batch",
+                    "item_count": 0,
                     "configured_concurrency": max_concurrency,
                     "effective_concurrency": 0,
                     "max_observed_concurrency": 0,
                     "failure_cutoff_index": None,
                     "statuses": [],
                     "repair_count": 0,
+                    "queue_wait_seconds": 0.0,
+                    "execution_seconds": 0.0,
+                    "resource_serialized_count": 0,
+                    "elapsed_seconds": 0.0,
                 },
             )
 
@@ -167,6 +254,7 @@ class AWorldCandidatePopulationExecutor:
                 repair_inputs[result.index] = (prompts[result.index], exc)
 
         repaired_indexes: set[int] = set()
+        repair_results: list[TaskBatchResult] = []
         repair_observability: Mapping[str, Any] = {}
         eligible_repairs = {
             index: value
@@ -254,6 +342,7 @@ class AWorldCandidatePopulationExecutor:
 
         diagnostics = {
             "mode": "model_task_batch",
+            "item_count": len(slots),
             "configured_concurrency": max_concurrency,
             "effective_concurrency": initial_observability.get(
                 "effective_concurrency", 0
@@ -265,6 +354,19 @@ class AWorldCandidatePopulationExecutor:
             "failure_cutoff_index": failure_cutoff,
             "statuses": [slot.status for slot in slots],
             "repair_count": len(repaired_indexes),
+            "queue_wait_seconds": sum(
+                result.queue_wait_seconds for result in initial_results
+            ),
+            "execution_seconds": sum(
+                result.execution_seconds for result in initial_results
+            ),
+            "resource_serialized_count": sum(
+                1 for result in initial_results if result.serialized_by_resource
+            ),
+            "elapsed_seconds": time.monotonic() - started_at,
+            "token_usage": _candidate_task_token_usage(
+                [*initial_results, *repair_results]
+            ),
         }
         return CandidatePopulationResult(
             slots=tuple(slots),
@@ -299,3 +401,25 @@ def _minimum_index(left: int | None, right: int | None) -> int | None:
     if right is None:
         return left
     return min(left, right)
+
+
+def _candidate_task_token_usage(
+    results: Sequence[TaskBatchResult],
+) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    allowed = {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "input_tokens",
+        "output_tokens",
+    }
+    for result in results:
+        usage = result.response.usage if result.response is not None else None
+        if not isinstance(usage, Mapping):
+            continue
+        for key in allowed:
+            value = usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                totals[key] = totals.get(key, 0) + value
+    return dict(sorted(totals.items()))

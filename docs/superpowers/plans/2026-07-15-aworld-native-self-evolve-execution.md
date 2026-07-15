@@ -276,9 +276,9 @@ report["execution"] = {
 }
 ```
 
-- [ ] Write failing tests for per-stage elapsed time, queue wait, configured/effective/max-observed concurrency, resource serialization, and separate total token/replay usage.
-- [ ] Add optional `SelfEvolveConcurrencyPolicy` injection without reading `judge_config.model_profile`; default optimize concurrency is `2`, and all-ones policy is the serial rollback.
-- [ ] Add report telemetry and cancellation diagnostics without prompt, credential, or dependency contents.
-- [ ] Run `conda run -n aworld_env python -m pytest tests/runners tests/memory tests/context tests/agents tests/hooks tests/self_evolve tests/core/test_optimize_top_level_command.py -q`.
-- [ ] Run `git diff --check` and inspect `git status --short` to ensure unrelated workspace artifacts are not staged.
-- [ ] Commit `feat(self-evolve): enable bounded AWorld-native execution`.
+- [x] Write failing tests for per-stage elapsed time, queue wait, configured/effective/max-observed concurrency, resource serialization, and separate total token/replay usage.
+- [x] Add optional `SelfEvolveConcurrencyPolicy` injection without reading `judge_config.model_profile`; default optimize concurrency is `2`, and all-ones policy is the serial rollback.
+- [x] Add report telemetry and cancellation diagnostics without prompt, credential, or dependency contents.
+- [x] Run `conda run -n aworld_env python -m pytest tests/runners tests/memory tests/context tests/agents tests/hooks tests/self_evolve tests/core/test_optimize_top_level_command.py -q`.
+- [x] Run `git diff --check` and inspect `git status --short` to ensure unrelated workspace artifacts are not staged.
+- [x] Commit `feat(self-evolve): enable bounded AWorld-native execution`.

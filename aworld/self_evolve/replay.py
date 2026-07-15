@@ -687,6 +687,7 @@ class AWorldCliCandidateReplayBackend:
             task_batch_executor or DeterministicTaskBatchExecutor()
         )
         self.last_replay_batch_observability: Mapping[str, Any] = {}
+        self.replay_batch_observability: list[Mapping[str, Any]] = []
 
     async def replay_candidate(
         self,
@@ -963,6 +964,9 @@ class AWorldCliCandidateReplayBackend:
         )
         self.last_replay_batch_observability = dict(
             self.task_batch_executor.last_run_observability
+        )
+        self.replay_batch_observability.append(
+            dict(self.last_replay_batch_observability)
         )
         results: list[ReplayVariantResult] = []
         for index, batch_result in enumerate(batch_results, start=1):

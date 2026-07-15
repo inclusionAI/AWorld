@@ -71,6 +71,7 @@ from aworld.self_evolve.candidate_generation import (
 from aworld.self_evolve.concurrency import (
     AWorldCandidatePopulationExecutor,
     SelfEvolveConcurrencyPolicy,
+    SelfEvolveExecutionTelemetry,
 )
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
@@ -103,10 +104,6 @@ from aworld.self_evolve.replay_capability import (
     ReplayCapabilityCompileRequest,
     compile_and_freeze_capability,
     discover_replay_capability,
-)
-from aworld.self_evolve.runtime import (
-    SelfEvolveTaskRequest,
-    build_self_evolve_task,
 )
 from aworld.self_evolve.release_checks import (
     build_content_quality_diagnostics,
@@ -186,6 +183,74 @@ def _emit_progress(
         logger.debug(f"self_evolve.progress_callback_failed stage={stage} error={exc}")
 
 
+def _execution_usage_report(
+    *,
+    optimizer_diagnostics: list[dict[str, object]],
+    iteration_states: list[dict[str, object]],
+    stages: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Mapping[str, int]]:
+    candidate_tokens: dict[str, int] = {}
+    for iteration in optimizer_diagnostics:
+        diagnostics = iteration.get("diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            continue
+        population = diagnostics.get("candidate_population_execution")
+        if not isinstance(population, Mapping):
+            continue
+        usage = population.get("token_usage")
+        if not isinstance(usage, Mapping):
+            continue
+        for key, value in usage.items():
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                candidate_tokens[str(key)] = candidate_tokens.get(str(key), 0) + value
+
+    judge_attempt_count = 0
+    judge_estimated_input_tokens = 0
+    for state in iteration_states:
+        for key in ("baseline_summary", "candidate_summary", "held_out_summary"):
+            summary = state.get(key)
+            if not isinstance(summary, EvaluationSummary):
+                continue
+            attempts = summary.metrics.get("judge_attempt_count")
+            if isinstance(attempts, int) and not isinstance(attempts, bool):
+                judge_attempt_count += max(0, attempts)
+            estimated = summary.metrics.get("judge_estimated_input_tokens_total")
+            if isinstance(estimated, (int, float)) and not isinstance(estimated, bool):
+                judge_estimated_input_tokens += max(0, int(estimated))
+
+    replay_stage = stages.get("replay", {})
+    evaluation_stage = stages.get("evaluation", {})
+    candidate_stage = stages.get("candidate_generation", {})
+    return {
+        "token_usage": {
+            **candidate_tokens,
+            "judge_estimated_input_tokens": judge_estimated_input_tokens,
+        },
+        "replay_usage": {
+            "scheduled_repetition_tasks": _non_negative_int(
+                replay_stage.get("item_count")
+            ),
+        },
+        "evaluation_usage": {
+            "scheduled_tasks": _non_negative_int(
+                evaluation_stage.get("item_count")
+            ),
+            "judge_attempt_count": judge_attempt_count,
+        },
+        "candidate_generation_usage": {
+            "scheduled_slots": _non_negative_int(
+                candidate_stage.get("item_count")
+            ),
+        },
+    }
+
+
+def _non_negative_int(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    return 0
+
+
 class SelfEvolveRunner:
     def __init__(
         self,
@@ -249,6 +314,7 @@ class SelfEvolveRunner:
         self.task_batch_executor = (
             task_batch_executor or DeterministicTaskBatchExecutor()
         )
+        self.execution_telemetry = SelfEvolveExecutionTelemetry()
         self._replay_adaptation_cache: dict[
             tuple[str, str, str],
             tuple[ReplayAdaptationBundle | None, GateResult],
@@ -265,6 +331,7 @@ class SelfEvolveRunner:
         target_selection_report: TargetSelectionReport | None = None,
         target_provenance: TargetProvenance | None = None,
     ) -> SelfEvolveRunnerResult:
+        self.execution_telemetry = SelfEvolveExecutionTelemetry()
         if apply_policy not in {"proposal", "auto_verified"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
         _emit_progress(
@@ -318,6 +385,14 @@ class SelfEvolveRunner:
             }
             if target_selection_report is not None:
                 report["target_selection"] = to_json_dict(target_selection_report)
+            report["execution"] = {
+                "stages": {},
+                "total_usage": _execution_usage_report(
+                    optimizer_diagnostics=[],
+                    iteration_states=[],
+                    stages={},
+                ),
+            }
             report["artifact_retention"] = _artifact_retention_report(
                 self.store,
                 run_id,
@@ -426,6 +501,14 @@ class SelfEvolveRunner:
                     target_package_inventory=target_package_inventory,
                 )
             )
+            population_execution = optimizer_result.diagnostics.get(
+                "candidate_population_execution"
+            )
+            if isinstance(population_execution, Mapping):
+                self.execution_telemetry.record(
+                    "candidate_generation",
+                    population_execution,
+                )
             filtered_known_duplicates = _known_duplicate_candidate_count(
                 optimizer_result.candidates,
                 rejected_candidate_ids=rejected_candidate_ids,
@@ -719,6 +802,7 @@ class SelfEvolveRunner:
                 post_apply=post_apply,
             )
 
+        execution_stages = self.execution_telemetry.to_report()
         report = {
             "run_id": run_id,
             "target": {
@@ -741,6 +825,14 @@ class SelfEvolveRunner:
             ),
             "prior_feedback_count": len(prior_feedback),
             "iterations": iteration_reports,
+            "execution": {
+                "stages": execution_stages,
+                "total_usage": _execution_usage_report(
+                    optimizer_diagnostics=optimizer_diagnostics,
+                    iteration_states=iteration_states,
+                    stages=execution_stages,
+                ),
+            },
         }
         trajectory_set_report = _trajectory_set_report(dataset)
         if trajectory_set_report is not None:
@@ -1155,6 +1247,7 @@ class SelfEvolveRunner:
                             "evaluation",
                             item_count=2,
                         ),
+                        execution_telemetry=self.execution_telemetry,
                     )
                     if replay_result is not None:
                         baseline_summary = _summary_with_replay_evidence_metrics(
@@ -1210,6 +1303,7 @@ class SelfEvolveRunner:
                                     artifact_namespace=run_id,
                                 ),
                                 task_batch_executor=self.task_batch_executor,
+                                execution_telemetry=self.execution_telemetry,
                             )
                             if replay_result is not None:
                                 held_out_summary = _summary_with_replay_evidence_metrics(
@@ -1631,11 +1725,25 @@ class SelfEvolveRunner:
                     reason=str(exc),
                 ),
             )
-        replay_result = await self.candidate_replay_backend.replay_candidate(
-            request,
-            candidate=selected_candidate,
-            dataset=dataset,
+        replay_history = getattr(
+            self.candidate_replay_backend,
+            "replay_batch_observability",
+            None,
         )
+        replay_history_start = (
+            len(replay_history) if isinstance(replay_history, list) else 0
+        )
+        try:
+            replay_result = await self.candidate_replay_backend.replay_candidate(
+                request,
+                candidate=selected_candidate,
+                dataset=dataset,
+            )
+        finally:
+            if isinstance(replay_history, list):
+                for observability in replay_history[replay_history_start:]:
+                    if isinstance(observability, Mapping):
+                        self.execution_telemetry.record("replay", observability)
         if not candidate_replay_is_comparable(
             dataset=dataset,
             replay_result=replay_result,
@@ -2291,6 +2399,11 @@ def optimize_from_cli_request(
         progress_callback=progress_callback,
         concurrency_policy=effective_concurrency_policy,
     )
+    from aworld.self_evolve.runtime import (
+        SelfEvolveTaskRequest,
+        build_self_evolve_task,
+    )
+
     outer_task = build_self_evolve_task(
         SelfEvolveTaskRequest(
             runner=self_evolve_runner,
@@ -2730,6 +2843,11 @@ def _rerun_evaluator_from_stored_run(
         skip_duplicate_rejected_candidate_gate=True,
         concurrency_policy=concurrency_policy,
     )
+    from aworld.self_evolve.runtime import (
+        SelfEvolveTaskRequest,
+        build_self_evolve_task,
+    )
+
     outer_task = build_self_evolve_task(
         SelfEvolveTaskRequest(
             runner=self_evolve_runner,

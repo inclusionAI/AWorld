@@ -12,6 +12,7 @@ from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
 )
+from aworld.self_evolve.concurrency import SelfEvolveConcurrencyPolicy
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -269,6 +270,7 @@ __all__ = [
     "ReplayVariantResult",
     "RankedCandidateStrategy",
     "SelfEvolveRunner",
+    "SelfEvolveConcurrencyPolicy",
     "SelfEvolveTaskRunner",
     "SelfEvolveTaskRequest",
     "SelfEvolveCandidateTaskRunner",

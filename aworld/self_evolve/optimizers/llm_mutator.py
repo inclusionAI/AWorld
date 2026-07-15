@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 import re
+import time
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from aworld.self_evolve.candidate_package import (
@@ -71,6 +72,7 @@ class TraceReflectiveLLMMutator:
         candidate_generation_failure: dict[str, str] | None = None
         candidate_outputs: list[tuple[int, Any]] = []
         population_diagnostics: dict[str, Any]
+        population_started_at = time.monotonic()
 
         if self.population_callable is not None:
             prompts = tuple(
@@ -108,12 +110,20 @@ class TraceReflectiveLLMMutator:
                 candidate_outputs.append((index, output))
             population_diagnostics = {
                 "mode": "custom_serial",
+                "item_count": request.max_candidates,
                 "configured_concurrency": 1,
                 "effective_concurrency": min(1, request.max_candidates),
-                "max_observed_concurrency": min(1, len(candidate_outputs)),
+                "max_observed_concurrency": min(
+                    1,
+                    len(candidate_outputs) + (1 if failure_cutoff is not None else 0),
+                ),
                 "failure_cutoff_index": failure_cutoff,
                 "statuses": statuses,
                 "repair_count": 0,
+                "resource_serialized_count": 0,
+                "queue_wait_seconds": 0.0,
+                "execution_seconds": time.monotonic() - population_started_at,
+                "elapsed_seconds": time.monotonic() - population_started_at,
             }
 
         for index, output in candidate_outputs:

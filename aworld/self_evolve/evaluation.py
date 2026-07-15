@@ -6,10 +6,10 @@ import hashlib
 import inspect
 import json
 import os
-import subprocess
-import time
 import statistics
+import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +25,7 @@ from aworld.runners.batch import (
     TaskResourceClaim,
 )
 from aworld.runners.evaluate_runner import EvaluateRunner
+from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary
 
@@ -649,6 +650,7 @@ async def evaluate_baseline_and_candidate(
     artifact_namespace: str | None = None,
     task_batch_executor: DeterministicTaskBatchExecutor | None = None,
     max_concurrency: int = 1,
+    execution_telemetry: SelfEvolveExecutionTelemetry | None = None,
 ) -> tuple[EvaluationSummary, EvaluationSummary]:
     requests = (
         EvaluationRequest(
@@ -675,6 +677,7 @@ async def evaluate_baseline_and_candidate(
         max_concurrency=max_concurrency,
         artifact_namespace=artifact_namespace,
         dataset_split=dataset_split,
+        execution_telemetry=execution_telemetry,
     )
     return summaries[0], summaries[1]
 
@@ -684,6 +687,7 @@ async def evaluate_variant_task(
     *,
     request: EvaluationRequest,
     task_batch_executor: DeterministicTaskBatchExecutor | None = None,
+    execution_telemetry: SelfEvolveExecutionTelemetry | None = None,
 ) -> EvaluationSummary:
     summaries = await _execute_evaluation_requests(
         backend,
@@ -692,6 +696,7 @@ async def evaluate_variant_task(
         max_concurrency=1,
         artifact_namespace=request.artifact_namespace,
         dataset_split=request.dataset_split,
+        execution_telemetry=execution_telemetry,
     )
     return summaries[0]
 
@@ -704,6 +709,7 @@ async def _execute_evaluation_requests(
     max_concurrency: int,
     artifact_namespace: str | None,
     dataset_split: str,
+    execution_telemetry: SelfEvolveExecutionTelemetry | None,
 ) -> tuple[EvaluationSummary, ...]:
     executor = task_batch_executor or DeterministicTaskBatchExecutor()
     task_local_runtime = getattr(backend, "task_local_runtime", False) is True
@@ -749,6 +755,11 @@ async def _execute_evaluation_requests(
         max_concurrency=max_concurrency,
         failure_policy="collect_all",
     )
+    if execution_telemetry is not None:
+        execution_telemetry.record(
+            "evaluation",
+            executor.last_run_observability,
+        )
     summaries: list[EvaluationSummary] = []
     for result in results:
         if (
