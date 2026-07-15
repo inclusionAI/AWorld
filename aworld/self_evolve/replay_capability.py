@@ -26,8 +26,9 @@ REPLAY_CAPABILITY_SCHEMA_VERSION = "aworld.skill.replay_capability.v1"
 REPLAY_CAPABILITY_PROTOCOL_VERSION = "aworld.replay.subprocess.v1"
 REPLAY_CAPABILITY_REQUEST_SCHEMA_VERSION = "aworld.replay.capability_request.v1"
 REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION = "aworld.replay.capability_result.v1"
+REPLAY_CAPABILITY_MANIFEST_PATH = "replay/capability.json"
 
-_MANIFEST_PATH = PurePosixPath("replay/capability.json")
+_MANIFEST_PATH = PurePosixPath(REPLAY_CAPABILITY_MANIFEST_PATH)
 _SUPPORTED_REQUIREMENT_KINDS = frozenset(
     {
         "conversation_context",
@@ -36,6 +37,9 @@ _SUPPORTED_REQUIREMENT_KINDS = frozenset(
         "local_file",
         "stateful_tool",
     }
+)
+REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS = tuple(
+    sorted(_SUPPORTED_REQUIREMENT_KINDS)
 )
 _SUPPORTED_READINESS_KINDS = frozenset({"http", "tcp"})
 _SUPPORTED_SERVICE_TRANSPORTS = frozenset({"http_fixture", "tcp_fixture"})
