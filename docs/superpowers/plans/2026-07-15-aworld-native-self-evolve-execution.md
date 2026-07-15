@@ -172,13 +172,13 @@ class SelfEvolveConcurrencyPolicy(BaseModel):
     candidate_screening_concurrency: PositiveInt = 1
 ```
 
-- [ ] Write failing tests proving model-backed slots overlap up to policy limit, results reduce by slot, a failure at slot `k` discards `k..N`, schema repair stays in the same slot, and direct custom `TraceReflectiveLLMMutator` remains serial by default.
-- [ ] Run targeted tests; expect missing `SelfEvolveConcurrencyPolicy`/population executor.
-- [ ] Implement `SelfEvolveConcurrencyPolicy` with defaults `(total=2, generation=2, replay=2, judge=2, screening=1)` and positive-value validation.
-- [ ] Implement a CLI-only candidate population executor that creates one agent and Task per slot, uses `DeterministicTaskBatchExecutor(indexed_fail_fast)`, performs one bounded repair Task for invalid JSON in the same slot, and returns slot-indexed mutation payloads.
-- [ ] Extend `TraceReflectiveLLMMutator` with an optional population callable; preserve its existing sequential loop when absent. Inject the callable from `optimize_from_cli_request()` only when a mutation `ModelConfig` exists.
-- [ ] Re-run optimizer/population tests and the current candidate-generation suite.
-- [ ] Commit `feat(self-evolve): batch candidate population tasks`.
+- [x] Write failing tests proving model-backed slots overlap up to policy limit, results reduce by slot, a failure at slot `k` discards `k..N`, schema repair stays in the same slot, and direct custom `TraceReflectiveLLMMutator` remains serial by default.
+- [x] Run targeted tests; expect missing `SelfEvolveConcurrencyPolicy`/population executor.
+- [x] Implement `SelfEvolveConcurrencyPolicy` with defaults `(total=2, generation=2, replay=2, judge=2, screening=1)` and positive-value validation.
+- [x] Implement a CLI-only candidate population executor that creates one agent and Task per slot, uses `DeterministicTaskBatchExecutor(indexed_fail_fast)`, performs one bounded repair Task for invalid JSON in the same slot, and returns slot-indexed mutation payloads.
+- [x] Extend `TraceReflectiveLLMMutator` with an optional population callable; preserve its existing sequential loop when absent. Inject the callable from `optimize_from_cli_request()` only when a mutation `ModelConfig` exists.
+- [x] Re-run optimizer/population tests and the current candidate-generation suite.
+- [x] Commit `feat(self-evolve): batch candidate population tasks`.
 
 ### Task 7: Outer self-evolve Task entry and deterministic barriers
 
