@@ -98,12 +98,12 @@ plan = BudgetedPromptAssemblyProvider(delegate, policy).build_plan(
 )
 ```
 
-- [ ] Write failing tests for `input_budget = min(max_input_tokens, max_model_len - reserved_output_tokens)`, tool-schema counting, stable optional-section reduction, required-content overflow, rebuilt stable hash, and unchanged base `Agent` behavior.
-- [ ] Run the two test files; expect missing imports.
-- [ ] Implement `PromptBudgetPolicy`, `PromptBudgetExceededError`, `BudgetedPromptSection`, `BudgetedPromptAssemblyPlan`, and `BudgetedPromptAssemblyProvider`. Count model messages plus serialized tools with `ModelUtils`; reduce complete optional messages, then bounded head/tail content, and never include content in diagnostics.
-- [ ] Implement `PromptBudgetedAgent` to wrap the normal provider, resolve one effective output limit, inject budget metadata, and assert the final plan before calling the inherited provider path. Do not alter `Agent.async_policy()` or `Agent.invoke_model()`.
-- [ ] Re-run both files plus prompt-cache tests; expect all pass and final cache hashes describe reduced messages.
-- [ ] Commit `feat(agents): add opt-in prompt budget processing`.
+- [x] Write failing tests for `input_budget = min(max_input_tokens, max_model_len - reserved_output_tokens)`, tool-schema counting, stable optional-section reduction, required-content overflow, rebuilt stable hash, and unchanged base `Agent` behavior.
+- [x] Run the two test files; expect missing imports.
+- [x] Implement `PromptBudgetPolicy`, `PromptBudgetExceededError`, `BudgetedPromptSection`, `BudgetedPromptAssemblyPlan`, and `BudgetedPromptAssemblyProvider`. Count model messages plus serialized tools with `ModelUtils`; reduce complete optional messages, then bounded head/tail content, and never include content in diagnostics.
+- [x] Implement `PromptBudgetedAgent` to wrap the normal provider, resolve one effective output limit, inject budget metadata, and assert the final plan before calling the inherited provider path. Do not alter `Agent.async_policy()` or `Agent.invoke_model()`.
+- [x] Re-run both files plus prompt-cache tests; expect all pass and final cache hashes describe reduced messages.
+- [x] Commit `feat(agents): add opt-in prompt budget processing`.
 
 ### Task 4: Execution-scoped hooks
 
