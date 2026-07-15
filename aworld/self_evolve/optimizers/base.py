@@ -14,6 +14,7 @@ from aworld.self_evolve.types import (
 )
 
 if TYPE_CHECKING:
+    from aworld.self_evolve.evolution_context import EvolutionContext
     from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 
 
@@ -30,6 +31,7 @@ class OptimizerRequest:
     max_candidates: int = 1
     replay_requirements: tuple[ReplayCapabilityRequirement, ...] = ()
     target_package_inventory: tuple[str, ...] = ()
+    evolution_context: EvolutionContext | None = None
 
     @classmethod
     def from_dataset(
