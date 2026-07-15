@@ -12,6 +12,7 @@ from typing import Mapping, Iterable
 from aworld.config.conf import ModelConfig, SelfEvolveJudgeConfig
 from aworld.logs.util import logger
 from aworld.runner import Runners
+from aworld.runners.batch import DeterministicTaskBatchExecutor
 from aworld.self_evolve.credit_assignment import (
     TargetInventoryEntry,
     TargetSelectionReport,
@@ -34,6 +35,7 @@ from aworld.self_evolve.evaluation import (
     determine_candidate_confidence,
     estimate_replay_cost,
     evaluate_baseline_and_candidate,
+    evaluate_variant_task,
 )
 from aworld.self_evolve.gates import (
     BudgetGate,
@@ -214,6 +216,7 @@ class SelfEvolveRunner:
         skip_duplicate_rejected_candidate_gate: bool = False,
         replay_adaptation_compiler: ReplayAdaptationCompiler | None = None,
         concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
+        task_batch_executor: DeterministicTaskBatchExecutor | None = None,
     ) -> None:
         self.store = store
         self.optimizer = optimizer
@@ -243,6 +246,9 @@ class SelfEvolveRunner:
             replay_adaptation_compiler or ReplayAdaptationCompiler()
         )
         self.concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
+        self.task_batch_executor = (
+            task_batch_executor or DeterministicTaskBatchExecutor()
+        )
         self._replay_adaptation_cache: dict[
             tuple[str, str, str],
             tuple[ReplayAdaptationBundle | None, GateResult],
@@ -1144,6 +1150,11 @@ class SelfEvolveRunner:
                         candidate=candidate,
                         dataset_split="validation",
                         artifact_namespace=run_id,
+                        task_batch_executor=self.task_batch_executor,
+                        max_concurrency=self.concurrency_policy.effective_limit(
+                            "evaluation",
+                            item_count=2,
+                        ),
                     )
                     if replay_result is not None:
                         baseline_summary = _summary_with_replay_evidence_metrics(
@@ -1189,14 +1200,16 @@ class SelfEvolveRunner:
                                 dataset_split="single_case_replay",
                             )
                         else:
-                            held_out_summary = await self.evaluation_backend.evaluate_variant(
-                                EvaluationRequest(
+                            held_out_summary = await evaluate_variant_task(
+                                self.evaluation_backend,
+                                request=EvaluationRequest(
                                     variant_id=candidate.candidate_id,
                                     candidate=candidate,
                                     dataset=evaluation_dataset,
                                     dataset_split="held_out",
                                     artifact_namespace=run_id,
-                                )
+                                ),
+                                task_batch_executor=self.task_batch_executor,
                             )
                             if replay_result is not None:
                                 held_out_summary = _summary_with_replay_evidence_metrics(
@@ -2238,9 +2251,11 @@ def optimize_from_cli_request(
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
     if replay_enabled and candidate_replay_backend is None:
-        candidate_replay_backend = AWorldCliCandidateReplayBackend(
-            concurrency_policy=effective_concurrency_policy
-        )
+        candidate_replay_backend = AWorldCliCandidateReplayBackend()
+        if hasattr(candidate_replay_backend, "concurrency_policy"):
+            candidate_replay_backend.concurrency_policy = (
+                effective_concurrency_policy
+            )
 
     self_evolve_runner = SelfEvolveRunner(
         store=store,

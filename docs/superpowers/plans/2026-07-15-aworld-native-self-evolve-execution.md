@@ -252,12 +252,12 @@ baseline, candidate = await evaluate_baseline_and_candidate(
 )
 ```
 
-- [ ] Write failing tests that baseline/candidate judge Tasks overlap for a task-local backend, unsafe in-process backends serialize, and results remain `(baseline, candidate)` regardless of completion order.
-- [ ] Write a failing subprocess-environment test proving concurrent CLI judges receive distinct `AWORLD_LOG_PATH` values without mutating the parent environment.
-- [ ] Implement `SelfEvolveEvaluationTaskRunner` input execution and optional batch execution in `evaluate_baseline_and_candidate()`. Add an exclusive claim for custom in-process backends unless they expose `task_local_runtime = True`.
-- [ ] For the default CLI evaluator, invoke `aworld-cli evaluator` in a child process with explicit environment and `--judge-timeout`; read the report artifact even when a failed gate produces a non-zero exit status. Never wrap concurrent CLI calls with the parent `_self_evolve_runtime_log_env` context manager.
-- [ ] Re-run evaluation/concurrency tests and CLI evaluator tests.
-- [ ] Commit `feat(self-evolve): batch isolated judge tasks`.
+- [x] Write failing tests that baseline/candidate judge Tasks overlap for a task-local backend, unsafe in-process backends serialize, and results remain `(baseline, candidate)` regardless of completion order.
+- [x] Write a failing subprocess-environment test proving concurrent CLI judges receive distinct `AWORLD_LOG_PATH` values without mutating the parent environment.
+- [x] Implement `SelfEvolveEvaluationTaskRunner` input execution and optional batch execution in `evaluate_baseline_and_candidate()`. Add an exclusive claim for custom in-process backends unless they expose `task_local_runtime = True`.
+- [x] For the default CLI evaluator, invoke `aworld-cli evaluator` in a child process with explicit environment and `--judge-timeout`; read the report artifact even when a failed gate produces a non-zero exit status. Never wrap concurrent CLI calls with the parent `_self_evolve_runtime_log_env` context manager.
+- [x] Re-run evaluation/concurrency tests and CLI evaluator tests.
+- [x] Commit `feat(self-evolve): batch isolated judge tasks`.
 
 ### Task 10: Telemetry, rollout, and full verification
 

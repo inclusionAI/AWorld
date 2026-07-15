@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import inspect
 import json
@@ -8,13 +9,21 @@ import os
 import subprocess
 import time
 import statistics
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from aworld.config.conf import EvaluationConfig
+from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.task import Task
 from aworld.logs.util import logger
+from aworld.runners.batch import (
+    DeterministicTaskBatchExecutor,
+    TaskBatchItem,
+    TaskResourceClaim,
+)
 from aworld.runners.evaluate_runner import EvaluateRunner
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary
@@ -63,6 +72,8 @@ class EvaluationBackend(Protocol):
 
 class CommandVerificationBackend:
     """Evaluate objective verification commands attached to eval cases."""
+
+    task_local_runtime = True
 
     def __init__(
         self,
@@ -146,6 +157,8 @@ class EvaluateRunnerBackend:
 class TrajectoryQualityBackend:
     """Score basic trajectory quality from trace packs without running a model."""
 
+    task_local_runtime = True
+
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         case_count = 0
         failed_step_count = 0
@@ -191,6 +204,8 @@ class TrajectoryQualityBackend:
 
 class SkillCandidateOverlayBackend:
     """Evaluate a skill candidate overlay against the current trajectory evidence."""
+
+    task_local_runtime = True
 
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         candidate = request.candidate
@@ -260,6 +275,22 @@ class AWorldTrajectoryEvaluatorBackend:
         self.judge_repetitions = judge_repetitions
         self.judge_failure_retries = judge_failure_retries
         self.judge_timeout_seconds = judge_timeout_seconds
+
+    @property
+    def task_local_runtime(self) -> bool:
+        return self.run_evaluator_source is None
+
+    async def evaluate_variant_in_task(
+        self,
+        request: EvaluationRequest,
+    ) -> EvaluationSummary:
+        if not self.task_local_runtime:
+            return await self.evaluate_variant(request)
+        token = _ISOLATED_EVALUATOR_TASK.set(True)
+        try:
+            return await self.evaluate_variant(request)
+        finally:
+            _ISOLATED_EVALUATOR_TASK.reset(token)
 
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         if not request.dataset.cases:
@@ -491,6 +522,16 @@ class AWorldTrajectoryEvaluatorBackend:
         runner_kwargs: Mapping[str, Any],
         log_path: Path,
     ) -> Mapping[str, Any]:
+        if self.run_evaluator_source is None and _ISOLATED_EVALUATOR_TASK.get():
+            report = await asyncio.to_thread(
+                _run_evaluator_cli_subprocess,
+                runner_kwargs=runner_kwargs,
+                log_path=log_path,
+                workspace_root=self.workspace_root,
+            )
+            if not isinstance(report, Mapping):  # pragma: no cover - helper validates
+                raise ValueError("AWorld trajectory evaluator report must be a mapping")
+            return report
         with _self_evolve_runtime_log_env(log_path):
             if self.run_evaluator_source is None:
                 report = await asyncio.to_thread(runner, **runner_kwargs)
@@ -501,6 +542,70 @@ class AWorldTrajectoryEvaluatorBackend:
         if not isinstance(report, Mapping):
             raise ValueError("AWorld trajectory evaluator report must be a mapping")
         return report
+
+
+_ISOLATED_EVALUATOR_TASK: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "aworld_self_evolve_isolated_evaluator_task",
+    default=False,
+)
+
+
+def _run_evaluator_cli_subprocess(
+    *,
+    runner_kwargs: Mapping[str, Any],
+    log_path: Path,
+    workspace_root: Path,
+) -> Mapping[str, Any]:
+    command = [sys.executable, "-m", "aworld_cli.main", "evaluator"]
+    option_names = {
+        "input": "--input",
+        "kind": "--kind",
+        "judge_agent": "--judge-agent",
+        "judge_agent_name": "--judge-agent-name",
+        "judge_backend_ref": "--judge-backend-ref",
+        "judge_model_profile": "--judge-model-profile",
+        "out_dir": "--out-dir",
+        "output": "--output",
+        "task_id": "--task-id",
+        "agent": "--agent",
+        "judge_timeout_seconds": "--judge-timeout",
+    }
+    for key, option in option_names.items():
+        value = runner_kwargs.get(key)
+        if value is not None:
+            command.extend([option, str(value)])
+    output = runner_kwargs.get("output")
+    if not isinstance(output, str) or not output:
+        raise ValueError("isolated evaluator subprocess requires output path")
+    environment = os.environ.copy()
+    environment["AWORLD_LOG_PATH"] = str(log_path)
+    environment["AWORLD_TRAJECTORY_LOG_DISABLED"] = "1"
+    timeout = runner_kwargs.get("judge_timeout_seconds")
+    process_timeout = (
+        float(timeout) + 30.0
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+        else None
+    )
+    completed = subprocess.run(
+        command,
+        cwd=workspace_root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=process_timeout,
+    )
+    report_path = Path(output)
+    if report_path.is_file():
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("isolated evaluator report is invalid") from exc
+        if isinstance(report, Mapping):
+            return report
+    raise RuntimeError(
+        "isolated evaluator subprocess did not produce a report "
+        f"(exit={completed.returncode})"
+    )
 
 
 @contextmanager
@@ -542,8 +647,10 @@ async def evaluate_baseline_and_candidate(
     dataset_split: str = "validation",
     baseline_variant_id: str = "baseline",
     artifact_namespace: str | None = None,
+    task_batch_executor: DeterministicTaskBatchExecutor | None = None,
+    max_concurrency: int = 1,
 ) -> tuple[EvaluationSummary, EvaluationSummary]:
-    baseline_summary = await backend.evaluate_variant(
+    requests = (
         EvaluationRequest(
             variant_id=baseline_variant_id,
             candidate=None,
@@ -551,9 +658,7 @@ async def evaluate_baseline_and_candidate(
             eval_config=eval_config,
             dataset_split=dataset_split,
             artifact_namespace=artifact_namespace,
-        )
-    )
-    candidate_summary = await backend.evaluate_variant(
+        ),
         EvaluationRequest(
             variant_id=candidate.candidate_id,
             candidate=candidate,
@@ -561,9 +666,128 @@ async def evaluate_baseline_and_candidate(
             eval_config=eval_config,
             dataset_split=dataset_split,
             artifact_namespace=artifact_namespace,
+        ),
+    )
+    summaries = await _execute_evaluation_requests(
+        backend,
+        requests=requests,
+        task_batch_executor=task_batch_executor,
+        max_concurrency=max_concurrency,
+        artifact_namespace=artifact_namespace,
+        dataset_split=dataset_split,
+    )
+    return summaries[0], summaries[1]
+
+
+async def evaluate_variant_task(
+    backend: EvaluationBackend,
+    *,
+    request: EvaluationRequest,
+    task_batch_executor: DeterministicTaskBatchExecutor | None = None,
+) -> EvaluationSummary:
+    summaries = await _execute_evaluation_requests(
+        backend,
+        requests=(request,),
+        task_batch_executor=task_batch_executor,
+        max_concurrency=1,
+        artifact_namespace=request.artifact_namespace,
+        dataset_split=request.dataset_split,
+    )
+    return summaries[0]
+
+
+async def _execute_evaluation_requests(
+    backend: EvaluationBackend,
+    *,
+    requests: tuple[EvaluationRequest, ...],
+    task_batch_executor: DeterministicTaskBatchExecutor | None,
+    max_concurrency: int,
+    artifact_namespace: str | None,
+    dataset_split: str,
+) -> tuple[EvaluationSummary, ...]:
+    executor = task_batch_executor or DeterministicTaskBatchExecutor()
+    task_local_runtime = getattr(backend, "task_local_runtime", False) is True
+    resource_claims = (
+        ()
+        if task_local_runtime
+        else (
+            TaskResourceClaim(
+                key=f"self-evolve-evaluation-backend:{id(backend)}",
+                exclusive=True,
+            ),
         )
     )
-    return baseline_summary, candidate_summary
+    items: list[TaskBatchItem] = []
+    for index, request in enumerate(requests):
+        task_id = (
+            "self-evolve-evaluation-"
+            f"{_safe_path_component(artifact_namespace or 'run')}-"
+            f"{_safe_path_component(request.variant_id)}-"
+            f"{_safe_path_component(dataset_split)}"
+        )
+        items.append(
+            TaskBatchItem(
+                index=index,
+                task=Task(
+                    id=task_id,
+                    session_id=task_id,
+                    input=EvaluationTaskInput(backend=backend, request=request),
+                    context=LocalIsolatedApplicationContext.create(
+                        task_id=task_id,
+                        session_id=task_id,
+                        task_content="isolated self-evolve evaluation request",
+                    ),
+                    runner_cls=(
+                        "aworld.self_evolve.runtime.SelfEvolveEvaluationTaskRunner"
+                    ),
+                ),
+                resource_claims=resource_claims,
+            )
+        )
+    results = await executor.run(
+        items,
+        max_concurrency=max_concurrency,
+        failure_policy="collect_all",
+    )
+    summaries: list[EvaluationSummary] = []
+    for result in results:
+        if (
+            result.status != "succeeded"
+            or result.response is None
+            or not isinstance(result.response.answer, EvaluationSummary)
+        ):
+            if result.error_type == "ValueError":
+                raise ValueError(
+                    f"required evaluation Task failed at index {result.index}"
+                )
+            if result.error_type in {"TimeoutError", "TimeoutExpired"}:
+                raise TimeoutError(
+                    f"required evaluation Task timed out at index {result.index}"
+                )
+            raise RuntimeError(
+                "required evaluation Task failed "
+                f"at index {result.index} ({result.error_type or 'TaskFailed'})"
+            )
+        summaries.append(result.response.answer)
+    return tuple(summaries)
+
+
+@dataclass(frozen=True)
+class EvaluationTaskInput:
+    backend: EvaluationBackend
+    request: EvaluationRequest
+
+    async def execute(self) -> EvaluationSummary:
+        task_method = getattr(self.backend, "evaluate_variant_in_task", None)
+        if callable(task_method):
+            result = task_method(self.request)
+        else:
+            result = self.backend.evaluate_variant(self.request)
+        if inspect.isawaitable(result):
+            result = await result
+        if not isinstance(result, EvaluationSummary):
+            raise TypeError("evaluation backend must return EvaluationSummary")
+        return result
 
 
 def estimate_replay_cost(
