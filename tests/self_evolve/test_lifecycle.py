@@ -10,6 +10,13 @@ from aworld.self_evolve.lifecycle import (
 )
 
 
+def test_default_retention_bounds_large_replay_workspace_history() -> None:
+    policy = SelfEvolveArtifactRetentionPolicy()
+
+    assert policy.keep_latest_runs == 2
+    assert policy.raw_artifact_retention_days == 0
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -42,6 +49,10 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         _write_text(run_dir / "manifest" / "evidence_manifest.jsonl", "{}\n")
         _write_json(run_dir / "apply" / "cand-1.journal.json", {"status": "applied"})
         _write_json(run_dir / "replay" / "cand-1" / "result.json", {"status": "succeeded"})
+        _write_json(
+            run_dir / "replay_adaptation" / "dataset" / "workspace_seed" / "seed.json",
+            {"status": "compiled"},
+        )
         _write_json(run_dir / "evidence" / "bundle.json", {"entries": []})
         _write_text(run_dir / "overlays" / "cand-1" / "skills" / "demo" / "SKILL.md")
         _write_text(run_dir / "stdout.txt", "duplicate stdout\n")
@@ -66,6 +77,7 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
 
     assert cleanup["removed_run_count"] == 1
     assert not (old_run / "replay").exists()
+    assert not (old_run / "replay_adaptation").exists()
     assert not (old_run / "evidence").exists()
     assert not (old_run / "overlays").exists()
     assert not (old_run / "stdout.txt").exists()
@@ -82,6 +94,7 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
     assert (old_run / "apply" / "cand-1.journal.json").exists()
 
     assert (recent_run / "replay").exists()
+    assert (recent_run / "replay_adaptation").exists()
     assert (recent_run / "overlays").exists()
     assert (artifact_root / "evaluator" / "run-recent").exists()
 

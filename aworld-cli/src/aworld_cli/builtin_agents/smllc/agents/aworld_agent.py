@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
+from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
 from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_CODER
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
@@ -39,6 +40,7 @@ from aworld.core.tool.builtin import SpawnSubagentTool
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aworld.agents.llm_agent import Agent
+from aworld.agents.prompt_budgeted_agent import PromptBudgetedAgent
 from aworld.core.agent.swarm import TeamSwarm, Swarm
 from aworld.core.agent.base import BaseAgent
 from aworld_cli.core import agent
@@ -49,6 +51,25 @@ from aworld.config import AgentConfig, ModelConfig
 CAST_ANALYSIS, CAST_CODER
 
 _BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def resolve_aworld_prompt_budget() -> Optional[PromptBudgetPolicy]:
+    """Resolve the opt-in request budget used by runtime-owned Aworld tasks."""
+
+    raw_value = os.environ.get("AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS")
+    if raw_value is None or not raw_value.strip():
+        return None
+    try:
+        reserved_output_tokens = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            "AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS must be a positive integer"
+        ) from exc
+    if reserved_output_tokens <= 0:
+        raise ValueError(
+            "AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS must be a positive integer"
+        )
+    return PromptBudgetPolicy(reserved_output_tokens=reserved_output_tokens)
 
 
 def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
@@ -209,6 +230,13 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         user_dir=os.environ.get("AWORLD_SKILLS_PATH"),
     )
 
+    prompt_budget_policy = resolve_aworld_prompt_budget()
+    max_completion_tokens = (
+        prompt_budget_policy.reserved_output_tokens
+        if prompt_budget_policy is not None
+        else 64000
+    )
+
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
         llm_config=ModelConfig(
@@ -217,7 +245,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_api_key=os.getenv("LLM_API_KEY"),
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 64000},
+            params={"max_completion_tokens": max_completion_tokens},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         use_vision=False,  # Enable if needed for image analysis
@@ -252,7 +280,13 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     # Create the Aworld agent with filesystem and terminal tools enabled
     # Note: Aworld is a coordinator with lightweight tool access for information gathering
     # Complex development tasks are delegated to sub-agents (e.g., Developer)
-    aworld_agent = Agent(
+    agent_class = PromptBudgetedAgent if prompt_budget_policy is not None else Agent
+    budgeted_agent_kwargs = (
+        {"prompt_budget_policy": prompt_budget_policy}
+        if prompt_budget_policy is not None
+        else {}
+    )
+    aworld_agent = agent_class(
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
@@ -266,6 +300,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             'cron',            # Core: Scheduled task management
         ],
         enable_subagent=True,  # Enable subagent capability (Aworld-specific default)
+        **budgeted_agent_kwargs,
     )
 
     # Directly instantiate developer, evaluator, and diffusion as sub-agents

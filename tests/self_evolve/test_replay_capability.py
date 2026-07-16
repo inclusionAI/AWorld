@@ -14,11 +14,16 @@ from aworld.self_evolve.replay_capability import (
     build_replay_sandboxed_command,
     compile_and_freeze_capability,
     discover_replay_capability,
+    materialize_replay_evidence_derivations,
     verify_frozen_replay_capability,
 )
 
 
-def _request(skill_root: Path) -> ReplayCapabilityCompileRequest:
+def _request(
+    skill_root: Path,
+    *,
+    requirement_status: str = "adapter_bound",
+) -> ReplayCapabilityCompileRequest:
     context_path = skill_root.parent / "trajectory_context" / "case-1.json"
     context_path.parent.mkdir(parents=True, exist_ok=True)
     context_payload = {
@@ -47,7 +52,7 @@ def _request(skill_root: Path) -> ReplayCapabilityCompileRequest:
         identifier="http://127.0.0.1:9222",
         case_ids=("case-1",),
         evidence_refs=(f"context:case-1:{context_fingerprint}",),
-        status="runtime_required",
+        status=requirement_status,
     )
     return ReplayCapabilityCompileRequest.create(
         requirements=(requirement,),
@@ -180,6 +185,263 @@ def test_discover_capability_inside_skill_root(tmp_path: Path) -> None:
     assert discovered.package_fingerprint.startswith("sha256:")
 
 
+def test_skill_runtime_requires_declared_protocol_probes(tmp_path: Path) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="skill runtime service requires protocol_probes",
+    ):
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+
+def test_runtime_required_requirement_rejects_fixture_only_transport(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="runtime_required requirement must use skill_runtime",
+    ):
+        compile_and_freeze_capability(
+            capability,
+            _request(skill, requirement_status="runtime_required"),
+            tmp_path / "compile",
+        )
+
+
+def test_skill_runtime_rejects_readiness_only_protocol_probe(tmp_path: Path) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'http', 'path': '/health',\n"
+                "            'timeout_seconds': 2.0,\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError, match="data-plane protocol probe"):
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+
+def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'websocket',\n"
+                "            'path': '/events',\n"
+                "            'timeout_seconds': 2.0,\n"
+                "            'request_text': '{\\\"op\\\":\\\"read\\\"}',\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill),
+        tmp_path / "compile",
+    )
+
+    probe = frozen.services[0].protocol_probes[0]
+    assert probe.kind == "websocket"
+    assert probe.request_text == '{"op":"read"}'
+    assert probe.response_contains == "recorded fixture"
+
+
+def test_skill_runtime_advertised_websocket_validation_requires_websocket_data_plane_probe(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'http', 'path': '/json/version',\n"
+                "            'timeout_seconds': 2.0,\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "            'validate_advertised_websockets': True,\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="advertised WebSocket requires a websocket data-plane protocol probe",
+    ):
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+
+def test_skill_runtime_allows_structural_http_discovery_expectation_with_fixture_backed_websocket_probe(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'http', 'path': '/json/version',\n"
+                "            'response_contains': 'Protocol-Version',\n"
+                "            'validate_advertised_websockets': True,\n"
+                "        }, {\n"
+                "            'kind': 'websocket', 'path': '/devtools/browser',\n"
+                "            'request_text': '{\"id\":1,\"method\":\"Runtime.evaluate\"}',\n"
+                "            'response_contains': 'recorded fixture',\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill),
+        tmp_path / "compile",
+    )
+
+    assert [probe.kind for probe in frozen.services[0].protocol_probes] == [
+        "http",
+        "websocket",
+    ]
+
+
+def test_skill_runtime_rejects_data_plane_expectation_not_in_fixture(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'websocket',\n"
+                "            'path': '/events',\n"
+                "            'request_text': '{\\\"op\\\":\\\"read\\\"}',\n"
+                "            'response_contains': 'invented response',\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="response_contains must be derived from the declared fixture",
+    ) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    message = str(error.value)
+    assert "kind=websocket" in message
+    assert "path=/events" in message
+    assert "expected_preview=invented response" in message
+    assert "expected_sha256=" in message
+
+
+def test_materializes_bounded_read_only_evidence_derivation_catalog(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    request = _request(skill)
+
+    catalog = materialize_replay_evidence_derivations(
+        request,
+        tmp_path / "trajectory_context" / "evidence_derivations",
+    )
+
+    evidence_ref = request.requirements[0].evidence_refs[0]
+    assert evidence_ref in catalog
+    entries = catalog[evidence_ref]
+    assert entries
+    assert any(Path(item["path"]).read_bytes() == b"recorded fixture" for item in entries)
+    assert all(str(item["sha256"]).startswith("sha256:") for item in entries)
+    assert all(Path(item["path"]).stat().st_mode & 0o222 == 0 for item in entries)
+
+    enriched = ReplayCapabilityCompileRequest.create(
+        requirements=request.requirements,
+        context_snapshots=request.context_snapshots,
+        task_inputs=request.task_inputs,
+        capability_root=skill,
+        context_fingerprint=request.context_fingerprint,
+        capability_package_fingerprint=request.capability_package_fingerprint,
+        evidence_derivations=catalog,
+    )
+    assert enriched.evidence_derivations[evidence_ref] == entries
+    assert enriched.request_fingerprint != request.request_fingerprint
+
+
 def test_discovery_returns_none_without_manifest(tmp_path: Path) -> None:
     skill = tmp_path / "plain-skill"
     skill.mkdir()
@@ -218,6 +480,85 @@ def test_compile_and_freeze_capability_is_deterministic(tmp_path: Path) -> None:
     )
     assert Path(frozen.frozen_root, "runtime", "replay/runtime.py").is_file()
     assert frozen.fingerprint.startswith("sha256:")
+
+
+def test_compile_normalizes_requirement_id_endpoint_replacement_keys(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler = skill / "replay/compiler.py"
+    compiler.write_text(
+        compiler.read_text(encoding="utf-8").replace(
+            "requirement['identifier']: 'fixture-http'",
+            "requirement['requirement_id']: 'fixture-http'",
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill),
+        tmp_path / "artifacts",
+    )
+
+    assert frozen.endpoint_replacements == {
+        "http://127.0.0.1:9222": "fixture-http"
+    }
+
+
+def test_compile_infers_single_service_endpoint_replacement(tmp_path: Path) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler = skill / "replay/compiler.py"
+    compiler.write_text(
+        compiler.read_text(encoding="utf-8").replace(
+            "'endpoint_replacements': {\n        requirement['identifier']: 'fixture-http',\n    },",
+            "'endpoint_replacements': {},",
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill),
+        tmp_path / "artifacts",
+    )
+
+    assert frozen.endpoint_replacements == {
+        "http://127.0.0.1:9222": "fixture-http"
+    }
+
+
+def test_compile_accepts_unused_evidence_backed_fixture(tmp_path: Path) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler = skill / "replay/compiler.py"
+    source = compiler.read_text(encoding="utf-8")
+    source = source.replace(
+        "(output / 'fixture.txt').write_text('recorded fixture', encoding='utf-8')",
+        "(output / 'fixture.txt').write_text('recorded fixture', encoding='utf-8')\n"
+        "(output / 'extra.txt').write_text('recorded fixture', encoding='utf-8')",
+    ).replace(
+        "'fixture.txt': request['requirements'][0]['evidence_refs'],",
+        "'fixture.txt': request['requirements'][0]['evidence_refs'],\n"
+        "        'extra.txt': request['requirements'][0]['evidence_refs'],",
+    ).replace(
+        "'fixtures': ['fixture.txt'],",
+        "'fixtures': ['fixture.txt', 'extra.txt'],",
+    )
+    compiler.write_text(source, encoding="utf-8")
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill),
+        tmp_path / "artifacts",
+    )
+
+    assert {item.path for item in frozen.fixtures} == {"fixture.txt", "extra.txt"}
 
 
 def test_double_compile_rejects_different_fixture_hashes(tmp_path: Path) -> None:
@@ -369,13 +710,18 @@ def test_replay_service_sandbox_does_not_allow_loopback_outbound(
         lambda _name: "/usr/bin/sandbox-exec",
     )
 
+    read_root = tmp_path / "read"
+    writable_root = tmp_path / "write"
     command = build_replay_sandboxed_command(
         ["python", "fixture_service.py"],
-        read_roots=(tmp_path,),
-        writable_roots=(tmp_path,),
+        read_roots=(read_root,),
+        writable_roots=(writable_root,),
         allow_loopback=True,
     )
 
     assert "network-bind" in command[2]
     assert "network-inbound" in command[2]
     assert "network-outbound" not in command[2]
+    resolved_write = str(writable_root.resolve())
+    assert f'(allow file-read* (subpath "{resolved_write}"))' in command[2]
+    assert f'(allow file-write* (subpath "{resolved_write}"))' in command[2]

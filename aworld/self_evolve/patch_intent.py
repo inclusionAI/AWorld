@@ -6,7 +6,17 @@ from typing import Any, Mapping
 
 _PROTECTED_REFERENCE_PATTERNS = (
     re.compile(r"(?<![\w.-])/(?:Users|private|var|tmp|home)/[^\s,;:'\")\]}]+"),
-    re.compile(r"(?i)\b(secret|token|api[_-]?key|password|authorization|cookie)\b"),
+    re.compile(
+        r"(?ix)\b(?:secret|token|api[_-]?key|password|cookie)\b"
+        r"\s*(?:=|:)\s*"
+        r"(?![\"']?(?:<|\$\{|\[|your[-_]|example[-_]|placeholder|redacted|dummy|test[-_]))"
+        r"[\"']?[a-z0-9+/_.-]{8,}"
+    ),
+    re.compile(
+        r"(?ix)\bauthorization\s*:\s*bearer\s+"
+        r"(?![\"']?(?:<|\$\{|\[|your[-_]|example[-_]|placeholder|redacted|dummy|test[-_]))"
+        r"[\"']?[a-z0-9_~+/.-]{8,}"
+    ),
     re.compile(r"(?i)\b(ignore|disregard) (all )?(previous|prior|above) (instructions|messages)\b"),
 )
 
@@ -44,7 +54,8 @@ def apply_skill_patch_intent(
 
 def _replace_section(content: str, *, heading: str, body: str) -> str:
     lines = content.splitlines()
-    start = _find_heading_index(lines, heading)
+    heading_title = _heading_title(heading)
+    start = _find_heading_index(lines, heading_title)
     if start is None:
         raise ValueError(f"section not found: {heading}")
     level = _heading_level(lines[start])
@@ -54,14 +65,19 @@ def _replace_section(content: str, *, heading: str, body: str) -> str:
         if current_level is not None and current_level <= level:
             break
         end += 1
-    replacement = [lines[start], "", *_body_lines(body)]
+    replacement = [
+        lines[start],
+        "",
+        *_body_lines(body, heading_title=heading_title),
+    ]
     return "\n".join([*lines[:start], *replacement, *lines[end:]])
 
 
 def _append_section(content: str, *, heading: str, body: str) -> str:
+    heading_title = _heading_title(heading)
     rendered = content.rstrip() + "\n\n"
-    rendered += f"## {heading.strip()}\n\n"
-    rendered += "\n".join(_body_lines(body))
+    rendered += f"## {heading_title}\n\n"
+    rendered += "\n".join(_body_lines(body, heading_title=heading_title))
     return rendered
 
 
@@ -87,8 +103,24 @@ def _heading_level(line: str) -> int | None:
     return level
 
 
-def _body_lines(body: str) -> list[str]:
-    return body.strip("\n").splitlines()
+def _body_lines(body: str, *, heading_title: str) -> list[str]:
+    lines = body.strip("\n").splitlines()
+    if lines and _heading_level(lines[0]) is not None:
+        first_title = _heading_title(lines[0])
+        if first_title.lower() == heading_title.lower():
+            lines = lines[1:]
+            while lines and not lines[0].strip():
+                lines.pop(0)
+    return lines
+
+
+def _heading_title(value: str) -> str:
+    stripped = value.strip()
+    if _heading_level(stripped) is not None:
+        stripped = stripped.lstrip("#").strip()
+    if not stripped:
+        raise ValueError("heading must include a Markdown title")
+    return stripped
 
 
 def _required_text(value: Any, *, field: str) -> str:

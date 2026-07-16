@@ -1,6 +1,7 @@
 from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
     build_context_config,
     load_aworld_system_prompt,
+    resolve_aworld_prompt_budget,
 )
 
 
@@ -98,6 +99,21 @@ def test_aworld_context_config_enables_task_grounding_neuron():
     config = build_context_config(debug_mode=True)
 
     assert "task_grounding" in config.agent_config.neuron_names
+
+
+def test_aworld_prompt_budget_is_opt_in(monkeypatch):
+    monkeypatch.delenv("AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS", raising=False)
+
+    assert resolve_aworld_prompt_budget() is None
+
+
+def test_aworld_prompt_budget_uses_runtime_output_reservation(monkeypatch):
+    monkeypatch.setenv("AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS", "4096")
+
+    policy = resolve_aworld_prompt_budget()
+
+    assert policy is not None
+    assert policy.reserved_output_tokens == 4096
 
 
 def test_aworld_prompt_requires_grounding_authoritative_request_and_finish_validation():

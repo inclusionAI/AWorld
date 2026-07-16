@@ -14,11 +14,21 @@ CANDIDATE_SCHEMA_VERSION = "aworld.self_evolve.candidate.v1"
 MAX_CANDIDATE_RESPONSE_CHARS = 2_000_000
 MAX_SURROUNDING_PROSE_CHARS = 4_000
 MAX_RATIONALE_CHARS = 8_000
+LARGE_TARGET_CONTENT_CHARS = 16_000
+MIN_FULL_REPLACEMENT_RETENTION_RATIO = 0.8
 
 CANDIDATE_OUTPUT_CONTRACT: Mapping[str, object] = {
     "schema_version": CANDIDATE_SCHEMA_VERSION,
-    "content": "optional complete primary target content",
+    "content": (
+        "optional complete primary target content for a deliberate full rewrite; "
+        "when the current content starts with YAML frontmatter, preserve that "
+        "frontmatter; do not use for a small delta to a large existing target"
+    ),
     "patch_intent": {
+        "preferred_when": (
+            "preserving a large existing target while adding or replacing bounded "
+            "Markdown sections"
+        ),
         "operations": [
             {
                 "op": "replace_section or append_section",
@@ -45,6 +55,7 @@ _JSON_FENCE = re.compile(
     r"```(?:json)?\s*(.*?)\s*```",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_YAML_FRONTMATTER = re.compile(r"^---\s*\n.*?\n---\s*\n", flags=re.DOTALL)
 
 
 class CandidateProtocolError(ValueError):
@@ -223,6 +234,28 @@ def _validate_candidate_payload(
         raise CandidateProtocolError(
             "empty_candidate_content",
             "candidate content must not be empty",
+            field_path="content",
+        )
+    if (
+        has_content
+        and _YAML_FRONTMATTER.match(current_content)
+        and not _YAML_FRONTMATTER.match(content)
+    ):
+        raise CandidateProtocolError(
+            "missing_candidate_frontmatter",
+            "complete skill content must preserve YAML frontmatter",
+            field_path="content",
+            repairable=False,
+        )
+    if (
+        has_content
+        and len(current_content) >= LARGE_TARGET_CONTENT_CHARS
+        and len(content)
+        < int(len(current_content) * MIN_FULL_REPLACEMENT_RETENTION_RATIO)
+    ):
+        raise CandidateProtocolError(
+            "destructive_full_content_replacement",
+            "large existing targets require patch_intent for a bounded delta",
             field_path="content",
         )
     if has_patch_intent:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, AsyncIterator
 
 from aworld.agents.prompt_budgeted_agent import PromptBudgetedAgent
 from aworld.config.conf import AgentConfig, ModelConfig
@@ -16,6 +16,7 @@ from aworld.runner import Runners
 
 
 DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT = 32_768
+DEFAULT_CANDIDATE_TASK_TIMEOUT_SECONDS = 300
 
 
 class CandidateGenerationInfrastructureError(RuntimeError):
@@ -58,6 +59,18 @@ class _SanitizingProvider:
                 error_type=type(exc).__name__,
             ) from None
 
+    async def astream_completion(self, **kwargs: Any) -> AsyncIterator[Any]:
+        try:
+            async for chunk in self._delegate.astream_completion(**kwargs):
+                yield chunk
+        except CandidateGenerationInfrastructureError:
+            raise
+        except Exception as exc:
+            raise CandidateGenerationInfrastructureError(
+                stage="model_provider",
+                error_type=type(exc).__name__,
+            ) from None
+
 
 class CandidateGenerationAgent(PromptBudgetedAgent):
     """AWorld agent used for one bounded self-evolve candidate generation call."""
@@ -67,11 +80,15 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
         *,
         model_config: ModelConfig,
         output_token_limit: int | None = None,
+        task_timeout_seconds: int = DEFAULT_CANDIDATE_TASK_TIMEOUT_SECONDS,
     ) -> None:
         if output_token_limit is not None and (
             isinstance(output_token_limit, bool) or output_token_limit <= 0
         ):
             raise ValueError("output_token_limit must be positive")
+        if isinstance(task_timeout_seconds, bool) or task_timeout_seconds <= 0:
+            raise ValueError("task_timeout_seconds must be positive")
+        self.task_timeout_seconds = task_timeout_seconds
         framework_output_limit = (
             int(output_token_limit)
             if output_token_limit is not None
@@ -99,10 +116,12 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
             if configured_max_completion_tokens is not None
             else "max_tokens"
         )
+        runtime_model_config = model_config.model_copy(deep=True)
+        _configure_structured_generation_reasoning(runtime_model_config)
         super().__init__(
             name="self-evolve-candidate-generator",
             conf=AgentConfig(
-                llm_config=model_config.model_copy(deep=True),
+                llm_config=runtime_model_config,
                 max_steps=1,
             ),
             prompt_budget_policy=PromptBudgetPolicy(
@@ -123,14 +142,26 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
             system_prompt=(
                 "You generate one self-evolve candidate package. Return only a JSON "
                 "object matching the candidate_output_contract in the task. Do not wrap "
-                "the JSON in prose. Keep domain-specific replay behavior inside "
-                "candidate-owned files and do not invent unavailable recordings."
+                "the JSON in prose. Preserve existing target behavior: use patch_intent "
+                "for a bounded change to a large target instead of reconstructing its "
+                "full content. Keep domain-specific replay behavior inside candidate-owned "
+                "files and do not invent unavailable recordings. Infer reusable protocol "
+                "behavior from bounded trace steps; do not embed dataset-specific task IDs, "
+                "case IDs, original endpoints, or environment paths. Candidate-owned replay "
+                "files make evaluation reproducible but do not replace a reusable behavior "
+                "improvement in the primary target content. A replay runtime must reconstruct "
+                "fixture-derived task data for observed interactions; a control-plane handshake, "
+                "placeholder token, or empty schema alone is not a valid data-plane replay."
             ),
             tool_names=[],
             llm_max_attempts=1,
         )
         self._task_failures: dict[str, dict[str, str]] = {}
-        self.conf.llm_config.llm_stream_call = False
+        # Long reasoning-model calls can exceed an intermediary's idle timeout
+        # before a non-streaming response has produced any bytes. Reuse AWorld's
+        # native streaming assembly so chunks keep the connection active while the
+        # Task/Runner lifecycle still receives one final candidate response.
+        self.conf.llm_config.llm_stream_call = True
         Swarm.register_agent([self])
 
     @property
@@ -255,6 +286,7 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
             agent=self,
             context=context,
             runner_cls="aworld.self_evolve.runtime.SelfEvolveCandidateTaskRunner",
+            timeout=self.task_timeout_seconds,
         )
 
     def pop_task_failure(
@@ -333,3 +365,35 @@ def _model_aware_candidate_output_limit(model_config: ModelConfig) -> int:
             max_model_len // 8,
         ),
     )
+
+
+def _configure_structured_generation_reasoning(model_config: ModelConfig) -> None:
+    """Use direct generation for model families whose default is forced thinking.
+
+    Candidate mutation already receives a compiled evolution context and must emit a
+    bounded machine-readable package in one turn. Providers that force chain-of-
+    thought can otherwise consume the entire completion budget without producing
+    the package. Explicit profile settings always win.
+    """
+
+    provider = (model_config.llm_provider or "openai").lower()
+    model_name = (model_config.llm_model_name or "").lower()
+    supports_thinking_switch = model_name.startswith(
+        ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5")
+    )
+    if provider != "openai" or not supports_thinking_switch:
+        return
+
+    params = dict(model_config.params or {})
+    if "thinking" in params:
+        return
+    extra_body = params.get("extra_body")
+    if extra_body is None:
+        extra_body = {}
+    if not isinstance(extra_body, dict) or "thinking" in extra_body:
+        return
+    params["extra_body"] = {
+        **extra_body,
+        "thinking": {"type": "disabled"},
+    }
+    model_config.params = params

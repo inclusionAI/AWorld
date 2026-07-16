@@ -85,6 +85,28 @@ def test_trace_pack_compresses_middle_steps_and_enforces_text_budget() -> None:
     assert len(trace_pack.steps[0].action["content"]) <= 40
 
 
+def test_trace_pack_samples_long_trajectory_across_middle_interactions() -> None:
+    trajectory = [
+        _trajectory_item(index + 1, f"step-{index + 1}", tool_name=f"tool-{index + 1}")
+        for index in range(61)
+    ]
+
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="trajectory_log",
+        task_id="long-task",
+        max_steps=8,
+    )
+
+    source_indexes = [step.source_index for step in trace_pack.steps]
+    assert source_indexes[:2] == [0, 1]
+    assert source_indexes[-2:] == [59, 60]
+    assert len(source_indexes) == 8
+    assert any(10 <= index < 25 for index in source_indexes)
+    assert any(25 <= index < 40 for index in source_indexes)
+    assert any(40 <= index < 59 for index in source_indexes)
+
+
 def test_trace_packs_from_trajectory_log_requires_explicit_log_path() -> None:
     fixture = Path(__file__).parent / "fixtures" / "credit_assignment_cases" / "sample_trajectory.log"
 

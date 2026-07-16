@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import re
 from dataclasses import asdict, dataclass, replace
 from typing import Callable, Any
 from pathlib import Path
@@ -110,12 +111,18 @@ from aworld.self_evolve.replay_capability import (
     ReplayCapabilityError,
     compile_and_freeze_capability,
     discover_replay_capability,
+    materialize_replay_evidence_derivations,
 )
 from aworld.self_evolve.release_checks import (
     build_content_quality_diagnostics,
     build_release_checklist,
 )
-from aworld.self_evolve.sanitization import sanitize_metric_value, sanitize_path_ref, sanitize_text
+from aworld.self_evolve.sanitization import (
+    sanitize_metric_value,
+    sanitize_path_ref,
+    sanitize_source_text,
+    sanitize_text,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import DraftSkillTextTarget, SelfEvolveTarget, SkillTextTarget
 from aworld.self_evolve.trace_pack import TracePack
@@ -132,6 +139,10 @@ from aworld.self_evolve.types import (
 )
 from aworld.skills.compat_provider import build_compat_registry
 from aworld.skills.release import normalize_verified_skill_release
+
+
+_MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
+_MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 
 
 @dataclass(frozen=True)
@@ -266,7 +277,18 @@ def _default_iteration_budget(
         if isinstance(explicit_iterations, bool) or explicit_iterations <= 0:
             raise ValueError("iterations must be positive")
         return explicit_iterations
-    return 2 if apply_policy == "auto_verified" else 1
+    return 10 if apply_policy == "auto_verified" else 1
+
+
+_DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 180
+
+
+def _candidate_screening_timeout(authoritative_timeout_seconds: int) -> int:
+    """Bound representative screening without weakening authoritative replay."""
+    return min(
+        authoritative_timeout_seconds,
+        _DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS,
+    )
 
 
 def _optimizer_iteration_diagnostics(
@@ -603,6 +625,7 @@ class SelfEvolveRunner:
             for feedback in prior_feedback
             if feedback.metrics.get("candidate_status") == "accepted"
         }
+        current_run_attempted_candidate_ids: set[str] = set()
         rejected_semantic_lesson_fingerprints = (
             _load_prior_rejected_semantic_lesson_fingerprints(
                 self.store,
@@ -619,11 +642,24 @@ class SelfEvolveRunner:
 
         baseline_preflight_blocked = False
         infrastructure_blocked = False
-        for iteration_index in range(self.max_iterations):
+        progress_repair_families: set[str] = set()
+        duplicate_population_stalls = 0
+        iteration_budget = (
+            self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
+        )
+        for iteration_index in range(iteration_budget):
+            if iteration_index >= self.max_iterations:
+                repair_family = _next_progress_repair_extension_family(
+                    validation_feedback,
+                    consumed_families=progress_repair_families,
+                )
+                if repair_family is None:
+                    break
+                progress_repair_families.add(repair_family)
             _emit_progress(
                 self.progress_callback,
                 "candidate_generation",
-                f"Generating candidate iteration {iteration_index + 1}/{self.max_iterations}",
+                f"Generating candidate iteration {iteration_index + 1}/{iteration_budget}",
             )
             iteration_lesson_records = generation_lesson_records
             if validation_feedback:
@@ -745,19 +781,24 @@ class SelfEvolveRunner:
                     )
                 )
                 if protocol_invalid_count:
-                    validation_feedback = (
-                        EvaluationSummary(
-                            variant_id=f"candidate-protocol-{iteration_index + 1}",
-                            dataset_split="validation",
-                            metrics={
-                                "failed_gates": ["candidate_protocol"],
-                                "candidate_status": "rejected",
-                                "failure_class": "candidate",
-                                "repairable": True,
-                                "candidate_protocol_invalid_count": (
-                                    protocol_invalid_count
+                    validation_feedback = _merge_validation_feedback(
+                        validation_feedback,
+                        (
+                            EvaluationSummary(
+                                variant_id=(
+                                    f"candidate-protocol-{iteration_index + 1}"
                                 ),
-                            },
+                                dataset_split="validation",
+                                metrics={
+                                    "failed_gates": ["candidate_protocol"],
+                                    "candidate_status": "rejected",
+                                    "failure_class": "candidate",
+                                    "repairable": True,
+                                    "candidate_protocol_invalid_count": (
+                                        protocol_invalid_count
+                                    ),
+                                },
+                            ),
                         ),
                     )
                     iteration_reports.append(
@@ -835,7 +876,21 @@ class SelfEvolveRunner:
                     )
                     skipped_feedback.append(duplicate_feedback)
                 if skipped_feedback:
-                    validation_feedback = tuple(skipped_feedback)
+                    validation_feedback = _merge_validation_feedback(
+                        validation_feedback,
+                        tuple(skipped_feedback),
+                    )
+                    if all(
+                        candidate.candidate_id
+                        in current_run_attempted_candidate_ids
+                        for candidate in skipped_duplicates
+                    ):
+                        duplicate_population_stalls += 1
+                        if (
+                            duplicate_population_stalls
+                            >= _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS
+                        ):
+                            break
                     continue
                 iteration_reports.append(
                     {
@@ -847,15 +902,47 @@ class SelfEvolveRunner:
                 )
                 continue
 
+            duplicate_population_stalls = 0
+
+            screening_candidates = candidate_population
             candidate_population, screening_report = await self._screen_candidate_population(
                 run_id=run_id,
                 target=target,
                 dataset=dataset,
                 candidates=candidate_population,
                 apply_policy=apply_policy,
+                capability_requirements=replay_preflight.requirements,
             )
             if screening_report is not None:
                 population_screening_reports.append(screening_report)
+            screening_feedback = _candidate_screening_repair_feedback(
+                screening_candidates,
+                screening_report,
+            )
+            if screening_feedback:
+                validation_feedback = _merge_validation_feedback(
+                    validation_feedback,
+                    screening_feedback,
+                )
+                rejected_candidate_ids.update(
+                    item.variant_id for item in screening_feedback
+                )
+                current_run_attempted_candidate_ids.update(
+                    item.variant_id for item in screening_feedback
+                )
+                iteration_reports.extend(
+                    {
+                        "iteration": iteration_index + 1,
+                        "candidate_id": item.variant_id,
+                        "status": "screening_rejected",
+                        "failed_gates": list(
+                            item.metrics.get("failed_gates", [])
+                        ),
+                    }
+                    for item in screening_feedback
+                )
+            if screening_feedback and not candidate_population:
+                continue
 
             accepted_in_iteration = False
             reusable_baseline_replay_dir: str | None = None
@@ -888,7 +975,7 @@ class SelfEvolveRunner:
                         ),
                     )
             for candidate_index, iteration_candidate in enumerate(candidate_population):
-                state, report_item, validation_feedback = await self._evaluate_iteration_candidate(
+                state, report_item, candidate_feedback = await self._evaluate_iteration_candidate(
                     run_id=run_id,
                     target=target,
                     dataset=dataset,
@@ -902,6 +989,13 @@ class SelfEvolveRunner:
                     accepted_candidate_ids=accepted_candidate_ids,
                     baseline_replay_dir=reusable_baseline_replay_dir,
                     capability_requirements=replay_preflight.requirements,
+                )
+                validation_feedback = _merge_validation_feedback(
+                    validation_feedback,
+                    candidate_feedback,
+                )
+                current_run_attempted_candidate_ids.add(
+                    iteration_candidate.candidate_id
                 )
                 iteration_reports.append(report_item)
                 iteration_states.append(state)
@@ -1215,11 +1309,16 @@ class SelfEvolveRunner:
         dataset: SelfEvolveDataset,
         candidates: tuple[CandidateVariant, ...],
         apply_policy: str,
+        capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
     ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
-        screening_dataset = _candidate_screening_dataset(dataset)
+        screening_dataset = _candidate_screening_dataset(
+            dataset,
+            capability_requirements=capability_requirements,
+        )
         if (
             apply_policy != "auto_verified"
-            or len(candidates) <= 1
+            or not candidates
+            or (len(candidates) == 1 and not capability_requirements)
             or screening_dataset is None
             or not self.replay_enabled
             or self.candidate_replay_backend is None
@@ -1265,6 +1364,9 @@ class SelfEvolveRunner:
                     baseline_repetitions=1,
                     candidate_repetitions=1,
                     progress_stage="candidate_screening",
+                    timeout_seconds=_candidate_screening_timeout(
+                        self.replay_timeout_seconds
+                    ),
                 )
             )
             if replay_result is not None and (
@@ -1297,26 +1399,45 @@ class SelfEvolveRunner:
             if (
                 replay_result is not None
                 and _baseline_preflight_blocks_population(replay_result)
+                and not _screening_attempt_requires_candidate_repair(attempts[-1])
             ):
                 break
 
         selection_reason = "representative replay produced a comparable pair"
         if selected_candidate is None:
-            # Screening is a bounded cost filter, not an acceptance gate. Preserve
-            # the highest-ranked candidate so transient screening failures are
-            # still decided by the authoritative full replay and its gates.
-            selected_candidate = candidates[0]
-            selection_reason = (
-                "screening was inconclusive; authoritative full replay retained "
-                "the highest-ranked candidate"
-            )
+            if any(_screening_attempt_requires_candidate_repair(item) for item in attempts):
+                selection_reason = (
+                    "screening isolated a repairable candidate replay capability "
+                    "failure; authoritative replay deferred to candidate repair"
+                )
+                selected_candidates = ()
+            else:
+                # Screening is a bounded cost filter, not an acceptance gate. An
+                # unavailable or non-comparable baseline contains no evidence that
+                # can distinguish candidates, so retain the complete ranked
+                # population for authoritative replay instead of discarding viable
+                # alternatives.
+                selection_reason = (
+                    "screening was inconclusive; authoritative full replay preserved "
+                    "the ranked population"
+                )
+                selected_candidates = candidates
+        else:
+            selected_candidates = (selected_candidate,)
         return (
-            (selected_candidate,),
+            selected_candidates,
             {
                 "representative_case_id": representative_case_id,
                 "generated_candidate_count": len(candidates),
                 "attempted_candidate_count": len(attempts),
-                "selected_candidate_id": selected_candidate.candidate_id,
+                "selected_candidate_id": (
+                    selected_candidate.candidate_id
+                    if selected_candidate is not None
+                    else None
+                ),
+                "selected_candidate_ids": [
+                    candidate.candidate_id for candidate in selected_candidates
+                ],
                 "selection_reason": selection_reason,
                 "baseline_repetitions": 1,
                 "candidate_repetitions": 1,
@@ -1383,6 +1504,16 @@ class SelfEvolveRunner:
         )
         if accepted_duplicate_blocked or rejected_duplicate_blocked:
             failed_gates = [gate for gate in gate_results if not gate.passed]
+            feedback = (
+                EvaluationSummary(
+                    variant_id=candidate.candidate_id,
+                    metrics={
+                        "failed_gates": [gate.gate_name for gate in failed_gates],
+                        "candidate_status": "rejected",
+                    },
+                    dataset_split="validation",
+                ),
+            )
             report_item = _iteration_report_item(
                 iteration_number=iteration_number,
                 candidate_number=candidate_number,
@@ -1402,17 +1533,8 @@ class SelfEvolveRunner:
                 replay_result=None,
                 replay_dataset=None,
                 gate_results=gate_results,
+                feedback=feedback,
                 status="rejected",
-            )
-            feedback = (
-                EvaluationSummary(
-                    variant_id=candidate.candidate_id,
-                    metrics={
-                        "failed_gates": [gate.gate_name for gate in failed_gates],
-                        "candidate_status": "rejected",
-                    },
-                    dataset_split="validation",
-                ),
             )
             return state, report_item, feedback
 
@@ -1844,6 +1966,22 @@ class SelfEvolveRunner:
                     capability_package_fingerprint=capability.package_fingerprint,
                     context_fingerprint=context_fingerprint,
                 )
+                evidence_derivations = materialize_replay_evidence_derivations(
+                    compile_request,
+                    context_root / "evidence_derivations",
+                )
+                compile_request = ReplayCapabilityCompileRequest.create(
+                    requirements=preflight.requirements,
+                    context_snapshots=context_snapshots,
+                    task_inputs={
+                        case.case_id: case.input
+                        for case in replayable_dataset.cases
+                    },
+                    capability_root=capability.skill_root,
+                    capability_package_fingerprint=capability.package_fingerprint,
+                    context_fingerprint=context_fingerprint,
+                    evidence_derivations=evidence_derivations,
+                )
                 frozen_capability = compile_and_freeze_capability(
                     capability,
                     compile_request,
@@ -1938,6 +2076,7 @@ class SelfEvolveRunner:
         baseline_repetitions: int | None = None,
         candidate_repetitions: int | None = None,
         progress_stage: str = "candidate_replay",
+        timeout_seconds: int | None = None,
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
@@ -2012,6 +2151,11 @@ class SelfEvolveRunner:
                 f"candidate x{effective_candidate_repetitions})"
             ),
         )
+        effective_timeout_seconds = (
+            self.replay_timeout_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
         try:
             request = build_replay_request(
                 run_id=run_id,
@@ -2021,7 +2165,7 @@ class SelfEvolveRunner:
                 overlay_skill_root=overlay.shadow_root,
                 dataset=dataset,
                 agent=self.replay_agent,
-                timeout_seconds=self.replay_timeout_seconds,
+                timeout_seconds=effective_timeout_seconds,
                 max_steps=self.replay_max_steps,
                 max_tokens=self.max_run_tokens,
                 baseline_repetitions=effective_baseline_repetitions,
@@ -4288,6 +4432,22 @@ def _feedback_from_report(
     report_path: Path,
 ) -> tuple[EvaluationSummary, ...]:
     items: list[EvaluationSummary] = []
+    repair_feedback = (
+        *_repair_feedback_from_selected_candidate(
+            report,
+            report_path=report_path,
+        ),
+        *_repair_feedback_from_screening_report(
+            report,
+            report_path=report_path,
+        ),
+    )
+    seen_repair_candidates: set[str] = set()
+    for feedback in repair_feedback:
+        if feedback.variant_id in seen_repair_candidates:
+            continue
+        seen_repair_candidates.add(feedback.variant_id)
+        items.append(feedback)
     items.extend(_lesson_feedback_from_report(report, report_path=report_path))
     iterations = report.get("iterations")
     if isinstance(iterations, list):
@@ -4311,6 +4471,276 @@ def _feedback_from_report(
                 )
             )
     return tuple(items)
+
+
+def _repair_feedback_from_selected_candidate(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+) -> tuple[EvaluationSummary, ...]:
+    candidate_id = report.get("selected_candidate_id")
+    raw_gates = report.get("gate_results")
+    if (
+        not isinstance(candidate_id, str)
+        or not candidate_id
+        or not isinstance(raw_gates, list)
+    ):
+        return ()
+    package = _stored_repair_candidate_package(
+        report_path=report_path,
+        candidate_id=candidate_id,
+    )
+    if package is None:
+        return ()
+
+    gates: list[GateResult] = []
+    for item in raw_gates:
+        if not isinstance(item, Mapping) or item.get("passed") is not False:
+            continue
+        details = item.get("details")
+        if (
+            not isinstance(details, Mapping)
+            or details.get("failure_class") != "candidate"
+            or details.get("repairable") is not True
+        ):
+            continue
+        gate_name = item.get("gate_name")
+        if not isinstance(gate_name, str) or not gate_name:
+            continue
+        bounded_details = dict(details)
+        failure_artifacts = _historical_failure_artifact_excerpts(
+            report_path=report_path,
+            artifact_root=details.get("artifact_root"),
+        )
+        if failure_artifacts:
+            bounded_details["failure_artifacts"] = list(failure_artifacts)
+        gates.append(
+            GateResult(
+                gate_name=gate_name,
+                passed=False,
+                reason=sanitize_text(item.get("reason"), max_chars=320),
+                details=bounded_details,
+            )
+        )
+    if not gates:
+        return ()
+    metrics = _typed_gate_feedback_metrics(gates)
+    metrics.update(
+        {
+            "failed_gates": [gate.gate_name for gate in gates],
+            "candidate_status": "repairable",
+            "authoritative_replay_failure": True,
+            "run_id": report.get("run_id") or report_path.parent.name,
+            "report_path": str(report_path),
+            "repair_candidate_package": package,
+        }
+    )
+    return (
+        EvaluationSummary(
+            variant_id=candidate_id,
+            metrics=metrics,
+            dataset_split="historical_repair",
+        ),
+    )
+
+
+def _historical_failure_artifact_excerpts(
+    *,
+    report_path: Path,
+    artifact_root: Any,
+) -> tuple[Mapping[str, str], ...]:
+    if not isinstance(artifact_root, str) or not artifact_root:
+        return ()
+    run_root = report_path.parent.resolve()
+    try:
+        root = Path(artifact_root).expanduser().resolve()
+    except OSError:
+        return ()
+    if not _path_is_relative_to(root, run_root) or not root.is_dir():
+        return ()
+
+    excerpts: list[Mapping[str, str]] = []
+    inspected = 0
+    try:
+        paths = root.rglob("*")
+        for path in paths:
+            inspected += 1
+            if inspected > 512 or len(excerpts) >= 4:
+                break
+            if path.is_symlink() or not path.is_file():
+                continue
+            name = path.name.lower()
+            is_diagnostic = (
+                name.endswith((".stderr.txt", ".stdout.txt"))
+                or name == "failure.json"
+                or (
+                    "diagnostic" in name
+                    and path.suffix.lower() in {".json", ".txt", ".log"}
+                )
+            )
+            if not is_diagnostic:
+                continue
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(0, 2)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 4_096))
+                    tail = handle.read(4_096).decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            # Preserve the terminal exception rather than the beginning of a
+            # traceback; downstream metric compaction intentionally bounds each
+            # diagnostic string to roughly one prompt paragraph.
+            excerpt = sanitize_text(tail[-360:], max_chars=360)
+            if not excerpt:
+                continue
+            excerpts.append(
+                {
+                    "path": sanitize_path_ref(
+                        path.relative_to(run_root).as_posix()
+                    ),
+                    "tail": excerpt,
+                }
+            )
+    except OSError:
+        return tuple(excerpts)
+    return tuple(excerpts)
+
+
+def _repair_feedback_from_screening_report(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+) -> tuple[EvaluationSummary, ...]:
+    population = report.get("population")
+    if not isinstance(population, Mapping):
+        return ()
+
+    screenings: list[Mapping[str, Any]] = []
+    screening_iterations = population.get("screening_iterations")
+    if isinstance(screening_iterations, list):
+        screenings.extend(
+            item for item in screening_iterations if isinstance(item, Mapping)
+        )
+    screening = population.get("screening")
+    if isinstance(screening, Mapping):
+        screenings.append(screening)
+    if not screenings:
+        return ()
+
+    feedback: list[EvaluationSummary] = []
+    seen_candidate_ids: set[str] = set()
+    attempts: list[Any] = []
+    for screening_item in reversed(screenings):
+        screening_attempts = screening_item.get("attempts")
+        if isinstance(screening_attempts, list):
+            attempts.extend(reversed(screening_attempts))
+    for attempt in attempts:
+        if not isinstance(attempt, Mapping) or attempt.get("passed") is not False:
+            continue
+        candidate_id = attempt.get("candidate_id")
+        details = attempt.get("details")
+        if (
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or not isinstance(details, Mapping)
+            or details.get("failure_class") != "candidate"
+            or details.get("repairable") is not True
+            or candidate_id in seen_candidate_ids
+        ):
+            continue
+        package = _stored_repair_candidate_package(
+            report_path=report_path,
+            candidate_id=candidate_id,
+        )
+        if package is None:
+            continue
+        seen_candidate_ids.add(candidate_id)
+        gate = GateResult(
+            gate_name="candidate_replay",
+            passed=False,
+            reason=sanitize_text(attempt.get("reason"), max_chars=320),
+            details=details,
+        )
+        metrics = _typed_gate_feedback_metrics([gate])
+        metrics.update(
+            {
+                "failed_gates": ["candidate_replay"],
+                "candidate_status": "repairable",
+                "run_id": report.get("run_id") or report_path.parent.name,
+                "report_path": str(report_path),
+                "repair_candidate_package": package,
+            }
+        )
+        feedback.append(
+            EvaluationSummary(
+                variant_id=candidate_id,
+                metrics=metrics,
+                dataset_split="historical_repair",
+            )
+        )
+        if len(feedback) >= _MAX_HISTORICAL_REPAIR_CANDIDATES:
+            break
+    return tuple(feedback)
+
+
+def _stored_repair_candidate_package(
+    *,
+    report_path: Path,
+    candidate_id: str,
+) -> Mapping[str, object] | None:
+    run_root = report_path.parent.resolve()
+    candidate_path = run_root / "candidates" / candidate_id / "candidate.json"
+    try:
+        resolved = candidate_path.resolve()
+    except OSError:
+        return None
+    if not _path_is_relative_to(resolved, run_root) or not resolved.is_file():
+        return None
+    try:
+        payload = _load_json_mapping(resolved)
+    except Exception:
+        return None
+    if payload.get("candidate_id") != candidate_id:
+        return None
+    raw_files = payload.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        return None
+
+    remaining_chars = _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS
+    files: list[dict[str, object]] = []
+    for item in raw_files[:8]:
+        if not isinstance(item, Mapping):
+            continue
+        path = item.get("path")
+        operation = item.get("operation")
+        if not isinstance(path, str) or not path or not isinstance(operation, str):
+            continue
+        file_payload: dict[str, object] = {
+            "path": sanitize_text(path, max_chars=240),
+            "operation": sanitize_text(operation, max_chars=40),
+            "executable": item.get("executable") is True,
+        }
+        content = item.get("content")
+        if isinstance(content, str) and remaining_chars > 0:
+            content_limit = min(
+                remaining_chars,
+                _MAX_REPAIR_CANDIDATE_FILE_CHARS,
+            )
+            sanitized_content = sanitize_source_text(
+                content,
+                max_chars=content_limit,
+            )
+            file_payload["content"] = sanitized_content
+            remaining_chars -= len(sanitized_content)
+        files.append(file_payload)
+    if not files:
+        return None
+    return {
+        "candidate_id": sanitize_text(candidate_id, max_chars=160),
+        "rationale": sanitize_text(payload.get("rationale"), max_chars=1_000),
+        "files": files,
+    }
 
 
 def _lesson_feedback_from_report(
@@ -4624,7 +5054,99 @@ def _replay_gate_details(
             for member in replay_result.member_results
             if not member.succeeded
         ]
+    if _candidate_replay_has_repairable_capability_failure(replay_result):
+        details["failure_class"] = "candidate"
+        details["repairable"] = True
+        details["failure_stage"] = "replay_capability"
     return details
+
+
+def _candidate_replay_has_repairable_capability_failure(
+    replay_result: CandidateReplayResult,
+) -> bool:
+    failures: list[Mapping[str, Any] | None] = [
+        replay_result.baseline.failure,
+        replay_result.candidate.failure,
+    ]
+    for member in replay_result.member_results:
+        failures.extend((member.baseline.failure, member.candidate.failure))
+    return any(_repairable_capability_failure(failure) for failure in failures)
+
+
+def _repairable_capability_failure(failure: Mapping[str, Any] | None) -> bool:
+    if not isinstance(failure, Mapping):
+        return False
+    if failure.get("outcome") == "candidate_failure":
+        return True
+    if (
+        failure.get("failure_class") == "candidate_replay_capability"
+        and failure.get("repairable") is True
+    ):
+        return True
+    for key in ("failures", "repetition_failures"):
+        nested = failure.get(key)
+        if isinstance(nested, list) and any(
+            _repairable_capability_failure(item)
+            for item in nested
+            if isinstance(item, Mapping)
+        ):
+            return True
+    return False
+
+
+def _screening_attempt_requires_candidate_repair(
+    attempt: Mapping[str, object],
+) -> bool:
+    details = attempt.get("details")
+    return bool(
+        isinstance(details, Mapping)
+        and details.get("failure_class") == "candidate"
+        and details.get("repairable") is True
+    )
+
+
+def _candidate_screening_repair_feedback(
+    candidates: Iterable[CandidateVariant],
+    report: Mapping[str, object] | None,
+) -> tuple[EvaluationSummary, ...]:
+    if not isinstance(report, Mapping):
+        return ()
+    attempts = report.get("attempts")
+    if not isinstance(attempts, list):
+        return ()
+    candidates_by_id = {
+        candidate.candidate_id: candidate for candidate in candidates
+    }
+    feedback: list[EvaluationSummary] = []
+    for attempt in attempts:
+        if not isinstance(attempt, Mapping):
+            continue
+        if not _screening_attempt_requires_candidate_repair(attempt):
+            continue
+        candidate_id = attempt.get("candidate_id")
+        candidate = candidates_by_id.get(str(candidate_id))
+        if candidate is None:
+            continue
+        details = attempt.get("details")
+        gate = GateResult(
+            gate_name="candidate_replay",
+            passed=False,
+            reason=str(
+                attempt.get("reason")
+                or "screening replay requires candidate capability repair"
+            ),
+            details=(dict(details) if isinstance(details, Mapping) else None),
+        )
+        feedback.extend(
+            _iteration_validation_feedback(
+                candidate=candidate,
+                baseline_summary=None,
+                candidate_summary=None,
+                held_out_summary=None,
+                failed_gates=[gate],
+            )
+        )
+    return tuple(feedback)
 
 
 def _replay_adaptation_details(
@@ -4826,6 +5348,12 @@ def _iteration_validation_feedback(
 ) -> tuple[EvaluationSummary, ...]:
     feedback: list[EvaluationSummary] = []
     typed_gate_metrics = _typed_gate_feedback_metrics(failed_gates)
+    repair_candidate_package = _repair_candidate_package_feedback(
+        candidate,
+        failed_gates=failed_gates,
+    )
+    if repair_candidate_package is not None:
+        typed_gate_metrics["repair_candidate_package"] = repair_candidate_package
     comparison_metrics = _baseline_comparison_feedback_metrics(
         baseline_summary=baseline_summary,
         candidate_summary=candidate_summary,
@@ -4871,16 +5399,186 @@ def _iteration_validation_feedback(
     )
 
 
+_MAX_CURRENT_RUN_VALIDATION_FEEDBACK = 16
+
+
+def _merge_validation_feedback(
+    existing: Iterable[EvaluationSummary],
+    new: Iterable[EvaluationSummary],
+) -> tuple[EvaluationSummary, ...]:
+    merged: list[EvaluationSummary] = []
+    seen: set[str] = set()
+    for item in (*tuple(existing), *tuple(new)):
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                to_json_dict(item),
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        merged.append(item)
+    best_family_index: dict[str, int] = {}
+    best_family_progress: dict[str, int] = {}
+    for index, item in enumerate(merged):
+        family = _validation_feedback_failure_family(item)
+        if family is not None:
+            progress = _feedback_interaction_progress(item)
+            if progress >= best_family_progress.get(family, -1):
+                best_family_progress[family] = progress
+                best_family_index[family] = index
+    compacted = [
+        item
+        for index, item in enumerate(merged)
+        if (
+            (family := _validation_feedback_failure_family(item)) is None
+            or best_family_index.get(family) == index
+        )
+    ]
+    return tuple(compacted[-_MAX_CURRENT_RUN_VALIDATION_FEEDBACK:])
+
+
+def _feedback_interaction_progress(feedback: EvaluationSummary) -> int:
+    value = feedback.metrics.get("interaction_progress")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
+def _next_progress_repair_extension_family(
+    feedback_items: Iterable[EvaluationSummary],
+    *,
+    consumed_families: set[str],
+) -> str | None:
+    for feedback in reversed(tuple(feedback_items)):
+        metrics = feedback.metrics
+        if metrics.get("failure_class") != "candidate":
+            continue
+        if metrics.get("repairable") is not True:
+            continue
+        if not isinstance(metrics.get("repair_candidate_package"), Mapping):
+            continue
+        family = _validation_feedback_failure_family(feedback)
+        if family is not None and family not in consumed_families:
+            return family
+    return None
+
+
+def _validation_feedback_failure_family(
+    feedback: EvaluationSummary,
+) -> str | None:
+    metrics = feedback.metrics
+    if not isinstance(metrics.get("repair_candidate_package"), Mapping):
+        return None
+    signature = {
+        "failed_gates": sorted(
+            str(item) for item in metrics.get("failed_gates", [])
+        ),
+        "failure_class": metrics.get("failure_class"),
+        "diagnostics": _failure_signature_values(
+            metrics.get("candidate_validation_diagnostics")
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            signature,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _failure_signature_values(value: Any) -> list[tuple[str, str]]:
+    selected_keys = {
+        "code",
+        "failure_class",
+        "reason",
+        "repairable",
+        "stage",
+        "type",
+    }
+    values: list[tuple[str, str]] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, nested in item.items():
+                key_text = str(key)
+                if key_text in selected_keys and not isinstance(
+                    nested, (Mapping, list, tuple)
+                ):
+                    values.append((key_text, str(nested)))
+                else:
+                    visit(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item:
+                visit(nested)
+
+    visit(value)
+    return sorted(values)
+
+
+def _diagnostic_classification_text(value: Any) -> str:
+    """Extract bounded diagnostic tails for type classification only."""
+
+    selected_keys = {
+        "detail",
+        "error",
+        "message",
+        "reason",
+        "stderr_tail",
+        "stdout_tail",
+        "tail",
+    }
+    values: list[str] = []
+
+    def visit(item: Any) -> None:
+        if len(values) >= 32:
+            return
+        if isinstance(item, Mapping):
+            for key, nested in item.items():
+                if len(values) >= 32:
+                    break
+                if str(key) in selected_keys and not isinstance(
+                    nested, (Mapping, list, tuple)
+                ):
+                    values.append(str(nested)[-2_000:])
+                else:
+                    visit(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item[:32]:
+                visit(nested)
+
+    visit(value)
+    return "\n".join(values)
+
+
 def _typed_gate_feedback_metrics(
     failed_gates: Iterable[GateResult],
 ) -> dict[str, object]:
+    failed_gate_items = tuple(failed_gates)
     diagnostics: list[Mapping[str, object]] = []
+    classification_fragments: list[str] = []
     failure_classes: set[str] = set()
     repairable_values: list[bool] = []
-    for gate in failed_gates:
+    for gate in failed_gate_items:
         details = gate.details
+        gate_diagnostic: dict[str, object] = {
+            "code": "failed_gate",
+            "stage": sanitize_text(gate.gate_name, max_chars=120),
+            "reason": sanitize_text(gate.reason, max_chars=400),
+        }
         if not isinstance(details, Mapping):
+            diagnostics.append(gate_diagnostic)
             continue
+        classification_fragments.append(_diagnostic_classification_text(details))
+        bounded_details = sanitize_metric_value(details, max_chars=400)
+        if isinstance(bounded_details, Mapping):
+            gate_diagnostic["details"] = dict(bounded_details)
+        diagnostics.append(gate_diagnostic)
         failure_class = details.get("failure_class")
         if isinstance(failure_class, str) and failure_class:
             failure_classes.add(failure_class)
@@ -4899,9 +5597,505 @@ def _typed_gate_feedback_metrics(
         result["failure_class"] = next(iter(failure_classes))
     if repairable_values:
         result["repairable"] = all(repairable_values)
+    interaction_progress = _diagnostic_interaction_progress(
+        tuple(
+            gate.details
+            for gate in failed_gate_items
+            if gate.details is not None
+        )
+    )
+    routing_continuity_gaps = _diagnostic_routing_continuity_gaps(
+        tuple(
+            gate.details
+            for gate in failed_gate_items
+            if gate.details is not None
+        )
+    )
+    fixture_root_types = _diagnostic_fixture_root_types(
+        tuple(
+            gate.details
+            for gate in failed_gate_items
+            if gate.details is not None
+        )
+    )
+    observed_request_operations = _diagnostic_observed_request_operations(
+        tuple(
+            gate.details
+            for gate in failed_gate_items
+            if gate.details is not None
+        )
+    )
+    protocol_probe_mismatch = _diagnostic_protocol_probe_mismatch(
+        tuple(
+            gate.details
+            for gate in failed_gate_items
+            if gate.details is not None
+        )
+    )
+    if interaction_progress:
+        result["interaction_progress"] = interaction_progress
+    diagnostic_text = json.dumps(
+        diagnostics,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    ).lower() + "\n" + "\n".join(classification_fragments).lower()
+    if (
+        "permissionerror" in diagnostic_text
+        or "permission denied" in diagnostic_text
+    ):
+        diagnostics.insert(
+            0,
+            {
+                "code": "repair_candidate_output_permission_collision",
+                "stage": "capability_compile",
+                "failure_class": "candidate",
+                "repairable": True,
+                "reason": (
+                    "The candidate compiler attempted to overwrite a generated output "
+                    "whose mode was inherited from a read-only evidence source. Preserve "
+                    "the recorded source bytes, but use a unique output path for each "
+                    "handled requirement (including requirements that share an evidence "
+                    "reference), or write without preserving source permissions. Ensure "
+                    "every declared fixture path matches the file actually written."
+                ),
+            },
+        )
+    elif "protocol probe response mismatch" in diagnostic_text:
+        expected_preview = str(
+            protocol_probe_mismatch.get("expected_preview") or "unknown"
+        )
+        diagnostics.insert(
+            0,
+            {
+                "code": "verify_declared_protocol_probe_branch",
+                "stage": "replay_capability",
+                "failure_class": "candidate",
+                "repairable": True,
+                **protocol_probe_mismatch,
+                "reason": (
+                    "Execute the declared request_text against the exact handler branch "
+                    "in the returned candidate source and verify substring containment: "
+                    "its serialized response must contain response_contains while preserving "
+                    "the protocol envelope. Compare the bounded expected_preview with the "
+                    "response_preview; response length does not need to equal expected length. "
+                    f"For this failure the exact bounded expected_preview is "
+                    f"{expected_preview!r}; put that literal in the response produced by "
+                    "the declared branch and self-check the serialized bytes before returning. "
+                    "If serialization escapes the selected fixture text, derive the same "
+                    "bounded encoding-stable token matching [A-Za-z0-9_]{8,32} in both "
+                    "compiler and runtime, and place that exact token in a dedicated "
+                    "response field so its bytes remain unchanged. "
+                    "A rationale claim is not a repair unless that returned candidate "
+                    "source branch actually changes."
+                ),
+            },
+        )
+    elif (
+        "websocket frame is incomplete" in diagnostic_text
+        or "connection closed before" in diagnostic_text
+    ):
+        observed_roots = (
+            ", ".join(fixture_root_types) if fixture_root_types else "unknown"
+        )
+        diagnostics.insert(
+            0,
+            {
+                "code": "diagnose_protocol_handler_abort",
+                "stage": "replay_capability",
+                "failure_class": "candidate",
+                "repairable": True,
+                "observed_fixture_root_types": list(fixture_root_types),
+                "reason": (
+                    "The protocol trace records an inbound request but no complete "
+                    "outbound frame, so the candidate handler closed or raised before "
+                    "serializing its response. Re-run the exact declared probe against "
+                    "the returned source and surface a bounded sanitized exception in "
+                    "stderr or protocol_trace.jsonl; do not swallow handler exceptions. "
+                    f"Observed frozen fixture root types: {observed_roots}. "
+                    "Treat fixture payloads as arbitrary JSON root types (object, array, "
+                    "scalar, or invalid JSON) and normalize the root before mapping-only "
+                    "operations such as .get(). Preserve the working handshake and frame "
+                    "helpers while repairing the request handler branch."
+                ),
+            },
+        )
+    elif routing_continuity_gaps:
+        diagnostics.insert(
+            0,
+            {
+                "code": "preserve_protocol_routing_continuity",
+                "stage": "replay_capability",
+                "failure_class": "candidate",
+                "repairable": True,
+                "routing_fields": list(routing_continuity_gaps),
+                "reason": (
+                    "The protocol trace shows that opaque routing fields present on "
+                    "an inbound request were dropped from its outbound interaction "
+                    f"envelope: {', '.join(routing_continuity_gaps)}. Preserve each "
+                    "field byte-for-byte on every response and follow-up event emitted "
+                    "for that request. Keep payload bodies redacted in protocol_trace.jsonl, "
+                    "but include these routing field names and opaque values in the "
+                    "correlation summary so continuity is directly verifiable."
+                ),
+            },
+        )
+    elif (
+        "hung during navigation" in diagnostic_text
+        or "still navigating" in diagnostic_text
+        or "waiting for the page to load" in diagnostic_text
+        or "正在导航" in diagnostic_text
+        or "仍在导航" in diagnostic_text
+        or "等待页面加载" in diagnostic_text
+    ):
+        diagnostics.insert(
+            0,
+            {
+                "code": "implement_async_endpoint_completion",
+                "stage": "replay_capability",
+                "failure_class": "candidate",
+                "repairable": True,
+                "reason": (
+                    "The candidate handled synchronous endpoint requests but the real "
+                    "task remained blocked waiting for completion. Preserve the working "
+                    "request/response branches, then implement the observed stateful "
+                    "interactions, including asynchronous completion or lifecycle "
+                    "notifications required after a synchronous response. Preserve opaque "
+                    "request correlation and routing metadata on both the response and its "
+                    "follow-up events when the protocol multiplexes sessions or channels; "
+                    "echoing only the numeric request id can leave the client waiting. Add a bounded "
+                    "probe that verifies the completion notification rather than only "
+                    "readiness or the initial response."
+                ),
+            },
+        )
+    elif (
+        "discovery methods failed" in diagnostic_text
+        or "failed to deserialize" in diagnostic_text
+        or "missing field" in diagnostic_text
+        or "doesn't implement the expected protocol" in diagnostic_text
+        or "does not implement the expected protocol" in diagnostic_text
+        or "websocket protocol error" in diagnostic_text
+        or (
+            "not a " in diagnostic_text
+            and " endpoint" in diagnostic_text
+        )
+        or (
+            "replay timed out" in diagnostic_text
+            and interaction_progress >= 4
+        )
+    ):
+        diagnostics.insert(
+            0,
+            {
+                "code": "implement_observed_endpoint_interactions",
+                "stage": "replay_capability",
+                "failure_class": "candidate",
+                "repairable": True,
+                "observed_request_operations": list(observed_request_operations),
+                "reason": (
+                    "The candidate's declared probes passed but the real task still "
+                    "rejected the supplied endpoint protocol. Use bounded task diagnostics "
+                    "and trace interaction summaries to implement the actual observed "
+                    "task-plane stateful interactions and add representative probes for "
+                    "them. The late observed request operations are: "
+                    + (", ".join(observed_request_operations) or "unknown")
+                    + ". Recursively traverse arbitrary fixture objects and arrays, select "
+                    "the recorded evidence needed by those operations, and make at least one "
+                    "representative probe assert non-empty fixture-derived response content. "
+                    "Do not return placeholder tokens or empty schemas, and do not preserve "
+                    "a readiness-only runtime merely because its self-declared probes pass."
+                ),
+            },
+        )
     if diagnostics:
         result["candidate_validation_diagnostics"] = diagnostics[:16]
     return result
+
+
+def _diagnostic_protocol_probe_mismatch(value: Any) -> dict[str, str]:
+    """Parse bounded expected/actual probe evidence from candidate diagnostics."""
+
+    messages: list[str] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, nested in list(item.items())[:128]:
+                if (
+                    str(key) in {"detail", "error", "message", "reason"}
+                    and isinstance(nested, str)
+                    and "protocol probe response mismatch" in nested.lower()
+                ):
+                    messages.append(nested)
+                else:
+                    collect(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item[:256]:
+                collect(nested)
+
+    collect(value)
+    for message in reversed(messages[-16:]):
+        kind_match = re.search(r"\bkind=([^\s]+)", message)
+        path_match = re.search(r"\bpath=([^\s]+)", message)
+        expected_match = re.search(
+            r"\bexpected_preview=(.*?)\s+response_bytes=\d+",
+            message,
+            flags=re.DOTALL,
+        )
+        response_match = re.search(
+            r"\bresponse_preview=(.*)$",
+            message,
+            flags=re.DOTALL,
+        )
+        parsed: dict[str, str] = {}
+        if kind_match:
+            parsed["probe_kind"] = sanitize_text(
+                kind_match.group(1), max_chars=40
+            )
+        if path_match:
+            parsed["probe_path"] = sanitize_text(
+                path_match.group(1), max_chars=160
+            )
+        if expected_match:
+            parsed["expected_preview"] = sanitize_text(
+                expected_match.group(1).strip(), max_chars=160
+            )
+        if response_match:
+            parsed["response_preview"] = sanitize_text(
+                response_match.group(1).strip(), max_chars=400
+            )
+        if parsed:
+            return parsed
+    return {}
+
+
+def _diagnostic_observed_request_operations(value: Any) -> tuple[str, ...]:
+    """Extract bounded, payload-free operation names from protocol trace tails."""
+
+    trace_tails: list[str] = []
+
+    def collect_tails(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, nested in list(item.items())[:128]:
+                if str(key) == "tail" and isinstance(nested, str):
+                    trace_tails.append(nested)
+                else:
+                    collect_tails(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item[:256]:
+                collect_tails(nested)
+
+    collect_tails(value)
+    observed: list[tuple[int, str]] = []
+    operation_keys = {"action", "command", "method", "operation", "path", "route"}
+    inbound_directions = {"in", "inbound", "receive", "received", "recv"}
+    for tail in trace_tails[:16]:
+        for raw_line in tail.splitlines()[-256:]:
+            try:
+                record = json.loads(raw_line)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, Mapping):
+                continue
+            direction = str(record.get("direction") or "").strip().lower()
+            kind = str(record.get("kind") or "").strip().lower()
+            if direction not in inbound_directions and "request" not in kind:
+                continue
+            sequence = record.get("sequence")
+            sequence_number = (
+                int(sequence)
+                if isinstance(sequence, (int, float)) and not isinstance(sequence, bool)
+                else 0
+            )
+            sources = [record]
+            correlation = record.get("correlation")
+            if isinstance(correlation, Mapping):
+                sources.append(correlation)
+            for source in sources:
+                for key, nested in source.items():
+                    if str(key).lower() not in operation_keys:
+                        continue
+                    if not isinstance(nested, str):
+                        continue
+                    operation = sanitize_text(nested, max_chars=120).strip()
+                    if operation:
+                        observed.append((sequence_number, operation))
+
+    ordered: list[str] = []
+    for _, operation in sorted(observed, key=lambda item: item[0]):
+        if operation in ordered:
+            ordered.remove(operation)
+        ordered.append(operation)
+    return tuple(ordered[-8:])
+
+
+def _diagnostic_fixture_root_types(value: Any) -> tuple[str, ...]:
+    """Collect bounded non-content fixture shape metadata from failure details."""
+
+    root_types: set[str] = set()
+
+    def collect(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, nested in list(item.items())[:128]:
+                if str(key) == "json_root_type" and isinstance(nested, str):
+                    normalized = nested.strip().lower()
+                    if normalized:
+                        root_types.add(normalized)
+                else:
+                    collect(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item[:256]:
+                collect(nested)
+
+    collect(value)
+    return tuple(sorted(root_types))
+
+
+def _diagnostic_routing_continuity_gaps(value: Any) -> tuple[str, ...]:
+    """Infer dropped opaque routing fields from candidate-owned trace summaries."""
+
+    trace_tails: list[str] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, nested in item.items():
+                if str(key) == "tail" and isinstance(nested, str):
+                    trace_tails.append(nested)
+                else:
+                    collect(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item[:256]:
+                collect(nested)
+
+    collect(value)
+    gaps: set[str] = set()
+    for tail in trace_tails[:16]:
+        pending_routing_fields: set[str] = set()
+        for line in tail.splitlines()[-256:]:
+            try:
+                record = json.loads(line)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, Mapping):
+                continue
+            direction = str(record.get("direction") or "").strip().lower()
+            raw_fields = record.get("fields")
+            fields = {
+                str(field)
+                for field in raw_fields
+                if isinstance(field, str) and field
+            } if isinstance(raw_fields, list) else set()
+            correlation = record.get("correlation")
+            correlation_fields = (
+                {str(key) for key in correlation}
+                if isinstance(correlation, Mapping)
+                else set()
+            )
+            if direction in {"in", "inbound", "received", "receive", "recv"}:
+                pending_routing_fields = {
+                    field
+                    for field in fields | correlation_fields
+                    if _looks_like_protocol_routing_field(field)
+                }
+                continue
+            if direction not in {
+                "out",
+                "outbound",
+                "emitted",
+                "emit",
+                "send",
+                "sent",
+            }:
+                continue
+            if pending_routing_fields:
+                gaps.update(
+                    pending_routing_fields.difference(fields | correlation_fields)
+                )
+    return tuple(sorted(gaps))
+
+
+def _looks_like_protocol_routing_field(field_name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", field_name.lower())
+    if not normalized or normalized == "id":
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "session",
+            "channel",
+            "route",
+            "routing",
+            "stream",
+            "correlation",
+            "connection",
+        )
+    )
+
+
+def _diagnostic_interaction_progress(value: Any) -> int:
+    max_sequence = 0
+
+    def visit(item: Any) -> None:
+        nonlocal max_sequence
+        if isinstance(item, Mapping):
+            for key, nested in item.items():
+                if (
+                    str(key) in {"sequence", "seq"}
+                    and not isinstance(nested, bool)
+                    and isinstance(nested, (int, float))
+                ):
+                    max_sequence = max(max_sequence, int(nested))
+                elif str(key) == "tail" and isinstance(nested, str):
+                    for line in nested.splitlines()[-256:]:
+                        try:
+                            parsed = json.loads(line)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        visit(parsed)
+                else:
+                    visit(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item[:256]:
+                visit(nested)
+
+    visit(value)
+    return max_sequence
+
+
+_MAX_REPAIR_CANDIDATE_PACKAGE_CHARS = 64_000
+_MAX_REPAIR_CANDIDATE_FILE_CHARS = 32_000
+_MAX_HISTORICAL_REPAIR_CANDIDATES = 8
+
+
+def _repair_candidate_package_feedback(
+    candidate: CandidateVariant,
+    *,
+    failed_gates: Iterable[GateResult],
+) -> dict[str, object] | None:
+    if not candidate.files or not any(not gate.passed for gate in failed_gates):
+        return None
+    remaining_chars = _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS
+    files: list[dict[str, object]] = []
+    for item in candidate.files[:8]:
+        file_payload: dict[str, object] = {
+            "path": sanitize_text(item.path, max_chars=240),
+            "operation": sanitize_text(item.operation, max_chars=40),
+            "executable": item.executable,
+        }
+        if item.content is not None and remaining_chars > 0:
+            content_limit = min(
+                remaining_chars,
+                _MAX_REPAIR_CANDIDATE_FILE_CHARS,
+            )
+            content = sanitize_source_text(item.content, max_chars=content_limit)
+            file_payload["content"] = content
+            remaining_chars -= len(content)
+        files.append(file_payload)
+    return {
+        "candidate_id": sanitize_text(candidate.candidate_id, max_chars=160),
+        "rationale": sanitize_text(candidate.rationale, max_chars=1_000),
+        "files": files,
+    }
 
 
 def _iteration_report_item(
@@ -5122,6 +6316,8 @@ def _population_report(
 
 def _candidate_screening_dataset(
     dataset: SelfEvolveDataset,
+    *,
+    capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
 ) -> SelfEvolveDataset | None:
     replayable_cases = tuple(
         case for case in dataset.cases if _is_replayable_user_task_case(case)
@@ -5138,14 +6334,29 @@ def _candidate_screening_dataset(
         *dataset.recipe.splits.get("validation", ()),
         *(case.case_id for case in replayable_cases),
     )
-    representative = next(
-        (
-            replayable_by_id[case_id]
-            for case_id in preferred_case_ids
-            if case_id in replayable_by_id and case_id not in held_out_case_ids
+    ordered_candidates: list[EvalCase] = []
+    seen_case_ids: set[str] = set()
+    for case_id in preferred_case_ids:
+        if (
+            case_id in replayable_by_id
+            and case_id not in held_out_case_ids
+            and case_id not in seen_case_ids
+        ):
+            ordered_candidates.append(replayable_by_id[case_id])
+            seen_case_ids.add(case_id)
+    if not ordered_candidates:
+        ordered_candidates = list(replayable_cases)
+    requirement_counts: dict[str, int] = {}
+    for requirement in capability_requirements:
+        for case_id in requirement.case_ids:
+            requirement_counts[case_id] = requirement_counts.get(case_id, 0) + 1
+    representative = max(
+        enumerate(ordered_candidates),
+        key=lambda item: (
+            requirement_counts.get(item[1].case_id, 0),
+            -item[0],
         ),
-        replayable_cases[0],
-    )
+    )[1]
     return SelfEvolveDataset(
         cases=(representative,),
         recipe=replace(
@@ -5344,16 +6555,53 @@ def _select_iteration_state(
     for state in iteration_states:
         if state.get("status") == "accepted":
             return state
-    return max(iteration_states, key=_iteration_candidate_score)
+    return max(
+        enumerate(iteration_states),
+        key=lambda item: (_iteration_candidate_score(item[1]), item[0]),
+    )[1]
 
 
-def _iteration_candidate_score(state: Mapping[str, object]) -> float:
+def _iteration_candidate_score(
+    state: Mapping[str, object],
+) -> tuple[int, int, float, int, int]:
     summary = state.get("candidate_summary")
+    score = float("-inf")
     if isinstance(summary, EvaluationSummary):
-        score = _metric_number(summary.metrics, "score")
-        if score is not None:
-            return score
-    return float("-inf")
+        candidate_score = _metric_number(summary.metrics, "score")
+        if candidate_score is not None:
+            score = candidate_score
+    gate_results = state.get("gate_results")
+    gates = (
+        tuple(gate_results)
+        if isinstance(gate_results, (list, tuple))
+        else ()
+    )
+    failed_count = sum(
+        1 for gate in gates if isinstance(gate, GateResult) and not gate.passed
+    )
+    passed_count = sum(
+        1 for gate in gates if isinstance(gate, GateResult) and gate.passed
+    )
+    failed_gate_names = {
+        gate.gate_name
+        for gate in gates
+        if isinstance(gate, GateResult) and not gate.passed
+    }
+    substantive_evaluation = failed_gate_names != {
+        "duplicate_rejected_candidate"
+    }
+    reached_replay = bool(
+        failed_gate_names & {"candidate_replay", "replay_confidence"}
+    )
+    adaptation_compiled = "replay_adaptation" not in failed_gate_names
+    progress_rank = 2 if reached_replay else 1 if adaptation_compiled else 0
+    return (
+        int(substantive_evaluation),
+        progress_rank,
+        score,
+        -failed_count,
+        passed_count,
+    )
 
 
 def _candidate_generation_limit(

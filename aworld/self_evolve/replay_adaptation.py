@@ -7,6 +7,7 @@ import platform
 import re
 import shutil
 import stat
+import subprocess
 import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -656,6 +657,17 @@ class ReplayAdaptationCompiler:
         artifact_root: Path,
     ) -> None:
         destination.mkdir(parents=True, exist_ok=True)
+        tracked_paths = _git_tracked_workspace_paths(source)
+        if tracked_paths is not None:
+            self._copy_tracked_workspace_seed(
+                source,
+                destination,
+                artifact_root=artifact_root,
+                tracked_paths=tracked_paths,
+            )
+            self._assert_workspace_seed_limits(destination)
+            return
+
         file_count = 0
         byte_count = 0
         for current_root, directory_names, file_names in os.walk(source):
@@ -723,6 +735,57 @@ class ReplayAdaptationCompiler:
                 shutil.copy2(source_path, target_root / file_name)
 
         self._assert_workspace_seed_limits(destination)
+
+    def _copy_tracked_workspace_seed(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        artifact_root: Path,
+        tracked_paths: Sequence[Path],
+    ) -> None:
+        file_count = 0
+        byte_count = 0
+        for relative in tracked_paths:
+            if any(part in _IGNORED_DIRECTORY_NAMES for part in relative.parts):
+                continue
+            source_path = source / relative
+            if (
+                _is_within(source_path, artifact_root)
+                or _is_sensitive_path(source_path)
+                or source_path.name.endswith(_IGNORED_FILE_SUFFIXES)
+            ):
+                continue
+            try:
+                metadata = source_path.lstat()
+            except FileNotFoundError:
+                # A tracked deletion in the current working tree is part of the
+                # snapshot state and therefore remains absent from the seed.
+                continue
+            except OSError as exc:
+                raise ReplayAdaptationError(
+                    f"cannot inspect replay seed input: {source_path.name}: {exc}"
+                ) from exc
+            destination_path = destination / relative
+            if stat.S_ISLNK(metadata.st_mode):
+                self._copy_internal_symlink(
+                    source_path,
+                    source_root=source,
+                    destination_root=destination,
+                    destination_path=destination_path,
+                    target_is_directory=False,
+                )
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                continue
+            file_count += 1
+            byte_count += metadata.st_size
+            if file_count > self.max_workspace_files:
+                raise ReplayAdaptationError("workspace snapshot file limit exceeded")
+            if byte_count > self.max_workspace_bytes:
+                raise ReplayAdaptationError("workspace snapshot byte limit exceeded")
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, destination_path)
 
     def _copy_internal_symlink(
         self,
@@ -824,8 +887,40 @@ def materialize_replay_workspace(
         else:
             target.unlink()
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(seed, target, symlinks=True)
+    _clone_or_copy_workspace(seed, target)
     return target
+
+
+def _clone_or_copy_workspace(seed: Path, target: Path) -> None:
+    """Materialize a writable rollout using filesystem copy-on-write when available."""
+
+    clone_command: list[str] | None = None
+    if sys.platform == "darwin":
+        clone_command = ["cp", "-cR", f"{seed}/.", str(target)]
+    elif sys.platform.startswith("linux"):
+        clone_command = [
+            "cp",
+            "--reflink=always",
+            "-a",
+            f"{seed}/.",
+            str(target),
+        ]
+    if clone_command is not None:
+        target.mkdir(parents=True, exist_ok=False)
+        try:
+            completed = subprocess.run(
+                clone_command,
+                text=True,
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            completed = None
+        if completed is not None and completed.returncode == 0:
+            return
+        shutil.rmtree(target, ignore_errors=True)
+    shutil.copytree(seed, target, symlinks=True)
 
 
 def _normalize_workspace_paths(text: str, *, workspace_root: Path) -> str:
@@ -835,6 +930,56 @@ def _normalize_workspace_paths(text: str, *, workspace_root: Path) -> str:
         rf"/(?:Users|home)/[^/\s]+/Documents/workspace/{repository_name}"
     )
     return re.sub(stale_pattern, REPLAY_WORKSPACE_PLACEHOLDER, normalized)
+
+
+def _git_tracked_workspace_paths(source: Path) -> tuple[Path, ...] | None:
+    """Return current tracked paths for a Git-backed replay seed.
+
+    The current working-tree bytes are copied, so local edits to tracked source are
+    preserved. Untracked files are excluded because they cannot be attributed to
+    the recorded initial state; explicit external inputs are snapshotted later by
+    dependency adaptation.
+    """
+
+    try:
+        root_result = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "--show-toplevel"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if root_result.returncode != 0:
+        return None
+    try:
+        git_root = Path(os.fsdecode(root_result.stdout).strip()).resolve()
+        source_prefix = source.relative_to(git_root)
+    except (OSError, ValueError):
+        return None
+    try:
+        files_result = subprocess.run(
+            ["git", "-C", str(git_root), "ls-files", "--cached", "--full-name", "-z"],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if files_result.returncode != 0:
+        return None
+    tracked: list[Path] = []
+    for raw_path in files_result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        root_relative = Path(os.fsdecode(raw_path))
+        try:
+            source_relative = root_relative.relative_to(source_prefix)
+        except ValueError:
+            continue
+        if source_relative.parts:
+            tracked.append(source_relative)
+    return tuple(sorted(set(tracked), key=lambda item: item.as_posix()))
 
 
 def _absolute_local_path_references(text: str) -> tuple[str, ...]:
