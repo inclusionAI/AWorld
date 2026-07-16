@@ -12,6 +12,7 @@ from aworld.self_evolve.candidate_protocol import (
 
 
 CURRENT_CONTENT = "# Demo\n\nExisting guidance.\n"
+SKILL_CONTENT = "---\nname: demo\ndescription: demo skill\n---\n\n# Demo\n"
 
 
 def test_normalizes_canonical_top_level_candidate() -> None:
@@ -31,6 +32,41 @@ def test_normalizes_canonical_top_level_candidate() -> None:
         "rationale": "improve the reusable workflow",
         "files": [],
     }
+
+
+def test_rejects_full_skill_content_that_drops_yaml_frontmatter() -> None:
+    with pytest.raises(CandidateProtocolError) as error:
+        normalize_candidate_output(
+            {
+                "schema_version": CANDIDATE_SCHEMA_VERSION,
+                "content": "# Demo\n\nImproved guidance.\n",
+                "files": [],
+            },
+            current_content=SKILL_CONTENT,
+        )
+
+    assert error.value.code == "missing_candidate_frontmatter"
+    assert error.value.field_path == "content"
+    assert error.value.repairable is False
+
+
+def test_rejects_destructive_full_replacement_of_large_target() -> None:
+    current = "---\nname: demo\n---\n\n# Demo\n\n" + ("existing guidance\n" * 2_000)
+    replacement = "---\nname: demo\n---\n\n# Demo\n\nShort rewrite.\n"
+
+    with pytest.raises(CandidateProtocolError) as error:
+        normalize_candidate_output(
+            {
+                "schema_version": CANDIDATE_SCHEMA_VERSION,
+                "content": replacement,
+                "files": [],
+            },
+            current_content=current,
+        )
+
+    assert error.value.code == "destructive_full_content_replacement"
+    assert error.value.field_path == "content"
+    assert error.value.repairable is True
 
 
 def test_normalizes_legacy_candidate_output_contract_envelope() -> None:

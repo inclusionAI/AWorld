@@ -20,6 +20,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayDependency,
     validate_replay_binding_concurrency,
 )
+from aworld.self_evolve.sanitization import sanitize_text
 
 
 REPLAY_CAPABILITY_SCHEMA_VERSION = "aworld.skill.replay_capability.v1"
@@ -42,7 +43,10 @@ REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS = tuple(
     sorted(_SUPPORTED_REQUIREMENT_KINDS)
 )
 _SUPPORTED_READINESS_KINDS = frozenset({"http", "tcp"})
-_SUPPORTED_SERVICE_TRANSPORTS = frozenset({"http_fixture", "tcp_fixture"})
+_SUPPORTED_PROTOCOL_PROBE_KINDS = frozenset({"http", "tcp", "websocket"})
+_SUPPORTED_SERVICE_TRANSPORTS = frozenset(
+    {"http_fixture", "skill_runtime", "tcp_fixture"}
+)
 _MAX_JSON_BYTES = 1024 * 1024
 _MAX_FIXTURE_COUNT = 64
 _MAX_FIXTURE_FILE_BYTES = 16 * 1024 * 1024
@@ -51,6 +55,9 @@ _MAX_READINESS_TIMEOUT_SECONDS = 30.0
 
 REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS = tuple(
     sorted(_SUPPORTED_READINESS_KINDS)
+)
+REPLAY_CAPABILITY_SUPPORTED_PROTOCOL_PROBE_KINDS = tuple(
+    sorted(_SUPPORTED_PROTOCOL_PROBE_KINDS)
 )
 REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS = tuple(
     sorted(_SUPPORTED_SERVICE_TRANSPORTS)
@@ -105,6 +112,7 @@ class ReplayCapabilityCompileRequest:
     requirements: tuple[ReplayCapabilityRequirement, ...]
     context_snapshots: Mapping[str, str]
     task_inputs: Mapping[str, Any]
+    evidence_derivations: Mapping[str, tuple[Mapping[str, Any], ...]]
     capability_root: str
     capability_package_fingerprint: str
     context_fingerprint: str
@@ -120,6 +128,9 @@ class ReplayCapabilityCompileRequest:
         capability_root: str | Path,
         context_fingerprint: str,
         capability_package_fingerprint: str | None = None,
+        evidence_derivations: Mapping[
+            str, Sequence[Mapping[str, Any]]
+        ] | None = None,
     ) -> ReplayCapabilityCompileRequest:
         root = Path(capability_root).expanduser().resolve()
         package_fingerprint = capability_package_fingerprint
@@ -130,11 +141,18 @@ class ReplayCapabilityCompileRequest:
                     f"replay capability manifest not found under: {root}"
                 )
             package_fingerprint = capability.package_fingerprint
+        normalized_derivations = {
+            str(evidence_ref): [dict(item) for item in entries]
+            for evidence_ref, entries in sorted(
+                (evidence_derivations or {}).items()
+            )
+        }
         payload = {
             "schema_version": REPLAY_CAPABILITY_REQUEST_SCHEMA_VERSION,
             "requirements": [asdict(item) for item in requirements],
             "context_snapshots": dict(sorted(context_snapshots.items())),
             "task_inputs": dict(sorted(task_inputs.items())),
+            "evidence_derivations": normalized_derivations,
             "capability_root": str(root),
             "capability_package_fingerprint": package_fingerprint,
             "context_fingerprint": context_fingerprint,
@@ -144,6 +162,10 @@ class ReplayCapabilityCompileRequest:
             requirements=tuple(requirements),
             context_snapshots=payload["context_snapshots"],
             task_inputs=payload["task_inputs"],
+            evidence_derivations={
+                evidence_ref: tuple(entries)
+                for evidence_ref, entries in normalized_derivations.items()
+            },
             capability_root=str(root),
             capability_package_fingerprint=package_fingerprint,
             context_fingerprint=context_fingerprint,
@@ -162,17 +184,29 @@ class ReplayReadinessProbe:
 
 
 @dataclass(frozen=True)
+class ReplayProtocolProbe:
+    kind: str
+    timeout_seconds: float
+    path: str = "/"
+    validate_advertised_websockets: bool = False
+    request_text: str | None = None
+    response_contains: str | None = None
+
+
+@dataclass(frozen=True)
 class ReplayServiceSpec:
     service_id: str
     requirement_id: str
     transport: str
     response_fixture: str
+    runtime_entrypoint: str | None = None
     readiness: ReplayReadinessProbe = field(
         default_factory=lambda: ReplayReadinessProbe(
             kind="tcp",
             timeout_seconds=10.0,
         )
     )
+    protocol_probes: tuple[ReplayProtocolProbe, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -323,6 +357,13 @@ class SubprocessReplayCapabilityExecutor:
                             Path(path).expanduser().resolve().parent
                             for path in request.context_snapshots.values()
                             if Path(path).expanduser().exists()
+                        ),
+                        *(
+                            Path(str(item.get("path"))).expanduser().resolve().parent
+                            for entries in request.evidence_derivations.values()
+                            for item in entries
+                            if isinstance(item.get("path"), str)
+                            and Path(str(item.get("path"))).expanduser().exists()
                         ),
                     ),
                     writable_roots=(run_root,),
@@ -687,15 +728,30 @@ def _parse_compile_result(
     _validate_declared_output_files(output_root, fixtures)
     services = _parse_services(
         raw.get("services", ()),
+        output_root=output_root,
         fixtures=fixtures,
+        runtime_files=capability.manifest.runtime_files,
         handled_requirements=set(handled),
         fixture_evidence_refs=fixture_evidence_refs,
         requirement_evidence_refs=evidence_refs,
     )
-    if {item.response_fixture for item in services} != set(fixtures):
-        raise ReplayCapabilityError(
-            "every replay fixture must be used by a bound replay service"
-        )
+    for requirement_id in handled:
+        requirement = requirements[requirement_id]
+        if requirement.status != "runtime_required":
+            continue
+        requirement_services = [
+            service
+            for service in services
+            if service.requirement_id == requirement_id
+        ]
+        if not any(
+            service.transport == "skill_runtime"
+            for service in requirement_services
+        ):
+            raise ReplayCapabilityError(
+                "runtime_required requirement must use skill_runtime: "
+                f"{requirement_id}"
+            )
     service_ids = {item.service_id for item in services}
     replacements_raw = raw.get("endpoint_replacements", {})
     if not isinstance(replacements_raw, dict) or not all(
@@ -704,30 +760,48 @@ def _parse_compile_result(
     ):
         raise ReplayCapabilityError("result endpoint_replacements must map strings")
     handled_identifiers = {requirements[item].identifier for item in handled}
-    if not set(replacements_raw).issubset(handled_identifiers):
-        raise ReplayCapabilityError(
-            "endpoint replacement is not backed by a handled requirement"
-        )
-    if not set(replacements_raw.values()).issubset(service_ids):
+    replacements: dict[str, str] = {}
+    for key, service_id in replacements_raw.items():
+        identifier = requirements[key].identifier if key in handled else key
+        if identifier not in handled_identifiers:
+            raise ReplayCapabilityError(
+                "endpoint replacement is not backed by a handled requirement"
+            )
+        previous = replacements.get(identifier)
+        if previous is not None and previous != service_id:
+            raise ReplayCapabilityError(
+                "endpoint replacements conflict after requirement normalization"
+            )
+        replacements[identifier] = service_id
+    network_requirements = {
+        requirement_id: requirements[requirement_id]
+        for requirement_id in handled
+        if requirements[requirement_id].kind in {"http_resource", "local_endpoint"}
+    }
+    for requirement_id, requirement in network_requirements.items():
+        if requirement.identifier in replacements:
+            continue
+        matching_services = [
+            service.service_id
+            for service in services
+            if service.requirement_id == requirement_id
+        ]
+        if len(matching_services) != 1:
+            raise ReplayCapabilityError(
+                "handled network requirement lacks an unambiguous endpoint replacement"
+            )
+        replacements[requirement.identifier] = matching_services[0]
+    if not set(replacements.values()).issubset(service_ids):
         raise ReplayCapabilityError(
             "endpoint replacement references an unknown replay service"
         )
     services_by_id = {item.service_id: item for item in services}
-    for identifier, service_id in replacements_raw.items():
+    for identifier, service_id in replacements.items():
         service = services_by_id[service_id]
         if requirements[service.requirement_id].identifier != identifier:
             raise ReplayCapabilityError(
                 "endpoint replacement service is bound to a different requirement"
             )
-    required_local_endpoints = {
-        requirements[item].identifier
-        for item in handled
-        if requirements[item].kind == "local_endpoint"
-    }
-    if not required_local_endpoints.issubset(replacements_raw):
-        raise ReplayCapabilityError(
-            "handled local endpoint lacks a declared endpoint replacement"
-        )
     result_mode = str(
         raw.get("concurrency_mode") or capability.manifest.concurrency_mode
     )
@@ -773,7 +847,7 @@ def _parse_compile_result(
         evidence_refs=evidence_refs,
         fixture_evidence_refs=fixture_evidence_refs,
         fixtures=fixtures,
-        endpoint_replacements=dict(sorted(replacements_raw.items())),
+        endpoint_replacements=dict(sorted(replacements.items())),
         services=services,
         concurrency_mode=validated_binding.concurrency_mode,
         resource_key=validated_binding.resource_key,
@@ -902,10 +976,81 @@ def _payload_derivations(value: Any) -> set[bytes]:
     return values
 
 
+def materialize_replay_evidence_derivations(
+    request: ReplayCapabilityCompileRequest,
+    output_root: str | Path,
+    *,
+    max_entries_per_ref: int = 16,
+    max_entry_bytes: int = 1024 * 1024,
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    """Materialize bounded, provenance-safe source bytes for skill compilers.
+
+    Every emitted file is one value already accepted by the framework's fixture
+    provenance validator. Candidate-owned code may select and copy these files, but
+    does not need to understand the trajectory snapshot's internal JSON shape.
+    """
+
+    if max_entries_per_ref <= 0 or max_entry_bytes <= 0:
+        raise ValueError("evidence derivation limits must be positive")
+    root = Path(output_root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    identifiers_by_ref: dict[str, set[str]] = {}
+    for requirement in request.requirements:
+        for evidence_ref in requirement.evidence_refs:
+            identifiers_by_ref.setdefault(evidence_ref, set()).add(
+                requirement.identifier
+            )
+
+    catalog: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    for evidence_ref in sorted(identifiers_by_ref):
+        identifiers = sorted(identifiers_by_ref[evidence_ref])
+        values = [
+            value
+            for value in _evidence_source_values(evidence_ref, request=request)
+            if value and len(value) <= max_entry_bytes
+        ]
+        ranked = sorted(
+            set(values),
+            key=lambda value: (
+                any(identifier.encode("utf-8") in value for identifier in identifiers),
+                value.lstrip().startswith((b"{", b"[", b"<")),
+                len(value),
+                hashlib.sha256(value).hexdigest(),
+            ),
+            reverse=True,
+        )[:max_entries_per_ref]
+        entries: list[Mapping[str, Any]] = []
+        for value in ranked:
+            digest = hashlib.sha256(value).hexdigest()
+            path = root / f"{digest}.bin"
+            if not path.exists():
+                path.write_bytes(value)
+                path.chmod(0o444)
+            preview = value[:160].decode("utf-8", errors="replace")
+            entries.append(
+                {
+                    "path": str(path),
+                    "sha256": f"sha256:{digest}",
+                    "byte_length": len(value),
+                    "preview": preview,
+                    "matching_identifiers": [
+                        identifier
+                        for identifier in identifiers
+                        if identifier.encode("utf-8") in value
+                    ],
+                }
+            )
+        if entries:
+            catalog[evidence_ref] = tuple(entries)
+    return catalog
+
+
 def _parse_services(
     raw: Any,
     *,
+    output_root: Path,
     fixtures: Sequence[str],
+    runtime_files: Sequence[str],
     handled_requirements: set[str],
     fixture_evidence_refs: Mapping[str, tuple[str, ...]],
     requirement_evidence_refs: Mapping[str, tuple[str, ...]],
@@ -949,6 +1094,68 @@ def _parse_services(
             raise ReplayCapabilityError(
                 "replay service fixture evidence belongs to a different requirement"
             )
+        runtime_entrypoint_raw = value.get("runtime_entrypoint")
+        runtime_entrypoint: str | None = None
+        protocol_probes: tuple[ReplayProtocolProbe, ...] = ()
+        if transport == "skill_runtime":
+            runtime_entrypoint = _normalize_runtime_entrypoint(
+                _required_string(value, "runtime_entrypoint", "service"),
+                runtime_files=runtime_files,
+            )
+            if not runtime_entrypoint.endswith(".py"):
+                raise ReplayCapabilityError(
+                    "skill runtime entrypoint must be a Python file"
+                )
+            protocol_probes = _parse_protocol_probes(
+                value.get("protocol_probes"),
+                service_id=service_id,
+            )
+            if not any(_is_data_plane_probe(item) for item in protocol_probes):
+                raise ReplayCapabilityError(
+                    "skill runtime service requires a data-plane protocol probe: "
+                    f"{service_id}"
+                )
+            if any(
+                item.kind == "http" and item.validate_advertised_websockets
+                for item in protocol_probes
+            ) and not any(
+                item.kind == "websocket" and _is_data_plane_probe(item)
+                for item in protocol_probes
+            ):
+                raise ReplayCapabilityError(
+                    "advertised WebSocket requires a websocket data-plane protocol "
+                    f"probe: {service_id}"
+                )
+            fixture_bytes = _resolve_output_file(
+                output_root,
+                response_fixture,
+            ).read_bytes()
+            for probe in protocol_probes:
+                if (
+                    probe.response_contains is not None
+                    and not (
+                        probe.kind == "http"
+                        and probe.validate_advertised_websockets
+                    )
+                    and probe.response_contains.encode("utf-8") not in fixture_bytes
+                ):
+                    expected = probe.response_contains
+                    expected_bytes = expected.encode("utf-8")
+                    expected_preview = sanitize_text(
+                        expected,
+                        max_chars=96,
+                    ).replace("\n", " ")
+                    raise ReplayCapabilityError(
+                        "protocol probe response_contains must be derived from the "
+                        f"declared fixture: {service_id} "
+                        f"kind={probe.kind} path={probe.path} "
+                        f"expected_preview={expected_preview} "
+                        f"expected_sha256={hashlib.sha256(expected_bytes).hexdigest()}"
+                    )
+        elif runtime_entrypoint_raw is not None:
+            raise ReplayCapabilityError(
+                "fixture service cannot declare a runtime entrypoint"
+            )
         readiness_raw = value.get("readiness", {})
         if not isinstance(readiness_raw, dict):
             raise ReplayCapabilityError(
@@ -977,14 +1184,139 @@ def _parse_services(
                 requirement_id=requirement_id,
                 transport=transport,
                 response_fixture=response_fixture,
+                runtime_entrypoint=runtime_entrypoint,
                 readiness=ReplayReadinessProbe(
                     kind=kind,
                     timeout_seconds=float(timeout),
                     path=path,
                 ),
+                protocol_probes=protocol_probes,
             )
         )
     return tuple(sorted(services, key=lambda item: item.service_id))
+
+
+def _parse_protocol_probes(
+    raw: Any,
+    *,
+    service_id: str,
+) -> tuple[ReplayProtocolProbe, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise ReplayCapabilityError(
+            f"skill runtime service requires protocol_probes: {service_id}"
+        )
+    if len(raw) > 8:
+        raise ReplayCapabilityError("protocol_probes cannot exceed 8 items")
+    probes: list[ReplayProtocolProbe] = []
+    for value in raw:
+        if not isinstance(value, dict):
+            raise ReplayCapabilityError("protocol probe must be an object")
+        kind = _required_string(value, "kind", "protocol probe")
+        if kind not in _SUPPORTED_PROTOCOL_PROBE_KINDS:
+            raise ReplayCapabilityError(f"unsupported protocol probe kind: {kind}")
+        timeout = value.get("timeout_seconds", 5.0)
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or timeout <= 0
+            or timeout > _MAX_READINESS_TIMEOUT_SECONDS
+        ):
+            raise ReplayCapabilityError(
+                "protocol probe timeout_seconds must be between 0 and "
+                f"{_MAX_READINESS_TIMEOUT_SECONDS}"
+            )
+        path = value.get("path", "/")
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ReplayCapabilityError("HTTP protocol probe path must start with /")
+        validate_links = value.get("validate_advertised_websockets", False)
+        if not isinstance(validate_links, bool):
+            raise ReplayCapabilityError(
+                "validate_advertised_websockets must be boolean"
+            )
+        if validate_links and kind != "http":
+            raise ReplayCapabilityError(
+                "only HTTP protocol probes can validate advertised WebSockets"
+            )
+        request_text = _optional_bounded_probe_text(
+            value.get("request_text"),
+            field="request_text",
+            max_chars=16_384,
+        )
+        response_contains = _optional_bounded_probe_text(
+            value.get("response_contains"),
+            field="response_contains",
+            max_chars=4_096,
+        )
+        if kind in {"tcp", "websocket"} and (
+            request_text is None or response_contains is None
+        ):
+            raise ReplayCapabilityError(
+                f"{kind} data-plane probe requires request_text and response_contains"
+            )
+        if kind == "http" and request_text is not None:
+            raise ReplayCapabilityError(
+                "HTTP protocol probe does not accept request_text"
+            )
+        probes.append(
+            ReplayProtocolProbe(
+                kind=kind,
+                timeout_seconds=float(timeout),
+                path=path,
+                validate_advertised_websockets=validate_links,
+                request_text=request_text,
+                response_contains=response_contains,
+            )
+        )
+    return tuple(probes)
+
+
+def _optional_bounded_probe_text(
+    value: Any,
+    *,
+    field: str,
+    max_chars: int,
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > max_chars:
+        raise ReplayCapabilityError(
+            f"protocol probe {field} must be non-empty and at most {max_chars} characters"
+        )
+    return value
+
+
+def _is_data_plane_probe(probe: ReplayProtocolProbe) -> bool:
+    if probe.kind == "http":
+        return bool(probe.response_contains)
+    return bool(probe.request_text and probe.response_contains)
+
+
+def _normalize_runtime_entrypoint(
+    value: str,
+    *,
+    runtime_files: Sequence[str],
+) -> str:
+    candidates: list[str] = []
+    try:
+        candidates.append(
+            _normalized_relative_path(value, label="service runtime entrypoint")
+        )
+    except ReplayCapabilityError:
+        pass
+    module_name, separator, callable_name = value.partition(":")
+    module_parts = module_name.split(".")
+    if (
+        module_parts
+        and all(part.isidentifier() for part in module_parts)
+        and (not separator or callable_name.isidentifier())
+    ):
+        candidates.append("/".join(module_parts) + ".py")
+    for candidate in candidates:
+        if candidate in runtime_files:
+            return candidate
+    raise ReplayCapabilityError(
+        "skill runtime entrypoint must be declared in manifest runtime_files"
+    )
 
 
 def _compile_snapshot(
@@ -1354,6 +1686,7 @@ def build_replay_sandboxed_command(
         Path(sys.prefix).resolve(),
         Path(sys.base_prefix).resolve(),
         *(Path(path).resolve() for path in read_roots),
+        *(Path(path).resolve() for path in writable_roots),
     }
     profile.extend(
         f'(allow file-read* (subpath "{_sbpl_path(path)}"))'

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -92,6 +93,38 @@ def test_compiler_normalizes_workspace_paths_and_persists_bundle(tmp_path: Path)
     environment = json.loads(Path(bundle.environment_snapshot_path).read_text())
     assert environment["runtime"]["python_version"]
     assert not any("token" in key.lower() for key in environment["environment"])
+
+
+def test_compiler_seeds_git_workspace_from_tracked_files_only(tmp_path: Path) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    tracked = workspace / "tracked.txt"
+    tracked.write_text("source", encoding="utf-8")
+    generated = workspace / "generated-result.json"
+    generated.write_text('{"stale": true}', encoding="utf-8")
+    subprocess.run(
+        ["git", "init", "-q", str(workspace)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(workspace), "add", "tracked.txt"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset(f"Write the result to {generated}."),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    seed = Path(bundle.workspace_seed)
+    assert (seed / "tracked.txt").read_text(encoding="utf-8") == "source"
+    assert not (seed / "generated-result.json").exists()
+    assert not (seed / ".git").exists()
 
 
 def test_compiler_marks_continuation_without_prior_context_incomplete(tmp_path: Path) -> None:
@@ -1231,9 +1264,15 @@ result = {
     'services': [{
         'service_id': 'recorded-http',
         'requirement_id': requirement['requirement_id'],
-        'transport': 'http_fixture',
+        'transport': 'skill_runtime',
         'response_fixture': 'recording.json',
+        'runtime_entrypoint': 'replay.runtime:main',
         'readiness': {'kind': 'tcp', 'timeout_seconds': 2},
+        'protocol_probes': [{
+            'kind': 'http',
+            'path': '/',
+            'response_contains': 'historical result',
+        }],
     }],
 }
 (output / 'result.json').write_text(json.dumps(result, sort_keys=True), encoding='utf-8')
@@ -1252,7 +1291,7 @@ result = {
             CandidateFileDelta(path="replay/compiler.py", content=compiler),
             CandidateFileDelta(
                 path="replay/runtime.py",
-                content="print('runtime')\n",
+                content="def main(argv=None):\n    return 0\n",
             ),
         ),
     )

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import socket
 import subprocess
+import sys
+import tempfile
+import threading
+import time
 from dataclasses import asdict, replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -24,6 +30,7 @@ from aworld.self_evolve.replay import (
     CandidateReplayResult,
     ReplayExecutionRequest,
     ReplayExecutionResult,
+    ReplayServiceProtocolError,
     ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
@@ -32,6 +39,17 @@ from aworld.self_evolve.replay import (
     _invalid_evidence_manifest_entry_reason,
     _member_artifact_name,
     _member_baseline_replay_dir,
+    _probe_advertised_websockets,
+    _attach_replay_service_protocol_diagnostics,
+    _preserve_replay_service_protocol_trace,
+    _probe_replay_service,
+    _read_websocket_frame,
+    _replay_capability_fixture_summaries,
+    _replay_service_failure_with_stderr,
+    _replay_failure_outcome,
+    _run_replay_cli,
+    _validate_replay_service_protocol_trace,
+    _validate_websocket_handshake_response,
 )
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationCompiler
 from aworld.self_evolve.replay_adaptation import ReplayAdapterBinding
@@ -66,6 +84,50 @@ def _write_json(path: Path, payload) -> None:
         json.dumps(payload, default=lambda value: value.__dict__, indent=2),
         encoding="utf-8",
     )
+
+
+def test_replay_capability_fixture_summary_exposes_shape_without_content(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixture.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text('[{"private": "secret-value"}]', encoding="utf-8")
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixture.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    summaries = _replay_capability_fixture_summaries(capability)
+
+    assert summaries == [
+        {
+            "service_id": "svc-1",
+            "fixture_bytes": fixture.stat().st_size,
+            "json_root_type": "array",
+        }
+    ]
+    assert "secret-value" not in json.dumps(summaries)
 
 
 def test_candidate_skill_overlay_materializes_shadow_root_without_mutating_real_skill(
@@ -169,6 +231,588 @@ def test_cleanup_self_evolve_overlays_retains_latest_runs(tmp_path: Path) -> Non
     assert cleanup["removed_run_count"] == 1
     assert not (root / "run-old" / "overlays").exists()
     assert (root / "run-new" / "overlays").exists()
+
+
+def test_http_probe_automatically_rejects_unreachable_advertised_websocket() -> None:
+    class DiscoveryOnlyHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = json.dumps(
+                {
+                    "socket": (
+                        f"ws://127.0.0.1:{self.server.server_port}/stateful"
+                    )
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DiscoveryOnlyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(
+            OSError,
+            match=(
+                "advertised WebSocket handshake (?:failed|requires HTTP/1.1)"
+            ),
+        ):
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "http",
+                "/json/version",
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_skill_runtime_http_readiness_accepts_live_advertised_websocket() -> None:
+    class StatefulHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            if self.headers.get("Upgrade", "").lower() == "websocket":
+                key = self.headers["Sec-WebSocket-Key"]
+                accept = base64.b64encode(
+                    hashlib.sha1(
+                        (
+                            key
+                            + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                        ).encode("ascii")
+                    ).digest()
+                ).decode("ascii")
+                self.send_response(101)
+                self.send_header("Upgrade", "websocket")
+                self.send_header("Connection", "Upgrade")
+                self.send_header("Sec-WebSocket-Accept", accept)
+                self.end_headers()
+                header = self.connection.recv(2)
+                length = header[1] & 0x7F
+                mask = self.connection.recv(4)
+                payload = self.connection.recv(length)
+                payload = bytes(
+                    value ^ mask[index % 4]
+                    for index, value in enumerate(payload)
+                )
+                self.connection.sendall(bytes([0x8A, len(payload)]) + payload)
+                return
+            body = json.dumps(
+                {
+                    "socket": (
+                        f"ws://127.0.0.1:{self.server.server_port}/stateful"
+                    )
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), StatefulHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _probe_replay_service(
+            "127.0.0.1",
+            server.server_port,
+            "http",
+            "/json/version",
+            validate_advertised_websockets=True,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_protocol_probe_mismatch_reports_actionable_bounded_diagnostics() -> None:
+    class DiscoveryHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            body = b'{"Browser":"ReplayChrome","webSocketDebuggerUrl":"ws://local"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DiscoveryHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(ReplayServiceProtocolError) as error:
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "http",
+                "/json/version",
+                response_contains="recorded fixture marker",
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    message = str(error.value)
+    assert "kind=http path=/json/version" in message
+    assert "expected_sha256=" in message
+    assert "expected_bytes=23" in message
+    assert "match=substring" in message
+    assert "expected_preview=recorded fixture marker" in message
+    assert 'response_preview={"Browser":"ReplayChrome"' in message
+    assert len(message) < 500
+
+
+def test_advertised_websocket_invalid_port_reports_actionable_protocol_error() -> None:
+    response = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+        b'{"webSocketDebuggerUrl":"ws://127.0.0.1:REPLACE_PORT/devtools/browser"}'
+    )
+
+    with pytest.raises(
+        ReplayServiceProtocolError,
+        match=(
+            "advertised WebSocket URL has an invalid port; construct it from "
+            "the supplied --port integer"
+        ),
+    ):
+        _probe_advertised_websockets(
+            response,
+            expected_host="127.0.0.1",
+            expected_port=54321,
+        )
+
+
+def test_websocket_probe_rejects_http_1_0_upgrade_response() -> None:
+    with pytest.raises(OSError, match="requires HTTP/1.1"):
+        _validate_websocket_handshake_response(
+            (
+                b"HTTP/1.0 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: expected\r\n\r\n"
+            ),
+            expected_accept="expected",
+        )
+
+
+def test_websocket_probe_reports_bounded_invalid_handshake_preview() -> None:
+    with pytest.raises(ReplayServiceProtocolError) as error:
+        _validate_websocket_handshake_response(
+            (
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n\r\n"
+                b'{"error":"upgrade route not reached"}'
+            ),
+            expected_accept="expected",
+        )
+
+    message = str(error.value)
+    assert "response_bytes=" in message
+    assert "response_preview=HTTP/1.1 200 OK" in message
+    assert len(message) < 500
+
+
+def test_skill_runtime_rejects_websocket_handshake_only_stub() -> None:
+    class HandshakeOnlyHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            if self.headers.get("Upgrade", "").lower() == "websocket":
+                key = self.headers["Sec-WebSocket-Key"]
+                accept = base64.b64encode(
+                    hashlib.sha1(
+                        (
+                            key
+                            + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                        ).encode("ascii")
+                    ).digest()
+                ).decode("ascii")
+                self.send_response(101)
+                self.send_header("Upgrade", "websocket")
+                self.send_header("Connection", "Upgrade")
+                self.send_header("Sec-WebSocket-Accept", accept)
+                self.end_headers()
+                return
+            body = json.dumps(
+                {
+                    "socket": (
+                        f"ws://127.0.0.1:{self.server.server_port}/stateful"
+                    )
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), HandshakeOnlyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(OSError, match="WebSocket control frame failed"):
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "http",
+                "/json/version",
+                validate_advertised_websockets=True,
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_skill_runtime_websocket_data_plane_probe_validates_response() -> None:
+    class DataPlaneHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            key = self.headers["Sec-WebSocket-Key"]
+            accept = base64.b64encode(
+                hashlib.sha1(
+                    (
+                        key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                    ).encode("ascii")
+                ).digest()
+            ).decode("ascii")
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+
+            opcode, payload = self._read_masked_frame()
+            assert opcode == 0x9
+            self.connection.sendall(bytes([0x8A, len(payload)]) + payload)
+            opcode, payload = self._read_masked_frame()
+            assert opcode == 0x1
+            assert json.loads(payload) == {"op": "read"}
+            response = b'{"result":"recorded fixture"}'
+            self.connection.sendall(bytes([0x81, len(response)]) + response)
+
+        def _read_masked_frame(self) -> tuple[int, bytes]:
+            header = self.connection.recv(2)
+            length = header[1] & 0x7F
+            mask = self.connection.recv(4)
+            payload = self.connection.recv(length)
+            return (
+                header[0] & 0x0F,
+                bytes(
+                    value ^ mask[index % 4]
+                    for index, value in enumerate(payload)
+                ),
+            )
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DataPlaneHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _probe_replay_service(
+            "127.0.0.1",
+            server.server_port,
+            "websocket",
+            "/stateful",
+            request_text='{"op":"read"}',
+            response_contains="recorded fixture",
+        )
+        with pytest.raises(
+            OSError,
+            match="protocol probe response mismatch: kind=websocket",
+        ):
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "websocket",
+                "/stateful",
+                request_text='{"op":"read"}',
+                response_contains="missing fixture",
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_websocket_probe_rejects_masked_server_frame() -> None:
+    client, server = socket.socketpair()
+    try:
+        payload = b"pong"
+        mask = b"mask"
+        masked = bytes(
+            value ^ mask[index % 4]
+            for index, value in enumerate(payload)
+        )
+        server.sendall(
+            bytes([0x81, 0x80 | len(payload)]) + mask + masked
+        )
+
+        with pytest.raises(
+            ReplayServiceProtocolError,
+            match="WebSocket server frame must not be masked",
+        ):
+            _read_websocket_frame(client)
+    finally:
+        client.close()
+        server.close()
+
+
+def test_candidate_owned_runtime_protocol_failure_is_not_infrastructure() -> None:
+    assert _replay_failure_outcome(
+        {
+            "type": "ReplayServiceProtocolError",
+            "reason": "advertised WebSocket handshake failed",
+            "outcome": "candidate_failure",
+        }
+    ) == "candidate_failure"
+
+
+def test_replay_service_failure_includes_bounded_sanitized_runtime_stderr(
+    tmp_path: Path,
+) -> None:
+    stderr_path = tmp_path / "stderr.txt"
+    stderr_path.write_text(
+        "Traceback at /private/tmp/runtime.py\n"
+        "OSError: [Errno 48] Address already in use\n",
+        encoding="utf-8",
+    )
+
+    enriched = _replay_service_failure_with_stderr(
+        TimeoutError("replay service readiness timed out"),
+        stderr_path=stderr_path,
+    )
+
+    assert isinstance(enriched, TimeoutError)
+    assert "Address already in use" in str(enriched)
+    assert "/private/tmp/runtime.py" not in str(enriched)
+    assert "<LOCAL_PATH>" in str(enriched)
+
+
+def test_replay_service_protocol_trace_is_bounded_and_sanitized(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "scratch" / "protocol_trace.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        ("x" * 80_000)
+        + '\n{"direction":"client_to_runtime","token=very-secret":"ignored"}'
+        + '\n{"direction":"runtime_to_client","path":"/Users/me/private.json"}\n',
+        encoding="utf-8",
+    )
+    destination = tmp_path / "diagnostics" / "protocol_trace.log"
+
+    assert _preserve_replay_service_protocol_trace(source, destination) is True
+
+    preserved = destination.read_text(encoding="utf-8")
+    assert len(preserved) <= 64 * 1024
+    assert "very-secret" not in preserved
+    assert "<REDACTED_SECRET>" in preserved
+    assert "/Users/me/private.json" not in preserved
+    assert "<LOCAL_PATH>" in preserved
+
+
+def test_failed_replay_includes_preserved_protocol_trace_diagnostics(
+    tmp_path: Path,
+) -> None:
+    trace = (
+        tmp_path
+        / "artifacts"
+        / "replay_services"
+        / "recorded-endpoint"
+        / "protocol_trace.log"
+    )
+    trace.parent.mkdir(parents=True)
+    trace.write_text(
+        '{"direction":"client_to_runtime","fields":["id","channel"]}\n'
+        '{"direction":"runtime_to_client","fields":["id"]}\n',
+        encoding="utf-8",
+    )
+    result = ReplayExecutionResult(
+        status="failed",
+        trajectory=[],
+        failure={
+            "type": "TimeoutExpired",
+            "reason": "replay timed out",
+            "outcome": "candidate_failure",
+        },
+    )
+
+    attached = _attach_replay_service_protocol_diagnostics(
+        result,
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    assert attached.failure is not None
+    assert attached.failure["outcome"] == "candidate_failure"
+    assert attached.failure["diagnostics"]["replay_service_protocol_traces"] == [
+        {
+            "path": "replay_services/recorded-endpoint/protocol_trace.log",
+            "tail": (
+                '{"direction":"client_to_runtime","fields":["id","channel"]}\n'
+                '{"direction":"runtime_to_client","fields":["id"]}'
+            ),
+        }
+    ]
+
+
+def test_protocol_trace_diagnostics_keep_terminal_interactions(
+    tmp_path: Path,
+) -> None:
+    trace = (
+        tmp_path
+        / "artifacts"
+        / "replay_services"
+        / "recorded-endpoint"
+        / "protocol_trace.log"
+    )
+    trace.parent.mkdir(parents=True)
+    trace.write_text(
+        ("old-interaction\n" * 600)
+        + '{"sequence":999,"kind":"terminal_unmatched_request"}\n',
+        encoding="utf-8",
+    )
+    result = ReplayExecutionResult(
+        status="failed",
+        trajectory=[],
+        failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+    )
+
+    attached = _attach_replay_service_protocol_diagnostics(
+        result,
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    assert attached.failure is not None
+    tail = attached.failure["diagnostics"][
+        "replay_service_protocol_traces"
+    ][0]["tail"]
+    assert len(tail) <= 4_000
+    assert "terminal_unmatched_request" in tail
+    assert tail.endswith('{"sequence":999,"kind":"terminal_unmatched_request"}')
+
+
+def test_replay_service_protocol_trace_contract_requires_bidirectional_records(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "protocol_trace.jsonl"
+    trace.write_text(
+        json.dumps(
+            {
+                "direction": "in",
+                "sequence": 1,
+                "kind": "request",
+                "fields": ["id", "method"],
+                "correlation": {"id": 1},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ReplayServiceProtocolError,
+        match="must record both received and emitted interactions",
+    ):
+        _validate_replay_service_protocol_trace(trace)
+
+
+def test_replay_service_protocol_trace_contract_accepts_sanitized_summary(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "protocol_trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(item)
+            for item in (
+                {
+                    "direction": "inbound",
+                    "sequence": 1,
+                    "kind": "request",
+                    "fields": ["id", "method", "sessionId"],
+                    "correlation": {"id": 1, "sessionId": "opaque"},
+                },
+                {
+                    "direction": "outbound",
+                    "sequence": 2,
+                    "kind": "response",
+                    "fields": ["id", "result", "sessionId"],
+                    "correlation": {"id": 1, "sessionId": "opaque"},
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _validate_replay_service_protocol_trace(trace)
+
+
+def test_replay_service_protocol_trace_contract_accepts_recv_send_directions(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "protocol_trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(item)
+            for item in (
+                {
+                    "direction": "recv",
+                    "sequence": 1,
+                    "kind": "request",
+                    "fields": ["id", "method"],
+                    "correlation": {"id": 1},
+                },
+                {
+                    "direction": "send",
+                    "sequence": 2,
+                    "kind": "response",
+                    "fields": ["id", "result"],
+                    "correlation": {"id": 1},
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _validate_replay_service_protocol_trace(trace)
+
+
+def test_replay_service_protocol_trace_contract_rejects_missing_trace(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        ReplayServiceProtocolError,
+        match="did not write protocol_trace.jsonl",
+    ):
+        _validate_replay_service_protocol_trace(
+            tmp_path / "protocol_trace.jsonl"
+        )
 
 
 @pytest.mark.asyncio
@@ -1210,6 +1854,203 @@ async def test_multi_member_replay_distributes_repetition_budget_across_members(
 
 
 @pytest.mark.asyncio
+async def test_multi_member_replay_stops_after_shared_baseline_infrastructure_failure(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        if request.task_id == "task-a" and request.variant_id == "baseline":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "type": "TimeoutExpired",
+                    "reason": "replay timed out",
+                    "outcome": "infrastructure_failure",
+                    "diagnostics": {
+                        "task_artifacts": [
+                            {
+                                "path": "artifact/workspace/scrape.log",
+                                "tail": "CDP endpoint does not implement /json/version",
+                            }
+                        ]
+                    },
+                },
+            )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.task_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=f"task-{suffix}", input=f"Replay task {suffix}")
+            for suffix in ("a", "b", "c")
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 3},
+            split_seed="seed",
+            splits={
+                "train": ["task-a", "task-b"],
+                "validation": [],
+                "held_out": ["task-c"],
+            },
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-baseline-infrastructure-fail-fast",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=dataset,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(request, candidate=candidate, dataset=dataset)
+
+    assert calls == [("task-a", "baseline")]
+    assert [member.case_id for member in result.member_results] == [
+        "task-a",
+        "task-b",
+        "task-c",
+    ]
+    assert result.member_results[0].baseline.failure["diagnostics"] == {
+        "task_artifacts": [
+            {
+                "path": "artifact/workspace/scrape.log",
+                "tail": "CDP endpoint does not implement /json/version",
+            }
+        ]
+    }
+    for member in result.member_results[1:]:
+        assert member.baseline.failure == {
+            "outcome": "infrastructure_failure",
+            "reason": "baseline_preflight_aborted",
+            "detail": (
+                "baseline replay skipped because shared replay infrastructure "
+                "failed for task-a"
+            ),
+            "blocked_by_case_id": "task-a",
+        }
+    assert all(
+        member.candidate.failure["reason"] == "baseline_preflight_failed"
+        for member in result.member_results
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_member_replay_skips_candidate_after_capability_preflight_failure(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request.variant_id)
+        return ReplayExecutionResult(
+            status="failed",
+            trajectory=[],
+            failure={
+                "type": "ReplayServiceProtocolError",
+                "reason": "advertised WebSocket handshake requires HTTP/1.1",
+                "outcome": "candidate_failure",
+            },
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="Replay task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-single-capability-preflight",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=dataset,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(request, candidate=candidate, dataset=dataset)
+
+    assert calls == ["baseline"]
+    assert result.baseline.failure["outcome"] == "candidate_failure"
+    assert result.candidate.failure["reason"] == "baseline_preflight_failed"
+
+
+@pytest.mark.asyncio
+async def test_single_member_replay_runs_candidate_after_rollout_capability_failure(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request.variant_id)
+        if request.variant_id == "baseline":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "type": "TimeoutExpired",
+                    "reason": "replay timed out",
+                    "outcome": "infrastructure_failure",
+                    "failure_class": "candidate_replay_capability",
+                    "failure_stage": "task_rollout",
+                    "repairable": True,
+                    "diagnostics": {
+                        "task_artifacts": [
+                            {
+                                "path": "artifact/protocol.json",
+                                "tail": "recorded data plane is incomplete",
+                            }
+                        ]
+                    },
+                },
+            )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate completed"}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="Replay task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    request = build_replay_request(
+        run_id="run-single-rollout-capability-failure",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=dataset,
+    )
+
+    result = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(request, candidate=candidate, dataset=dataset)
+
+    assert calls == ["baseline", "cand-1"]
+    assert result.baseline.succeeded is False
+    assert result.candidate.succeeded is True
+    assert candidate_replay_is_comparable(dataset=dataset, replay_result=result)
+
+
+@pytest.mark.asyncio
 async def test_multi_member_replay_reports_failed_case_without_masking_it(
     tmp_path: Path,
 ) -> None:
@@ -2161,6 +3002,9 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("NO_PROXY", "internal.example")
+    monkeypatch.setenv("no_proxy", "legacy.example")
+    monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1080")
     captured: dict[str, object] = {}
     trajectory = [
         {
@@ -2174,6 +3018,20 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     def fake_run(command, **kwargs):
         captured["command"] = command
         captured["kwargs"] = kwargs
+        runtime_root = Path(kwargs["env"]["HOME"]).parent
+        captured["runtime_root"] = runtime_root
+        captured["runtime_paths_existed"] = all(
+            path.is_dir()
+            for path in (
+                runtime_root / "home",
+                runtime_root / "xdg-config",
+                runtime_root / "xdg-cache",
+                runtime_root / "xdg-data",
+                runtime_root / "xdg-state",
+                runtime_root / "tmp",
+                runtime_root / "memory",
+            )
+        )
         return subprocess.CompletedProcess(
             command,
             0,
@@ -2188,7 +3046,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2219,6 +3077,13 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "explicitly authorizes a control-plane operation" in task_text
     assert "Do not terminate, restart, reconfigure, or replace externally managed prerequisites" in task_text
     assert "Do not copy or substitute credentials, sessions, profiles, or private state" in task_text
+    assert "Do not override the supplied HOME, TMPDIR, XDG_*" in task_text
+    assert "Only endpoints supplied through AWORLD_REPLAY_ENDPOINT_*" in task_text
+    assert "Do not enumerate or connect to any other loopback port" in task_text
+    assert (
+        "On the first terminal protocol signal from a supplied endpoint" in task_text
+    )
+    assert "Do not retry alternate URL forms or inspect host ports" in task_text
     assert "fail the replay with a prerequisite-unavailable reason" in task_text
     assert (
         "Once the requested output artifact and a valid evidence manifest exist, "
@@ -2244,10 +3109,123 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     )
     assert captured["kwargs"]["env"]["AWORLD_TRAJECTORY_LOG_DISABLED"] == "1"
     assert captured["kwargs"]["env"]["AWORLD_TOOL_CALL_LIMIT"] == "24"
+    assert captured["kwargs"]["env"][
+        "AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS"
+    ] == "4096"
+    assert captured["kwargs"]["env"][
+        "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES"
+    ] == "AWORLD_REPLAY_"
+    assert captured["kwargs"]["start_new_session"] is True
+    runtime_root = captured["runtime_root"]
+    assert isinstance(runtime_root, Path)
+    assert runtime_root.parent.resolve() == Path("/tmp").resolve()
+    assert runtime_root.name.startswith("aworld-replay-runtime-")
+    assert len(str(runtime_root)) < 100
+    assert captured["kwargs"]["env"]["HOME"] == str(runtime_root / "home")
+    assert captured["kwargs"]["env"]["XDG_CONFIG_HOME"] == str(
+        runtime_root / "xdg-config"
+    )
+    assert captured["kwargs"]["env"]["XDG_CACHE_HOME"] == str(
+        runtime_root / "xdg-cache"
+    )
+    assert captured["kwargs"]["env"]["XDG_DATA_HOME"] == str(
+        runtime_root / "xdg-data"
+    )
+    assert captured["kwargs"]["env"]["XDG_STATE_HOME"] == str(
+        runtime_root / "xdg-state"
+    )
+    assert captured["kwargs"]["env"]["TMPDIR"] == str(runtime_root / "tmp")
+    assert captured["kwargs"]["env"]["AWORLD_MEMORY_ROOT"] == str(
+        runtime_root / "memory"
+    )
+    assert captured["kwargs"]["env"]["NO_PROXY"] == (
+        "internal.example,127.0.0.1,localhost,::1"
+    )
+    assert captured["kwargs"]["env"]["no_proxy"] == (
+        "legacy.example,127.0.0.1,localhost,::1"
+    )
+    assert captured["kwargs"]["env"]["ALL_PROXY"] == (
+        "socks5://127.0.0.1:1080"
+    )
+    assert captured["runtime_paths_existed"] is True
+    assert not runtime_root.exists()
     assert "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR" in task_text
     assert str(tmp_path / "artifacts") in task_text
     assert str(tmp_path / "artifacts" / "evidence_manifest.jsonl") in task_text
     assert "evidence_manifest.jsonl" in task_text
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_rejects_undeclared_loopback_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld"},
+            "state": {"input": {"content": "Replay this task"}},
+            "action": {
+                "content": "Try the host service as a fallback.",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "mcp",
+                            "arguments": json.dumps(
+                                {
+                                    "command": (
+                                        "curl http://127.0.0.1:9222/json/version"
+                                    )
+                                }
+                            ),
+                        }
+                    }
+                ],
+            },
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:54321"
+            },
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure == {
+        "type": "ReplayBoundaryViolation",
+        "reason": "replay_dependency_boundary_violation",
+        "outcome": "task_failure",
+        "undeclared_loopback_endpoints": ["http://127.0.0.1:9222"],
+    }
+    assert result.metrics["replay_dependency_boundary_passed"] is False
+    assert result.metrics["undeclared_loopback_endpoint_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -2283,7 +3261,7 @@ async def test_aworld_cli_replay_executor_normalizes_stale_workspace_paths(
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2372,7 +3350,7 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2457,7 +3435,7 @@ async def test_aworld_cli_replay_executor_writes_canonical_evidence_bundle(
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2545,7 +3523,7 @@ async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2630,7 +3608,7 @@ async def test_aworld_cli_replay_executor_reports_compacted_argument_without_evi
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2710,7 +3688,7 @@ async def test_aworld_cli_replay_executor_archives_workspace_manifest_artifact(
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2796,7 +3774,7 @@ async def test_aworld_cli_replay_executor_rejects_untrusted_manifest_artifact_ou
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2878,7 +3856,7 @@ async def test_aworld_cli_replay_executor_accepts_bounded_excerpt_for_outside_ar
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -2989,7 +3967,7 @@ async def test_aworld_cli_replay_executor_rejects_compacted_evidence_without_man
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -3038,7 +4016,7 @@ async def test_aworld_cli_replay_executor_rejects_summary_synthetic_trajectory(
             stderr="",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -3068,14 +4046,22 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
     tmp_path: Path,
 ) -> None:
     def fake_run(command, **kwargs):
+        (tmp_path / "scrape_output.log").write_text(
+            "WebSocket protocol error: HTTP version must be 1.1 or higher; "
+            "API_KEY=top-secret-value",
+            encoding="utf-8",
+        )
         raise subprocess.TimeoutExpired(
             cmd=command,
             timeout=kwargs["timeout"],
-            output=b"partial stdout",
-            stderr=b"partial stderr",
+            output=(
+                b"partial stdout: CDP discovery failed at "
+                b"/Users/example/private/runtime.py"
+            ),
+            stderr=b"partial stderr API_KEY=top-secret-value",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -3088,13 +4074,442 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
             skill_root=str(tmp_path / "skills"),
             artifact_dir=str(tmp_path / "artifacts"),
             timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
         )
     )
 
     assert result.succeeded is False
-    assert result.stdout == "partial stdout"
-    assert result.stderr == "partial stderr"
-    assert result.failure == {"type": "TimeoutExpired", "reason": "replay timed out"}
+    assert result.stdout.startswith("partial stdout: CDP discovery failed")
+    assert result.stderr.startswith("partial stderr")
+    assert result.failure == {
+        "type": "TimeoutExpired",
+        "reason": "replay timed out",
+        "outcome": "candidate_failure",
+        "failure_class": "candidate_replay_capability",
+        "failure_stage": "task_rollout",
+        "repairable": True,
+        "diagnostics": {
+            "stdout_tail": "partial stdout: CDP discovery failed at <LOCAL_PATH>",
+            "stderr_tail": "partial stderr <REDACTED_SECRET>",
+            "task_artifacts": [
+                {
+                    "path": "workspace/scrape_output.log",
+                    "tail": (
+                        "WebSocket protocol error: HTTP version must be 1.1 "
+                        "or higher; <REDACTED_SECRET>"
+                    ),
+                }
+            ],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_ignores_static_task_contract_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=(
+                "Current task: use http://127.0.0.1:49533\n"
+                "On the first terminal protocol signal, such as a protocol error, "
+                "report a replay capability mismatch.\n"
+                "🔄 Running task: task_20260716110210\n"
+            ).encode(),
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.succeeded is False
+    assert result.failure["type"] == "TimeoutExpired"
+    assert "failure_class" not in result.failure
+    assert "repairable" not in result.failure
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_classifies_closed_cdp_response_channel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        (tmp_path / "scrape_stdout.log").write_text(
+            "CDP response channel closed",
+            encoding="utf-8",
+        )
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=b"The browser task remained active without producing output",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_classifies_browser_operation_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        (tmp_path / "scrape_stdout.log").write_text(
+            "Operation timed out. The page may still be loading or the element may not exist.",
+            encoding="utf-8",
+        )
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=b"The browser replay task did not produce an artifact",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_classifies_replay_endpoint_navigation_stall(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=(
+                b"The script hung during navigation against "
+                b"http://127.0.0.1:49533 while waiting for the page to load"
+            ),
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_classifies_incomplete_navigation_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=(
+                b"The script is still navigating on http://127.0.0.1:49533; "
+                b"it exited without producing output"
+            ),
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_classifies_localized_navigation_stall(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=(
+                "Replay endpoint: http://127.0.0.1:49533\n"
+                "[03:12:23] 正在导航到 X 首页..."
+            ).encode(),
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_classifies_unresponsive_bound_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=(
+                b"The task is stuck while connecting to "
+                b"http://127.0.0.1:49533 and the service is unresponsive"
+            ),
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_classifies_wrong_bound_endpoint_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=(
+                b"The endpoint at http://127.0.0.1:49533 appears to be a "
+                b"fixture service, not a required browser protocol endpoint"
+            ),
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_classifies_bound_endpoint_schema_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=(
+                b"The supplied endpoint at port 49533 failed to deserialize "
+                b"the protocol response: missing field sessionId"
+            ),
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_trusts_scoped_task_protocol_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "scrape_output.log").write_text(
+            "Failed to deserialize protocol response: missing field sessionId",
+            encoding="utf-8",
+        )
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+            output=b"The replay task did not finish",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
 
 
 @pytest.mark.asyncio
@@ -3142,7 +4557,7 @@ async def test_aworld_cli_replay_executor_recovers_timeout_with_valid_artifact_m
             stderr=b"partial stderr",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.replay.subprocess.run", fake_run)
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
 
     result = await AWorldCliReplayExecutor()(
         ReplayExecutionRequest(
@@ -3179,6 +4594,366 @@ async def test_aworld_cli_replay_executor_recovers_timeout_with_valid_artifact_m
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_does_not_recover_dependency_mismatch_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(command, **kwargs):
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "diag_replay_capability_mismatch.json").write_text(
+            json.dumps(
+                {
+                    "diagnostic_type": "replay_capability_mismatch",
+                    "endpoint": "http://127.0.0.1:49533",
+                    "error": "WebSocket protocol error: missing upgrade header",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (artifact_dir / "evidence_manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "source_id": "replay_mismatch",
+                    "extraction_method": "diagnostic",
+                    "evidence_type": "metadata",
+                    "metadata": {
+                        "diagnostic_type": "replay_capability_mismatch",
+                        "endpoint": "http://127.0.0.1:49533",
+                        "error": "WebSocket protocol error",
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=kwargs["timeout"],
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=1,
+            environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+    )
+
+    assert result.succeeded is False
+    assert result.metrics.get("timeout_recovered_with_artifact_evidence") is None
+    assert result.failure["outcome"] == "candidate_failure"
+    assert result.failure["failure_class"] == "candidate_replay_capability"
+    assert result.failure["failure_stage"] == "task_rollout"
+    assert result.failure["repairable"] is True
+    assert result.failure["diagnostics"]["task_artifacts"][0]["path"] == (
+        "artifact/diag_replay_capability_mismatch.json"
+    )
+
+
+def test_replay_cli_supervisor_stops_on_terminal_dependency_diagnostic(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    diagnostic_path = artifact_dir / "diag_replay_capability_mismatch.json"
+    diagnostic = json.dumps(
+        {
+            "diagnostic_type": "replay_capability_mismatch",
+            "endpoint": "http://127.0.0.1:49533",
+            "error": "protocol mismatch",
+        }
+    )
+    script = (
+        "from pathlib import Path; import time; "
+        f"Path({str(diagnostic_path)!r}).write_text("
+        f"{diagnostic!r}); "
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_replay_cli(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            text=True,
+            capture_output=True,
+            timeout=20,
+            start_new_session=True,
+            env={},
+            artifact_dir=artifact_dir,
+            execution_started_at=time.time(),
+            replay_environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+
+    assert time.monotonic() - started < 5
+    assert getattr(exc_info.value, "terminal_diagnostic", False) is True
+
+
+def test_replay_cli_supervisor_does_not_stop_on_live_progress_artifact(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    progress_path = artifact_dir / "scrape_output.log"
+    script = (
+        "from pathlib import Path; import time; "
+        "print('Replay runtime contract for http://127.0.0.1:49533: on a "
+        "protocol error report replay capability mismatch', flush=True); "
+        f"Path({str(progress_path)!r}).write_text("
+        "'[03:12:23] 正在导航到 X 首页...'); "
+        "time.sleep(1.2); print('completed', flush=True)"
+    )
+    started = time.monotonic()
+
+    completed = _run_replay_cli(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=5,
+        start_new_session=True,
+        env={},
+        artifact_dir=artifact_dir,
+        execution_started_at=time.time(),
+        replay_environment={
+            "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+        },
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.rstrip().endswith("completed")
+    assert time.monotonic() - started >= 1
+
+
+def test_replay_cli_supervisor_stops_on_skill_owned_capability_mismatch(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    diagnostic_path = artifact_dir / "replay_capability_mismatch.json"
+    diagnostic = json.dumps(
+        {
+            "diagnostic_type": "replay_capability_mismatch",
+            "endpoint": "http://127.0.0.1:49533",
+            "observed_errors": ["All protocol discovery methods failed"],
+        }
+    )
+    script = (
+        "from pathlib import Path; import time; "
+        f"Path({str(diagnostic_path)!r}).write_text("
+        f"{diagnostic!r}); "
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_replay_cli(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            text=True,
+            capture_output=True,
+            timeout=20,
+            start_new_session=True,
+            env={},
+            artifact_dir=artifact_dir,
+            execution_started_at=time.time(),
+            replay_environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+
+    assert time.monotonic() - started < 5
+    assert getattr(exc_info.value, "terminal_diagnostic", False) is True
+
+
+def test_replay_cli_supervisor_stops_on_partial_process_diagnostic(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    script = (
+        "import time; "
+        "print('The task is still navigating on http://127.0.0.1:49533 and "
+        "exited without producing output', flush=True); "
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_replay_cli(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            text=True,
+            capture_output=True,
+            timeout=20,
+            start_new_session=True,
+            env={},
+            artifact_dir=artifact_dir,
+            execution_started_at=time.time(),
+            replay_environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+
+    assert time.monotonic() - started < 5
+    assert getattr(exc_info.value, "terminal_diagnostic", False) is True
+
+
+def test_replay_cli_supervisor_stops_on_observed_protocol_signal(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    script = (
+        "import time; "
+        "print('Replay endpoint http://127.0.0.1:49533 returned not_found for '"
+        "      'the required protocol path. This is a protocol signal.', "
+        "      flush=True); "
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_replay_cli(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            text=True,
+            capture_output=True,
+            timeout=20,
+            start_new_session=True,
+            env={},
+            artifact_dir=artifact_dir,
+            execution_started_at=time.time(),
+            replay_environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+
+    assert time.monotonic() - started < 5
+    assert getattr(exc_info.value, "terminal_diagnostic", False) is True
+
+
+def test_replay_cli_supervisor_stops_on_workspace_root_diagnostic(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    workspace_dir = artifact_dir / "workspace"
+    workspace_dir.mkdir(parents=True)
+    diagnostic_path = workspace_dir / "scrape_stdout.log"
+    diagnostic = (
+        "All protocol discovery methods failed for "
+        "http://127.0.0.1:49533"
+    )
+    script = (
+        "from pathlib import Path; import time; "
+        f"Path({str(diagnostic_path)!r}).write_text({diagnostic!r}); "
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_replay_cli(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            text=True,
+            capture_output=True,
+            timeout=20,
+            start_new_session=True,
+            env={},
+            artifact_dir=artifact_dir,
+            execution_started_at=time.time(),
+            replay_environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+
+    assert time.monotonic() - started < 5
+    assert getattr(exc_info.value, "terminal_diagnostic", False) is True
+
+
+def test_replay_cli_supervisor_combines_live_artifact_with_endpoint_context(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    diagnostic_path = artifact_dir / "scrape_stdout.log"
+    script = (
+        "from pathlib import Path; import time; "
+        "print('Using replay endpoint http://127.0.0.1:49533', flush=True); "
+        f"Path({str(diagnostic_path)!r}).write_text("
+        "'Failed to deserialize response: missing field targetInfos'); "
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_replay_cli(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            text=True,
+            capture_output=True,
+            timeout=20,
+            start_new_session=True,
+            env={},
+            artifact_dir=artifact_dir,
+            execution_started_at=time.time(),
+            replay_environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+
+    assert time.monotonic() - started < 5
+    assert getattr(exc_info.value, "terminal_diagnostic", False) is True
+
+
+def test_replay_cli_supervisor_ignores_static_contract_language(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    script = (
+        "import time; "
+        "print('If a supplied endpoint does not implement the protocol, report a '"
+        "      'replay capability mismatch.', flush=True); "
+        "time.sleep(5)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _run_replay_cli(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            text=True,
+            capture_output=True,
+            timeout=1.5,
+            start_new_session=True,
+            env={},
+            artifact_dir=artifact_dir,
+            execution_started_at=time.time(),
+            replay_environment={
+                "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:49533"
+            },
+        )
+
+    assert time.monotonic() - started >= 1.0
+    assert getattr(exc_info.value, "terminal_diagnostic", False) is False
 
 
 @pytest.mark.asyncio

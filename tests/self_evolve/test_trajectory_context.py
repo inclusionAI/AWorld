@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from aworld.self_evolve.trace_pack import TrajectoryLogRecord
-from aworld.self_evolve.trajectory_context import build_trajectory_context_snapshots
+from aworld.self_evolve.trajectory_context import (
+    build_trajectory_context_snapshots,
+    input_with_reconstructed_context,
+)
 
 
 def _record(
@@ -127,3 +130,76 @@ def test_context_snapshot_keeps_full_step_count_and_stable_fingerprint() -> None
     assert first.step_count == 1
     assert len(first.steps) == 1
     assert first.fingerprint == second.fingerprint
+
+
+def test_recorded_system_prompt_is_not_replayed_as_user_task_context() -> None:
+    record = _record(
+        "task",
+        "session-a",
+        "Run the current task",
+        "Done",
+        record_index=0,
+    )
+    step = dict(record.trajectory[0])
+    state = dict(step["state"])
+    state["messages"] = [
+        {
+            "role": "system",
+            "content": "Old environment system prompt and tool catalog " * 2_000,
+        },
+        {"role": "user", "content": "Run the current task"},
+    ]
+    step["state"] = state
+    record = TrajectoryLogRecord(
+        record_index=record.record_index,
+        task_id=record.task_id,
+        record_metadata=record.record_metadata,
+        trajectory=(step,),
+    )
+
+    snapshot = build_trajectory_context_snapshots((record,))[0]
+
+    assert snapshot.prior_turns == ()
+    assert input_with_reconstructed_context(
+        {"content": "Run the current task"},
+        snapshot,
+    ) == {"content": "Run the current task"}
+
+
+def test_recorded_conversation_context_is_bounded_and_keeps_recent_turns() -> None:
+    record = _record(
+        "task",
+        "session-a",
+        "Continue the current task",
+        "Done",
+        record_index=0,
+    )
+    step = dict(record.trajectory[0])
+    state = dict(step["state"])
+    state["messages"] = [
+        {"role": "system", "content": "environment-only"},
+        {"role": "user", "content": "old" * 4_000},
+        {"role": "assistant", "content": "recent result"},
+        {"role": "user", "content": "Continue the current task"},
+    ]
+    step["state"] = state
+    record = TrajectoryLogRecord(
+        record_index=record.record_index,
+        task_id=record.task_id,
+        record_metadata=record.record_metadata,
+        trajectory=(step,),
+    )
+
+    snapshot = build_trajectory_context_snapshots(
+        (record,),
+        max_text_chars=128,
+    )[0]
+    reconstructed = input_with_reconstructed_context(
+        {"content": "Continue the current task"},
+        snapshot,
+    )
+
+    assert [turn.role for turn in snapshot.prior_turns] == ["user", "assistant"]
+    assert sum(len(turn.content) for turn in snapshot.prior_turns) <= 128
+    assert snapshot.prior_turns[-1].content == "recent result"
+    assert "environment-only" not in reconstructed["content"]

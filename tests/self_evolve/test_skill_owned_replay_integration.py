@@ -92,26 +92,59 @@ result = {
     'services': [{
         'service_id': 'fixture-http',
         'requirement_id': requirement['requirement_id'],
-        'transport': 'http_fixture',
+        'transport': 'skill_runtime',
         'response_fixture': 'recording.txt',
+        'runtime_entrypoint': 'replay.runtime:main',
         'readiness': {'kind': 'tcp', 'timeout_seconds': 3},
+        'protocol_probes': [
+            {
+                'kind': 'http',
+                'path': '/',
+                'timeout_seconds': 3,
+                'response_contains': 'recorded response',
+            },
+        ],
     }],
 }
 (output / 'result.json').write_text(json.dumps(result, sort_keys=True), encoding='utf-8')
 """
     runtime = r"""
 import argparse
+import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--port', required=True, type=int)
+parser.add_argument('--fixture', required=True)
+parser.add_argument('--scratch', required=True)
 args = parser.parse_args()
+trace_path = Path(args.scratch) / 'protocol_trace.jsonl'
+sequence = 0
+
+def trace(direction, kind, fields, correlation):
+    global sequence
+    sequence += 1
+    with trace_path.open('a', encoding='utf-8') as handle:
+        handle.write(json.dumps({
+            'direction': direction,
+            'sequence': sequence,
+            'kind': kind,
+            'fields': fields,
+            'correlation': correlation,
+        }, sort_keys=True) + '\n')
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        trace('in', 'http_request', ['method', 'path'], {
+            'method': 'GET', 'path': self.path,
+        })
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b'recorded response')
+        self.wfile.write(open(args.fixture, 'rb').read())
+        trace('out', 'http_response', ['status', 'path'], {
+            'status': 200, 'path': self.path,
+        })
     def log_message(self, *args):
         pass
 
@@ -145,7 +178,13 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
         observed_ports.append(port)
         with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
             connection.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
-            assert b"recorded response" in connection.recv(4096)
+            response = b""
+            while b"recorded response" not in response:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            assert b"recorded response" in response
         return ReplayExecutionResult(
             status="succeeded",
             trajectory=[
@@ -197,6 +236,10 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     )
     assert loaded.request.replay_adaptation is not None
     assert loaded.request.replay_adaptation.replay_capability is not None
+    loaded_service = loaded.request.replay_adaptation.replay_capability.services[0]
+    assert loaded_service.runtime_entrypoint == "replay/runtime.py"
+    assert loaded_service.protocol_probes[0].kind == "http"
+    assert loaded_service.protocol_probes[0].response_contains == "recorded response"
     assert (
         loaded.request.replay_adaptation.replay_capability.fingerprint
         == report["replay_capability"]["frozen_capability_fingerprint"]

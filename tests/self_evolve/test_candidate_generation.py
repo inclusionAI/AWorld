@@ -16,6 +16,7 @@ from aworld.self_evolve.runtime import SelfEvolveCandidateTaskRunner
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
+    DEFAULT_CANDIDATE_TASK_TIMEOUT_SECONDS,
     _SanitizingProvider,
 )
 
@@ -44,6 +45,45 @@ def test_candidate_generation_default_output_budget_scales_with_model_window() -
 
     assert agent.output_token_limit == 16_000
     assert agent.prompt_budget_policy.reserved_output_tokens == 16_000
+    assert agent.conf.llm_config.llm_stream_call is True
+
+
+def test_candidate_generation_disables_forced_reasoning_for_structured_output() -> None:
+    model_config = ModelConfig(
+        llm_provider="openai",
+        llm_model_name="glm-5.2",
+        llm_api_key="test-key",
+        params={"extra_body": {"request_tag": "candidate"}},
+    )
+
+    agent = CandidateGenerationAgent(model_config=model_config)
+
+    assert agent.conf.llm_config.params == {
+        "extra_body": {
+            "request_tag": "candidate",
+            "thinking": {"type": "disabled"},
+        }
+    }
+    assert model_config.params == {"extra_body": {"request_tag": "candidate"}}
+
+
+def test_candidate_generation_preserves_explicit_reasoning_profile() -> None:
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="glm-5.2",
+            llm_api_key="test-key",
+            params={
+                "extra_body": {
+                    "thinking": {"type": "enabled"},
+                }
+            },
+        )
+    )
+
+    assert agent.conf.llm_config.params["extra_body"]["thinking"] == {
+        "type": "enabled"
+    }
 
 
 @pytest.mark.asyncio
@@ -88,6 +128,33 @@ async def test_candidate_generation_submits_standard_isolated_task(
     assert task.context.execution_scope == "self_evolve"
     assert captured["run_conf"] is None
     assert SelfEvolveCandidateTaskRunner is not None
+
+
+def test_candidate_generation_task_has_bounded_runtime_deadline() -> None:
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="candidate-model",
+            llm_api_key="test-key",
+        )
+    )
+
+    task = agent.build_task("candidate evidence")
+
+    assert task.timeout == DEFAULT_CANDIDATE_TASK_TIMEOUT_SECONDS
+
+
+def test_candidate_generation_task_accepts_shorter_runtime_deadline() -> None:
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="candidate-model",
+            llm_api_key="test-key",
+        ),
+        task_timeout_seconds=45,
+    )
+
+    assert agent.build_task("candidate evidence").timeout == 45
 
 
 @pytest.mark.asyncio
@@ -230,9 +297,9 @@ async def test_candidate_generation_runs_through_agent_model_path() -> None:
         provider_name = "openai"
         provider = object()
 
-        async def acompletion(self, **kwargs):
+        async def astream_completion(self, **kwargs):
             captured.update(kwargs)
-            return ModelResponse(
+            yield ModelResponse(
                 id="candidate-response",
                 model="candidate-model",
                 content='{"content":"# Candidate"}',
@@ -262,10 +329,31 @@ async def test_candidate_generation_sanitizes_provider_failure_before_agent_logg
         async def acompletion(self, **kwargs):
             raise RuntimeError("Authorization: Bearer should-not-leak")
 
+        async def astream_completion(self, **kwargs):
+            raise RuntimeError("Authorization: Bearer should-not-leak")
+            yield
+
     provider = _SanitizingProvider(FailingProvider())
 
     with pytest.raises(CandidateGenerationInfrastructureError) as exc_info:
         await provider.acompletion(messages=[])
+
+    assert exc_info.value.error_type == "RuntimeError"
+    assert "should-not-leak" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_candidate_generation_sanitizes_streaming_provider_failure() -> None:
+    class FailingProvider:
+        async def astream_completion(self, **kwargs):
+            raise RuntimeError("Authorization: Bearer should-not-leak")
+            yield
+
+    provider = _SanitizingProvider(FailingProvider())
+
+    with pytest.raises(CandidateGenerationInfrastructureError) as exc_info:
+        async for _ in provider.astream_completion(messages=[]):
+            pass
 
     assert exc_info.value.error_type == "RuntimeError"
     assert "should-not-leak" not in str(exc_info.value)
@@ -280,12 +368,17 @@ async def test_candidate_generation_preserves_safe_underlying_failure_type(
         async def acompletion(self, **kwargs):
             raise RuntimeError("Authorization: Bearer should-not-leak")
 
+        async def astream_completion(self, **kwargs):
+            raise RuntimeError("Authorization: Bearer should-not-leak")
+            yield
+
     class FakeModel:
         provider_name = "openai"
         provider = FailingProvider()
 
-        async def acompletion(self, **kwargs):
-            return await self.provider.acompletion(**kwargs)
+        async def astream_completion(self, **kwargs):
+            async for chunk in self.provider.astream_completion(**kwargs):
+                yield chunk
 
     monkeypatch.chdir(tmp_path)
     agent = CandidateGenerationAgent(

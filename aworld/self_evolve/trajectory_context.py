@@ -48,7 +48,7 @@ def build_trajectory_context_snapshots(
     *,
     source_kind: str = "trajectory_log",
     max_steps: int = 128,
-    max_text_chars: int = 16_384,
+    max_text_chars: int = 8_192,
 ) -> tuple[TrajectoryContextSnapshot, ...]:
     if max_steps <= 0:
         raise ValueError("max_steps must be positive")
@@ -225,20 +225,37 @@ def _recorded_prior_turns(
     if current_index is None or current_index == 0:
         return ()
     turns: list[TrajectoryContextTurn] = []
-    for index, message in enumerate(messages[:current_index]):
+    remaining_chars = max_text_chars
+    for index in range(current_index - 1, -1, -1):
+        message = messages[index]
         if not isinstance(message, Mapping):
             continue
-        content = _text_content(message.get("content"))
+        role = str(message.get("role") or "unknown").strip().lower()
+        # A recorded system/tool prompt belongs to the source environment. The
+        # current runner supplies its own system and tool context; replaying the
+        # old one as user text duplicates tens of thousands of tokens and can
+        # change the task's authority boundary. Conversational user/assistant
+        # turns remain useful portable context.
+        if role not in {"user", "assistant"}:
+            continue
+        content = sanitize_text(
+            _text_content(message.get("content")),
+            max_chars=remaining_chars,
+        )
         if not content:
             continue
         turns.append(
             TrajectoryContextTurn(
-                role=str(message.get("role") or "unknown"),
-                content=sanitize_text(content, max_chars=max_text_chars),
+                role=role,
+                content=content,
                 source_task_id=record.task_id,
                 evidence_ref=f"{record.task_id}:message-{index}",
             )
         )
+        remaining_chars -= len(content)
+        if remaining_chars <= 0:
+            break
+    turns.reverse()
     return tuple(turns)
 
 

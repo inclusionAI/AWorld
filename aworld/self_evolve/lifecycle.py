@@ -10,8 +10,8 @@ from typing import Any, Iterable, Mapping
 
 @dataclass(frozen=True)
 class SelfEvolveArtifactRetentionPolicy:
-    keep_latest_runs: int = 5
-    raw_artifact_retention_days: int = 14
+    keep_latest_runs: int = 2
+    raw_artifact_retention_days: int = 0
 
 
 _TERMINAL_STATUSES = {"succeeded", "failed", "rejected"}
@@ -19,6 +19,7 @@ _INTERRUPTED_APPLY_STATUSES = {"backup_written", "applying"}
 _RAW_RUN_DIRS = {
     "evidence",
     "replay",
+    "replay_adaptation",
 }
 _TEMP_RUN_DIRS = {
     "archived_workspace",

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from aworld.self_evolve.sanitization import sanitize_metric_value, sanitize_text
+from aworld.self_evolve.sanitization import (
+    sanitize_metric_value,
+    sanitize_source_text,
+    sanitize_text,
+)
 from aworld.self_evolve.types import EvaluationSummary
 
 _MAX_TEXT_CHARS = 240
 _MAX_LIST_ITEMS = 3
+_MAX_REPAIR_PACKAGE_CHARS = 64_000
+_MAX_REPAIR_FILE_CHARS = 32_000
 
 _SCALAR_METRIC_KEYS = {
     "lesson_id",
@@ -71,6 +77,8 @@ _SCALAR_METRIC_KEYS = {
     "failure_class",
     "repairable",
     "candidate_protocol_invalid_count",
+    "authoritative_replay_failure",
+    "interaction_progress",
 }
 
 _EVIDENCE_METRIC_KEYS = {
@@ -131,7 +139,47 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
             for item in diagnostics[:16]
             if isinstance(item, Mapping)
         ]
+    repair_candidate_package = _repair_candidate_package_summary(
+        metrics.get("repair_candidate_package")
+    )
+    if repair_candidate_package is not None:
+        result["repair_candidate_package"] = repair_candidate_package
     return result
+
+
+def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    raw_files = value.get("files")
+    if not isinstance(raw_files, list):
+        return None
+    remaining_chars = _MAX_REPAIR_PACKAGE_CHARS
+    files: list[dict[str, Any]] = []
+    for raw_file in raw_files[:8]:
+        if not isinstance(raw_file, Mapping):
+            continue
+        item: dict[str, Any] = {
+            "path": sanitize_text(raw_file.get("path"), max_chars=240),
+            "operation": sanitize_text(
+                raw_file.get("operation") or "upsert",
+                max_chars=40,
+            ),
+            "executable": raw_file.get("executable") is True,
+        }
+        content = raw_file.get("content")
+        if isinstance(content, str) and remaining_chars > 0:
+            content_limit = min(remaining_chars, _MAX_REPAIR_FILE_CHARS)
+            bounded_content = sanitize_source_text(content, max_chars=content_limit)
+            item["content"] = bounded_content
+            remaining_chars -= len(bounded_content)
+        files.append(item)
+    if not files:
+        return None
+    return {
+        "candidate_id": sanitize_text(value.get("candidate_id"), max_chars=160),
+        "rationale": sanitize_text(value.get("rationale"), max_chars=1_000),
+        "files": files,
+    }
 
 
 def _metric_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:

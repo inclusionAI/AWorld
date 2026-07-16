@@ -187,11 +187,36 @@ def _select_boundary_items(
         return indexed_items, []
     if max_steps == 1:
         return [indexed_items[-1]], indexed_items[:-1]
+    if max_steps == 2:
+        selected = [indexed_items[0], indexed_items[-1]]
+        return selected, indexed_items[1:-1]
 
-    head_count = max_steps // 2
-    tail_count = max_steps - head_count
-    selected = indexed_items[:head_count] + indexed_items[-tail_count:]
-    omitted = indexed_items[head_count:-tail_count]
+    head_count = 2 if max_steps >= 4 else 1
+    tail_count = 2 if max_steps >= 4 else 1
+    middle_count = max_steps - head_count - tail_count
+    selected_indexes = set(range(head_count))
+    selected_indexes.update(range(len(items) - tail_count, len(items)))
+    start_anchor = head_count - 1
+    end_anchor = len(items) - tail_count
+    for slot in range(middle_count):
+        source_index = round(
+            start_anchor
+            + (slot + 1)
+            * (end_anchor - start_anchor)
+            / (middle_count + 1)
+        )
+        selected_indexes.add(source_index)
+    if len(selected_indexes) < max_steps:
+        for source_index in range(head_count, len(items) - tail_count):
+            selected_indexes.add(source_index)
+            if len(selected_indexes) == max_steps:
+                break
+    selected = [indexed_items[index] for index in sorted(selected_indexes)]
+    omitted = [
+        indexed_items[index]
+        for index in range(len(items))
+        if index not in selected_indexes
+    ]
     return selected, omitted
 
 

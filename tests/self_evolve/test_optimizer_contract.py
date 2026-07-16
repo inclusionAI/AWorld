@@ -502,6 +502,9 @@ async def test_llm_mutator_prompt_requires_minimal_delta_and_preserve_list() -> 
     assert "pass_isolated_baseline_candidate_comparison" in (
         payload["acceptance_constraints"]
     )
+    assert "do_not_embed_dataset_specific_identifiers" in (
+        payload["acceptance_constraints"]
+    )
 
 
 @pytest.mark.asyncio
@@ -588,16 +591,17 @@ async def test_llm_mutator_prompts_population_with_distinct_strategy_slots() -> 
     assert len(result.candidates) == 3
     assert "population_strategy" in prompts[0]
     assert _prompt_payload(prompts[0])["population_strategy"] == (
-        "minimal_behavior_delta"
+        "quality_regression_repair"
     )
     assert _prompt_payload(prompts[1])["population_strategy"] == (
-        "quality_regression_repair"
+        "minimal_behavior_delta"
     )
     assert _prompt_payload(prompts[2])["population_strategy"] == (
         "efficiency_and_robustness"
     )
     assert "A1_groundedness_delta" in prompts[0]
     assert "A2_completeness_delta" in prompts[0]
+    assert "repair_candidate_package" in prompts[0]
 
 
 @pytest.mark.asyncio
@@ -718,7 +722,7 @@ async def test_llm_mutator_turns_low_efficiency_feedback_into_generic_strategy()
     prompt = prompts[0]
     instruction_text = prompt[: prompt.find("{")]
     payload = _prompt_payload(prompt)
-    assert payload["population_strategy"] == "minimal_behavior_delta"
+    assert payload["population_strategy"] == "quality_regression_repair"
     assert "score_improvement" in prompt
     assert "B2_efficiency" in prompt
     assert "plan_before_tools" in prompt
