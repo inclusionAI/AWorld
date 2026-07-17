@@ -751,6 +751,16 @@ def _fixture_probe_derivation_violations(
                 continue
             if not _fixture_selector_function_name(function.name):
                 continue
+            top_level_projection = _top_level_fixture_projection(function)
+            if top_level_projection is not None:
+                violations.append(
+                    {
+                        "path": path,
+                        "function": function.name,
+                        "line": int(top_level_projection.lineno),
+                        "construct": "top_level_fixture_projection",
+                    }
+                )
             gateway_container = _gateway_container_selected_instead_of_subtree(
                 function
             )
@@ -830,6 +840,42 @@ def _fixture_probe_derivation_violations(
                     }
                 )
     return violations[:32]
+
+
+def _top_level_fixture_projection(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> ast.Return | ast.Call | None:
+    """Reject task data helpers that expose the outer fixture envelope.
+
+    A trajectory fixture is commonly a list of action records.  Returning
+    ``FIXTURE_DATA`` or ``FIXTURE_DATA.get(key, [])`` from a task-plane helper
+    is non-empty but not a recorded response: it discards the gateway/payload
+    correlation and makes callers observe action metadata instead of task
+    records.  This check is deliberately limited to helpers that advertise
+    fixture/list/response normalization; arbitrary protocol code may still use
+    a local list or a concrete response projection.
+    """
+
+    name = function.name.casefold()
+    if not any(
+        marker in name
+        for marker in ("normalize", "fixture_list", "fixture_data", "response_data")
+    ):
+        return None
+    fixture_names = {"fixture_data", "fixture", "root"}
+    for node in ast.walk(function):
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Name):
+            if node.value.id.casefold() in fixture_names:
+                return node
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "get" or not isinstance(node.func.value, ast.Name):
+            continue
+        if node.func.value.id.casefold() not in fixture_names:
+            continue
+        if node.args and isinstance(node.args[-1], ast.List):
+            return node
+    return None
 
 
 def _gateway_container_selected_instead_of_subtree(

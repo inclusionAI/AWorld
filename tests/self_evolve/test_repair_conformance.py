@@ -193,6 +193,51 @@ def test_task_plane_conformance_rejects_global_response_after_data_plane_progres
     assert result.code == "operation_response_uncorrelated"
 
 
+def test_task_plane_conformance_rejects_outer_fixture_list_projection() -> None:
+    base_runtime = (
+        "def handle(operation):\n"
+        "    if operation == 'records.query':\n"
+        "        return {'records': []}\n"
+        "    return {}\n"
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(base_runtime),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    candidate = _candidate(
+        runtime_source=(
+            "FIXTURE_DATA = []\n"
+            "def _normalize_fixture_list(key):\n"
+            "    if isinstance(FIXTURE_DATA, list):\n"
+            "        return FIXTURE_DATA\n"
+            "    return []\n\n"
+            "def handle(operation):\n"
+            "    if operation == 'records.query':\n"
+            "        return {'records': _normalize_fixture_list('records')}\n"
+            "    return {}\n"
+        )
+    )
+    result = evaluate_candidate_source_conformance(candidate, contract)
+    assert result.passed is False
+    assert result.code == "forbidden_fixture_probe_derivation"
+    assert result.details["violations"] == [
+        {
+            "path": "replay/runtime.py",
+            "function": "_normalize_fixture_list",
+            "line": 4,
+            "construct": "top_level_fixture_projection",
+        }
+    ]
+
+
 def test_source_conformance_requires_observed_branch_or_called_helper_change() -> None:
     base_runtime = (
         "def recorded_items():\n"

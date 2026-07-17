@@ -73,6 +73,7 @@ def _write_capability_skill(
     invalid_evidence: bool = False,
     mutate_runtime: bool = False,
     undeclared_output: bool = False,
+    nested_fixture: bool = False,
 ) -> Path:
     skill = root / "fixture-skill"
     replay = skill / "replay"
@@ -103,7 +104,14 @@ def _write_capability_skill(
             "('recorded fixture a' if 'compile-a' in args.output "
             "else 'recorded fixture b')"
             if nondeterministic
-            else "'recorded fixture'"
+            else (
+                "json.dumps({'wrapper': [{'action_result': "
+                "[{'action_name': 'records.query', 'content': "
+                "json.dumps({'records': [{'id': 1, 'value': 'recorded'}]})}]}]}, "
+                "ensure_ascii=False)"
+                if nested_fixture
+                else "'recorded fixture'"
+            )
         )
         evidence_expression = (
             "['context:case-1:sha256:wrong']"
@@ -586,6 +594,43 @@ def test_recorded_response_index_reconstructs_nested_operation_payloads() -> Non
             "non_empty": True,
         }
     ]
+
+
+def test_freeze_places_operation_index_next_to_nested_fixture(tmp_path: Path) -> None:
+    skill = _write_capability_skill(tmp_path, nested_fixture=True)
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+    fixture_value = json.dumps(
+        {
+            "wrapper": [
+                {
+                    "action_result": [
+                        {
+                            "action_name": "records.query",
+                            "content": json.dumps(
+                                {"records": [{"id": 1, "value": "recorded"}]},
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ]
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill, recorded_value=fixture_value),
+        tmp_path / "compile",
+    )
+
+    fixture = Path(frozen.frozen_root) / "fixtures" / "fixture.txt"
+    sidecar = fixture.with_suffix(".responses.json")
+    assert sidecar.is_file()
+    sidecar_payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert sidecar_payload["operations"] == ["records.query"]
+    assert sidecar_payload["records"][0]["non_empty"] is True
 
 
 def test_discovery_returns_none_without_manifest(tmp_path: Path) -> None:
