@@ -11,7 +11,11 @@ from aworld.runners.batch import DeterministicTaskBatchExecutor
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationInfrastructureError,
 )
-from aworld.self_evolve.candidate_protocol import CandidateProtocolError
+from aworld.self_evolve.candidate_protocol import (
+    CandidateProtocolError,
+    merge_candidate_repair_output,
+    normalize_candidate_output,
+)
 from aworld.self_evolve.concurrency import (
     AWorldCandidatePopulationExecutor,
     SelfEvolveConcurrencyPolicy,
@@ -236,6 +240,58 @@ async def test_schema_repair_reuses_the_same_slot_agent() -> None:
     assert len(agents[0].tasks) == 2
     assert all(task.agent is agents[0] for task in agents[0].tasks)
     assert result.diagnostics["candidate_population_execution"]["repair_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_representation_repair_preserves_valid_initial_candidate_files() -> None:
+    async def run_task(task: Task):
+        if task.id.endswith("-repair"):
+            answer = json.dumps(
+                {
+                    "content": "# Demo\n\nUse the recorded replay runtime.\n",
+                    "rationale": "repair the invalid candidate rationale",
+                }
+            )
+        else:
+            answer = json.dumps(
+                {
+                    "content": "# Demo\n\nOld guidance.\n",
+                    "rationale": 7,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "operation": "upsert",
+                            "content": "def respond():\n    return {'recorded': True}\n",
+                        }
+                    ],
+                }
+            )
+        return {task.id: TaskResponse(id=task.id, success=True, answer=answer)}
+
+    executor = AWorldCandidatePopulationExecutor(
+        agent_factory=_FakeCandidateAgent,
+        parse_output=lambda raw: normalize_candidate_output(
+            raw,
+            current_content="# Demo\n\nOld guidance.\n",
+        ),
+        repair_prompt_builder=lambda invalid, error: f"repair: {error}",
+        repair_output_merger=merge_candidate_repair_output,
+        task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
+    )
+
+    population = await executor.run(("generate",), max_concurrency=1)
+
+    assert population.slots[0].status == "succeeded"
+    assert population.slots[0].repaired is True
+    assert population.slots[0].output is not None
+    assert population.slots[0].output["files"] == [
+        {
+            "path": "replay/runtime.py",
+            "operation": "upsert",
+            "content": "def respond():\n    return {'recorded': True}\n",
+            "executable": False,
+        }
+    ]
 
 
 @pytest.mark.asyncio

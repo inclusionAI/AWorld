@@ -228,6 +228,135 @@ async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> No
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_inherits_primary_content_for_files_only_delta() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "rationale": "publish reusable package-owned runtime behavior",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "def respond():\n    return {'recorded': True}\n",
+                }
+            ],
+        }
+
+    current_content = "# Demo\n\nExisting skill guidance.\n"
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].content == current_content
+    assert result.diagnostics["candidate_strategies"][0]["materialization"] == (
+        "files_only"
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n\nRepair recorded task-plane behavior.\n",
+            "rationale": "Repair the late observed operation.",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "def respond():\n    return {'recorded': True}\n",
+                }
+            ],
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-failed",
+                dataset_split="validation",
+                metrics={
+                    "failed_gates": ["candidate_replay"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "interaction_progress": 21,
+                    "candidate_validation_diagnostics": [
+                        {
+                            "code": "implement_observed_endpoint_interactions",
+                            "stage": "replay_capability",
+                            "observed_request_operations": [
+                                "session.open",
+                                "records.query",
+                            ],
+                        }
+                    ],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-failed",
+                        "files": [
+                            {
+                                "path": "replay/compiler.py",
+                                "operation": "upsert",
+                                "content": "def compile_fixture():\n    return 'preserved'\n",
+                            },
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def respond():\n    return {}\n",
+                            }
+                        ],
+                    },
+                },
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    payload = _prompt_payload(prompts[0])
+    assert payload["repair_conformance"]["focus_candidate_id"] == (
+        "candidate-failed"
+    )
+    strategy = result.diagnostics["candidate_strategies"][0]
+    assert strategy["repair_conformance"] == payload["repair_conformance"]
+    assert strategy["repair_conformance"]["late_observed_operations"] == [
+        "session.open",
+        "records.query",
+    ]
+    assert "Omit focused package files that do not change" in prompts[0]
+    assert "must recurse through mapping values and sequence items" in prompts[0]
+    assert "merely declaring it while traversing every gateway dict" in prompts[0]
+    assert "Calling the scalar selector directly on a gateway is forbidden" in prompts[0]
+    assert "Phase 2 is the processing of payloads inside found gateways" in prompts[0]
+    assert "required_fixture_probe_operations" in prompts[0]
+    assert "cannot be replaced by a later repetition" in prompts[0]
+    assert "response_contains must remain a recorded scalar leaf" in prompts[0]
+    assert "runtime response must carry the surrounding decoded container" in prompts[0]
+    assert "Never remove or relocate the contract's exact_probe" in prompts[0]
+    assert result.candidates[0].files == (
+        CandidateFileDelta(
+            path="replay/compiler.py",
+            content="def compile_fixture():\n    return 'preserved'",
+        ),
+        CandidateFileDelta(
+            path="replay/runtime.py",
+            content="def respond():\n    return {'recorded': True}\n",
+        ),
+    )
+
+
+@pytest.mark.asyncio
 async def test_trace_reflective_llm_mutator_prompt_contains_replay_requirements() -> None:
     prompts: list[str] = []
 
@@ -541,6 +670,8 @@ async def test_llm_mutator_prompt_uses_canonical_compiled_context_contract() -> 
     assert "candidate_output_contract" not in payload
     assert "If feedback mentions" not in instruction
     assert "return the value of expected_output" in instruction.lower()
+    assert "same selected leaf may be reused by multiple probes" in instruction
+    assert "diagnostic evidence rather than a value to hard-code" in instruction
 
 
 @pytest.mark.asyncio

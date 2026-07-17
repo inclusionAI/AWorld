@@ -105,6 +105,7 @@ def test_replay_authoring_contract_is_derived_from_public_protocol_constants() -
     assert result_shape["services"]["items"]["protocol_probes"] == {
         "required_for": "skill_runtime",
         "type": "non-empty array",
+        "max_items": 16,
         "items": {
             "kind": {"enum": ["http", "tcp", "websocket"]},
             "path": "absolute path beginning with /; used by http",
@@ -116,9 +117,11 @@ def test_replay_authoring_contract_is_derived_from_public_protocol_constants() -
                 "required bounded UTF-8 request for tcp or websocket"
             ),
             "response_contains": (
-                "required literal substring selected from the declared response_fixture "
-                "for tcp or websocket; include it inside the protocol-valid response "
-                "envelope. An HTTP discovery probe with "
+                "required recorded value or semantically decoded JSON/JSONL container "
+                "selected from the declared response_fixture for tcp or websocket; "
+                "include it inside the protocol-valid response envelope. JSON "
+                "reserialization may differ in whitespace or escaping but must decode "
+                "to a fixture descendant. An HTTP discovery probe with "
                 "validate_advertised_websockets may instead assert a structural "
                 "protocol field; its paired websocket data-plane probe remains "
                 "fixture-derived. Required on at least one probe per service"
@@ -145,8 +148,9 @@ def test_replay_authoring_contract_is_derived_from_public_protocol_constants() -
         "include at least one data-plane probe with expected response content; a health-only probe is invalid",
         "for every runtime_required requirement use skill_runtime, not a static fixture transport",
         "treat fixture bytes as an arbitrary JSON root (object, array, scalar, or null) or non-JSON bytes; normalize the decoded value before mapping-only operations such as .get instead of assuming an object root",
-        "derive response_contains at compile time as a bounded non-empty literal substring of the selected fixture bytes and include that exact substring inside a protocol-valid representative runtime response; when the response uses serialization, select an encoding-stable fixture token matching a conservative form such as [A-Za-z0-9_]{8,32}, use the same extraction function in compiler and runtime, and place the exact token in a dedicated response field so its bytes remain unchanged; never replace a required protocol envelope with raw fixture text",
-        "for each stateful WebSocket entry point, send a representative bounded request_text and require fixture-derived response_contains content inside the protocol-valid response to that request",
+        "for observed task-plane operations, recursively traverse nested fixture objects and arrays, preserve protocol-required scalar types, and select non-empty recorded descendants for response fields instead of returning placeholders, empty arrays, or empty schemas",
+        "derive response_contains at compile time from a deterministic non-empty recorded response value without regex, length, digest, or placeholder filtering; for trajectory envelopes discover action_result or tool_outputs gateways before traversing content, response, result, output, body, or data payloads, recursively decode nested JSON, and use the same bounded selector in compiler and runtime; include the selected value and its surrounding recorded container inside the protocol-valid response so multiple recorded values remain available; never fall back to request or metadata branches after a response gateway is found and never replace a required protocol envelope with raw fixture text",
+        "for each stateful WebSocket entry point, send at least one representative bounded request_text and require fixture-derived response_contains content inside the protocol-valid response to that request; implement other observed operations without declaring redundant assertion probes unless each exact response truthfully contains its declared expectation",
         "route Upgrade: websocket through the handler's actual GET dispatch and continue processing required frames; an unregistered helper or handshake-only stub is insufficient",
         "keep an upgraded WebSocket connection open for multiple frames, answer each client ping with a matching pong, then process the declared data request without closing after a one-shot unsolicited frame",
         "preserve opaque request correlation and routing metadata on synchronous responses and on follow-up completion events for multiplexed sessions or channels; matching only the numeric request id is insufficient when the client supplied an additional routing envelope",

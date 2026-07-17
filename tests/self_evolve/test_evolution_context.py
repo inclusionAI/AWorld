@@ -282,11 +282,82 @@ def test_prompt_payload_assigns_one_recent_repair_focus_per_population_member() 
         "candidate_id"
     ] == "candidate-task"
     for payload in (first_payload, second_payload):
-        assert sum(
-            "repair_candidate_package" in item
+        assert all(
+            "repair_candidate_package" not in item
             for item in payload["validation_feedback"]
-        ) == 1
-        assert payload["validation_feedback"][0] == payload["repair_focus"]
+        )
+        assert payload["validation_feedback"][0] != payload["repair_focus"]
+
+
+def test_prompt_payload_compiles_machine_checked_repair_as_focused_context() -> None:
+    runtime_source = "def handle(value):\n    return value\n" + ("# source\n" * 200)
+    feedback = EvaluationSummary(
+        variant_id="candidate-focused",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "failed_gate",
+                    "details": {
+                        "stage": "repair_conformance",
+                        "code": "late_fixture_probe_not_recorded",
+                        "required_reconstruction_algorithm": [
+                            "decode the recorded response container"
+                        ],
+                    },
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-focused",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": runtime_source,
+                    }
+                ],
+            },
+        },
+    )
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            trace_packs=(
+                TracePack(
+                    pack_id="trajectory:focused",
+                    source_kind="trajectory_log",
+                    task_id="focused",
+                    steps=(
+                        TraceEvidenceStep(
+                            evidence_id="focused:1",
+                            source_index=0,
+                            original_id="1",
+                            state={"messages": [{"content": "x" * 8_000}]},
+                            action={"content": "repair"},
+                            reward=None,
+                            agent_id="main",
+                            tool_names=(),
+                        ),
+                    ),
+                ),
+            ),
+            validation_feedback=(feedback,),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    assert payload["repair_context_mode"] == "focused_candidate_delta"
+    assert payload["trainable_cases"] == []
+    assert payload["trace_evidence"] == []
+    assert payload["lesson_records"] == []
+    assert payload["repair_focus"]["repair_candidate_package"]["files"][0][
+        "content"
+    ] == runtime_source.strip()
+    assert serialized.count("def handle(value)") == 1
 
 
 def test_prompt_payload_omits_repair_focus_without_candidate_source() -> None:
@@ -295,6 +366,56 @@ def test_prompt_payload_omits_repair_focus_without_candidate_source() -> None:
     payload = context.to_prompt_payload(candidate_index=0)
 
     assert "repair_focus" not in payload
+
+
+def test_prompt_payload_omits_support_that_failed_same_specific_repair_gate() -> None:
+    def repair_feedback(candidate_id: str, code: str) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_repair_conformance"],
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": "failed_gate",
+                        "details": {
+                            "stage": "repair_conformance",
+                            "code": code,
+                        },
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "content": f"# {candidate_id}\n",
+                        }
+                    ],
+                },
+            },
+        )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                repair_feedback(
+                    "candidate-one",
+                    "late_fixture_probe_not_recorded",
+                ),
+                repair_feedback(
+                    "candidate-two",
+                    "late_fixture_probe_outside_recorded_payload",
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert "repair_support" not in payload
 
 
 def test_prompt_payload_prioritizes_real_task_protocol_failure_over_newer_probe() -> None:
@@ -444,7 +565,7 @@ def test_prompt_payload_prefers_current_run_frontier_over_historical_authoritati
     assert "repair_candidate_package" not in historical
 
 
-def test_prompt_payload_uses_recent_alternative_for_population_diversity() -> None:
+def test_prompt_payload_keeps_all_population_members_on_task_plane_frontier() -> None:
     def feedback(candidate_id: str, code: str) -> EvaluationSummary:
         return EvaluationSummary(
             variant_id=candidate_id,
@@ -472,7 +593,7 @@ def test_prompt_payload_uses_recent_alternative_for_population_diversity() -> No
             _request(),
             validation_feedback=(
                 feedback("candidate-task-old", "implement_observed_endpoint_interactions"),
-                feedback("candidate-task-new", "failed to deserialize protocol response"),
+                feedback("candidate-task-new", "implement_observed_endpoint_interactions"),
                 feedback("candidate-probe-newest", "verify_declared_protocol_probe_branch"),
             ),
             prior_feedback=(),
@@ -487,7 +608,13 @@ def test_prompt_payload_uses_recent_alternative_for_population_diversity() -> No
     ] == "candidate-task-new"
     assert second_payload["repair_focus"]["repair_candidate_package"][
         "candidate_id"
-    ] == "candidate-probe-newest"
+    ] == "candidate-task-new"
+    assert first_payload["repair_conformance"][
+        "requires_fixture_derived_probe"
+    ] is True
+    assert second_payload["repair_conformance"] == first_payload[
+        "repair_conformance"
+    ]
 
 
 def test_prompt_payload_prioritizes_async_completion_frontier_over_probe_repair() -> None:
@@ -643,6 +770,11 @@ def test_prompt_payload_prefers_task_plane_timeout_over_transport_abort() -> Non
                         "code": code,
                         "stage": "replay_capability",
                         "reason": "bounded candidate failure",
+                        "observed_request_operations": (
+                            ["session.open", "records.query"]
+                            if code == "implement_observed_endpoint_interactions"
+                            else []
+                        ),
                     }
                 ],
                 "repair_candidate_package": {
@@ -678,6 +810,309 @@ def test_prompt_payload_prefers_task_plane_timeout_over_transport_abort() -> Non
     assert payload["repair_focus"]["repair_candidate_package"][
         "candidate_id"
     ] == "candidate-task-plane"
+    assert payload["repair_conformance"]["focus_candidate_id"] == (
+        "candidate-task-plane"
+    )
+    assert payload["repair_conformance"]["late_observed_operations"] == [
+        "session.open",
+        "records.query",
+    ]
+    assert payload["repair_conformance"]["requires_fixture_derived_probe"] is True
+
+
+def test_prompt_payload_does_not_regress_task_plane_frontier_to_transport_conformance() -> None:
+    task_plane = EvaluationSummary(
+        variant_id="candidate-task-plane",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "interaction_progress": 138,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "stage": "replay_capability",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-task-plane",
+                "files": [
+                    {"path": "replay/runtime.py", "content": "# task plane\n"}
+                ],
+            },
+        },
+    )
+    conformance = EvaluationSummary(
+        variant_id="candidate-conformance",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "interaction_progress": 8,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "diagnose_protocol_handler_abort",
+                    "stage": "replay_capability",
+                    "observed_fixture_root_types": ["array"],
+                },
+                {
+                    "code": "failed_gate",
+                    "stage": "candidate_replay",
+                    "details": {
+                        "stage": "repair_conformance",
+                        "code": "repair_probe_execution_failed",
+                    },
+                },
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-conformance",
+                "files": [
+                    {"path": "replay/runtime.py", "content": "# conformance\n"}
+                ],
+            },
+        },
+    )
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(task_plane, conformance),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-task-plane"
+    assert payload["repair_support"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-conformance"
+
+
+def test_prompt_payload_prioritizes_conformance_that_inherits_task_plane_frontier() -> None:
+    def feedback(
+        candidate_id: str,
+        *,
+        code: str,
+        inherited_task_plane: bool,
+    ) -> EvaluationSummary:
+        contract = {
+            "focus_candidate_id": "candidate-parent",
+            "failure_codes": (
+                ["implement_observed_endpoint_interactions"]
+                if inherited_task_plane
+                else ["diagnose_protocol_handler_abort"]
+            ),
+            "interaction_progress": 138 if inherited_task_plane else 8,
+            "base_file_fingerprints": {
+                "replay/runtime.py": "sha256:old"
+            },
+            "required_branch_paths": ["replay/runtime.py"],
+            "base_branch_fingerprints": {},
+            "late_observed_operations": (
+                ["records.query"] if inherited_task_plane else []
+            ),
+            "requires_fixture_derived_probe": inherited_task_plane,
+        }
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "interaction_progress": contract["interaction_progress"],
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": "failed_gate",
+                        "stage": "candidate_replay",
+                        "details": {
+                            "stage": "repair_conformance",
+                            "code": code,
+                            "repair_conformance": contract,
+                        },
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "content": f"# {candidate_id}",
+                        }
+                    ],
+                },
+            },
+        )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                feedback(
+                    "candidate-data-frontier-conformance",
+                    code="late_fixture_probe_missing",
+                    inherited_task_plane=True,
+                ),
+                feedback(
+                    "candidate-transport-conformance-newer",
+                    code="repair_probe_execution_failed",
+                    inherited_task_plane=False,
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-data-frontier-conformance"
+    assert payload["repair_conformance"]["requires_fixture_derived_probe"] is True
+    assert payload["repair_conformance"]["late_observed_operations"] == [
+        "records.query"
+    ]
+
+
+def test_prompt_payload_prefers_verified_task_rollout_over_sibling_static_conformance() -> None:
+    direct = EvaluationSummary(
+        variant_id="candidate-task-rollout",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-task-rollout",
+                "files": [
+                    {"path": "replay/runtime.py", "content": "# task rollout\n"}
+                ],
+            },
+        },
+    )
+    sibling_static = EvaluationSummary(
+        variant_id="candidate-sibling-static",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "failed_gate",
+                    "details": {
+                        "stage": "repair_conformance",
+                        "code": "late_fixture_probe_not_recorded",
+                        "repair_conformance": {
+                            "focus_candidate_id": "candidate-parent",
+                            "failure_codes": [
+                                "implement_observed_endpoint_interactions"
+                            ],
+                            "interaction_progress": 0,
+                            "base_file_fingerprints": {
+                                "replay/runtime.py": "sha256:parent"
+                            },
+                            "required_branch_paths": ["replay/runtime.py"],
+                            "base_branch_fingerprints": {},
+                            "late_observed_operations": ["records.query"],
+                            "requires_fixture_derived_probe": True,
+                        },
+                    },
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-sibling-static",
+                "files": [
+                    {"path": "replay/runtime.py", "content": "# static reject\n"}
+                ],
+            },
+        },
+    )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(direct, sibling_static),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-task-rollout"
+
+
+def test_prompt_payload_prefers_deep_dynamic_conformance_over_newer_static_failure() -> None:
+    def conformance_feedback(
+        candidate_id: str,
+        code: str,
+    ) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "interaction_progress": 10,
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": "failed_gate",
+                        "stage": "candidate_replay",
+                        "details": {
+                            "stage": "repair_conformance",
+                            "code": code,
+                            "repair_conformance": {
+                                "focus_candidate_id": "candidate-parent",
+                                "failure_codes": [
+                                    "verify_declared_protocol_probe_branch"
+                                ],
+                                "interaction_progress": 10,
+                                "base_file_fingerprints": {
+                                    "replay/runtime.py": "sha256:old"
+                                },
+                                "required_branch_paths": [
+                                    "replay/runtime.py"
+                                ],
+                                "base_branch_fingerprints": {},
+                            },
+                        },
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "content": f"# {candidate_id}",
+                        }
+                    ],
+                },
+            },
+        )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                conformance_feedback(
+                    "candidate-dynamic",
+                    "repair_probe_execution_failed",
+                ),
+                conformance_feedback(
+                    "candidate-static-newer",
+                    "repair_branch_unchanged",
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-dynamic"
 
 
 def test_prompt_payload_prefers_complete_probe_mismatch_over_handler_abort() -> None:

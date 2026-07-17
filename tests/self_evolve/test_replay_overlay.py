@@ -45,6 +45,8 @@ from aworld.self_evolve.replay import (
     _probe_replay_service,
     _read_websocket_frame,
     _replay_capability_fixture_summaries,
+    replay_capability_fixture_leaf_values,
+    replay_capability_fixture_response_leaf_values,
     _replay_service_failure_with_stderr,
     _replay_failure_outcome,
     _run_replay_cli,
@@ -128,6 +130,426 @@ def test_replay_capability_fixture_summary_exposes_shape_without_content(
         }
     ]
     assert "secret-value" not in json.dumps(summaries)
+
+
+def test_replay_capability_fixture_leaf_values_walk_arbitrary_nested_arrays(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(
+        json.dumps(
+            {
+                "envelope": [
+                    {"response": {"items": []}},
+                    {"response": [{"payload": "recorded nested value"}]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    values = replay_capability_fixture_leaf_values(capability)
+
+    assert values == {
+        "fixtures/recorded.json": ("recorded nested value",),
+    }
+
+
+def test_fixture_response_leaf_values_decode_nested_trajectory_outputs(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture.parent.mkdir(parents=True)
+    encoded_payload = json.dumps(
+        {
+            "result": {
+                "items": [{"text": "recorded response value"}]
+            }
+        }
+    )
+    fixture.write_text(
+        json.dumps(
+            [
+                {
+                    "action": {
+                        "result": {"value": "ignored result value"},
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "arguments": json.dumps(
+                                        {"request": "ignored request value"}
+                                    )
+                                }
+                            }
+                        ]
+                    },
+                    "state": {
+                        "input": {
+                            "action_result": [
+                                {
+                                    "name": "ignored tool name",
+                                    "tool_call_id": "ignored-tool-call-id",
+                                    "success": True,
+                                    "content": encoded_payload
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    values = replay_capability_fixture_response_leaf_values(capability)
+
+    assert values == {
+        "fixtures/recorded.json": (
+            encoded_payload,
+            "recorded response value",
+        ),
+    }
+
+
+def test_fixture_response_leaf_values_find_nested_gateway_without_top_level_trace_keys(
+    tmp_path: Path,
+) -> None:
+    """Nested trajectory gateways must not leak envelope metadata as payload."""
+
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(
+        json.dumps(
+            {
+                "context": {
+                    "state": {
+                        "action_result": [
+                            {
+                                "tool_name": "ignored metadata",
+                                "success": True,
+                                "content": json.dumps(
+                                    {
+                                        "records": [
+                                            {"payload": "late recorded value"}
+                                        ]
+                                    }
+                                ),
+                            }
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    values = replay_capability_fixture_response_leaf_values(capability)
+
+    assert values == {
+        "fixtures/recorded.json": (
+            json.dumps({"records": [{"payload": "late recorded value"}]}),
+            "late recorded value",
+        ),
+    }
+
+
+def test_fixture_response_leaf_values_treat_tool_outputs_as_gateway_before_payload(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(
+        json.dumps(
+            {
+                "wrapper": {
+                    "tool_outputs": [
+                        {
+                            "tool_name": "ignored tool name",
+                            "success": True,
+                            "response": {
+                                "items": [{"text": "tool output value"}]
+                            },
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    values = replay_capability_fixture_response_leaf_values(capability)
+
+    assert values == {
+        "fixtures/recorded.json": ("tool output value",),
+    }
+
+
+def test_fixture_response_leaf_values_skip_metadata_inside_encoded_content_envelope(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture.parent.mkdir(parents=True)
+    encoded_content = json.dumps(
+        {
+            "type": "text",
+            "content": "actual recorded output",
+            "is_done": False,
+        }
+    )
+    fixture.write_text(
+        json.dumps(
+            {
+                "nested": {
+                    "action_result": [
+                        {
+                            "success": "False",
+                            "content": encoded_content,
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    values = replay_capability_fixture_response_leaf_values(capability)
+
+    assert values == {
+        "fixtures/recorded.json": (
+            encoded_content,
+            "actual recorded output",
+        ),
+    }
+
+
+def test_fixture_response_leaf_values_support_deep_bounded_nesting(
+    tmp_path: Path,
+) -> None:
+    """Discovery is bounded by nodes, not an arbitrary shallow depth cutoff."""
+
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture.parent.mkdir(parents=True)
+    nested: object = {
+        "action_result": [
+            {"content": "deep recorded output", "success": "False"}
+        ]
+    }
+    for _ in range(72):
+        nested = {"wrapper": nested}
+    fixture.write_text(json.dumps(nested), encoding="utf-8")
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    values = replay_capability_fixture_response_leaf_values(capability)
+
+    assert values == {"fixtures/recorded.json": ("deep recorded output",)}
+
+
+def test_fixture_response_leaf_values_keep_message_after_encoded_success_metadata(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(
+        json.dumps(
+            {
+                "action_result": [
+                    {
+                        "content": json.dumps(
+                            {
+                                "success": True,
+                                "message": "recorded message output",
+                            }
+                        )
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    values = replay_capability_fixture_response_leaf_values(capability)
+
+    assert values == {
+        "fixtures/recorded.json": (
+            json.dumps({"success": True, "message": "recorded message output"}),
+            "recorded message output",
+        )
+    }
 
 
 def test_candidate_skill_overlay_materializes_shadow_root_without_mutating_real_skill(
@@ -380,6 +802,51 @@ def test_protocol_probe_mismatch_reports_actionable_bounded_diagnostics() -> Non
     assert len(message) < 500
 
 
+def test_http_probe_accepts_semantically_equivalent_json_descendant() -> None:
+    expected_value = {
+        "success": True,
+        "message": "recorded fixture\nwith escaped lines",
+    }
+
+    class SemanticDiscoveryHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            body = json.dumps(
+                {"recorded_container": expected_value},
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SemanticDiscoveryHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _probe_replay_service(
+            "127.0.0.1",
+            server.server_port,
+            "http",
+            "/json/version",
+            response_contains=json.dumps(
+                expected_value,
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_advertised_websocket_invalid_port_reports_actionable_protocol_error() -> None:
     response = (
         b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
@@ -552,6 +1019,210 @@ def test_skill_runtime_websocket_data_plane_probe_validates_response() -> None:
                 "/stateful",
                 request_text='{"op":"read"}',
                 response_contains="missing fixture",
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_task_plane_probe_requires_fixture_content_in_nonempty_correlated_result() -> None:
+    class CorrelatedDataPlaneHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            key = self.headers["Sec-WebSocket-Key"]
+            accept = base64.b64encode(
+                hashlib.sha1(
+                    (
+                        key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                    ).encode("ascii")
+                ).digest()
+            ).decode("ascii")
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+
+            opcode, payload = self._read_masked_frame()
+            assert opcode == 0x9
+            self.connection.sendall(bytes([0x8A, len(payload)]) + payload)
+            opcode, payload = self._read_masked_frame()
+            assert opcode == 0x1
+            request = json.loads(payload)
+            if request["method"] == "records.empty":
+                response_payload = {
+                    "id": request["id"],
+                    "result": [],
+                    "replay_token": "recorded fixture",
+                }
+            elif request["method"] == "records.query":
+                response_payload = {
+                    "id": request["id"],
+                    "result": {"records": ["recorded fixture"]},
+                }
+            else:
+                response_payload = {
+                    "id": request["id"],
+                    "result": {
+                        "records": [
+                            "recorded fixture",
+                            "second recorded value",
+                        ]
+                    },
+                }
+            response = json.dumps(response_payload).encode("utf-8")
+            self.connection.sendall(bytes([0x81, len(response)]) + response)
+
+        def _read_masked_frame(self) -> tuple[int, bytes]:
+            header = self.connection.recv(2)
+            length = header[1] & 0x7F
+            mask = self.connection.recv(4)
+            payload = self.connection.recv(length)
+            return (
+                header[0] & 0x0F,
+                bytes(
+                    value ^ mask[index % 4]
+                    for index, value in enumerate(payload)
+                ),
+            )
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), CorrelatedDataPlaneHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(
+            ReplayServiceProtocolError,
+            match="fixture-derived content must be inside a non-empty correlated result",
+        ):
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "websocket",
+                "/stateful",
+                request_text='{"id":7,"method":"records.empty"}',
+                response_contains="recorded fixture",
+                require_nonempty_correlated_response=True,
+            )
+
+        _probe_replay_service(
+            "127.0.0.1",
+            server.server_port,
+            "websocket",
+            "/stateful",
+            request_text='{"id":8,"method":"records.query"}',
+            response_contains="recorded fixture",
+            require_nonempty_correlated_response=True,
+        )
+
+        with pytest.raises(
+            ReplayServiceProtocolError,
+            match="surrounding recorded response context",
+        ):
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "websocket",
+                "/stateful",
+                request_text='{"id":9,"method":"records.query"}',
+                response_contains="recorded fixture",
+                require_nonempty_correlated_response=True,
+                required_recorded_response_values=(
+                    "recorded fixture",
+                    "second recorded value",
+                ),
+            )
+
+        _probe_replay_service(
+            "127.0.0.1",
+            server.server_port,
+            "websocket",
+            "/stateful",
+            request_text='{"id":10,"method":"records.structured"}',
+            response_contains="recorded fixture",
+            require_nonempty_correlated_response=True,
+            required_recorded_response_values=(
+                "recorded fixture",
+                "second recorded value",
+            ),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_task_plane_probe_accepts_short_recorded_response_leaf() -> None:
+    """Fixture reconstruction must not impose an arbitrary token length."""
+
+    class ShortLeafHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            key = self.headers["Sec-WebSocket-Key"]
+            accept = base64.b64encode(
+                hashlib.sha1(
+                    (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode(
+                        "ascii"
+                    )
+                ).digest()
+            ).decode("ascii")
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            opcode, payload = self._read_masked_frame()
+            assert opcode == 0x9
+            self.connection.sendall(bytes([0x8A, len(payload)]) + payload)
+            opcode, payload = self._read_masked_frame()
+            assert opcode == 0x1
+            request = json.loads(payload)
+            response = json.dumps(
+                {
+                    "id": request["id"],
+                    "result": {"content": "OK"},
+                }
+            ).encode("utf-8")
+            self.connection.sendall(bytes([0x81, len(response)]) + response)
+
+        def _read_masked_frame(self) -> tuple[int, bytes]:
+            header = self.connection.recv(2)
+            length = header[1] & 0x7F
+            mask = self.connection.recv(4)
+            payload = self.connection.recv(length)
+            return (
+                header[0] & 0x0F,
+                bytes(
+                    value ^ mask[index % 4]
+                    for index, value in enumerate(payload)
+                ),
+            )
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ShortLeafHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(
+            ReplayServiceProtocolError,
+            match="surrounding recorded response context",
+        ):
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "websocket",
+                "/stateful",
+                request_text='{"id":11,"method":"records.query"}',
+                response_contains="OK",
+                require_nonempty_correlated_response=True,
+                required_recorded_response_values=("OK", "YES"),
             )
     finally:
         server.shutdown()

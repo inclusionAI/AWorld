@@ -65,6 +65,7 @@ from aworld.self_evolve.candidate_package import candidate_package_fingerprint
 from aworld.self_evolve.candidate_protocol import (
     CANDIDATE_OUTPUT_CONTRACT,
     CandidateProtocolError,
+    merge_candidate_repair_output,
     normalize_candidate_output,
 )
 from aworld.self_evolve.capability_contracts import (
@@ -94,11 +95,21 @@ from aworld.self_evolve.replay import (
     candidate_replay_is_comparable,
     candidate_replay_pair_coverage,
     load_candidate_replay_result,
+    preflight_frozen_replay_capability,
+    replay_capability_fixture_leaf_values,
+    replay_capability_fixture_response_leaf_values,
+    replay_capability_fixture_summaries,
     replay_dataset_fingerprint,
     _distributed_member_repetitions,
     _load_variant_result_from_dir,
     _is_replayable_user_task_case,
     _select_replay_case,
+)
+from aworld.self_evolve.repair_conformance import (
+    RepairConformanceContract,
+    RepairConformanceResult,
+    evaluate_candidate_source_conformance,
+    evaluate_compiled_probe_conformance,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
@@ -905,6 +916,11 @@ class SelfEvolveRunner:
             duplicate_population_stalls = 0
 
             screening_candidates = candidate_population
+            repair_conformance_contracts = (
+                _candidate_repair_conformance_contracts(
+                    optimizer_result.diagnostics
+                )
+            )
             candidate_population, screening_report = await self._screen_candidate_population(
                 run_id=run_id,
                 target=target,
@@ -912,6 +928,7 @@ class SelfEvolveRunner:
                 candidates=candidate_population,
                 apply_policy=apply_policy,
                 capability_requirements=replay_preflight.requirements,
+                repair_conformance_contracts=repair_conformance_contracts,
             )
             if screening_report is not None:
                 population_screening_reports.append(screening_report)
@@ -1310,7 +1327,11 @@ class SelfEvolveRunner:
         candidates: tuple[CandidateVariant, ...],
         apply_policy: str,
         capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
+        repair_conformance_contracts: Mapping[
+            str, RepairConformanceContract
+        ] | None = None,
     ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
+        repair_conformance_contracts = repair_conformance_contracts or {}
         screening_dataset = _candidate_screening_dataset(
             dataset,
             capability_requirements=capability_requirements,
@@ -1318,7 +1339,11 @@ class SelfEvolveRunner:
         if (
             apply_policy != "auto_verified"
             or not candidates
-            or (len(candidates) == 1 and not capability_requirements)
+            or (
+                len(candidates) == 1
+                and not capability_requirements
+                and not repair_conformance_contracts
+            )
             or screening_dataset is None
             or not self.replay_enabled
             or self.candidate_replay_backend is None
@@ -1349,6 +1374,43 @@ class SelfEvolveRunner:
             ),
         )
         for candidate in candidates:
+            conformance_contract = repair_conformance_contracts.get(
+                candidate.candidate_id
+            )
+            if conformance_contract is not None:
+                source_conformance = evaluate_candidate_source_conformance(
+                    candidate,
+                    conformance_contract,
+                )
+                if not source_conformance.passed:
+                    attempts.append(
+                        _repair_conformance_screening_attempt(
+                            candidate,
+                            source_conformance,
+                            contract=conformance_contract,
+                        )
+                    )
+                    continue
+                conformance_gate = (
+                    await self._preflight_candidate_repair_conformance(
+                        run_id=run_id,
+                        target=target,
+                        dataset=screening_dataset,
+                        candidate=candidate,
+                        contract=conformance_contract,
+                    )
+                )
+                if not conformance_gate.passed:
+                    attempts.append(
+                        {
+                            "candidate_id": candidate.candidate_id,
+                            "screening_candidate_id": None,
+                            "passed": False,
+                            "reason": conformance_gate.reason,
+                            "details": conformance_gate.details,
+                        }
+                    )
+                    continue
             screening_candidate = replace(
                 candidate,
                 candidate_id=f"{candidate.candidate_id}--screening",
@@ -1369,6 +1431,18 @@ class SelfEvolveRunner:
                     ),
                 )
             )
+            if (
+                conformance_contract is not None
+                and replay_gate is not None
+                and not replay_gate.passed
+            ):
+                replay_gate = replace(
+                    replay_gate,
+                    details={
+                        **dict(replay_gate.details or {}),
+                        "repair_conformance": conformance_contract.to_dict(),
+                    },
+                )
             if replay_result is not None and (
                 replay_result.member_results or replay_result.baseline.succeeded
             ):
@@ -1443,6 +1517,137 @@ class SelfEvolveRunner:
                 "candidate_repetitions": 1,
                 "attempts": attempts,
             },
+        )
+
+    async def _preflight_candidate_repair_conformance(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+        candidate: CandidateVariant,
+        contract: RepairConformanceContract,
+    ) -> GateResult:
+        if target.identity.path is None:
+            return _repair_conformance_gate(
+                RepairConformanceResult(
+                    passed=False,
+                    code="repair_target_path_missing",
+                    reason="repair conformance requires a filesystem skill target",
+                    details={},
+                ),
+                contract=contract,
+            )
+        overlay = create_candidate_skill_overlay(
+            workspace_root=self.store.workspace_root,
+            run_id=run_id,
+            candidate=candidate,
+            target_skill_path=target.identity.path,
+            baseline_skill_roots=getattr(target, "baseline_skill_roots", ()),
+        )
+        adaptation, adaptation_gate = self._prepare_replay_adaptation(
+            run_id=run_id,
+            dataset=dataset,
+            capability_skill_root=overlay.candidate_skill_path.parent,
+            candidate_package_fingerprint=candidate_package_fingerprint(candidate),
+            emit_progress=False,
+        )
+        if adaptation is None or not adaptation_gate.passed:
+            return GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=False,
+                reason=adaptation_gate.reason,
+                details={
+                    **dict(adaptation_gate.details or {}),
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "stage": "repair_conformance_compile",
+                    "code": "repair_capability_compile_failed",
+                    "repair_conformance": contract.to_dict(),
+                },
+            )
+        capability = adaptation.replay_capability
+        if capability is None:
+            return _repair_conformance_gate(
+                RepairConformanceResult(
+                    passed=False,
+                    code="repair_capability_missing",
+                    reason=(
+                        "repair candidate did not compile a frozen replay capability"
+                    ),
+                    details={"focus_candidate_id": contract.focus_candidate_id},
+                ),
+                contract=contract,
+            )
+        probe_conformance = evaluate_compiled_probe_conformance(
+            capability.services,
+            contract,
+            fixture_leaf_values=replay_capability_fixture_leaf_values(
+                capability
+            ),
+            fixture_response_leaf_values=(
+                replay_capability_fixture_response_leaf_values(capability)
+            ),
+        )
+        if not probe_conformance.passed:
+            return _repair_conformance_gate(
+                probe_conformance,
+                contract=contract,
+            )
+        artifact_dir = (
+            self.store.run_path(run_id)
+            / "repair_conformance"
+            / _safe_artifact_name(candidate.candidate_id)
+        )
+        try:
+            await preflight_frozen_replay_capability(
+                capability,
+                artifact_dir=artifact_dir,
+                required_nonempty_probe_operations=(
+                    _repair_conformance_required_nonempty_operations(contract)
+                ),
+                required_recorded_probe_operations=(
+                    (
+                        contract.required_fixture_probe_operations
+                        or contract.late_observed_operations[-1:]
+                    )
+                    if contract.requires_fixture_derived_probe
+                    else ()
+                ),
+            )
+        except Exception as exc:
+            return _repair_conformance_gate(
+                RepairConformanceResult(
+                    passed=False,
+                    code="repair_probe_execution_failed",
+                    reason=(
+                        "candidate declared repair probe failed before task rollout"
+                    ),
+                    details={
+                        "type": type(exc).__name__,
+                        "reason": sanitize_text(str(exc), max_chars=400),
+                        "artifact_root": str(artifact_dir),
+                        "diagnostics": _repair_conformance_failure_diagnostics(
+                            capability,
+                            artifact_dir=artifact_dir,
+                        ),
+                    },
+                ),
+                contract=contract,
+            )
+        return _repair_conformance_gate(
+            RepairConformanceResult(
+                passed=True,
+                code="repair_conformance_passed",
+                reason=(
+                    "candidate changed the failed branch and passed declared probes"
+                ),
+                details={
+                    "focus_candidate_id": contract.focus_candidate_id,
+                    "artifact_root": str(artifact_dir),
+                },
+            ),
+            contract=contract,
         )
 
     async def _evaluate_iteration_candidate(
@@ -2801,6 +3006,7 @@ def optimize_from_cli_request(
                 current_content=target_adapter.load_current_content(),
             ),
             repair_prompt_builder=_candidate_mutation_repair_prompt,
+            repair_output_merger=merge_candidate_repair_output,
         )
         if mutation_model_config is not None
         else None
@@ -2963,7 +3169,10 @@ def _candidate_mutation_repair_prompt(
     payload = {
         "candidate_schema": dict(CANDIDATE_OUTPUT_CONTRACT),
         "diagnostics": [diagnostic],
-        "invalid_response": sanitize_text(invalid_output, max_chars=16_000),
+        # Candidate packages commonly contain complete compiler/runtime sources.
+        # Preserve a bounded full package when possible so representation repair
+        # does not reconstruct missing file tails from a small prefix.
+        "invalid_response": sanitize_text(invalid_output, max_chars=64_000),
     }
     return (
         "Repair representation only using the supplied schema and diagnostic. "
@@ -5105,6 +5314,140 @@ def _screening_attempt_requires_candidate_repair(
     )
 
 
+def _candidate_repair_conformance_contracts(
+    optimizer_diagnostics: Mapping[str, object],
+) -> dict[str, RepairConformanceContract]:
+    raw_strategies = optimizer_diagnostics.get("candidate_strategies")
+    if not isinstance(raw_strategies, (list, tuple)):
+        return {}
+    contracts: dict[str, RepairConformanceContract] = {}
+    for strategy in raw_strategies:
+        if not isinstance(strategy, Mapping):
+            continue
+        candidate_id = strategy.get("candidate_id")
+        raw_contract = strategy.get("repair_conformance")
+        if (
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or not isinstance(raw_contract, Mapping)
+        ):
+            continue
+        contract = RepairConformanceContract.from_dict(raw_contract)
+        if contract.focus_candidate_id and contract.required_branch_paths:
+            contracts[candidate_id] = contract
+    return contracts
+
+
+def _repair_conformance_gate(
+    result: RepairConformanceResult,
+    *,
+    contract: RepairConformanceContract | None = None,
+) -> GateResult:
+    details = {
+        "failure_class": "candidate",
+        "repairable": not result.passed,
+        "stage": "repair_conformance",
+        "code": result.code,
+        **dict(result.details),
+    }
+    if contract is not None:
+        details["repair_conformance"] = contract.to_dict()
+    return GateResult(
+        gate_name="candidate_repair_conformance",
+        passed=result.passed,
+        reason=result.reason,
+        details=details,
+    )
+
+
+def _repair_conformance_required_nonempty_operations(
+    contract: RepairConformanceContract,
+) -> tuple[str, ...]:
+    """Select operations whose exact probes must prove result-plane content.
+
+    A task-plane contract always needs this validation. An exact repair probe
+    also needs it when its diagnostic captured an observed request operation;
+    otherwise a candidate can satisfy substring matching by echoing a mapping
+    key or unrelated envelope metadata instead of returning recorded content.
+    """
+
+    if not contract.late_observed_operations:
+        return ()
+    if contract.requires_fixture_derived_probe or contract.exact_probe is not None:
+        return (
+            contract.required_fixture_probe_operations
+            or contract.late_observed_operations[-1:]
+        )
+    return ()
+
+
+def _repair_conformance_screening_attempt(
+    candidate: CandidateVariant,
+    result: RepairConformanceResult,
+    *,
+    contract: RepairConformanceContract,
+) -> dict[str, object]:
+    gate = _repair_conformance_gate(result, contract=contract)
+    return {
+        "candidate_id": candidate.candidate_id,
+        "screening_candidate_id": None,
+        "passed": False,
+        "reason": gate.reason,
+        "details": gate.details,
+    }
+
+
+def _repair_conformance_failure_diagnostics(
+    capability: Any,
+    *,
+    artifact_dir: Path,
+) -> dict[str, object]:
+    diagnostics: dict[str, object] = {}
+    fixture_summaries = replay_capability_fixture_summaries(capability)
+    if fixture_summaries:
+        diagnostics["replay_fixture_summaries"] = fixture_summaries
+
+    trace_excerpts: list[dict[str, str]] = []
+    if artifact_dir.is_dir():
+        inspected = 0
+        for path in artifact_dir.rglob("*"):
+            inspected += 1
+            if inspected > 128 or len(trace_excerpts) >= 8:
+                break
+            if path.is_symlink() or not path.is_file():
+                continue
+            name = path.name.lower()
+            if "protocol_trace" not in name and name not in {
+                "stderr.txt",
+                "stdout.txt",
+            }:
+                continue
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(0, 2)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 4_096))
+                    tail = handle.read(4_096).decode(
+                        "utf-8", errors="replace"
+                    )
+            except OSError:
+                continue
+            bounded_tail = sanitize_text(tail, max_chars=4_000).strip()
+            if not bounded_tail:
+                continue
+            trace_excerpts.append(
+                {
+                    "path": sanitize_path_ref(
+                        path.relative_to(artifact_dir).as_posix()
+                    ),
+                    "tail": bounded_tail,
+                }
+            )
+    if trace_excerpts:
+        diagnostics["replay_service_protocol_traces"] = trace_excerpts
+    return diagnostics
+
+
 def _candidate_screening_repair_feedback(
     candidates: Iterable[CandidateVariant],
     report: Mapping[str, object] | None,
@@ -5556,12 +5899,43 @@ def _diagnostic_classification_text(value: Any) -> str:
     return "\n".join(values)
 
 
+def _candidate_repair_diagnostic_view(
+    details: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Select candidate-side evidence from a paired replay gate.
+
+    Baseline failures remain in the persisted gate details for comparison, but
+    they must not redirect repair attribution away from the candidate variant.
+    """
+
+    candidate_failures: list[Mapping[str, object]] = []
+    direct = details.get("candidate_failure")
+    if isinstance(direct, Mapping):
+        candidate_failures.append(direct)
+    failed_members = details.get("failed_members")
+    if isinstance(failed_members, list):
+        for member in failed_members[:64]:
+            if not isinstance(member, Mapping):
+                continue
+            failure = member.get("candidate_failure")
+            if isinstance(failure, Mapping):
+                candidate_failures.append(failure)
+    if not candidate_failures:
+        return details
+    return {
+        "failure_class": details.get("failure_class"),
+        "repairable": details.get("repairable"),
+        "candidate_failures": candidate_failures,
+    }
+
+
 def _typed_gate_feedback_metrics(
     failed_gates: Iterable[GateResult],
 ) -> dict[str, object]:
     failed_gate_items = tuple(failed_gates)
     diagnostics: list[Mapping[str, object]] = []
     classification_fragments: list[str] = []
+    classification_views: list[Mapping[str, object]] = []
     failure_classes: set[str] = set()
     repairable_values: list[bool] = []
     for gate in failed_gate_items:
@@ -5574,7 +5948,11 @@ def _typed_gate_feedback_metrics(
         if not isinstance(details, Mapping):
             diagnostics.append(gate_diagnostic)
             continue
-        classification_fragments.append(_diagnostic_classification_text(details))
+        classification_view = _candidate_repair_diagnostic_view(details)
+        classification_views.append(classification_view)
+        classification_fragments.append(
+            _diagnostic_classification_text(classification_view)
+        )
         bounded_details = sanitize_metric_value(details, max_chars=400)
         if isinstance(bounded_details, Mapping):
             gate_diagnostic["details"] = dict(bounded_details)
@@ -5598,44 +5976,24 @@ def _typed_gate_feedback_metrics(
     if repairable_values:
         result["repairable"] = all(repairable_values)
     interaction_progress = _diagnostic_interaction_progress(
-        tuple(
-            gate.details
-            for gate in failed_gate_items
-            if gate.details is not None
-        )
+        tuple(classification_views)
     )
     routing_continuity_gaps = _diagnostic_routing_continuity_gaps(
-        tuple(
-            gate.details
-            for gate in failed_gate_items
-            if gate.details is not None
-        )
+        tuple(classification_views)
     )
     fixture_root_types = _diagnostic_fixture_root_types(
-        tuple(
-            gate.details
-            for gate in failed_gate_items
-            if gate.details is not None
-        )
+        tuple(classification_views)
     )
     observed_request_operations = _diagnostic_observed_request_operations(
-        tuple(
-            gate.details
-            for gate in failed_gate_items
-            if gate.details is not None
-        )
+        tuple(classification_views)
     )
     protocol_probe_mismatch = _diagnostic_protocol_probe_mismatch(
-        tuple(
-            gate.details
-            for gate in failed_gate_items
-            if gate.details is not None
-        )
+        tuple(classification_views)
     )
     if interaction_progress:
         result["interaction_progress"] = interaction_progress
     diagnostic_text = json.dumps(
-        diagnostics,
+        classification_views,
         ensure_ascii=False,
         sort_keys=True,
         default=str,
@@ -5673,19 +6031,31 @@ def _typed_gate_feedback_metrics(
                 "failure_class": "candidate",
                 "repairable": True,
                 **protocol_probe_mismatch,
+                "observed_request_operations": list(
+                    observed_request_operations
+                ),
                 "reason": (
                     "Execute the declared request_text against the exact handler branch "
-                    "in the returned candidate source and verify substring containment: "
-                    "its serialized response must contain response_contains while preserving "
+                    "in the returned candidate source and verify semantic containment: "
+                    "its decoded response must contain response_contains while preserving "
                     "the protocol envelope. Compare the bounded expected_preview with the "
                     "response_preview; response length does not need to equal expected length. "
                     f"For this failure the exact bounded expected_preview is "
-                    f"{expected_preview!r}; put that literal in the response produced by "
-                    "the declared branch and self-check the serialized bytes before returning. "
-                    "If serialization escapes the selected fixture text, derive the same "
-                    "bounded encoding-stable token matching [A-Za-z0-9_]{8,32} in both "
-                    "compiler and runtime, and place that exact token in a dedicated "
-                    "response field so its bytes remain unchanged. "
+                    f"{expected_preview!r}; use it only as bounded diagnostic evidence, "
+                    "not as a value to hard-code. A differing fixture-derived value in the "
+                    "runtime response indicates that compiler and runtime selected different "
+                    "leaves. Use one canonical deterministic selector in compiler and runtime "
+                    "with identical JSON/JSONL parsing, recursive traversal, filtering, ordering, "
+                    "deduplication, and fallback semantics. Prefer sharing the selector source "
+                    "or passing the compiled selected value through generated configuration so "
+                    "the two sides cannot drift. A single selected leaf may be reused by multiple "
+                    "probes; do not invent mapping-key or raw-token fallbacks merely to make each "
+                    "probe token unique. Place the derived value in the exact declared "
+                    "response branch and self-check the serialized bytes before returning. "
+                    "Every declared probe is executed. Do not copy one assertion onto every "
+                    "observed operation: remove redundant probes for branches not required by "
+                    "exact_probe or the final late_observed_operation, while still implementing "
+                    "those operations for the real task. "
                     "A rationale claim is not a repair unless that returned candidate "
                     "source branch actually changes."
                 ),
@@ -5741,6 +6111,46 @@ def _typed_gate_feedback_metrics(
             },
         )
     elif (
+        "discovery methods failed" in diagnostic_text
+        or "failed to deserialize" in diagnostic_text
+        or "missing field" in diagnostic_text
+        or "doesn't implement the expected protocol" in diagnostic_text
+        or "does not implement the expected protocol" in diagnostic_text
+        or "websocket protocol error" in diagnostic_text
+        or (
+            "not a " in diagnostic_text
+            and " endpoint" in diagnostic_text
+        )
+        or (
+            "replay timed out" in diagnostic_text
+            and interaction_progress >= 4
+            and bool(observed_request_operations)
+        )
+    ):
+        diagnostics.insert(
+            0,
+            {
+                "code": "implement_observed_endpoint_interactions",
+                "stage": "replay_capability",
+                "failure_class": "candidate",
+                "repairable": True,
+                "observed_request_operations": list(observed_request_operations),
+                "reason": (
+                    "The candidate's declared probes passed but the real task still "
+                    "rejected the supplied endpoint protocol. Use bounded task diagnostics "
+                    "and trace interaction summaries to implement the actual observed "
+                    "task-plane stateful interactions and add representative probes for "
+                    "them. The late observed request operations are: "
+                    + (", ".join(observed_request_operations) or "unknown")
+                    + ". Recursively traverse arbitrary fixture objects and arrays, select "
+                    "the recorded evidence needed by those operations, and make at least one "
+                    "representative probe assert non-empty fixture-derived response content. "
+                    "Do not return placeholder tokens or empty schemas, and do not preserve "
+                    "a readiness-only runtime merely because its self-declared probes pass."
+                ),
+            },
+        )
+    elif (
         "hung during navigation" in diagnostic_text
         or "still navigating" in diagnostic_text
         or "waiting for the page to load" in diagnostic_text
@@ -5766,45 +6176,6 @@ def _typed_gate_feedback_metrics(
                     "echoing only the numeric request id can leave the client waiting. Add a bounded "
                     "probe that verifies the completion notification rather than only "
                     "readiness or the initial response."
-                ),
-            },
-        )
-    elif (
-        "discovery methods failed" in diagnostic_text
-        or "failed to deserialize" in diagnostic_text
-        or "missing field" in diagnostic_text
-        or "doesn't implement the expected protocol" in diagnostic_text
-        or "does not implement the expected protocol" in diagnostic_text
-        or "websocket protocol error" in diagnostic_text
-        or (
-            "not a " in diagnostic_text
-            and " endpoint" in diagnostic_text
-        )
-        or (
-            "replay timed out" in diagnostic_text
-            and interaction_progress >= 4
-        )
-    ):
-        diagnostics.insert(
-            0,
-            {
-                "code": "implement_observed_endpoint_interactions",
-                "stage": "replay_capability",
-                "failure_class": "candidate",
-                "repairable": True,
-                "observed_request_operations": list(observed_request_operations),
-                "reason": (
-                    "The candidate's declared probes passed but the real task still "
-                    "rejected the supplied endpoint protocol. Use bounded task diagnostics "
-                    "and trace interaction summaries to implement the actual observed "
-                    "task-plane stateful interactions and add representative probes for "
-                    "them. The late observed request operations are: "
-                    + (", ".join(observed_request_operations) or "unknown")
-                    + ". Recursively traverse arbitrary fixture objects and arrays, select "
-                    "the recorded evidence needed by those operations, and make at least one "
-                    "representative probe assert non-empty fixture-derived response content. "
-                    "Do not return placeholder tokens or empty schemas, and do not preserve "
-                    "a readiness-only runtime merely because its self-declared probes pass."
                 ),
             },
         )
@@ -5987,7 +6358,11 @@ def _diagnostic_routing_continuity_gaps(value: Any) -> tuple[str, ...]:
             } if isinstance(raw_fields, list) else set()
             correlation = record.get("correlation")
             correlation_fields = (
-                {str(key) for key in correlation}
+                {
+                    str(key)
+                    for key, nested in correlation.items()
+                    if nested is not None and nested != ""
+                }
                 if isinstance(correlation, Mapping)
                 else set()
             )

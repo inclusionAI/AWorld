@@ -12,6 +12,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayCapabilityRequirement,
 )
 from aworld.self_evolve.replay_capability import (
+    REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES,
     REPLAY_CAPABILITY_MANIFEST_PATH,
     REPLAY_CAPABILITY_PROTOCOL_VERSION,
     REPLAY_CAPABILITY_REQUEST_SCHEMA_VERSION,
@@ -306,6 +307,7 @@ class ReplayCapabilityContractProvider:
                             "protocol_probes": {
                                 "required_for": "skill_runtime",
                                 "type": "non-empty array",
+                                "max_items": REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES,
                                 "items": {
                                     "kind": {
                                         "enum": list(
@@ -324,9 +326,12 @@ class ReplayCapabilityContractProvider:
                                         "required bounded UTF-8 request for tcp or websocket"
                                     ),
                                     "response_contains": (
-                                        "required literal substring selected from the declared "
+                                        "required recorded value or semantically decoded "
+                                        "JSON/JSONL container selected from the declared "
                                         "response_fixture for tcp or websocket; include it "
-                                        "inside the protocol-valid response envelope. An HTTP "
+                                        "inside the protocol-valid response envelope. JSON "
+                                        "reserialization may differ in whitespace or escaping "
+                                        "but must decode to a fixture descendant. An HTTP "
                                         "discovery probe with validate_advertised_websockets may "
                                         "instead assert a structural protocol field; its paired "
                                         "websocket data-plane probe remains fixture-derived. "
@@ -384,17 +389,25 @@ class ReplayCapabilityContractProvider:
                     "treat fixture bytes as an arbitrary JSON root (object, array, scalar, "
                     "or null) or non-JSON bytes; normalize the decoded value before "
                     "mapping-only operations such as .get instead of assuming an object root",
-                    "derive response_contains at compile time as a bounded non-empty literal "
-                    "substring of the selected fixture bytes and include that exact substring "
-                    "inside a protocol-valid representative runtime response; when the "
-                    "response uses serialization, select an encoding-stable fixture token "
-                    "matching a conservative form such as [A-Za-z0-9_]{8,32}, use the same "
-                    "extraction function in compiler and runtime, and place the exact token in "
-                    "a dedicated response field so its bytes remain unchanged; never replace a "
-                    "required protocol envelope with raw fixture text",
-                    "for each stateful WebSocket entry point, send a representative bounded "
-                    "request_text and require fixture-derived response_contains content inside "
-                    "the protocol-valid response to that request",
+                    "for observed task-plane operations, recursively traverse nested fixture "
+                    "objects and arrays, preserve protocol-required scalar types, and select "
+                    "non-empty recorded descendants for response fields instead of returning "
+                    "placeholders, empty arrays, or empty schemas",
+                    "derive response_contains at compile time from a deterministic non-empty "
+                    "recorded response value without regex, length, digest, or placeholder "
+                    "filtering; for trajectory envelopes discover action_result or tool_outputs "
+                    "gateways before traversing content, response, result, output, body, or data "
+                    "payloads, recursively decode nested JSON, and use the same bounded selector "
+                    "in compiler and runtime; include the selected value and its surrounding "
+                    "recorded container inside the protocol-valid response so multiple recorded "
+                    "values remain available; never fall back to request or metadata branches "
+                    "after a response gateway is found and never replace a required protocol "
+                    "envelope with raw fixture text",
+                    "for each stateful WebSocket entry point, send at least one representative "
+                    "bounded request_text and require fixture-derived response_contains content "
+                    "inside the protocol-valid response to that request; implement other observed "
+                    "operations without declaring redundant assertion probes unless each exact "
+                    "response truthfully contains its declared expectation",
                     "route Upgrade: websocket through the handler's actual GET dispatch "
                     "and continue processing required frames; an unregistered helper or "
                     "handshake-only stub is insufficient",

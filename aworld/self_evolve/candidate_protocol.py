@@ -5,6 +5,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+import json_repair
+
 from aworld.self_evolve.candidate_package import validate_candidate_files
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.types import CandidateFileDelta
@@ -22,7 +24,9 @@ CANDIDATE_OUTPUT_CONTRACT: Mapping[str, object] = {
     "content": (
         "optional complete primary target content for a deliberate full rewrite; "
         "when the current content starts with YAML frontmatter, preserve that "
-        "frontmatter; do not use for a small delta to a large existing target"
+        "frontmatter; do not use for a small delta to a large existing target; "
+        "may be omitted with patch_intent, or when files themselves implement "
+        "the reusable skill-package behavior delta"
     ),
     "patch_intent": {
         "preferred_when": (
@@ -119,6 +123,59 @@ def normalize_candidate_output(
     return _validate_candidate_payload(payload, current_content=current_content)
 
 
+def merge_candidate_repair_output(
+    invalid_output: str,
+    repaired_output: str,
+    error: ValueError,
+) -> str:
+    """Merge representation-only repair fields without dropping valid package files.
+
+    A large initial package may fail only because its primary body is absent or
+    malformed. The repair Task should not have to reproduce every already-valid
+    candidate-owned file through a bounded repair prompt. Semantic validation still
+    runs on the merged object immediately afterwards.
+    """
+
+    del error
+    initial = _candidate_payload_fields(_decode_single_json_object(invalid_output))
+    repaired = _candidate_payload_fields(_decode_single_json_object(repaired_output))
+    merged = {**initial, **repaired}
+    initial_files = initial.get("files")
+    repaired_files = repaired.get("files")
+    if (
+        isinstance(initial_files, list)
+        and initial_files
+        and (not isinstance(repaired_files, list) or not repaired_files)
+    ):
+        merged["files"] = initial_files
+    if not repaired.get("rationale") and isinstance(initial.get("rationale"), str):
+        merged["rationale"] = initial["rationale"]
+    return json.dumps(merged, ensure_ascii=False, separators=(",", ":"))
+
+
+def _candidate_payload_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    envelope = payload.get("candidate_output_contract")
+    if not isinstance(envelope, Mapping):
+        return {
+            key: payload[key]
+            for key in _CANDIDATE_FIELDS
+            if key in payload
+        }
+    fields = {
+        key: envelope[key]
+        for key in _CANDIDATE_FIELDS
+        if key in envelope
+    }
+    fields.update(
+        {
+            key: payload[key]
+            for key in _CANDIDATE_FIELDS
+            if key in payload
+        }
+    )
+    return fields
+
+
 def _decode_single_json_object(raw_output: Any) -> dict[str, Any]:
     if isinstance(raw_output, Mapping):
         return dict(raw_output)
@@ -146,13 +203,54 @@ def _decode_single_json_object(raw_output: Any) -> dict[str, Any]:
     try:
         decoded = json.loads(text)
     except json.JSONDecodeError:
-        decoded = _extract_one_surrounded_object(text)
+        if text.startswith("{"):
+            if _has_multiple_top_level_objects(text):
+                raise CandidateProtocolError(
+                    "multiple_json_objects",
+                    "candidate response must contain exactly one JSON object",
+                    repairable=False,
+                )
+            try:
+                decoded = json_repair.repair_json(text, return_objects=True)
+            except Exception:
+                decoded = _extract_one_surrounded_object(text)
+        else:
+            decoded = _extract_one_surrounded_object(text)
     if not isinstance(decoded, Mapping):
         raise CandidateProtocolError(
             "candidate_response_not_object",
             "candidate response must contain one JSON object",
         )
     return dict(decoded)
+
+
+def _has_multiple_top_level_objects(text: str) -> bool:
+    """Detect concatenated objects without mistaking nested candidate fields."""
+
+    depth = 0
+    completed = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            depth += 1
+        elif character == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                completed += 1
+                if completed > 1:
+                    return True
+    return False
 
 
 def _extract_one_surrounded_object(text: str) -> Mapping[str, Any]:
@@ -216,6 +314,11 @@ def _validate_candidate_payload(
 
     content = payload.get("content")
     patch_intent = payload.get("patch_intent")
+    raw_files_for_body = payload.get("files", [])
+    has_package_file_delta = (
+        isinstance(raw_files_for_body, list)
+        and any(isinstance(item, Mapping) for item in raw_files_for_body)
+    )
     has_content = isinstance(content, str)
     has_patch_intent = isinstance(patch_intent, Mapping)
     if has_content and has_patch_intent:
@@ -224,11 +327,11 @@ def _validate_candidate_payload(
             "candidate must use exactly one of content or patch_intent",
             field_path="content|patch_intent",
         )
-    if not has_content and not has_patch_intent:
+    if not has_content and not has_patch_intent and not has_package_file_delta:
         raise CandidateProtocolError(
             "missing_candidate_body",
-            "candidate requires content or patch_intent",
-            field_path="content|patch_intent",
+            "candidate requires content, patch_intent, or package file deltas",
+            field_path="content|patch_intent|files",
         )
     if has_content and not content.strip():
         raise CandidateProtocolError(
@@ -332,6 +435,6 @@ def _validate_candidate_payload(
     }
     if has_content:
         normalized["content"] = content
-    else:
+    elif has_patch_intent:
         normalized["patch_intent"] = dict(patch_intent)
     return normalized

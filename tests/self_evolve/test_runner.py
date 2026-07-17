@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -55,6 +56,8 @@ from aworld.self_evolve.runner import (
     _replay_gate_details,
     _replay_adaptation_exception_details,
     _replay_report,
+    _repair_conformance_failure_diagnostics,
+    _repair_conformance_required_nonempty_operations,
     _select_iteration_state,
     _candidate_screening_dataset,
     _source_config_from_stored_dataset_recipe,
@@ -63,6 +66,9 @@ from aworld.self_evolve.runner import (
     optimize_from_cli_request,
 )
 from aworld.self_evolve.replay_capability import ReplayCapabilityError
+from aworld.self_evolve.repair_conformance import (
+    compile_repair_conformance_contract,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
@@ -1939,7 +1945,9 @@ def test_protocol_probe_mismatch_feedback_requires_exact_branch_verification() -
     assert diagnostics[0]["code"] == "verify_declared_protocol_probe_branch"
     assert "request_text" in diagnostics[0]["reason"]
     assert "returned candidate source" in diagnostics[0]["reason"]
-    assert "substring containment" in diagnostics[0]["reason"]
+    assert "semantic containment" in diagnostics[0]["reason"]
+    assert "Every declared probe is executed" in diagnostics[0]["reason"]
+    assert "remove redundant probes" in diagnostics[0]["reason"]
     assert diagnostics[0]["probe_kind"] == "websocket"
     assert diagnostics[0]["probe_path"] == "/ws"
     assert diagnostics[0]["expected_preview"] == "ext_info"
@@ -1947,6 +1955,10 @@ def test_protocol_probe_mismatch_feedback_requires_exact_branch_verification() -
         '{"id":1,"result":{"targetInfos":[]}}'
     )
     assert "ext_info" in diagnostics[0]["reason"]
+    assert "compiler and runtime" in diagnostics[0]["reason"]
+    assert "one canonical deterministic selector" in diagnostics[0]["reason"]
+    assert "hard-code" in diagnostics[0]["reason"]
+    assert "put that literal" not in diagnostics[0]["reason"]
 
 
 def test_task_level_endpoint_mismatch_requires_real_interaction_repair() -> None:
@@ -2109,6 +2121,139 @@ def test_progressing_replay_timeout_requires_task_plane_interaction_repair() -> 
         "Runtime.evaluate",
     ]
     assert feedback[0].metrics["interaction_progress"] == 138
+
+
+def test_progressing_task_plane_timeout_outranks_stale_navigation_output() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish a responsive protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'token': 'placeholder'}\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "stdout_tail": (
+                                "earlier output: 正在导航到首页; 等待页面加载; "
+                                "later output: snapshot and extraction commands ran"
+                            ),
+                            "replay_service_protocol_traces": [
+                                {
+                                    "tail": (
+                                        '{"direction":"in","sequence":149,'
+                                        '"kind":"ws_request","correlation":'
+                                        '{"method":"Runtime.evaluate"}}\n'
+                                        '{"direction":"out","sequence":150,'
+                                        '"kind":"ws_response","correlation":{"id":62}}\n'
+                                        '{"direction":"in","sequence":151,'
+                                        '"kind":"ws_request","correlation":'
+                                        '{"method":"Runtime.evaluate"}}\n'
+                                        '{"direction":"out","sequence":152,'
+                                        '"kind":"ws_response","correlation":{"id":63}}'
+                                    )
+                                }
+                            ],
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert diagnostics[0]["observed_request_operations"] == ["Runtime.evaluate"]
+    assert feedback[0].metrics["interaction_progress"] == 152
+
+
+def test_candidate_repair_diagnostics_ignore_baseline_only_routing_gap() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish a responsive protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'items': []}\n",
+            ),
+        ),
+    )
+    baseline_trace = (
+        '{"direction":"in","sequence":20,"kind":"ws_request",'
+        '"correlation":{"method":"records.query","sessionId":"s-1"}}\n'
+        '{"direction":"out","sequence":21,"kind":"ws_response",'
+        '"correlation":{"id":1}}'
+    )
+    candidate_trace = (
+        '{"direction":"in","sequence":98,"kind":"ws_request",'
+        '"correlation":{"method":"records.query","sessionId":"s-1"}}\n'
+        '{"direction":"out","sequence":99,"kind":"ws_response",'
+        '"correlation":{"id":8,"sessionId":"s-1"}}'
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [
+                                {"tail": baseline_trace}
+                            ]
+                        },
+                    },
+                    "candidate_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [
+                                {"tail": candidate_trace}
+                            ],
+                            "stdout_tail": "recorded response was empty",
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert diagnostics[0]["observed_request_operations"] == ["records.query"]
+    assert feedback[0].metrics["interaction_progress"] == 99
 
 
 def test_task_level_endpoint_schema_mismatch_requires_real_interaction_repair() -> None:
@@ -2344,6 +2489,69 @@ def test_task_level_protocol_trace_identifies_dropped_routing_fields() -> None:
     assert diagnostics[0]["routing_fields"] == ["sessionId"]
     assert "every response and follow-up event" in diagnostics[0]["reason"]
     assert feedback[0].metrics["interaction_progress"] == 33
+
+
+def test_null_routing_correlation_does_not_create_a_false_gap() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish multiplexed runtime",
+    )
+    trace = "\n".join(
+        json.dumps(item)
+        for item in (
+            {
+                "direction": "in",
+                "sequence": 98,
+                "kind": "ws_request",
+                "fields": ["id", "method"],
+                "correlation": {
+                    "id": 37,
+                    "method": "records.query",
+                    "sessionId": None,
+                },
+            },
+            {
+                "direction": "out",
+                "sequence": 99,
+                "kind": "ws_response",
+                "fields": ["id", "result"],
+                "correlation": {"id": 37},
+            },
+        )
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [
+                                {"tail": trace}
+                            ]
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert diagnostics[0]["observed_request_operations"] == ["records.query"]
 
 
 def test_iteration_validation_feedback_does_not_mix_validation_delta_into_held_out() -> None:
@@ -3944,6 +4152,348 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     assert report is not None
     assert report["generated_candidate_count"] == 1
     assert report["attempted_candidate_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_population_screening_rejects_unchanged_repair_branch_before_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input={"content": "Replay task A"}),
+            EvalCase(case_id="task-b", input={"content": "Replay task B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 1},
+            split_seed="seed",
+            splits={
+                "train": ["task-a"],
+                "validation": ["task-b"],
+                "held_out": [],
+            },
+            trainable_case_ids=("task-a", "task-b"),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-rationale-only",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content="---\nname: demo\n---\n# Demo\n\nClaimed repair.\n",
+        rationale="The failed branch is fixed.",
+        files=(
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="def compile_request():\n    return 'unrelated change'\n",
+            ),
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def respond():\n    return {}\n",
+            ),
+        ),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "files": [
+                    {
+                        "path": "replay/capability.json",
+                        "content": json.dumps(
+                            {
+                                "schema_version": "aworld.skill.replay_capability.v1",
+                                "entrypoint": "replay/compiler.py",
+                                "runtime_files": ["replay/runtime.py"],
+                            }
+                        ),
+                    },
+                    {
+                        "path": "replay/compiler.py",
+                        "content": "def compile_request():\n    return None\n",
+                    },
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def respond():\n    return {}\n",
+                    },
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "stage": "replay_capability",
+                    "probe_kind": "websocket",
+                    "probe_path": "/session",
+                    "expected_preview": "recorded_value",
+                }
+            ],
+        }
+    )
+    assert contract is not None
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    rollout_calls = 0
+
+    async def unexpected_rollout(**kwargs):
+        nonlocal rollout_calls
+        rollout_calls += 1
+        raise AssertionError("paired rollout must not start")
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", unexpected_rollout)
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-conformance",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="auto_verified",
+        repair_conformance_contracts={candidate.candidate_id: contract},
+    )
+
+    assert rollout_calls == 0
+    assert screened == ()
+    assert report is not None
+    assert report["attempts"][0]["details"]["code"] == (
+        "repair_branch_unchanged"
+    )
+    assert report["attempts"][0]["details"]["repair_conformance"] == (
+        contract.to_dict()
+    )
+    feedback = _candidate_screening_repair_feedback((candidate,), report)
+    assert len(feedback) == 1
+    assert feedback[0].metrics["failure_class"] == "candidate"
+    inherited_contract = compile_repair_conformance_contract(
+        feedback[0].metrics
+    )
+    assert inherited_contract is not None
+    assert inherited_contract.exact_probe == contract.exact_probe
+
+
+@pytest.mark.asyncio
+async def test_population_screening_rollout_failure_preserves_passed_conformance_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input={"content": "Replay task A"}),
+            EvalCase(case_id="task-b", input={"content": "Replay task B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 1},
+            split_seed="seed",
+            splits={
+                "train": ["task-a"],
+                "validation": ["task-b"],
+                "held_out": [],
+            },
+            trainable_case_ids=("task-a", "task-b"),
+        ),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "files": [
+                    {
+                        "path": "replay/capability.json",
+                        "content": json.dumps(
+                            {
+                                "schema_version": "aworld.skill.replay_capability.v1",
+                                "entrypoint": "replay/compiler.py",
+                                "runtime_files": ["replay/runtime.py"],
+                            }
+                        ),
+                    },
+                    {
+                        "path": "replay/compiler.py",
+                        "content": "def compile_request():\n    return None\n",
+                    },
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def respond():\n    return {}\n",
+                    },
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    candidate = CandidateVariant(
+        candidate_id="candidate-rollout-timeout",
+        target=SelfEvolveTargetRef(
+            target_type="skill", target_id="demo", path=str(skill_path)
+        ),
+        content="---\nname: demo\n---\n# Demo\n",
+        rationale="Repair task plane.",
+        files=(
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="def compile_request():\n    return None\n",
+            ),
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def respond():\n    return {'recorded': True}\n",
+            ),
+        ),
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+
+    async def passed_preflight(**kwargs):
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=True,
+            reason="passed",
+            details={},
+        )
+
+    async def failed_rollout(**kwargs):
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="replay timed out",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_failure": {
+                        "reason": "replay timed out",
+                        "outcome": "candidate_failure",
+                    },
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner, "_preflight_candidate_repair_conformance", passed_preflight
+    )
+    monkeypatch.setattr(runner, "_replay_selected_candidate", failed_rollout)
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-rollout-contract",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="auto_verified",
+        repair_conformance_contracts={candidate.candidate_id: contract},
+    )
+
+    assert screened == ()
+    assert report is not None
+    details = report["attempts"][0]["details"]
+    assert details["repair_conformance"] == contract.to_dict()
+    feedback = _candidate_screening_repair_feedback((candidate,), report)
+    inherited = compile_repair_conformance_contract(feedback[0].metrics)
+    assert inherited is not None
+    assert inherited.required_fixture_probe_operations == (
+        "records.query",
+    )
+
+
+def test_repair_conformance_failure_preserves_fixture_shape_and_trace_tail(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture_path = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture_path.parent.mkdir(parents=True)
+    fixture_path.write_text('[{"records":[{"value":"captured"}]}]', encoding="utf-8")
+    artifact_root = tmp_path / "conformance"
+    trace_path = artifact_root / "replay_services" / "service-1" / "protocol_trace.log"
+    trace_path.parent.mkdir(parents=True)
+    trace_path.write_text(
+        '{"direction":"in","sequence":5,"kind":"request",'
+        '"correlation":{"operation":"records.query"}}\n'
+        '{"direction":"out","sequence":6,"kind":"error",'
+        '"correlation":{"error":"list root has no attribute get"}}\n',
+        encoding="utf-8",
+    )
+    capability = SimpleNamespace(
+        frozen_root=str(frozen_root),
+        services=(
+            SimpleNamespace(
+                service_id="service-1",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+    )
+
+    diagnostics = _repair_conformance_failure_diagnostics(
+        capability,
+        artifact_dir=artifact_root,
+    )
+
+    assert diagnostics["replay_fixture_summaries"][0]["json_root_type"] == "array"
+    assert diagnostics["replay_service_protocol_traces"][0]["tail"].endswith(
+        '"correlation":{"error":"list root has no attribute get"}}'
+    )
+
+
+def test_exact_repair_probe_requires_correlated_result_validation() -> None:
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def handle():\n    return {}\n",
+                    }
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "probe_kind": "websocket",
+                    "probe_path": "/session",
+                    "expected_preview": "recorded_value",
+                    "observed_request_operations": ["Target.getTargets"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    assert contract.requires_fixture_derived_probe is False
+
+    assert _repair_conformance_required_nonempty_operations(contract) == (
+        "Target.getTargets",
+    )
 
 
 @pytest.mark.asyncio

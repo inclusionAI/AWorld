@@ -254,6 +254,7 @@ class CandidateTaskAgent(Protocol):
 CandidateAgentFactory = Callable[[int], CandidateTaskAgent]
 CandidateOutputParser = Callable[[str], Mapping[str, Any]]
 CandidateRepairPromptBuilder = Callable[[str, ValueError], str]
+CandidateRepairOutputMerger = Callable[[str, str, ValueError], str]
 
 
 class AWorldCandidatePopulationExecutor:
@@ -265,11 +266,13 @@ class AWorldCandidatePopulationExecutor:
         agent_factory: CandidateAgentFactory,
         parse_output: CandidateOutputParser,
         repair_prompt_builder: CandidateRepairPromptBuilder,
+        repair_output_merger: CandidateRepairOutputMerger | None = None,
         task_batch_executor: DeterministicTaskBatchExecutor | None = None,
     ) -> None:
         self._agent_factory = agent_factory
         self._parse_output = parse_output
         self._repair_prompt_builder = repair_prompt_builder
+        self._repair_output_merger = repair_output_merger
         self._task_batch_executor = (
             task_batch_executor or DeterministicTaskBatchExecutor()
         )
@@ -414,6 +417,13 @@ class AWorldCandidatePopulationExecutor:
                     continue
                 repaired_indexes.add(index)
                 try:
+                    if self._repair_output_merger is not None:
+                        invalid_output, initial_error = eligible_repairs[index]
+                        raw_output = self._repair_output_merger(
+                            invalid_output,
+                            raw_output,
+                            initial_error,
+                        )
                     outputs[index] = self._parse_output(raw_output)
                     successful_repair_indexes.add(index)
                 except ValueError as exc:

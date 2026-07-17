@@ -23,13 +23,14 @@ def _request(
     skill_root: Path,
     *,
     requirement_status: str = "adapter_bound",
+    recorded_value: object = "recorded fixture",
 ) -> ReplayCapabilityCompileRequest:
     context_path = skill_root.parent / "trajectory_context" / "case-1.json"
     context_path.parent.mkdir(parents=True, exist_ok=True)
     context_payload = {
         "case_id": "case-1",
         "steps": [
-            {"observation": "recorded fixture"},
+            {"observation": recorded_value},
             {"observation": "recorded fixture a"},
             {"observation": "recorded fixture b"},
         ],
@@ -295,6 +296,57 @@ def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     assert probe.response_contains == "recorded fixture"
 
 
+@pytest.mark.parametrize(
+    ("probe_count", "accepted"),
+    [(16, True), (17, False)],
+)
+def test_skill_runtime_protocol_probe_limit_is_bounded_but_covers_observed_operations(
+    tmp_path: Path,
+    probe_count: int,
+    accepted: bool,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    probe = {
+        "kind": "websocket",
+        "path": "/events",
+        "request_text": '{"op":"read"}',
+        "response_contains": "recorded fixture",
+    }
+    serialized_probes = repr([probe] * probe_count)
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                f"        'protocol_probes': {serialized_probes},"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    if accepted:
+        frozen = compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+        assert len(frozen.services[0].protocol_probes) == probe_count
+    else:
+        with pytest.raises(
+            ReplayCapabilityError,
+            match="protocol_probes cannot exceed 16 items",
+        ):
+            compile_and_freeze_capability(
+                capability,
+                _request(skill),
+                tmp_path / "compile",
+            )
+
+
 def test_skill_runtime_advertised_websocket_validation_requires_websocket_data_plane_probe(
     tmp_path: Path,
 ) -> None:
@@ -408,6 +460,61 @@ def test_skill_runtime_rejects_data_plane_expectation_not_in_fixture(
     assert "path=/events" in message
     assert "expected_preview=invented response" in message
     assert "expected_sha256=" in message
+
+
+def test_skill_runtime_accepts_semantically_decoded_fixture_container_expectation(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    fixture_value = {
+        "action_result": {
+            "content": {"value": "recorded fixture"},
+        }
+    }
+    fixture_payload = json.dumps(
+        fixture_value,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    expected_container = json.dumps(
+        {"value": "recorded fixture"},
+        ensure_ascii=False,
+        indent=2,
+    )
+    compiler_source = compiler_path.read_text(encoding="utf-8").replace(
+        "'recorded fixture'",
+        repr(fixture_payload),
+        1,
+    )
+    compiler_path.write_text(
+        compiler_source.replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'websocket',\n"
+                "            'path': '/events',\n"
+                "            'request_text': '{\\\"op\\\":\\\"read\\\"}',\n"
+                f"            'response_contains': {expected_container!r},\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill, recorded_value=fixture_value),
+        tmp_path / "compile",
+    )
+
+    assert frozen.services[0].protocol_probes[0].response_contains == (
+        expected_container
+    )
 
 
 def test_materializes_bounded_read_only_evidence_derivation_catalog(

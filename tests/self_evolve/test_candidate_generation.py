@@ -360,6 +360,44 @@ async def test_candidate_generation_sanitizes_streaming_provider_failure() -> No
 
 
 @pytest.mark.asyncio
+async def test_candidate_generation_coalesces_provider_stream_before_aworld_events() -> None:
+    class StreamingProvider:
+        async def astream_completion(self, **kwargs):
+            yield ModelResponse(
+                id="response-1",
+                model="candidate-model",
+                content='{"content":',
+            )
+            yield ModelResponse(
+                id="response-1",
+                model="candidate-model",
+                content='"# Candidate"}',
+                usage={
+                    "prompt_tokens": 120,
+                    "completion_tokens": 8,
+                    "total_tokens": 128,
+                },
+                finish_reason="stop",
+            )
+
+    chunks = [
+        chunk
+        async for chunk in _SanitizingProvider(
+            StreamingProvider()
+        ).astream_completion(messages=[])
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0].content == '{"content":"# Candidate"}'
+    assert chunks[0].usage == {
+        "prompt_tokens": 120,
+        "completion_tokens": 8,
+        "total_tokens": 128,
+    }
+    assert chunks[0].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
 async def test_candidate_generation_preserves_safe_underlying_failure_type(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

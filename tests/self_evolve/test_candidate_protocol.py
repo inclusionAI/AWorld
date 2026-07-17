@@ -139,6 +139,50 @@ def test_rejects_multiple_json_objects_in_text() -> None:
     assert error.value.code == "multiple_json_objects"
 
 
+def test_repairs_one_truncated_candidate_json_before_semantic_validation() -> None:
+    normalized = normalize_candidate_output(
+        (
+            '{"content":"# Demo\\n\\nRecovered candidate.\\n",'
+            '"rationale":"recover transport truncation","files":[]'
+        ),
+        current_content=CURRENT_CONTENT,
+    )
+
+    assert normalized["schema_version"] == CANDIDATE_SCHEMA_VERSION
+    assert normalized["content"].endswith("Recovered candidate.")
+
+
+def test_accepts_files_only_skill_package_behavior_delta() -> None:
+    normalized = normalize_candidate_output(
+        {
+            "schema_version": CANDIDATE_SCHEMA_VERSION,
+            "rationale": "publish reusable candidate-owned runtime behavior",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "operation": "upsert",
+                    "content": "def respond():\n    return {'recorded': True}\n",
+                }
+            ],
+        },
+        current_content=CURRENT_CONTENT,
+    )
+
+    assert "content" not in normalized
+    assert "patch_intent" not in normalized
+    assert normalized["files"][0]["path"] == "replay/runtime.py"
+
+
+def test_rejects_candidate_without_body_or_package_files() -> None:
+    with pytest.raises(CandidateProtocolError) as error:
+        normalize_candidate_output(
+            {"rationale": "no behavior delta", "files": []},
+            current_content=CURRENT_CONTENT,
+        )
+
+    assert error.value.code == "missing_candidate_body"
+
+
 def test_rejects_candidate_with_both_content_and_patch_intent() -> None:
     with pytest.raises(CandidateProtocolError) as error:
         normalize_candidate_output(

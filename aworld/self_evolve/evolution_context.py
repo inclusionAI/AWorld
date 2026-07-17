@@ -11,6 +11,9 @@ from aworld.self_evolve.capability_contracts import (
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest
+from aworld.self_evolve.repair_conformance import (
+    compile_repair_conformance_contract,
+)
 from aworld.self_evolve.sanitization import (
     sanitize_metric_value,
     sanitize_path_ref,
@@ -58,6 +61,12 @@ class EvolutionContext:
             self.validation_feedback,
             candidate_index=candidate_index,
         )
+        focused_repair = repair_focus is not None
+        prompt_feedback = (
+            tuple(_without_repair_candidate_package(item) for item in feedback)
+            if focused_repair
+            else feedback
+        )
         payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "candidate_index": candidate_index,
@@ -65,10 +74,14 @@ class EvolutionContext:
             "target": dict(self.target),
             "current_content": self.current_content,
             "target_package_inventory": list(self.target_package_inventory),
-            "trainable_cases": list(self.trainable_cases),
-            "trace_evidence": list(self.trace_evidence),
-            "validation_feedback": list(feedback),
-            "lesson_records": list(self.lesson_records),
+            # Once a concrete candidate package and a machine-readable failure
+            # are available, they are the authoritative repair context. Repeating
+            # the original trajectory and lessons makes the source delta harder to
+            # attend to and can duplicate the same package in the prompt.
+            "trainable_cases": [] if focused_repair else list(self.trainable_cases),
+            "trace_evidence": [] if focused_repair else list(self.trace_evidence),
+            "validation_feedback": list(prompt_feedback),
+            "lesson_records": [] if focused_repair else list(self.lesson_records),
             "observed_failures": list(self.observed_failures),
             "required_behaviors": list(self.required_behaviors),
             "preserved_behaviors": list(self.preserved_behaviors),
@@ -78,10 +91,28 @@ class EvolutionContext:
             "expected_output": dict(self.expected_output),
         }
         if repair_focus is not None:
+            payload["repair_context_mode"] = "focused_candidate_delta"
             payload["repair_focus"] = repair_focus
+            repair_conformance = compile_repair_conformance_contract(
+                repair_focus
+            )
+            if repair_conformance is not None:
+                payload["repair_conformance"] = repair_conformance.to_dict()
         if repair_support is not None:
             payload["repair_support"] = repair_support
         return payload
+
+
+def _without_repair_candidate_package(
+    feedback: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Keep diagnostics in the prompt while source lives only in repair_focus."""
+
+    return {
+        key: value
+        for key, value in feedback.items()
+        if key != "repair_candidate_package"
+    }
 
 
 def _focused_validation_feedback(
@@ -111,7 +142,11 @@ def _focused_validation_feedback(
         reverse=True,
     )
     primary = ranked_repairs[0]
-    if candidate_index == 0 or len(ranked_repairs) == 1:
+    if (
+        candidate_index == 0
+        or len(ranked_repairs) == 1
+        or _repair_feedback_reached_task_plane(primary[1])
+    ):
         focus = primary[1]
     else:
         recent_alternatives = [
@@ -123,7 +158,12 @@ def _focused_validation_feedback(
             (candidate_index - 1) % len(recent_alternatives)
         ][1]
     support = next(
-        (item for _, item in ranked_repairs if item is not focus),
+        (
+            item
+            for _, item in ranked_repairs
+            if item is not focus
+            and _repair_support_is_complementary(focus, item)
+        ),
         None,
     )
     contextual_feedback: list[Mapping[str, object]] = [focus]
@@ -140,6 +180,78 @@ def _focused_validation_feedback(
     return tuple(contextual_feedback), focus, support
 
 
+def _repair_support_is_complementary(
+    focus: Mapping[str, object],
+    support: Mapping[str, object],
+) -> bool:
+    """Do not transplant source that failed the same machine-checked repair.
+
+    A support package is useful only when it contributes behavior from a
+    different verified frontier. Reusing another package rejected by the same
+    conformance code amplifies a known-bad branch and needlessly expands the
+    model context.
+    """
+
+    focus_codes = _specific_repair_conformance_failure_codes(focus)
+    if focus_codes:
+        # A machine-checked conformance failure has an exact focused source and
+        # executable repair recipe. No rejected sibling is verified to satisfy
+        # that recipe, so transplanting one can only reintroduce an unproven
+        # branch. Let the focused repair advance past conformance first.
+        return False
+    return True
+
+
+def _specific_repair_conformance_failure_codes(
+    feedback: Mapping[str, object],
+) -> frozenset[str]:
+    diagnostics = feedback.get("candidate_validation_diagnostics", ())
+    pending: list[object] = [diagnostics]
+    codes: set[str] = set()
+    visited = 0
+    while pending and visited < 256:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            stage = str(current.get("stage", "")).strip().casefold()
+            code = current.get("code")
+            if (
+                "repair_conformance" in stage
+                and isinstance(code, str)
+                and code
+                and code != "failed_gate"
+            ):
+                if code in {
+                    "exact_repair_probe_not_recorded",
+                    "late_fixture_probe_not_recorded",
+                    "late_fixture_probe_outside_recorded_payload",
+                }:
+                    codes.add("fixture_probe_derivation")
+                else:
+                    codes.add(code)
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    return frozenset(codes)
+
+
+def _repair_feedback_reached_task_plane(
+    feedback: Mapping[str, object],
+) -> bool:
+    diagnostic_text = json.dumps(
+        feedback.get("candidate_validation_diagnostics", ()),
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    ).lower()
+    return (
+        "implement_observed_endpoint_interactions" in diagnostic_text
+        or "failed to deserialize" in diagnostic_text
+        or "missing field" in diagnostic_text
+        or '"requires_fixture_derived_probe": true' in diagnostic_text
+    )
+
+
 def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
     metrics = feedback.get("metrics")
     interaction_progress = 0
@@ -150,17 +262,53 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
             and isinstance(raw_progress, (int, float))
         ):
             interaction_progress = min(999, max(0, int(raw_progress)))
-    if (
-        isinstance(metrics, Mapping)
-        and metrics.get("authoritative_replay_failure") is True
-    ):
-        return 50_000 + interaction_progress
     diagnostic_text = json.dumps(
         feedback.get("candidate_validation_diagnostics", ()),
         ensure_ascii=False,
         sort_keys=True,
         default=str,
     ).lower()
+    inherited_task_plane_frontier = (
+        '"requires_fixture_derived_probe": true' in diagnostic_text
+        or (
+            '"repair_conformance"' in diagnostic_text
+            and "implement_observed_endpoint_interactions" in diagnostic_text
+        )
+    )
+    if (
+        isinstance(metrics, Mapping)
+        and metrics.get("authoritative_replay_failure") is True
+    ):
+        return 150_000 + interaction_progress
+    if "repair_conformance" in diagnostic_text:
+        # Keep repair search on the deepest verified frontier. A candidate that
+        # inherited a real task-plane failure remains ahead of transport-only
+        # branches. Within the same frontier, a candidate that reached the
+        # isolated dynamic probe contains more working behavior than one rejected
+        # by source or declaration checks, even when the shallower failure is
+        # newer in accumulated feedback.
+        frontier_offset = 40_000 if inherited_task_plane_frontier else 0
+        if "repair_probe_execution_failed" in diagnostic_text:
+            return 89_000 + frontier_offset + interaction_progress
+        if (
+            "late_fixture_probe_not_recorded" in diagnostic_text
+            or "late_fixture_probe_outside_recorded_payload" in diagnostic_text
+            or "exact_repair_probe_not_recorded" in diagnostic_text
+        ):
+            return 88_000 + frontier_offset + interaction_progress
+        if (
+            "late_fixture_probe_missing" in diagnostic_text
+            or "exact_repair_probe_missing" in diagnostic_text
+        ):
+            return 87_000 + frontier_offset + interaction_progress
+        if (
+            "repair_capability_compile_failed" in diagnostic_text
+            or "repair_capability_missing" in diagnostic_text
+        ):
+            return 86_000 + frontier_offset + interaction_progress
+        if "repair_branch_unchanged" in diagnostic_text:
+            return 81_000 + frontier_offset + interaction_progress
+        return 84_000 + frontier_offset + interaction_progress
     if "preserve_protocol_routing_continuity" in diagnostic_text:
         return 38_000 + interaction_progress
     if "implement_async_endpoint_completion" in diagnostic_text:
@@ -172,7 +320,10 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
         or "failed to deserialize" in diagnostic_text
         or "missing field" in diagnostic_text
     ):
-        return 42_000 + interaction_progress
+        # A real task rollout that reached the data plane is a deeper verified
+        # frontier than any transport-only conformance preflight. Do not let a
+        # newer shallow branch discard its late-operation contract.
+        return 140_000 + interaction_progress
     if "verify_declared_protocol_probe_branch" in diagnostic_text:
         return 34_000 + interaction_progress
     if (
