@@ -422,3 +422,45 @@ dependency recovers.
 - Making non-self-evolve agents opt into the new candidate or capability contracts.
 - Redesigning the general trajectory strategy warning path; it is non-causal for the
   identified rejection and can be handled independently.
+
+## Repair Conformance Extension
+
+A repair iteration must not trust the model rationale. The focused failed candidate
+package and its typed validation evidence are compiled into a candidate-specific
+`RepairConformanceContract` before generation. The bounded contract records:
+
+- the failed candidate package fingerprint and the replay implementation paths declared
+  by its capability manifest;
+- the typed failure codes and interaction frontier;
+- an exact failed probe kind, path, and expected fixture-derived response token when
+  available;
+- the bounded late observed operation names for a progressing task-plane timeout; and
+- whether a non-empty fixture-derived data-plane probe is mandatory.
+
+The generated package passes a two-stage conformance check before any task rollout:
+
+1. Static source conformance verifies that the candidate materially changes the focused
+   replay implementation branch (or redirects the manifest to a new non-empty runtime),
+   rather than only changing its rationale or unrelated files.
+2. Dynamic conformance compiles and freezes the candidate-owned capability using the
+   existing replay compiler, verifies that its declared probes satisfy the exact or late
+  operation constraints, and starts the isolated replay service so those declared probes
+  execute immediately. An exact probe's previous expected preview is bounded diagnostic
+  evidence, not an allowed hard-coded repair value: when it is not a recorded scalar value,
+  the repaired compiler may replace it with a value-derived fixture leaf.
+
+For a task-plane timeout, at least one declared probe must cover a late observed operation
+and assert a non-empty `response_contains` value already proven by the replay capability
+validator to occur in the selected recorded fixture. Operation names and opaque request
+text remain protocol-neutral evidence; the framework does not implement Browser/CDP or
+any other domain adapter. Recursive fixture interpretation and protocol-valid response
+construction remain candidate/skill-owned behavior. Mapping keys, raw-byte regex matches,
+placeholder literals, and hard-coded diagnostic previews do not count as recorded values.
+For JSON request/response probes, dynamic conformance also requires matching correlation,
+a non-error non-empty result, and the selected recorded value inside that result rather
+than in unrelated envelope metadata.
+
+Conformance failure is a typed, repairable candidate failure and feeds the next bounded
+repair iteration. It never starts baseline/candidate Tasks, so rationale-only or
+readiness-only candidates are normally rejected in seconds instead of consuming the
+task-plane timeout.

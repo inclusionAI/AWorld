@@ -611,3 +611,30 @@ git commit -m "fix(self-evolve): report unevaluated release checks"
 - Baseline and candidate use the same frozen adaptation and isolated initial state.
 - `succeeded` requires verified apply and accepted post-apply validation; infrastructure does not become `rejected` or candidate feedback.
 - Reports include initial and repair Task usage, accurate skipped-check status, and no prompt/response/credential content.
+
+### Task 8: Candidate Repair Conformance and Fixture-Derived Task-Plane Probes
+
+**Files:**
+- Create: `aworld/self_evolve/repair_conformance.py`
+- Modify: `aworld/self_evolve/evolution_context.py`
+- Modify: `aworld/self_evolve/optimizers/llm_mutator.py`
+- Modify: `aworld/self_evolve/replay.py`
+- Modify: `aworld/self_evolve/runner.py`
+- Modify: `aworld/self_evolve/capability_contracts.py`
+- Test: `tests/self_evolve/test_repair_conformance.py`
+- Test: `tests/self_evolve/test_runner.py`
+- Test: `tests/self_evolve/test_capability_contracts.py`
+
+- [x] Compile the focused failed package and typed diagnostics into a bounded,
+  serializable candidate-specific `RepairConformanceContract`.
+- [x] Reject rationale-only or unrelated-file repairs unless a replay implementation
+  source changes or the manifest redirects to a new non-empty runtime.
+- [x] Validate exact failed probe constraints against the newly compiled frozen
+  capability and execute its declared probes through the existing isolated replay
+  service lifecycle.
+- [x] For progressing task-plane timeouts, require a non-empty fixture-derived probe
+  whose opaque request covers a late observed operation.
+- [x] Feed conformance failures back as typed candidate repair evidence without
+  launching paired task rollout.
+- [ ] Run focused and full regression suites, then repeat the real optimize command
+  until it reaches `succeeded` and `post_apply.status == "accepted"`.

@@ -53,6 +53,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayProtocolProbe,
     ReplayReadinessProbe,
     ReplayServiceSpec,
+    replay_payload_contains_expected_value,
     replay_process_memory_bytes,
     replay_process_resource_limiter,
     verify_frozen_replay_capability,
@@ -2733,6 +2734,8 @@ async def _start_replay_services(
     capability: FrozenReplayCapability,
     *,
     artifact_dir: Path,
+    required_nonempty_probe_operations: Sequence[str] = (),
+    required_recorded_probe_operations: Sequence[str] = (),
 ) -> _ReplayServiceSession:
     if not capability.ready or not capability.deterministic:
         raise ValueError("skill-owned replay capability is not ready")
@@ -2764,6 +2767,11 @@ async def _start_replay_services(
     )
     endpoints: dict[str, str] = {}
     environment: dict[str, str] = {}
+    recorded_response_values = (
+        replay_capability_fixture_response_leaf_values(capability)
+        if required_recorded_probe_operations
+        else {}
+    )
     fixture_service = Path(__file__).with_name("fixture_service.py").resolve()
     try:
         for service in capability.services:
@@ -2875,6 +2883,20 @@ async def _start_replay_services(
                     ),
                 )
                 for protocol_probe in service.protocol_probes:
+                    require_nonempty_correlated_response = any(
+                        _request_declares_operation(
+                            protocol_probe.request_text,
+                            operation,
+                        )
+                        for operation in required_nonempty_probe_operations
+                    )
+                    require_recorded_response = any(
+                        _request_declares_operation(
+                            protocol_probe.request_text,
+                            operation,
+                        )
+                        for operation in required_recorded_probe_operations
+                    )
                     await _wait_for_replay_service(
                         process,
                         host="127.0.0.1",
@@ -2887,6 +2909,16 @@ async def _start_replay_services(
                         ),
                         request_text=protocol_probe.request_text,
                         response_contains=protocol_probe.response_contains,
+                        require_nonempty_correlated_response=(
+                            require_nonempty_correlated_response
+                        ),
+                        required_recorded_response_values=(
+                            recorded_response_values.get(
+                                service.response_fixture, ()
+                            )
+                            if require_recorded_response
+                            else ()
+                        ),
                     )
                 if service.transport == "skill_runtime":
                     _validate_replay_service_protocol_trace(
@@ -2908,6 +2940,34 @@ async def _start_replay_services(
     session.endpoints = endpoints
     session.environment = environment
     return session
+
+
+async def preflight_frozen_replay_capability(
+    capability: FrozenReplayCapability,
+    *,
+    artifact_dir: str | Path,
+    required_nonempty_probe_operations: Sequence[str] = (),
+    required_recorded_probe_operations: Sequence[str] = (),
+) -> Mapping[str, str]:
+    """Start a frozen capability, execute every declared probe, then stop it.
+
+    This is the same isolated service lifecycle used by task replay, exposed as a
+    bounded pre-rollout conformance check. Candidate code still runs only in the
+    replay subprocess sandbox.
+    """
+
+    resolved_artifact_dir = Path(artifact_dir).expanduser().resolve()
+    resolved_artifact_dir.mkdir(parents=True, exist_ok=True)
+    session = await _start_replay_services(
+        capability,
+        artifact_dir=resolved_artifact_dir,
+        required_nonempty_probe_operations=required_nonempty_probe_operations,
+        required_recorded_probe_operations=required_recorded_probe_operations,
+    )
+    try:
+        return dict(session.endpoints)
+    finally:
+        await session.stop()
 
 
 def _replay_capability_fixture_summaries(
@@ -2963,6 +3023,349 @@ def _replay_capability_fixture_summaries(
         except OSError:
             continue
     return summaries
+
+
+def replay_capability_fixture_summaries(
+    capability: FrozenReplayCapability,
+) -> list[dict[str, object]]:
+    """Return bounded, payload-free fixture shape evidence for repair feedback."""
+
+    return _replay_capability_fixture_summaries(capability)
+
+
+def replay_capability_fixture_leaf_values(
+    capability: FrozenReplayCapability,
+) -> dict[str, tuple[str, ...]]:
+    """Read bounded scalar values from arbitrarily nested frozen fixtures.
+
+    Values are used only by repair conformance to prove that a declared task-plane
+    probe returns recorded content rather than an object key, placeholder, or empty
+    schema. They are never included in diagnostics or persisted separately.
+    """
+
+    collected, _ = _replay_capability_fixture_value_evidence(capability)
+    return collected
+
+
+def replay_capability_fixture_response_leaf_values(
+    capability: FrozenReplayCapability,
+) -> dict[str, tuple[str, ...]]:
+    """Return scalar values proven to originate in recorded output contexts.
+
+    Trajectory context fixtures often wrap tool outputs in ``action_result`` or
+    ``tool_outputs`` containers and encode the actual response as a JSON string.
+    This generic extractor follows those output containers and recursively
+    decodes bounded JSON string layers without knowing the external protocol.
+    """
+
+    _, response_values = _replay_capability_fixture_value_evidence(capability)
+    return {
+        path: values
+        for path, values in response_values.items()
+        if values
+    }
+
+
+_RECORDED_RESPONSE_CONTAINER_KEYS = frozenset(
+    {
+        "action_result",
+        "output",
+        "outputs",
+        "response",
+        "responses",
+        "result",
+        "results",
+        "tool_outputs",
+    }
+)
+_TRAJECTORY_RESPONSE_PAYLOAD_KEYS = frozenset(
+    {
+        "body",
+        "content",
+        "data",
+        "output",
+        "outputs",
+        "response",
+        "responses",
+        "result",
+        "results",
+    }
+)
+_TRAJECTORY_RESPONSE_METADATA_KEYS = frozenset(
+    {
+        "call_id",
+        "duration",
+        "error",
+        "id",
+        "is_done",
+        "name",
+        "role",
+        "success",
+        "session_id",
+        "sessionid",
+        "status",
+        "timestamp",
+        "tool_call_id",
+        "tool_name",
+        "type",
+    }
+)
+_TRAJECTORY_RECORD_KEYS = frozenset(
+    {"action", "meta", "reward", "state"}
+)
+
+
+def _replay_capability_fixture_value_evidence(
+    capability: FrozenReplayCapability,
+) -> tuple[
+    dict[str, tuple[str, ...]],
+    dict[str, tuple[str, ...]],
+]:
+    fixture_root = (
+        Path(capability.frozen_root).expanduser().resolve() / "fixtures"
+    ).resolve()
+    collected: dict[str, tuple[str, ...]] = {}
+    response_collected: dict[str, tuple[str, ...]] = {}
+    for service in capability.services[:16]:
+        relative = service.response_fixture
+        if relative in collected:
+            continue
+        try:
+            fixture_path = (fixture_root / relative).resolve(strict=True)
+            if (
+                not fixture_path.is_relative_to(fixture_root)
+                or not fixture_path.is_file()
+                or fixture_path.is_symlink()
+                or fixture_path.stat().st_size > 2 * 1024 * 1024
+            ):
+                continue
+            raw_text = fixture_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        roots: list[object] = []
+        try:
+            roots.append(json.loads(raw_text))
+        except json.JSONDecodeError:
+            for line in raw_text.splitlines()[:4096]:
+                if not line.strip():
+                    continue
+                try:
+                    roots.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        # A trajectory context is not required to expose ``action``, ``state`` or
+        # other envelope keys at its root.  Recorded snapshots are frequently
+        # nested below a task/context wrapper (and may be JSON-encoded more than
+        # once), so discover response gateways independently before selecting
+        # scalar leaves.  Without this pass an ``action_result`` nested below a
+        # single ``state`` key is treated as a generic response container and
+        # metadata such as tool names and success flags leaks into the recorded
+        # value catalog.
+        trajectory_envelope = _looks_like_trajectory_context(roots) or (
+            _contains_trajectory_response_gateway(roots)
+        )
+        values: list[str] = []
+        response_values: list[str] = []
+        seen: set[str] = set()
+        response_seen: set[str] = set()
+        pending: list[tuple[object, int, int, int]] = [
+            (root, 0, 0, 0) for root in reversed(roots[:4096])
+        ]
+        visited = 0
+        while (
+            pending
+            and visited < 100_000
+            and (len(values) < 4096 or len(response_values) < 4096)
+        ):
+            value, depth, response_stage, decoded_depth = pending.pop()
+            visited += 1
+            if isinstance(value, Mapping):
+                items = list(value.items())[:4096]
+                payload_keys_present = (
+                    response_stage == 3
+                    and any(
+                        str(item_key).strip().casefold()
+                        in _TRAJECTORY_RESPONSE_PAYLOAD_KEYS
+                        for item_key, _ in items
+                    )
+                )
+                for key, nested in reversed(items):
+                    normalized_key = str(key).strip().casefold()
+                    # Once a trajectory gateway's payload key (usually
+                    # ``content``) contains an encoded protocol envelope, keep
+                    # metadata siblings such as ``type``, ``success`` and
+                    # ``is_done`` out of the response catalog.  If the decoded
+                    # object has no recognized payload key of its own, it is
+                    # already the recorded payload container and arbitrary
+                    # descendants remain eligible.
+                    if (
+                        trajectory_envelope
+                        and response_stage >= 1
+                        and normalized_key in _TRAJECTORY_RESPONSE_METADATA_KEYS
+                    ):
+                        continue
+                    if payload_keys_present and (
+                        normalized_key not in _TRAJECTORY_RESPONSE_PAYLOAD_KEYS
+                    ):
+                        continue
+                    nested_response_stage = response_stage
+                    if trajectory_envelope:
+                        if normalized_key == "tool_outputs":
+                            # ``tool_outputs`` is a trajectory gateway just like
+                            # ``action_result``.  Entering it is not sufficient
+                            # evidence that every nested scalar is response data:
+                            # tool names, call ids and success flags commonly sit
+                            # beside the actual ``content``/``response`` payload.
+                            # Keep the traversal in gateway phase until a known
+                            # payload key is reached.
+                            nested_response_stage = max(response_stage, 1)
+                        elif normalized_key == "action_result":
+                            nested_response_stage = max(response_stage, 1)
+                        elif (
+                            response_stage == 1
+                            and normalized_key
+                            in _TRAJECTORY_RESPONSE_PAYLOAD_KEYS
+                        ):
+                            # Stage 3 denotes a payload container reached via a
+                            # trajectory gateway.  It enables the metadata
+                            # filtering pass above while retaining arbitrary
+                            # recorded fields when no nested payload key exists.
+                            nested_response_stage = 3
+                    elif normalized_key in _RECORDED_RESPONSE_CONTAINER_KEYS:
+                        nested_response_stage = 2
+                    pending.append(
+                        (
+                            nested,
+                            depth + 1,
+                            nested_response_stage,
+                            decoded_depth,
+                        )
+                    )
+                continue
+            if isinstance(value, list):
+                pending.extend(
+                    (nested, depth + 1, response_stage, decoded_depth)
+                    for nested in reversed(value[:4096])
+                )
+                continue
+            if isinstance(value, str):
+                stripped = value.strip()
+                if (
+                    decoded_depth < 4
+                    and stripped[:1] in {"{", "["}
+                    and len(stripped) <= 2 * 1024 * 1024
+                ):
+                    try:
+                        decoded = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        decoded = None
+                    if isinstance(decoded, (Mapping, list)):
+                        encoded_container = stripped[:4096]
+                        if (
+                            response_stage >= 2
+                            and encoded_container
+                            and encoded_container not in response_seen
+                            and len(response_values) < 4096
+                        ):
+                            response_seen.add(encoded_container)
+                            response_values.append(encoded_container)
+                        pending.append(
+                            (
+                                decoded,
+                                depth + 1,
+                                response_stage,
+                                decoded_depth + 1,
+                            )
+                        )
+                        continue
+                normalized = stripped[:4096]
+            elif isinstance(value, bool):
+                normalized = "true" if value else "false"
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                normalized = json.dumps(value, ensure_ascii=False)
+            else:
+                normalized = ""
+            if (
+                len(values) < 4096
+                and normalized
+                and normalized not in seen
+            ):
+                seen.add(normalized)
+                values.append(normalized)
+            if (
+                response_stage >= 2
+                and len(response_values) < 4096
+                and normalized
+                and normalized not in response_seen
+            ):
+                response_seen.add(normalized)
+                response_values.append(normalized)
+        collected[relative] = tuple(values)
+        response_collected[relative] = tuple(response_values)
+    return collected, response_collected
+
+
+def _looks_like_trajectory_context(roots: Sequence[object]) -> bool:
+    candidates: list[object] = []
+    for root in roots[:64]:
+        if isinstance(root, Mapping):
+            candidates.append(root)
+        elif isinstance(root, list):
+            candidates.extend(root[:64])
+    for candidate in candidates[:256]:
+        if not isinstance(candidate, Mapping):
+            continue
+        keys = {str(key).strip().casefold() for key in candidate.keys()}
+        if len(keys & _TRAJECTORY_RECORD_KEYS) >= 2:
+            return True
+    return False
+
+
+def _contains_trajectory_response_gateway(roots: Sequence[object]) -> bool:
+    """Return whether arbitrary nested fixture data contains an output gateway.
+
+    ``_looks_like_trajectory_context`` intentionally checks the conventional
+    top-level trajectory keys, but dataset fixtures can wrap those records in
+    arbitrary context objects or encode them as JSON strings.  This bounded
+    discovery pass only records gateway presence; payload scalar selection is
+    still performed by the second traversal in
+    ``_replay_capability_fixture_value_evidence``.
+    """
+
+    gateway_keys = {"action_result", "tool_outputs"}
+    pending: list[tuple[object, int, int]] = [
+        (root, 0, 0) for root in reversed(roots[:4096])
+    ]
+    visited = 0
+    while pending and visited < 100_000:
+        value, depth, decoded_depth = pending.pop()
+        visited += 1
+        if isinstance(value, Mapping):
+            for key, nested in list(value.items())[:4096]:
+                if str(key).strip().casefold() in gateway_keys:
+                    return True
+                pending.append((nested, depth + 1, decoded_depth))
+            continue
+        if isinstance(value, (list, tuple)):
+            pending.extend(
+                (nested, depth + 1, decoded_depth)
+                for nested in reversed(value[:4096])
+            )
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if (
+                decoded_depth < 4
+                and stripped[:1] in {"{", "["}
+                and len(stripped) <= 2 * 1024 * 1024
+            ):
+                try:
+                    decoded = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(decoded, (Mapping, list)):
+                    pending.append((decoded, depth + 1, decoded_depth + 1))
+    return False
 
 
 def _replay_service_failure_with_stderr(
@@ -3047,6 +3450,8 @@ async def _wait_for_replay_service(
     validate_advertised_websockets: bool = False,
     request_text: str | None = None,
     response_contains: str | None = None,
+    require_nonempty_correlated_response: bool = False,
+    required_recorded_response_values: Sequence[str] = (),
 ) -> None:
     deadline = time.monotonic() + timeout_seconds
     last_error: OSError | None = None
@@ -3065,6 +3470,12 @@ async def _wait_for_replay_service(
                 validate_advertised_websockets=validate_advertised_websockets,
                 request_text=request_text,
                 response_contains=response_contains,
+                require_nonempty_correlated_response=(
+                    require_nonempty_correlated_response
+                ),
+                required_recorded_response_values=(
+                    required_recorded_response_values
+                ),
             )
             return
         except OSError as exc:
@@ -3090,6 +3501,8 @@ def _probe_replay_service(
     validate_advertised_websockets: bool = False,
     request_text: str | None = None,
     response_contains: str | None = None,
+    require_nonempty_correlated_response: bool = False,
+    required_recorded_response_values: Sequence[str] = (),
 ) -> None:
     if kind == "websocket":
         _probe_websocket_handshake(
@@ -3099,6 +3512,12 @@ def _probe_replay_service(
             query="",
             request_text=request_text,
             response_contains=response_contains,
+            require_nonempty_correlated_response=(
+                require_nonempty_correlated_response
+            ),
+            required_recorded_response_values=(
+                required_recorded_response_values
+            ),
         )
         return
     response = b""
@@ -3128,9 +3547,20 @@ def _probe_replay_service(
                     else None
                 ),
             )
-    if (
-        response_contains is not None
-        and response_contains.encode("utf-8") not in response
+            if require_nonempty_correlated_response:
+                _validate_nonempty_correlated_json_response(
+                    request_text=request_text,
+                    response_payload=response,
+                    response_contains=response_contains,
+                )
+    match_payload = (
+        response.partition(b"\r\n\r\n")[2]
+        if kind == "http" and b"\r\n\r\n" in response
+        else response
+    )
+    if response_contains is not None and not replay_payload_contains_expected_value(
+        response_contains,
+        match_payload,
     ):
         raise ReplayServiceProtocolError(
             _protocol_probe_response_mismatch(
@@ -3263,6 +3693,8 @@ def _probe_websocket_handshake(
     query: str,
     request_text: str | None = None,
     response_contains: str | None = None,
+    require_nonempty_correlated_response: bool = False,
+    required_recorded_response_values: Sequence[str] = (),
 ) -> None:
     request_path = path + (f"?{query}" if query else "")
     raw_key = b"aworld-replay-v1"
@@ -3298,6 +3730,12 @@ def _probe_websocket_handshake(
                     path=request_path,
                     request_text=request_text,
                     response_contains=response_contains,
+                    require_nonempty_correlated_response=(
+                        require_nonempty_correlated_response
+                    ),
+                    required_recorded_response_values=(
+                        required_recorded_response_values
+                    ),
                 )
     except ReplayServiceProtocolError:
         raise
@@ -3365,6 +3803,8 @@ def _probe_websocket_text_exchange(
     path: str,
     request_text: str,
     response_contains: str | None,
+    require_nonempty_correlated_response: bool = False,
+    required_recorded_response_values: Sequence[str] = (),
 ) -> None:
     _send_masked_websocket_frame(
         connection,
@@ -3381,9 +3821,18 @@ def _probe_websocket_text_exchange(
         ) from exc
     if opcode != 0x1:
         raise ReplayServiceProtocolError("WebSocket data-plane frame failed")
-    if (
-        response_contains is not None
-        and response_contains.encode("utf-8") not in response_payload
+    if require_nonempty_correlated_response:
+        _validate_nonempty_correlated_json_response(
+            request_text=request_text,
+            response_payload=response_payload,
+            response_contains=response_contains,
+            required_recorded_response_values=(
+                required_recorded_response_values
+            ),
+        )
+    if response_contains is not None and not replay_payload_contains_expected_value(
+        response_contains,
+        response_payload,
     ):
         raise ReplayServiceProtocolError(
             _protocol_probe_response_mismatch(
@@ -3393,6 +3842,138 @@ def _probe_websocket_text_exchange(
                 response=response_payload,
             )
         )
+
+
+def _request_declares_operation(
+    request_text: str | None,
+    operation: str,
+) -> bool:
+    if not isinstance(request_text, str) or not operation:
+        return False
+    try:
+        payload = json.loads(request_text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return operation in request_text
+    pending: list[Any] = [payload]
+    operation_keys = {"action", "command", "method", "operation", "path", "route"}
+    while pending:
+        current = pending.pop()
+        if isinstance(current, Mapping):
+            for key, value in current.items():
+                if str(key).lower() in operation_keys and value == operation:
+                    return True
+                if isinstance(value, (Mapping, list, tuple)):
+                    pending.append(value)
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    return False
+
+
+def _validate_nonempty_correlated_json_response(
+    *,
+    request_text: str,
+    response_payload: bytes,
+    response_contains: str | None,
+    required_recorded_response_values: Sequence[str] = (),
+) -> None:
+    """Validate a generic JSON request/result envelope for task-plane probes.
+
+    The framework does not interpret domain operations. It only proves that a
+    declared JSON request with correlation metadata receives a matching,
+    non-error, non-empty result and that recorded probe content is part of that
+    result rather than unrelated envelope metadata.
+    """
+
+    try:
+        request = json.loads(request_text)
+        response = json.loads(response_payload.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReplayServiceProtocolError(
+            "task-plane correlated probe requires JSON request and response envelopes"
+        ) from exc
+    if not isinstance(request, Mapping) or not isinstance(response, Mapping):
+        raise ReplayServiceProtocolError(
+            "task-plane correlated probe requires JSON object envelopes"
+        )
+    request_id = request.get("id")
+    if request_id is None or response.get("id") != request_id:
+        raise ReplayServiceProtocolError(
+            "task-plane correlated probe response id does not match request id"
+        )
+    if response.get("error") is not None:
+        raise ReplayServiceProtocolError(
+            "task-plane correlated probe returned an error envelope"
+        )
+    result = response.get("result") if "result" in response else None
+    if (
+        not _nonempty_protocol_result(result)
+        or not isinstance(response_contains, str)
+        or not response_contains
+        or not _protocol_result_contains(result, response_contains)
+    ):
+        raise ReplayServiceProtocolError(
+            "fixture-derived content must be inside a non-empty correlated result"
+        )
+    recorded_values = _bounded_recorded_response_probe_values(
+        required_recorded_response_values
+    )
+    required_matches = min(2, len(recorded_values))
+    if required_matches and sum(
+        1
+        for value in recorded_values
+        if _protocol_result_contains(result, value)
+    ) < required_matches:
+        raise ReplayServiceProtocolError(
+            "task-plane probe must return surrounding recorded response context"
+        )
+
+
+def _bounded_recorded_response_probe_values(
+    values: Sequence[str],
+) -> tuple[str, ...]:
+    selected: list[str] = []
+    for value in values[:4096]:
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip()
+        if (
+            not normalized
+            or len(normalized) > 4096
+            or normalized in selected
+        ):
+            continue
+        selected.append(normalized)
+        if len(selected) >= 512:
+            break
+    return tuple(selected)
+
+
+def _nonempty_protocol_result(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (Mapping, list, tuple)):
+        return bool(value)
+    return True
+
+
+def _protocol_result_contains(value: Any, expected: str) -> bool:
+    pending: list[Any] = [value]
+    visited = 0
+    while pending and visited < 4096:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, str):
+            if expected in current:
+                return True
+        elif isinstance(current, Mapping):
+            pending.extend(list(current.values())[:512])
+        elif isinstance(current, (list, tuple)):
+            pending.extend(list(current)[:512])
+        elif current is not None and expected in str(current):
+            return True
+    return False
 
 
 def _protocol_probe_response_mismatch(

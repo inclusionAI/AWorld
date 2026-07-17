@@ -12,7 +12,9 @@ from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
 from aworld.core.context.base import Context
 from aworld.core.task import Task
 from aworld.logs.util import logger
+from aworld.models.model_response import ModelResponse
 from aworld.runner import Runners
+from aworld.utils.common import nest_dict_counter
 
 
 DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT = 32_768
@@ -40,7 +42,7 @@ class CandidateGenerationInfrastructureError(RuntimeError):
 
 
 class _SanitizingProvider:
-    """Convert provider exceptions before generic Agent diagnostics can persist them."""
+    """Sanitize failures and coalesce provider chunks before AWorld event logging."""
 
     def __init__(self, delegate: Any) -> None:
         self._delegate = delegate
@@ -61,8 +63,89 @@ class _SanitizingProvider:
 
     async def astream_completion(self, **kwargs: Any) -> AsyncIterator[Any]:
         try:
+            response_id = ""
+            model = ""
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            tool_calls: list[Any] = []
+            usage: dict[str, Any] = {}
+            raw_usage: Any = None
+            provider_request_id: str | None = None
+            error: str | None = None
+            message: dict[str, Any] = {}
+            finish_reason: str | None = None
+            video_result: Any = None
+            structured_output: dict[str, Any] = {}
+            observed_chunk = False
             async for chunk in self._delegate.astream_completion(**kwargs):
-                yield chunk
+                observed_chunk = True
+                response_id = getattr(chunk, "id", None) or response_id
+                model = getattr(chunk, "model", None) or model
+                chunk_content = getattr(chunk, "content", None)
+                if isinstance(chunk_content, str):
+                    content_parts.append(chunk_content)
+                chunk_reasoning = getattr(chunk, "reasoning_content", None)
+                if isinstance(chunk_reasoning, str):
+                    reasoning_parts.append(chunk_reasoning)
+                for tool_call in getattr(chunk, "tool_calls", None) or ():
+                    if (
+                        getattr(getattr(tool_call, "function", None), "name", None)
+                        == "unknown"
+                        and tool_calls
+                    ):
+                        previous = tool_calls[-1]
+                        previous.function.arguments = (
+                            previous.function.arguments or ""
+                        ) + (tool_call.function.arguments or "")
+                    else:
+                        tool_calls.append(tool_call)
+                usage = nest_dict_counter(
+                    usage,
+                    getattr(chunk, "usage", None) or {},
+                    ignore_zero=False,
+                )
+                chunk_raw_usage = getattr(chunk, "raw_usage", None)
+                if chunk_raw_usage is not None:
+                    raw_usage = chunk_raw_usage
+                provider_request_id = (
+                    getattr(chunk, "provider_request_id", None)
+                    or provider_request_id
+                )
+                error = getattr(chunk, "error", None) or error
+                chunk_message = getattr(chunk, "message", None)
+                if isinstance(chunk_message, dict):
+                    message.update(chunk_message)
+                finish_reason = (
+                    getattr(chunk, "finish_reason", None) or finish_reason
+                )
+                video_result = getattr(chunk, "video_result", None) or video_result
+                chunk_structured = getattr(chunk, "structured_output", None)
+                if isinstance(chunk_structured, dict):
+                    structured_output.update(chunk_structured)
+            if not observed_chunk:
+                return
+            content = "".join(content_parts)
+            reasoning_content = "".join(reasoning_parts) or None
+            message["role"] = message.get("role") or "assistant"
+            message["content"] = content
+            if tool_calls:
+                message["tool_calls"] = [item.to_dict() for item in tool_calls]
+            response = ModelResponse(
+                id=response_id,
+                model=model,
+                content=content,
+                tool_calls=tool_calls,
+                usage=usage,
+                raw_usage=raw_usage,
+                provider_request_id=provider_request_id,
+                error=error,
+                message=message,
+                reasoning_content=reasoning_content,
+                finish_reason=finish_reason,
+                video_result=video_result,
+            )
+            response.structured_output.update(structured_output)
+            yield response
         except CandidateGenerationInfrastructureError:
             raise
         except Exception as exc:
@@ -148,8 +231,9 @@ class CandidateGenerationAgent(PromptBudgetedAgent):
                 "files and do not invent unavailable recordings. Infer reusable protocol "
                 "behavior from bounded trace steps; do not embed dataset-specific task IDs, "
                 "case IDs, original endpoints, or environment paths. Candidate-owned replay "
-                "files make evaluation reproducible but do not replace a reusable behavior "
-                "improvement in the primary target content. A replay runtime must reconstruct "
+                "files may be the reusable skill-package behavior improvement even when the "
+                "primary Markdown content is inherited unchanged; fixture-only placeholders "
+                "are not behavior improvements. A replay runtime must reconstruct "
                 "fixture-derived task data for observed interactions; a control-plane handshake, "
                 "placeholder token, or empty schema alone is not a valid data-plane replay."
             ),

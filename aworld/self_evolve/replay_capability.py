@@ -52,6 +52,7 @@ _MAX_FIXTURE_COUNT = 64
 _MAX_FIXTURE_FILE_BYTES = 16 * 1024 * 1024
 _MAX_FIXTURE_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_READINESS_TIMEOUT_SECONDS = 30.0
+REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES = 16
 
 REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS = tuple(
     sorted(_SUPPORTED_READINESS_KINDS)
@@ -1137,7 +1138,10 @@ def _parse_services(
                         probe.kind == "http"
                         and probe.validate_advertised_websockets
                     )
-                    and probe.response_contains.encode("utf-8") not in fixture_bytes
+                    and not replay_payload_contains_expected_value(
+                        probe.response_contains,
+                        fixture_bytes,
+                    )
                 ):
                     expected = probe.response_contains
                     expected_bytes = expected.encode("utf-8")
@@ -1205,8 +1209,11 @@ def _parse_protocol_probes(
         raise ReplayCapabilityError(
             f"skill runtime service requires protocol_probes: {service_id}"
         )
-    if len(raw) > 8:
-        raise ReplayCapabilityError("protocol_probes cannot exceed 8 items")
+    if len(raw) > REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES:
+        raise ReplayCapabilityError(
+            "protocol_probes cannot exceed "
+            f"{REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES} items"
+        )
     probes: list[ReplayProtocolProbe] = []
     for value in raw:
         if not isinstance(value, dict):
@@ -1283,6 +1290,85 @@ def _optional_bounded_probe_text(
             f"protocol probe {field} must be non-empty and at most {max_chars} characters"
         )
     return value
+
+
+def replay_payload_contains_expected_value(
+    expected: str,
+    payload_bytes: bytes,
+) -> bool:
+    expected_bytes = expected.encode("utf-8")
+    if expected_bytes in payload_bytes:
+        return True
+    if len(payload_bytes) > _MAX_JSON_BYTES:
+        return False
+    try:
+        text = payload_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+
+    roots: list[Any] = []
+    try:
+        roots.append(json.loads(text))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        for line in text.splitlines()[:4096]:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                roots.append(json.loads(stripped))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+    if not roots:
+        return expected in text
+
+    expected_value: Any = _NO_DECODED_EXPECTATION
+    stripped_expected = expected.strip()
+    if (
+        len(stripped_expected) <= _MAX_JSON_BYTES
+        and stripped_expected[:1] in {"{", "["}
+        and stripped_expected[-1:] in {"}", "]"}
+    ):
+        try:
+            expected_value = json.loads(stripped_expected)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+    pending: list[Any] = list(reversed(roots))
+    visited = 0
+    while pending and visited < 50_000:
+        current = pending.pop()
+        visited += 1
+        if (
+            expected_value is not _NO_DECODED_EXPECTATION
+            and current == expected_value
+        ):
+            return True
+        if isinstance(current, Mapping):
+            pending.extend(reversed(tuple(current.values())))
+            continue
+        if isinstance(current, (list, tuple)):
+            pending.extend(reversed(current))
+            continue
+        if isinstance(current, str):
+            if expected in current:
+                return True
+            stripped = current.strip()
+            if (
+                len(stripped) <= _MAX_JSON_BYTES
+                and stripped[:1] in {"{", "["}
+                and stripped[-1:] in {"}", "]"}
+            ):
+                try:
+                    pending.append(json.loads(stripped))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            continue
+        if current is not None and expected == str(current):
+            return True
+    return False
+
+
+_NO_DECODED_EXPECTATION = object()
 
 
 def _is_data_plane_probe(probe: ReplayProtocolProbe) -> bool:
