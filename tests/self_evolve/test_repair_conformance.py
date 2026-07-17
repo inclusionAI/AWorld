@@ -155,6 +155,44 @@ def test_source_conformance_treats_omitted_runtime_delta_as_unchanged() -> None:
     assert result.code == "repair_branch_unchanged"
 
 
+def test_task_plane_conformance_rejects_global_response_after_data_plane_progress() -> None:
+    base_runtime = (
+        "GATEWAY_KEYS = {'action_result', 'tool_outputs'}\n"
+        "PAYLOAD_KEYS = {'content'}\n"
+        "def handle(message):\n"
+        "    method = message.get('method')\n"
+        "    if method == 'records.query':\n"
+        "        return {'records': []}\n"
+        "    return {}\n"
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(base_runtime),
+            "interaction_progress": 8,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+
+    result = evaluate_candidate_source_conformance(
+        _candidate(
+            runtime_source=base_runtime.replace(
+                "return {'records': []}",
+                "return {'records': [{'value': 'recorded'}]}",
+            )
+        ),
+        contract,
+    )
+
+    assert result.passed is False
+    assert result.code == "operation_response_uncorrelated"
+
+
 def test_source_conformance_requires_observed_branch_or_called_helper_change() -> None:
     base_runtime = (
         "def recorded_items():\n"

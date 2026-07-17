@@ -383,6 +383,12 @@ def evaluate_candidate_source_conformance(
                     ],
                 },
             )
+        operation_failure = _operation_response_correlation_failure(
+            candidate_sources,
+            contract=contract,
+        )
+        if operation_failure is not None:
+            return operation_failure
         return _passed(
             "repair_branch_changed",
             "candidate materially changes the focused replay implementation",
@@ -435,6 +441,155 @@ def evaluate_candidate_source_conformance(
             "observed_candidate_paths": sorted(candidate_sources)[:32],
         },
     )
+
+
+def _operation_response_correlation_failure(
+    sources: Mapping[str, str],
+    *,
+    contract: RepairConformanceContract,
+) -> RepairConformanceResult | None:
+    """Reject a task-plane branch that ignores the request it is repairing.
+
+    A declaration-only candidate can pass a readiness probe while returning one
+    fixture container for every operation.  The generic conformance contract has
+    no protocol-specific schema, but it can still require the changed handler to
+    consume either the observed operation's request parameters or a deterministic
+    response map/cursor.  This catches the common failure before an expensive
+    task rollout without imposing a browser/CDP implementation on the framework.
+    """
+
+    operations = tuple(
+        operation
+        for operation in (
+            contract.required_fixture_probe_operations
+            or contract.late_observed_operations[-1:]
+        )
+        if operation
+    )
+    # A shallow synthetic feedback package may only prove that a selector
+    # changed.  Require operation correlation once the replay has actually
+    # reached the task/data plane (the interaction progress counter is emitted
+    # by the runner from the protocol trace), preserving selector-focused
+    # conformance checks for transport-only repairs.
+    if (
+        not contract.requires_fixture_derived_probe
+        or not operations
+        or contract.interaction_progress < 4
+    ):
+        return None
+    operation_names = {operation.casefold() for operation in operations}
+    parameter_names = {
+        "params",
+        "parameters",
+        "arguments",
+        "request",
+        "request_data",
+        "payload",
+        "query",
+    }
+    map_markers = (
+        "cursor",
+        "offset",
+        "index",
+        "operation_map",
+        "responses_by_operation",
+        "response_by_operation",
+        "per_operation",
+        "recorded_responses",
+        "response_records",
+    )
+    for path, source in sorted(sources.items()):
+        if PurePosixPath(path).suffix.casefold() != ".py":
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            function_name = function.name.casefold()
+            if not any(
+                marker in function_name
+                for marker in ("handle", "dispatch", "request", "command", "response")
+            ):
+                continue
+            branch = _operation_branch(function, operation_names)
+            if branch is None:
+                continue
+            loaded_names = {
+                node.id.casefold()
+                for node in ast.walk(branch)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            }
+            uses_request = bool(loaded_names & parameter_names)
+            uses_operation_map = bool(
+                loaded_names
+                and any(
+                    any(marker in name for marker in map_markers)
+                    for name in loaded_names
+                )
+            )
+            indexes_by_operation = any(
+                isinstance(node, ast.Subscript)
+                and isinstance(node.slice, ast.Name)
+                and node.slice.id.casefold()
+                in {"method", "operation", "op", "command", "route"}
+                for node in ast.walk(branch)
+            )
+            gets_by_operation = any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id.casefold()
+                in {"method", "operation", "op", "command", "route"}
+                for node in ast.walk(branch)
+            )
+            if uses_request or (uses_operation_map and (indexes_by_operation or gets_by_operation)):
+                continue
+            operation = next(iter(operations), "unknown")
+            return RepairConformanceResult(
+                passed=False,
+                code="operation_response_uncorrelated",
+                reason=(
+                    "task-plane operation branch returns a global response without "
+                    "consuming request parameters or a deterministic per-operation "
+                    "recorded-response map"
+                ),
+                details={
+                    "path": path,
+                    "function": function.name,
+                    "operation": operation,
+                    "required_operations": list(operations),
+                    "required_change": [
+                        "read bounded request parameters for the observed operation",
+                        "or select a response from a deterministic operation map/cursor",
+                        "preserve the recorded response shape instead of returning one global container",
+                    ],
+                },
+            )
+    return None
+
+
+def _operation_branch(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    operation_names: set[str],
+) -> ast.If | None:
+    """Find an operation-specific branch without assuming a protocol name."""
+
+    for node in ast.walk(function):
+        if not isinstance(node, ast.If):
+            continue
+        literals = {
+            str(item.value).casefold()
+            for item in ast.walk(node.test)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        }
+        if literals & operation_names:
+            return node
+    return None
 
 
 def _diagnostic_failure_codes(
