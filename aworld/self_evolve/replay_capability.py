@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import math
 import os
 import signal
@@ -1137,6 +1138,36 @@ def _build_recorded_response_index(
                             "shape": shape,
                             "non_empty": _fixture_non_empty(payload),
                         }
+                        # Tool output often embeds a JSON file behind line
+                        # prefixes (for example ``12→{...}``) or markdown.
+                        # Keep bounded decoded composites as first-class
+                        # records so a skill runtime can return the actual
+                        # response shape instead of the surrounding log text.
+                        if isinstance(payload, str):
+                            for embedded_index, embedded in enumerate(
+                                _embedded_json_values(payload)
+                            ):
+                                encoded = json.dumps(
+                                    embedded,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                ).encode("utf-8")
+                                if len(encoded) > 64 * 1024:
+                                    continue
+                                records.append(
+                                    {
+                                        "ordinal": len(records),
+                                        "gateway_key": key_name,
+                                        "operation": record.get("operation"),
+                                        "payload_path": (
+                                            f"{'.'.join(payload_path)}"
+                                            f"#embedded{embedded_index}"
+                                        ),
+                                        "shape": _fixture_json_shape(embedded),
+                                        "non_empty": _fixture_non_empty(embedded),
+                                        "value": embedded,
+                                    }
+                                )
                         records.append(record)
                         hint = record.get("operation")
                         if isinstance(hint, str) and hint and hint not in operations:
@@ -1207,6 +1238,83 @@ def _fixture_payload_nodes(value: Any) -> list[tuple[Any, tuple[str, ...]]]:
                 if isinstance(decoded, (Mapping, list)):
                     pending.append((decoded, path, depth + 1))
     return found
+
+
+def _embedded_json_values(
+    value: str,
+    *,
+    max_values: int = 8,
+    _depth: int = 0,
+) -> list[Any]:
+    """Decode bounded JSON composites embedded in tool/file output text."""
+
+    text = value.strip()
+    if not text:
+        return []
+    candidates = [text]
+    # ``read_file`` output prefixes each line with ``N→``.  Remove only that
+    # presentation layer; the underlying JSON remains fixture-derived.
+    normalized_lines = [
+        re.sub(r"^\s*\d+→\s?", "", line)
+        for line in text.splitlines()
+    ]
+    normalized = "\n".join(normalized_lines).strip()
+    if normalized != text:
+        candidates.append(normalized)
+    decoder = json.JSONDecoder()
+    values: list[Any] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        for index, char in enumerate(candidate):
+            if char not in "[{":
+                continue
+            try:
+                parsed, _ = decoder.raw_decode(candidate[index:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, (Mapping, list)):
+                continue
+            fingerprint = json.dumps(
+                parsed,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            values.append(parsed)
+            if _depth < 2:
+                nested_strings: list[str] = []
+                pending: list[Any] = [parsed]
+                while pending:
+                    nested = pending.pop()
+                    if isinstance(nested, str):
+                        nested_strings.append(nested)
+                    elif isinstance(nested, Mapping):
+                        pending.extend(nested.values())
+                    elif isinstance(nested, list):
+                        pending.extend(nested)
+                for nested_text in nested_strings:
+                    if len(values) >= max_values:
+                        break
+                    for nested_value in _embedded_json_values(
+                        nested_text,
+                        max_values=max_values - len(values),
+                        _depth=_depth + 1,
+                    ):
+                        nested_fingerprint = json.dumps(
+                            nested_value,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        if nested_fingerprint not in seen:
+                            seen.add(nested_fingerprint)
+                            values.append(nested_value)
+            if len(values) >= max_values:
+                return values
+    return values
 
 
 def _fixture_json_shape(value: Any) -> str:
