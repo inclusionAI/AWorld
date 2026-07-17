@@ -597,6 +597,37 @@ def test_recorded_response_index_reconstructs_nested_operation_payloads() -> Non
     assert all(record["non_empty"] is True for record in index["records"])
 
 
+def test_recorded_response_index_aliases_declared_probe_to_non_empty_value() -> None:
+    fixture = {
+        "wrapper": [
+            {
+                "action_result": [
+                    {
+                        "action_name": "read_file",
+                        "content": json.dumps({"tweets": [{"id": "1"}]}),
+                    }
+                ]
+            }
+        ]
+    }
+
+    index = _build_recorded_response_index(
+        json.dumps(fixture, ensure_ascii=False).encode("utf-8"),
+        observed_operations=("Runtime.evaluate",),
+    )
+
+    assert "Runtime.evaluate" in index["operations"]
+    aliases = [
+        record
+        for record in index["records"]
+        if record.get("operation") == "Runtime.evaluate"
+    ]
+    assert aliases
+    assert aliases[0]["derived_operation"] is True
+    assert aliases[0]["non_empty"] is True
+    assert aliases[0]["value"] == {"tweets": [{"id": "1"}]}
+
+
 def test_freeze_places_operation_index_next_to_nested_fixture(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, nested_fixture=True)
     capability = discover_replay_capability(skill)

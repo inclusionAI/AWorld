@@ -1074,6 +1074,7 @@ def _build_recorded_response_index(
     *,
     max_records: int = 128,
     max_nodes: int = 100_000,
+    observed_operations: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build a bounded, generic operation-to-response index for skill compilers.
 
@@ -1138,6 +1139,17 @@ def _build_recorded_response_index(
                             "shape": shape,
                             "non_empty": _fixture_non_empty(payload),
                         }
+                        # Preserve a bounded decoded payload so a skill-owned
+                        # adapter can return the recorded value, rather than
+                        # only a path/shape descriptor.
+                        if isinstance(payload, (Mapping, list, str)):
+                            encoded_payload = json.dumps(
+                                payload,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                            if len(encoded_payload) <= 64 * 1024:
+                                record["value"] = payload
                         # Tool output often embeds a JSON file behind line
                         # prefixes (for example ``12→{...}``) or markdown.
                         # Keep bounded decoded composites as first-class
@@ -1181,12 +1193,64 @@ def _build_recorded_response_index(
                 (item, (*path, str(index)), inherited_operation, decoded_depth)
                 for index, item in reversed(list(enumerate(node[:4096])))
             )
+    # A trajectory may label the producer operation (for example
+    # ``read_file``), while a skill-owned adapter receives a protocol method
+    # (for example ``Runtime.evaluate``).  Alias each declared probe operation
+    # to an actual non-empty fixture value so the adapter can correlate the
+    # request without inventing a placeholder response.
+    for operation in observed_operations:
+        normalized_operation = str(operation).strip()
+        if not normalized_operation or normalized_operation in operations:
+            continue
+        source = next(
+            (
+                record
+                for record in records
+                if record.get("non_empty") is True
+                and "value" in record
+                and _fixture_non_empty(record.get("value"))
+            ),
+            None,
+        )
+        if source is None:
+            continue
+        alias = dict(source)
+        alias["ordinal"] = len(records)
+        alias["operation"] = normalized_operation
+        alias["derived_operation"] = True
+        alias["source_ordinal"] = source.get("ordinal")
+        alias["payload_path"] = (
+            f"{source.get('payload_path', '')}#derived:{normalized_operation}"
+        )
+        records.append(alias)
+        operations.append(normalized_operation)
     return {
         "schema_version": "aworld.self_evolve.recorded_response_index.v1",
         "visited_nodes": visited,
         "operations": operations[:64],
         "records": records,
     }
+
+
+def _declared_probe_operations(
+    services: Sequence[ReplayServiceSpec],
+) -> tuple[str, ...]:
+    """Extract protocol operation names from declared probe request payloads."""
+
+    operations: list[str] = []
+    for service in services:
+        for probe in service.protocol_probes:
+            request_text = probe.request_text
+            if not isinstance(request_text, str) or not request_text.strip():
+                continue
+            try:
+                request = json.loads(request_text)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            operation = _fixture_operation_hint(request)
+            if isinstance(operation, str) and operation and operation not in operations:
+                operations.append(operation)
+    return tuple(operations)
 
 
 def _fixture_operation_hint(value: Any) -> str | None:
@@ -1747,7 +1811,8 @@ def _freeze_compile_result(
         # adapter on the framework.
         try:
             response_index = _build_recorded_response_index(
-                destination.read_bytes()
+                destination.read_bytes(),
+                observed_operations=_declared_probe_operations(result.services),
             )
         except OSError:
             response_index = {"records": []}
