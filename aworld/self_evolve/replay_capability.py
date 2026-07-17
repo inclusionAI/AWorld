@@ -1027,23 +1027,208 @@ def materialize_replay_evidence_derivations(
             if not path.exists():
                 path.write_bytes(value)
                 path.chmod(0o444)
+            response_index = _build_recorded_response_index(value)
+            response_index_path: Path | None = None
+            if response_index["records"]:
+                response_index_path = root / f"{digest}.responses.json"
+                if not response_index_path.exists():
+                    response_index_path.write_text(
+                        json.dumps(response_index, ensure_ascii=False, indent=2)
+                        + "\n",
+                        encoding="utf-8",
+                    )
             preview = value[:160].decode("utf-8", errors="replace")
-            entries.append(
-                {
-                    "path": str(path),
-                    "sha256": f"sha256:{digest}",
-                    "byte_length": len(value),
-                    "preview": preview,
-                    "matching_identifiers": [
-                        identifier
-                        for identifier in identifiers
-                        if identifier.encode("utf-8") in value
-                    ],
-                }
-            )
+            entry: dict[str, Any] = {
+                "path": str(path),
+                "sha256": f"sha256:{digest}",
+                "byte_length": len(value),
+                "preview": preview,
+                "matching_identifiers": [
+                    identifier
+                    for identifier in identifiers
+                    if identifier.encode("utf-8") in value
+                ],
+            }
+            if response_index_path is not None:
+                entry["response_index_path"] = str(response_index_path)
+                entry["response_record_count"] = len(response_index["records"])
+                entry["response_operations"] = response_index["operations"]
+            entries.append(entry)
         if entries:
             catalog[evidence_ref] = tuple(entries)
     return catalog
+
+
+_FIXTURE_GATEWAY_KEYS = frozenset({"action_result", "tool_outputs"})
+_FIXTURE_PAYLOAD_KEYS = frozenset(
+    {"body", "content", "data", "output", "outputs", "response", "responses", "result", "results"}
+)
+_FIXTURE_OPERATION_KEYS = frozenset(
+    {"action_name", "command", "method", "name", "operation", "path", "route", "tool_name"}
+)
+
+
+def _build_recorded_response_index(
+    raw: bytes,
+    *,
+    max_records: int = 128,
+    max_nodes: int = 100_000,
+) -> dict[str, Any]:
+    """Build a bounded, generic operation-to-response index for skill compilers.
+
+    The index is intentionally protocol-neutral: it records where an arbitrary
+    nested trajectory gateway contains a response payload, its operation hint,
+    and the decoded response shape.  Payload bytes remain in the provenance
+    fixture; a skill-owned compiler can correlate the index with that fixture and
+    choose the protocol-specific projection.  This prevents compilers from
+    treating the first scalar in an outer envelope as the task response.
+    """
+
+    roots: list[Any] = []
+    try:
+        roots.append(json.loads(raw.decode("utf-8", errors="replace")))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        for line in raw.decode("utf-8", errors="replace").splitlines()[:4096]:
+            if not line.strip():
+                continue
+            try:
+                roots.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    records: list[dict[str, Any]] = []
+    operations: list[str] = []
+    visited = 0
+    pending: list[tuple[Any, tuple[str, ...], str | None, int]] = [
+        (root, (), None, 0) for root in reversed(roots[:4096])
+    ]
+    while pending and visited < max_nodes and len(records) < max_records:
+        node, path, inherited_operation, decoded_depth = pending.pop()
+        visited += 1
+        if isinstance(node, str):
+            stripped = node.strip()
+            if (
+                decoded_depth < 4
+                and stripped[:1] in {"{", "["}
+                and len(stripped) <= 2 * 1024 * 1024
+            ):
+                try:
+                    decoded = json.loads(stripped)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, (Mapping, list)):
+                    pending.append((decoded, path, inherited_operation, decoded_depth + 1))
+            continue
+        if isinstance(node, Mapping):
+            operation = _fixture_operation_hint(node) or inherited_operation
+            for key, value in reversed(list(node.items())[:4096]):
+                key_name = str(key).strip().casefold()
+                child_path = (*path, str(key))
+                if key_name in _FIXTURE_GATEWAY_KEYS:
+                    payloads = _fixture_payload_nodes(value)
+                    if not payloads:
+                        payloads = [(value, child_path)]
+                    for payload, payload_path in payloads:
+                        shape = _fixture_json_shape(payload)
+                        record = {
+                            "ordinal": len(records),
+                            "gateway_key": key_name,
+                            "operation": _fixture_operation_hint(value) or operation,
+                            "payload_path": ".".join(payload_path),
+                            "shape": shape,
+                            "non_empty": _fixture_non_empty(payload),
+                        }
+                        records.append(record)
+                        hint = record.get("operation")
+                        if isinstance(hint, str) and hint and hint not in operations:
+                            operations.append(hint)
+                    pending.append((value, child_path, operation, decoded_depth))
+                    continue
+                pending.append((value, child_path, operation, decoded_depth))
+            continue
+        if isinstance(node, list):
+            pending.extend(
+                (item, (*path, str(index)), inherited_operation, decoded_depth)
+                for index, item in reversed(list(enumerate(node[:4096])))
+            )
+    return {
+        "schema_version": "aworld.self_evolve.recorded_response_index.v1",
+        "visited_nodes": visited,
+        "operations": operations[:64],
+        "records": records,
+    }
+
+
+def _fixture_operation_hint(value: Any) -> str | None:
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    visited = 0
+    while pending and visited < 256:
+        current, depth = pending.pop()
+        visited += 1
+        if depth > 8:
+            continue
+        if isinstance(current, Mapping):
+            for key, nested in current.items():
+                if str(key).strip().casefold() in _FIXTURE_OPERATION_KEYS:
+                    if isinstance(nested, str) and nested.strip():
+                        return sanitize_text(nested.strip(), max_chars=160)
+                elif isinstance(nested, (Mapping, list)):
+                    pending.append((nested, depth + 1))
+        elif isinstance(current, list):
+            pending.extend((nested, depth + 1) for nested in reversed(current[:256]))
+    return None
+
+
+def _fixture_payload_nodes(value: Any) -> list[tuple[Any, tuple[str, ...]]]:
+    found: list[tuple[Any, tuple[str, ...]]] = []
+    pending: list[tuple[Any, tuple[str, ...], int]] = [(value, (), 0)]
+    while pending and len(found) < 128:
+        node, path, depth = pending.pop()
+        if depth > 32:
+            continue
+        if isinstance(node, Mapping):
+            for key, nested in reversed(list(node.items())[:4096]):
+                child_path = (*path, str(key))
+                if str(key).strip().casefold() in _FIXTURE_PAYLOAD_KEYS:
+                    found.append((nested, child_path))
+                else:
+                    pending.append((nested, child_path, depth + 1))
+        elif isinstance(node, list):
+            pending.extend(
+                (nested, (*path, str(index)), depth + 1)
+                for index, nested in reversed(list(enumerate(node[:4096])))
+            )
+        elif isinstance(node, str):
+            stripped = node.strip()
+            if depth < 4 and stripped[:1] in {"{", "["}:
+                try:
+                    decoded = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(decoded, (Mapping, list)):
+                    pending.append((decoded, path, depth + 1))
+    return found
+
+
+def _fixture_json_shape(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, bool):
+        return "boolean"
+    if value is None:
+        return "null"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "unknown"
+
+
+def _fixture_non_empty(value: Any) -> bool:
+    if isinstance(value, (Mapping, list, tuple, str)):
+        return bool(value)
+    return value is not None
 
 
 def _parse_services(

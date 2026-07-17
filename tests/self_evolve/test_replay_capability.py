@@ -11,6 +11,7 @@ from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
     ReplayCapabilityCompileRequest,
     ReplayCapabilityError,
+    _build_recorded_response_index,
     build_replay_sandboxed_command,
     compile_and_freeze_capability,
     discover_replay_capability,
@@ -547,6 +548,44 @@ def test_materializes_bounded_read_only_evidence_derivation_catalog(
     )
     assert enriched.evidence_derivations[evidence_ref] == entries
     assert enriched.request_fingerprint != request.request_fingerprint
+
+
+def test_recorded_response_index_reconstructs_nested_operation_payloads() -> None:
+    fixture = {
+        "wrapper": [
+            {
+                "state": {
+                    "action_result": [
+                        {
+                            "action_name": "records.query",
+                            "content": json.dumps(
+                                {"records": [{"id": 1, "value": "recorded"}]}
+                            ),
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    index = _build_recorded_response_index(
+        json.dumps(fixture, ensure_ascii=False).encode("utf-8")
+    )
+
+    assert index["schema_version"] == (
+        "aworld.self_evolve.recorded_response_index.v1"
+    )
+    assert index["operations"] == ["records.query"]
+    assert index["records"] == [
+        {
+            "ordinal": 0,
+            "gateway_key": "action_result",
+            "operation": "records.query",
+            "payload_path": "0.content",
+            "shape": "string",
+            "non_empty": True,
+        }
+    ]
 
 
 def test_discovery_returns_none_without_manifest(tmp_path: Path) -> None:
