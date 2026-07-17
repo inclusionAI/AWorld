@@ -615,6 +615,19 @@ def _materialize_mutator_output(
     request: OptimizerRequest,
 ) -> tuple[str, str, str, tuple[CandidateFileDelta, ...]]:
     if isinstance(output, Mapping):
+        # Some structured-output providers return the schema payload under an
+        # ``expected_output`` envelope even though the prompt requests the
+        # value itself.  Unwrap that provider-level envelope at the framework
+        # boundary so a valid candidate is not silently discarded; preserve
+        # any top-level fields as fallbacks for providers that split metadata
+        # between the envelope and the outer object.
+        expected_output = output.get("expected_output")
+        if isinstance(expected_output, Mapping):
+            normalized_output = dict(expected_output)
+            for key, value in output.items():
+                if key != "expected_output":
+                    normalized_output.setdefault(key, value)
+            output = normalized_output
         content = output.get("content")
         patch_intent = output.get("patch_intent")
         rationale = output.get("rationale", "")
