@@ -321,6 +321,47 @@ def test_source_conformance_requires_observed_branch_or_called_helper_change() -
     assert evaluate_candidate_source_conformance(called_helper, contract).passed is True
 
 
+def test_source_conformance_rejects_index_declared_but_global_task_response() -> None:
+    """An index marker must reach the observed operation's returned payload."""
+
+    base_runtime = (
+        "def handle(operation):\n"
+        "    if operation == 'records.query':\n"
+        "        return {'items': []}\n"
+        "    return {}\n"
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(base_runtime),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "stage": "replay_capability",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+
+    candidate = _candidate(
+        runtime_source=(
+            "AWORLD_REPLAY_RESPONSE_INDEX = 'responses.json'\n"
+            "RESPONSE_CONTAINER = []\n\n"
+            "def handle(operation):\n"
+            "    if operation == 'records.query':\n"
+            "        return {'items': RESPONSE_CONTAINER}\n"
+            "    return {}\n"
+        )
+    )
+
+    result = evaluate_candidate_source_conformance(candidate, contract)
+
+    assert result.passed is False
+    assert result.code == "operation_response_uncorrelated"
+    assert "response-index record" in result.details["required_change"]
+
+
 def test_source_conformance_accepts_changed_fixture_selector_data_dependency() -> None:
     base_runtime = (
         "RESPONSE_VALUE = 'empty'\n\n"
