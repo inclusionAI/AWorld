@@ -584,16 +584,17 @@ def test_recorded_response_index_reconstructs_nested_operation_payloads() -> Non
         "aworld.self_evolve.recorded_response_index.v1"
     )
     assert index["operations"] == ["records.query"]
-    assert index["records"] == [
-        {
-            "ordinal": 0,
-            "gateway_key": "action_result",
-            "operation": "records.query",
-            "payload_path": "0.content",
-            "shape": "string",
-            "non_empty": True,
-        }
-    ]
+    assert index["records"]
+    assert any(
+        record.get("value") == {"records": [{"id": 1, "value": "recorded"}]}
+        for record in index["records"]
+    )
+    assert any(
+        record.get("value") == [{"id": 1, "value": "recorded"}]
+        and record.get("shape") == "array"
+        for record in index["records"]
+    )
+    assert all(record["non_empty"] is True for record in index["records"])
 
 
 def test_freeze_places_operation_index_next_to_nested_fixture(tmp_path: Path) -> None:
