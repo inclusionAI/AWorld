@@ -5998,6 +5998,19 @@ def _typed_gate_feedback_metrics(
         sort_keys=True,
         default=str,
     ).lower() + "\n" + "\n".join(classification_fragments).lower()
+    # A timeout with observed protocol operations is already evidence that the
+    # task reached the stateful/data plane, even when the trace did not expose
+    # a numeric progress counter.  Preserve a minimum task-plane marker so the
+    # next repair contract requires operation-aware fixture reconstruction and
+    # the framework response-index binding instead of another readiness-only
+    # candidate.
+    if (
+        "replay timed out" in diagnostic_text
+        and observed_request_operations
+        and interaction_progress < 4
+    ):
+        interaction_progress = 4
+        result["interaction_progress"] = interaction_progress
     if (
         "permissionerror" in diagnostic_text
         or "permission denied" in diagnostic_text
@@ -6123,7 +6136,6 @@ def _typed_gate_feedback_metrics(
         )
         or (
             "replay timed out" in diagnostic_text
-            and interaction_progress >= 4
             and bool(observed_request_operations)
         )
     ):
