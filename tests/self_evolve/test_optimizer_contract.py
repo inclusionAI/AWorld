@@ -228,6 +228,37 @@ async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> No
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_unwraps_structured_expected_output_envelope() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "expected_output": {
+                "rationale": "publish the replay runtime delta",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def respond():\n    return {'recorded': True}\n",
+                    }
+                ],
+            }
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].rationale == "publish the replay runtime delta"
+    assert result.candidates[0].files[0].path == "replay/runtime.py"
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_inherits_primary_content_for_files_only_delta() -> None:
     async def mutate(prompt: str) -> dict:
         return {
