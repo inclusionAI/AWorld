@@ -522,7 +522,32 @@ def _operation_response_correlation_failure(
                 for node in ast.walk(branch)
                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
             }
-            uses_request = bool(loaded_names & parameter_names)
+            response_loaded_names: set[str] = set()
+            for return_node in ast.walk(branch):
+                if not isinstance(return_node, ast.Return) or return_node.value is None:
+                    continue
+                response_loaded_names.update(
+                    node.id.casefold()
+                    for node in ast.walk(return_node.value)
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                )
+            request_aliases: set[str] = set()
+            for assignment in ast.walk(branch):
+                if not isinstance(assignment, ast.Assign):
+                    continue
+                value_names = {
+                    node.id.casefold()
+                    for node in ast.walk(assignment.value)
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                }
+                if not (value_names & parameter_names):
+                    continue
+                for target in assignment.targets:
+                    if isinstance(target, ast.Name):
+                        request_aliases.add(target.id.casefold())
+            uses_request = bool(
+                response_loaded_names & (parameter_names | request_aliases)
+            )
             uses_operation_map = bool(
                 loaded_names
                 and any(
