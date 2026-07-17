@@ -1630,6 +1630,22 @@ def _freeze_compile_result(
         destination = _destination_inside(fixtures_root, relative, label="fixture")
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination, follow_symlinks=False)
+        # A skill-owned runtime receives only the frozen fixture path.  Keep a
+        # generic operation index beside that fixture so the runtime can
+        # correlate a request with a nested recorded response without having
+        # to rediscover the trajectory envelope on every protocol call.  The
+        # sidecar is derived solely from the immutable fixture and is copied
+        # with the frozen capability; it does not impose a protocol-specific
+        # adapter on the framework.
+        try:
+            response_index = _build_recorded_response_index(
+                destination.read_bytes()
+            )
+        except OSError:
+            response_index = {"records": []}
+        if response_index.get("records"):
+            response_index_path = destination.with_suffix(".responses.json")
+            _write_json(response_index_path, response_index)
         frozen_fixtures.append(_frozen_file(destination, relative))
     frozen_runtime: list[FrozenReplayFile] = []
     for source in capability.runtime_files:

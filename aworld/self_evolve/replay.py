@@ -2833,6 +2833,17 @@ async def _start_replay_services(
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
+            # The response index is a framework-generated sidecar next to the
+            # frozen fixture.  Expose its path explicitly instead of making a
+            # skill runtime guess where replay metadata lives.  Adapters remain
+            # skill-owned: the framework only supplies immutable evidence and
+            # the generic operation-to-record binding.
+            response_index_path = fixture_path.with_suffix(".responses.json")
+            if response_index_path.is_file():
+                service_environment["AWORLD_REPLAY_RESPONSE_INDEX"] = str(
+                    response_index_path
+                )
+            service_environment["AWORLD_REPLAY_FIXTURE_PATH"] = str(fixture_path)
             service_dir = service_logs / _safe_path(service.service_id)
             service_dir.mkdir(parents=True, exist_ok=True)
             stdout_path = service_dir / "stdout.txt"
