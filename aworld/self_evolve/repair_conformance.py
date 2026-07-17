@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_SCHEMA_VERSION,
@@ -354,6 +354,10 @@ def evaluate_candidate_source_conformance(
         violations = _fixture_probe_derivation_violations(
             candidate_sources,
             required=contract.requires_fixture_derived_probe,
+            operation_names=(
+                contract.required_fixture_probe_operations
+                or contract.late_observed_operations
+            ),
         )
         if violations:
             required_change = (
@@ -803,10 +807,57 @@ def _fixture_probe_structure_failure(
     )
 
 
+def _reachable_operation_functions(
+    tree: ast.AST,
+    *,
+    operation_names: Sequence[str],
+) -> set[str]:
+    """Return operation handlers and helpers reachable from their branches."""
+
+    normalized_operations = {
+        str(operation).casefold()
+        for operation in operation_names
+        if str(operation).strip()
+    }
+    if not normalized_operations:
+        return set()
+    functions = {
+        function.name: function
+        for function in ast.walk(tree)
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    reachable: set[str] = set()
+    pending: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    for function in functions.values():
+        if _operation_branch(function, normalized_operations) is not None:
+            reachable.add(function.name)
+            pending.append(function)
+    while pending:
+        function = pending.pop()
+        branch = _operation_branch(function, normalized_operations)
+        if branch is not None:
+            nodes = (
+                node
+                for root in (branch.test, *branch.body)
+                for node in ast.walk(root)
+            )
+        else:
+            nodes = ast.walk(function)
+        for node in nodes:
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            helper = functions.get(node.func.id)
+            if helper is not None and helper.name not in reachable:
+                reachable.add(helper.name)
+                pending.append(helper)
+    return reachable
+
+
 def _fixture_probe_derivation_violations(
     sources: Mapping[str, str],
     *,
     required: bool,
+    operation_names: Sequence[str] = (),
 ) -> list[dict[str, object]]:
     if not required:
         return []
@@ -818,6 +869,10 @@ def _fixture_probe_derivation_violations(
             tree = ast.parse(source)
         except SyntaxError:
             continue
+        reachable_functions = _reachable_operation_functions(
+            tree,
+            operation_names=operation_names,
+        )
         unused_payload_keys = _unused_payload_key_declarations(tree)
         if unused_payload_keys:
             selector = next(
@@ -860,6 +915,13 @@ def _fixture_probe_derivation_violations(
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not _fixture_selector_function_name(function.name):
+                continue
+            # Only enforce fixture derivation rules on the changed operation
+            # branch and helpers it calls.  A runtime may legitimately retain
+            # a separate selector for an unrelated protocol method; rejecting
+            # that dead/unrelated helper would violate the conformance
+            # contract's "failed branch" boundary.
+            if reachable_functions and function.name not in reachable_functions:
                 continue
             top_level_projection = _top_level_fixture_projection(function)
             if top_level_projection is not None:

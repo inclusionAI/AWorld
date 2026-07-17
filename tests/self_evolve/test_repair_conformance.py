@@ -362,6 +362,49 @@ def test_source_conformance_rejects_index_declared_but_global_task_response() ->
     assert "response-index record" in result.details["required_change"]
 
 
+def test_source_conformance_ignores_unrelated_selector_not_reached_by_probe() -> None:
+    base_runtime = (
+        "FIXTURE_DATA = {}\n"
+        "def _normalize_fixture_list(key):\n"
+        "    return FIXTURE_DATA.get(key, [])\n\n"
+        "def handle(operation):\n"
+        "    if operation == 'records.query':\n"
+        "        return {'items': []}\n"
+        "    return {}\n"
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(base_runtime),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "stage": "replay_capability",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    candidate = _candidate(
+        runtime_source=(
+            "AWORLD_REPLAY_RESPONSE_INDEX = 'responses.json'\n"
+            "RESPONSE_INDEX = {'records.query': {'items': ['recorded']}}\n"
+            "FIXTURE_DATA = {}\n"
+            "def _normalize_fixture_list(key):\n"
+            "    return FIXTURE_DATA.get(key, [])\n\n"
+            "def handle(operation):\n"
+            "    if operation == 'records.query':\n"
+            "        response_index = RESPONSE_INDEX\n"
+            "        return response_index[operation]\n"
+            "    return {}\n"
+        )
+    )
+
+    result = evaluate_candidate_source_conformance(candidate, contract)
+
+    assert result.passed is True
+
+
 def test_source_conformance_accepts_changed_fixture_selector_data_dependency() -> None:
     base_runtime = (
         "RESPONSE_VALUE = 'empty'\n\n"
