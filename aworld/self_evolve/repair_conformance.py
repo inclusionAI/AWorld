@@ -356,6 +356,21 @@ def evaluate_candidate_source_conformance(
             required=contract.requires_fixture_derived_probe,
         )
         if violations:
+            required_change = (
+                "load AWORLD_REPLAY_RESPONSE_INDEX, select a non_empty record "
+                "for the incoming operation, and return its decoded value or "
+                "protocol projection; remove any helper that returns "
+                "FIXTURE_DATA or FIXTURE_DATA.get(key, [])"
+                if any(
+                    item.get("construct") == "top_level_fixture_projection"
+                    for item in violations
+                )
+                else (
+                    "select any deterministic non-empty recorded response leaf "
+                    "after a complete recursive gateway-discovery phase and a "
+                    "separate payload traversal phase"
+                )
+            )
             return RepairConformanceResult(
                 passed=False,
                 code="forbidden_fixture_probe_derivation",
@@ -368,11 +383,7 @@ def evaluate_candidate_source_conformance(
                 details={
                     "focus_candidate_id": contract.focus_candidate_id,
                     "violations": violations,
-                    "required_change": (
-                        "select any deterministic non-empty recorded response "
-                        "leaf after a complete recursive gateway-discovery phase "
-                        "and a separate payload traversal phase"
-                    ),
+                    "required_change": required_change,
                     "forbidden_derivations": [
                         "regex scalar filters",
                         "narrow scalar length filters",
