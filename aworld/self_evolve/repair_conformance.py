@@ -488,6 +488,8 @@ def _operation_response_correlation_failure(
         or contract.interaction_progress < 4
     ):
         return None
+    source_text = "\n".join(sources.values())
+    has_index_binding = "AWORLD_REPLAY_RESPONSE_INDEX" in source_text
     operation_names = {operation.casefold() for operation in operations}
     parameter_names = {
         "params",
@@ -584,6 +586,25 @@ def _operation_response_correlation_failure(
                 for node in ast.walk(branch)
             )
             if uses_request or (uses_operation_map and (indexes_by_operation or gets_by_operation)):
+                if not has_index_binding and not uses_operation_map:
+                    return RepairConformanceResult(
+                        passed=False,
+                        code="operation_response_uncorrelated",
+                        reason=(
+                            "task-plane fixture response is not bound to the "
+                            "framework operation-response index"
+                        ),
+                        details={
+                            "path": path,
+                            "function": function.name,
+                            "operation": next(iter(operations), "unknown"),
+                            "required_change": (
+                                "consume AWORLD_REPLAY_RESPONSE_INDEX (or an "
+                                "equivalent deterministic per-operation response "
+                                "map) and project its recorded value"
+                            ),
+                        },
+                    )
                 continue
             operation = next(iter(operations), "unknown")
             return RepairConformanceResult(
