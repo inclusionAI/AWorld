@@ -490,6 +490,23 @@ def _operation_response_correlation_failure(
         return None
     source_text = "\n".join(sources.values())
     has_index_binding = "AWORLD_REPLAY_RESPONSE_INDEX" in source_text
+    if not has_index_binding:
+        return RepairConformanceResult(
+            passed=False,
+            code="operation_response_uncorrelated",
+            reason=(
+                "task-plane fixture response does not consume the framework's "
+                "immutable operation-response index"
+            ),
+            details={
+                "operation": next(iter(operations), "unknown"),
+                "required_change": (
+                    "load AWORLD_REPLAY_RESPONSE_INDEX (and, when needed, "
+                    "AWORLD_REPLAY_FIXTURE_PATH), select a non_empty record for "
+                    "the incoming operation, and project its recorded value"
+                ),
+            },
+        )
     operation_names = {operation.casefold() for operation in operations}
     parameter_names = {
         "params",

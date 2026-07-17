@@ -193,6 +193,43 @@ def test_task_plane_conformance_rejects_global_response_after_data_plane_progres
     assert result.code == "operation_response_uncorrelated"
 
 
+def test_task_plane_conformance_requires_framework_response_index_binding() -> None:
+    base_runtime = (
+        "def handle(message):\n"
+        "    if message.get('method') == 'records.query':\n"
+        "        return {'records': []}\n"
+        "    return {}\n"
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(base_runtime),
+            "interaction_progress": 8,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+
+    operation_map_candidate = _candidate(
+        runtime_source=(
+            "RESPONSES_BY_OPERATION = {'records.query': {'records': [{'value': 'recorded'}]}}\n"
+            "def handle(message):\n"
+            "    operation = message.get('method')\n"
+            "    if operation == 'records.query':\n"
+            "        return RESPONSES_BY_OPERATION[operation]\n"
+            "    return {}\n"
+        )
+    )
+    result = evaluate_candidate_source_conformance(operation_map_candidate, contract)
+    assert result.passed is False
+    assert result.code == "operation_response_uncorrelated"
+    assert "AWORLD_REPLAY_RESPONSE_INDEX" in result.details["required_change"]
+
+
 def test_task_plane_conformance_rejects_outer_fixture_list_projection() -> None:
     base_runtime = (
         "def handle(operation):\n"
