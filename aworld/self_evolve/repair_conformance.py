@@ -482,14 +482,75 @@ def _operation_response_correlation_failure(
     # reached the task/data plane (the interaction progress counter is emitted
     # by the runner from the protocol trace), preserving selector-focused
     # conformance checks for transport-only repairs.
-    if (
-        not contract.requires_fixture_derived_probe
-        or not operations
-        or contract.interaction_progress < 4
-    ):
+    if not contract.requires_fixture_derived_probe or not operations:
         return None
     source_text = "\n".join(sources.values())
     has_index_binding = "AWORLD_REPLAY_RESPONSE_INDEX" in source_text
+    # Once a candidate advertises the framework index, do not let a shallow
+    # synthetic contract (which may lack a numeric progress counter) hide a
+    # response branch that still falls back to a module-global container.  The
+    # index must participate in the returned data flow, not merely be loaded by
+    # an unrelated helper.  Candidates without an index retain the historical
+    # selector-only path until a real task-plane timeout supplies progress.
+    if has_index_binding and contract.interaction_progress < 4:
+        operation_names = {operation.casefold() for operation in operations}
+        for path, source in sorted(sources.items()):
+            if PurePosixPath(path).suffix.casefold() != ".py":
+                continue
+            try:
+                tree = ast.parse(source)
+            except SyntaxError:
+                continue
+            loaded_names = {
+                node.id.casefold()
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            }
+            if not any(
+                name in loaded_names
+                for name in ("response_container", "fixture_container", "response_token")
+            ):
+                continue
+            for function in ast.walk(tree):
+                if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                branch = _operation_branch(function, operation_names)
+                if branch is None:
+                    continue
+                branch_names = {
+                    node.id.casefold()
+                    for node in ast.walk(branch)
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                }
+                if any(
+                    name in branch_names
+                    for name in ("response_container", "fixture_container", "response_token")
+                ) and "response_index" not in branch_names:
+                    return RepairConformanceResult(
+                        passed=False,
+                        code="operation_response_uncorrelated",
+                        reason=(
+                            "indexed task-plane branch still falls back to a "
+                            "module-global response container"
+                        ),
+                        details={
+                            "path": path,
+                            "function": function.name,
+                            "operation": next(iter(operations), "unknown"),
+                            "required_change": (
+                                "make the selected non_empty response-index record "
+                                "reach the returned protocol payload; do not fall "
+                                "back to RESPONSE_CONTAINER or RESPONSE_TOKEN"
+                            ),
+                        },
+                    )
+        if contract.interaction_progress < 4:
+            return None
+    # Without a response index, retain the selector-focused contract until a
+    # real task-plane timeout supplies progress.  At that point the index is
+    # mandatory and the candidate is rejected below.
+    if contract.interaction_progress < 4:
+        return None
     if not has_index_binding:
         return RepairConformanceResult(
             passed=False,
