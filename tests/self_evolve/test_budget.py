@@ -14,12 +14,14 @@ from aworld.self_evolve.budget import (
     BudgetEstimateSource,
     BudgetStage,
     BudgetUsage,
+    BudgetUsageCompleteness,
     CandidateAttemptEvent,
     CandidateAttemptAggregate,
     CandidateAttemptKey,
     CandidateAttemptStage,
     RepairFrontier,
     RunBudgetLedger,
+    ObservedBudgetUsage,
     ScheduledCandidateSlot,
     ScheduledSlotRole,
     SchedulerDecision,
@@ -210,6 +212,7 @@ def test_ledger_denial_is_deterministic_and_does_not_mutate_state() -> None:
         "spent",
         "observed",
         "debit_observation",
+        "debit_completeness",
     ),
 )
 def test_ledger_serialization_rejects_derived_summary_and_reservation_tamper(
@@ -218,7 +221,12 @@ def test_ledger_serialization_rejects_derived_summary_and_reservation_tamper(
     ledger = _ledger()
     decision = ledger.reserve(_estimate())
     assert decision.allowed is True
-    if tamper in {"spent", "observed", "debit_observation"}:
+    if tamper in {
+        "spent",
+        "observed",
+        "debit_observation",
+        "debit_completeness",
+    }:
         ledger.debit_actual(
             decision.reservation_id or "",
             BudgetUsage(
@@ -237,11 +245,13 @@ def test_ledger_serialization_rejects_derived_summary_and_reservation_tamper(
     elif tamper == "spent":
         payload["spent_by_stage"]["candidate_generation"]["tokens"] = 201  # type: ignore[index]
     elif tamper == "observed":
-        payload["observed_by_stage"]["candidate_generation"][0][  # type: ignore[index]
-            "tokens"
+        payload["observed_by_stage"]["candidate_generation"]["tokens"][  # type: ignore[index]
+            0
         ] = 201
-    else:
+    elif tamper == "debit_observation":
         payload["debit_observations"][0]["actual"]["tokens"] = 201  # type: ignore[index]
+    else:
+        payload["debit_observations"][0]["actual_completeness"]["tokens"] = False  # type: ignore[index]
 
     with pytest.raises(
         ValueError,
@@ -351,7 +361,11 @@ def test_batch_actual_history_is_normalized_per_unit_before_future_scaling(
     )
 
     assert debit.actual == aggregate_actual
-    assert debit.observed_per_unit == per_unit
+    assert debit.observed_per_unit == ObservedBudgetUsage(
+        tokens=per_unit.tokens,
+        cost_usd=per_unit.cost_usd,
+        wall_seconds=per_unit.wall_seconds,
+    )
     assert ledger.spent_by_stage[stage] == aggregate_actual
     next_estimate = ledger.estimate_next(
         stage=stage,
@@ -389,12 +403,110 @@ def test_batch_token_observation_rounds_up_without_rounding_aggregate_spend() ->
         ),
     )
 
-    assert debit.observed_per_unit == BudgetUsage(
+    assert debit.observed_per_unit == ObservedBudgetUsage(
         tokens=11,
         cost_usd=Decimal("1"),
         wall_seconds=Decimal("2"),
     )
     assert ledger.total_spent().tokens == 31
+
+
+def test_incomplete_dimensions_use_conservative_spend_but_not_estimator_samples() -> None:
+    ledger = _ledger()
+    decision = ledger.reserve(
+        ledger.estimate_next(
+            stage=BudgetStage.PAIRED_REPLAY,
+            item_id="multi-trajectory-batch",
+            units=2,
+            cold_start_per_unit=BudgetUsage(
+                tokens=50,
+                cost_usd=Decimal("1"),
+                wall_seconds=Decimal("2"),
+            ),
+        )
+    )
+
+    debit = ledger.debit_actual(
+        decision.reservation_id or "",
+        BudgetUsage(
+            tokens=150,
+            cost_usd=Decimal("3"),
+            wall_seconds=Decimal("1"),
+        ),
+        actual_completeness=BudgetUsageCompleteness(
+            tokens=False,
+            cost_usd=False,
+            wall_seconds=True,
+        ),
+    )
+
+    assert debit.known_lower_bound.tokens == 150
+    assert debit.actual == BudgetUsage(
+        tokens=150,
+        cost_usd=Decimal("3"),
+        wall_seconds=Decimal("1"),
+    )
+    assert debit.observed_per_unit == ObservedBudgetUsage(
+        wall_seconds=Decimal("0.5")
+    )
+    statistics_value = ledger.estimate_statistics(BudgetStage.PAIRED_REPLAY)
+    assert statistics_value is not None
+    assert statistics_value.sample_count_by_dimension.to_dict() == {
+        "tokens": 0,
+        "cost_usd": 0,
+        "wall_seconds": 1,
+    }
+    next_estimate = ledger.estimate_next(
+        stage=BudgetStage.PAIRED_REPLAY,
+        item_id="next-multi-trajectory-batch",
+        units=3,
+        cold_start_per_unit=BudgetUsage(
+            tokens=50,
+            cost_usd=Decimal("1"),
+            wall_seconds=Decimal("2"),
+        ),
+    )
+    assert next_estimate.resolved_usage() == BudgetUsage(
+        tokens=150,
+        cost_usd=Decimal("3"),
+        wall_seconds=Decimal("1.5"),
+    )
+    assert next_estimate.source is BudgetEstimateSource.OBSERVED_ROBUST
+    assert next_estimate.confidence is BudgetEstimateConfidence.LOW
+    assert RunBudgetLedger.from_dict(ledger.to_dict()).to_dict() == ledger.to_dict()
+
+
+def test_repeated_reserved_fallbacks_do_not_train_or_raise_estimator_confidence() -> None:
+    ledger = _ledger()
+    cold = BudgetUsage(
+        tokens=10,
+        cost_usd=Decimal("1"),
+        wall_seconds=Decimal("2"),
+    )
+    for index in range(5):
+        decision = ledger.reserve(
+            ledger.estimate_next(
+                stage=BudgetStage.EVALUATION,
+                item_id=f"fallback-{index}",
+                cold_start_per_unit=cold,
+            )
+        )
+        ledger.debit_actual(
+            decision.reservation_id or "",
+            BudgetUsage(),
+            actual_completeness=BudgetUsageCompleteness.incomplete(),
+        )
+
+    assert ledger.total_spent() == cold.scale(5)
+    assert ledger.estimate_statistics(BudgetStage.EVALUATION) is None
+    next_estimate = ledger.estimate_next(
+        stage=BudgetStage.EVALUATION,
+        item_id="still-cold",
+        cold_start_per_unit=cold,
+    )
+    assert next_estimate.resolved_usage() == cold
+    assert next_estimate.source is BudgetEstimateSource.CONFIGURED_COLD_START
+    assert next_estimate.confidence is BudgetEstimateConfidence.LOW
 
 
 def test_debit_observation_journal_rejects_removed_prefix() -> None:

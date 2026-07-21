@@ -61,10 +61,12 @@ from aworld.self_evolve.replay_adaptation import (
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
     _RunBudgetContext,
+    _StoredCandidateReplayBackend,
     _TelemetryUsageSnapshot,
     _aggregate_target_selection_decisions,
     _auto_group_trajectory_log_dataset,
     _baseline_replay_artifact_dir,
+    _backend_proves_zero_budget_usage,
     _candidate_screening_timeout,
     _candidate_validation_report_for_persistence,
     _candidate_gate_results,
@@ -1983,6 +1985,31 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
     assert rerun_selection["evidence_step_ids"] == []
     assert rerun_report["target_selection"]["selection_origin"] == "operator_explicit"
     assert rerun_report["target_provenance"]["status"] == "resolved"
+    stored_generation_debits = [
+        item
+        for item in rerun_report["budget"]["debits"]
+        if item["stage"] == "candidate_generation"
+    ]
+    assert len(stored_generation_debits) == 1
+    stored_generation_decisions = [
+        item
+        for item in rerun_report["budget"]["decisions"]
+        if item["stage"] == "candidate_generation"
+    ]
+    assert len(stored_generation_decisions) == 1
+    assert (
+        stored_generation_decisions[0]["estimate"]["backend_proven_zero"]
+        is True
+    )
+    assert stored_generation_debits[0]["reserved"] == {
+        "tokens": 0,
+        "cost_usd": "0",
+        "wall_seconds": "0",
+    }
+    assert (
+        stored_generation_debits[0]["actual"]
+        == stored_generation_debits[0]["reserved"]
+    )
 
 
 def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
@@ -4496,12 +4523,17 @@ def test_stage_telemetry_delta_uses_only_new_batch_when_token_alias_changes() ->
     )
 
     after = _stage_telemetry_usage_snapshot(telemetry, "replay")
-    tokens, cost, wall, source = _stage_telemetry_usage_delta(before, after)
+    delta = _stage_telemetry_usage_delta(before, after)
 
-    assert tokens == 25
-    assert cost is None
-    assert wall == Decimal("2")
-    assert source == "telemetry_delta_tokens+wall_seconds"
+    assert delta.observation.known_lower_bound.tokens == 25
+    assert delta.observation.known_lower_bound.cost_usd == Decimal("0")
+    assert delta.observation.known_lower_bound.wall_seconds == Decimal("2")
+    assert delta.observation.completeness.to_dict() == {
+        "tokens": True,
+        "cost_usd": False,
+        "wall_seconds": True,
+    }
+    assert delta.source == "telemetry_delta_tokens+wall_seconds"
 
 
 def test_stage_telemetry_delta_falls_back_if_any_new_batch_lacks_tokens() -> None:
@@ -4521,12 +4553,17 @@ def test_stage_telemetry_delta_falls_back_if_any_new_batch_lacks_tokens() -> Non
     )
 
     after = _stage_telemetry_usage_snapshot(telemetry, "evaluation")
-    tokens, cost, wall, source = _stage_telemetry_usage_delta(before, after)
+    delta = _stage_telemetry_usage_delta(before, after)
 
-    assert tokens is None
-    assert cost is None
-    assert wall == Decimal("3")
-    assert source == "telemetry_delta_wall_seconds"
+    assert delta.observation.known_lower_bound.tokens == 10
+    assert delta.observation.known_lower_bound.cost_usd == Decimal("0")
+    assert delta.observation.known_lower_bound.wall_seconds == Decimal("3")
+    assert delta.observation.completeness.to_dict() == {
+        "tokens": False,
+        "cost_usd": False,
+        "wall_seconds": True,
+    }
+    assert delta.source == "telemetry_delta_tokens_lower_bound+wall_seconds"
 
 
 def test_stage_telemetry_delta_canonicalizes_wall_alias_per_new_batch() -> None:
@@ -4544,12 +4581,17 @@ def test_stage_telemetry_delta_canonicalizes_wall_alias_per_new_batch() -> None:
         )
     )
 
-    tokens, cost, wall, source = _stage_telemetry_usage_delta(before, after)
+    delta = _stage_telemetry_usage_delta(before, after)
 
-    assert tokens == 8
-    assert cost is None
-    assert wall == Decimal("4")
-    assert source == "telemetry_delta_tokens+wall_seconds"
+    assert delta.observation.known_lower_bound.tokens == 8
+    assert delta.observation.known_lower_bound.cost_usd == Decimal("0")
+    assert delta.observation.known_lower_bound.wall_seconds == Decimal("4")
+    assert delta.observation.completeness.to_dict() == {
+        "tokens": True,
+        "cost_usd": False,
+        "wall_seconds": True,
+    }
+    assert delta.source == "telemetry_delta_tokens+wall_seconds"
 
 
 def test_explicit_zero_proof_is_overridden_by_nonzero_actual_usage() -> None:
@@ -4562,13 +4604,12 @@ def test_explicit_zero_proof_is_overridden_by_nonzero_actual_usage() -> None:
             )
         ),
         cold_start_by_stage={BudgetStage.PAIRED_REPLAY: None},
+        backend_proven_zero_by_stage={BudgetStage.PAIRED_REPLAY: True},
     )
-    estimate = context.ledger.estimate_next(
-        stage=BudgetStage.PAIRED_REPLAY,
-        item_id="first-replay",
-        backend_proven_zero=True,
+    decision = context.reserve(
+        BudgetStage.PAIRED_REPLAY,
+        "first-replay",
     )
-    decision = context.ledger.reserve(estimate)
     assert decision.allowed is True
     assert decision.estimate.backend_proven_zero is True
 
@@ -4593,6 +4634,130 @@ def test_explicit_zero_proof_is_overridden_by_nonzero_actual_usage() -> None:
         cost_ceiling=None,
         wall_ceiling=None,
     ) is None
+
+
+def test_stored_replay_backend_explicitly_proves_zero_for_multi_trajectory_reuse() -> None:
+    class TruthyNumericCapability:
+        def proves_zero_budget_usage(self, stage: BudgetStage) -> int:
+            return 1
+
+    backend = _StoredCandidateReplayBackend(
+        replay_result=None,  # type: ignore[arg-type]
+        source_replay_path="stored/replay",
+    )
+    assert _backend_proves_zero_budget_usage(
+        backend,
+        BudgetStage.PAIRED_REPLAY,
+    )
+    assert not _backend_proves_zero_budget_usage(
+        backend,
+        BudgetStage.SCREENING,
+    )
+    assert not _backend_proves_zero_budget_usage(
+        TruthyNumericCapability(),
+        BudgetStage.PAIRED_REPLAY,
+    )
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(
+                total_tokens=100,
+                total_cost_usd=Decimal("10"),
+                wall_seconds=Decimal("100"),
+            )
+        ),
+        cold_start_by_stage={
+            BudgetStage.PAIRED_REPLAY: BudgetUsage(
+                tokens=10,
+                cost_usd=Decimal("1"),
+                wall_seconds=Decimal("5"),
+            )
+        },
+        backend_proven_zero_by_stage={
+            BudgetStage.PAIRED_REPLAY: _backend_proves_zero_budget_usage(
+                backend,
+                BudgetStage.PAIRED_REPLAY,
+            )
+        },
+    )
+
+    decision = context.reserve(
+        BudgetStage.PAIRED_REPLAY,
+        "stored-eight-member-replay",
+        units=8,
+    )
+    assert decision.allowed is True
+    assert decision.estimate.backend_proven_zero is True
+    assert decision.estimate.resolved_usage() == BudgetUsage()
+    context.debit(
+        decision,
+        actual_source="stored_replay_has_no_execution_usage",
+    )
+
+    assert context.ledger.total_spent() == BudgetUsage()
+    assert context.ledger.estimate_statistics(BudgetStage.PAIRED_REPLAY) is None
+    assert context.debits[0]["actual_completeness"] == {
+        "tokens": False,
+        "cost_usd": False,
+        "wall_seconds": False,
+    }
+
+
+def test_partial_multi_batch_telemetry_never_debits_below_known_lower_bound() -> None:
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(BudgetCeilings(100, Decimal("10"), Decimal("100"))),
+        cold_start_by_stage={
+            BudgetStage.PAIRED_REPLAY: BudgetUsage(
+                tokens=5,
+                cost_usd=Decimal("1"),
+                wall_seconds=Decimal("2"),
+            )
+        },
+    )
+    decision = context.reserve(
+        BudgetStage.PAIRED_REPLAY,
+        "two-trajectory-replay",
+        units=2,
+    )
+    delta = _stage_telemetry_usage_delta(
+        _TelemetryUsageSnapshot(),
+        _TelemetryUsageSnapshot(
+            batches=(
+                {
+                    "token_usage": {"total_tokens": 15},
+                    "total_cost_usd": "3",
+                    "elapsed_seconds": "1",
+                },
+                {"execution_seconds": "1"},
+            )
+        ),
+    )
+
+    context.debit(
+        decision,
+        usage_observation=delta.observation,
+        actual_source=delta.source,
+    )
+
+    debit = context.debits[0]
+    assert debit["known_lower_bound"] == {
+        "tokens": 15,
+        "cost_usd": "3",
+        "wall_seconds": "2",
+    }
+    assert debit["actual"] == {
+        "tokens": 15,
+        "cost_usd": "3",
+        "wall_seconds": "2",
+    }
+    statistics_value = context.ledger.estimate_statistics(
+        BudgetStage.PAIRED_REPLAY
+    )
+    assert statistics_value is not None
+    assert statistics_value.sample_count_by_dimension.to_dict() == {
+        "tokens": 0,
+        "cost_usd": 0,
+        "wall_seconds": 1,
+    }
 
 
 def test_judge_actual_tokens_require_complete_executed_summary_set() -> None:
