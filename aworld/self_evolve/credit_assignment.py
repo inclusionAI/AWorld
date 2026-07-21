@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.provenance import (
+    TargetProvenance,
+    TargetProvenanceResolution,
+    TargetSelectionOrigin,
+    resolve_target_provenance,
+)
 from aworld.self_evolve.trace_pack import TraceEvidenceStep, TracePack
 from aworld.self_evolve.types import SelfEvolveTargetRef
 
@@ -50,6 +55,64 @@ class TargetSelectionReport:
     signals: tuple[str, ...] = ()
     no_target_reason: str | None = None
     diagnostics: Mapping[str, Any] | None = None
+    provenance_status: str | None = None
+    provenance_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class TargetSelectionDecision:
+    """A target-selection report coupled to its authorization classification."""
+
+    report: TargetSelectionReport
+    provenance_resolution: TargetProvenanceResolution
+
+    @property
+    def provenance(self) -> TargetProvenance | None:
+        return self.provenance_resolution.provenance
+
+    @property
+    def unresolved_reason(self) -> str | None:
+        if self.provenance_resolution.resolved:
+            return None
+        return self.provenance_resolution.reason
+
+
+def build_target_selection_decision(
+    report: TargetSelectionReport,
+    *,
+    inventory: TargetInventory,
+    selection_origin: TargetSelectionOrigin,
+    workspace_root: str | Path | None = None,
+) -> TargetSelectionDecision:
+    target = report.selected_target
+    if target is None:
+        resolution = TargetProvenanceResolution(
+            status="unresolved",
+            provenance=None,
+            reason=report.no_target_reason or "no mutation target was selected",
+        )
+        return TargetSelectionDecision(
+            report=report,
+            provenance_resolution=resolution,
+        )
+
+    inventory_entry = inventory.find(target.target_type, target.target_id)
+    resolution = resolve_target_provenance(
+        target,
+        selection_origin=selection_origin,
+        inventory_provenance=(
+            inventory_entry.provenance if inventory_entry is not None else None
+        ),
+        workspace_root=workspace_root,
+    )
+    return TargetSelectionDecision(
+        report=replace(
+            report,
+            provenance_status=resolution.status,
+            provenance_reason=resolution.reason,
+        ),
+        provenance_resolution=resolution,
+    )
 
 
 @dataclass(frozen=True)
@@ -172,6 +235,15 @@ class TrajectoryCreditAssigner:
             failure_category=signal.failure_category,
             signals=signals,
             diagnostics={"pack_id": trace_pack.pack_id},
+        )
+
+    def assign_decision(self, trace_pack: TracePack) -> TargetSelectionDecision:
+        """Select and classify one target through a total provenance boundary."""
+
+        return build_target_selection_decision(
+            self.assign(trace_pack),
+            inventory=self.inventory,
+            selection_origin="inferred",
         )
 
     def _assign_fallback_target(

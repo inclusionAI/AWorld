@@ -5,9 +5,15 @@ from pathlib import Path
 from aworld.self_evolve.credit_assignment import (
     LLMTargetDiagnosis,
     TargetInventory,
+    TargetInventoryEntry,
+    TargetSelectionDecision,
+    TargetSelectionReport,
     TrajectoryCreditAssigner,
+    build_target_selection_decision,
     build_default_target_inventory,
 )
+from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.types import SelfEvolveTargetRef
 from aworld.self_evolve.trace_pack import build_trace_pack, trace_packs_from_trajectory_log
 
 
@@ -58,6 +64,131 @@ def test_target_inventory_can_be_scoped_to_executable_target_types(tmp_path) -> 
     assert scoped.find("skill", "demo-skill") is not None
     assert scoped.find("prompt-section", "result-validation-anchor-policy") is None
     assert scoped.draft_skill_root == inventory.draft_skill_root
+
+
+def test_credit_assignment_decision_preserves_inventory_provenance(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="generic-capability")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="installed_skill",
+        trust_level="local",
+        protected=False,
+        reason="generic local capability",
+    )
+    inventory = TargetInventory(
+        entries=(TargetInventoryEntry(target=target, provenance=provenance),)
+    )
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1},
+                "state": {"input": {"content": "A generic workflow failed."}},
+                "action": {"content": "The capability needs diagnosis."},
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="inventory-target",
+    )
+    diagnosis = LLMTargetDiagnosis(
+        target_type="skill",
+        target_id="generic-capability",
+        confidence=0.95,
+        evidence_step_ids=("inventory-target:step-1",),
+        failure_category="skill",
+        rationale="generic capability owns the failed behavior",
+    )
+
+    decision = TrajectoryCreditAssigner(
+        inventory=inventory,
+        llm_diagnoser=lambda _pack, _inventory: diagnosis,
+    ).assign_decision(pack)
+
+    assert isinstance(decision, TargetSelectionDecision)
+    assert decision.report.selected_target is not None
+    assert decision.report.selected_target.target_id == "generic-capability"
+    assert decision.provenance is provenance
+    assert decision.report.provenance_status == "resolved"
+
+
+def test_credit_assignment_decision_marks_new_draft_as_generated(tmp_path) -> None:
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="generated-capability",
+        path=str(tmp_path / "drafts" / "generated-capability" / "SKILL.md"),
+    )
+    report = TargetSelectionReport(
+        selected_target=target,
+        confidence=0.85,
+        evidence_step_ids=("generated-target:step-1",),
+        failure_category="skill",
+        signals=("new_skill_candidate",),
+    )
+
+    decision = build_target_selection_decision(
+        report,
+        inventory=TargetInventory(entries=()),
+        selection_origin="inferred",
+    )
+
+    assert decision.report.selected_target is not None
+    assert decision.report.selected_target.target_id == "generated-capability"
+    assert decision.provenance is not None
+    assert decision.provenance.trust_level == "generated"
+    assert decision.provenance.write_origin == "target_inference"
+    assert decision.report.provenance_status == "resolved"
+
+
+def test_explicit_selection_cannot_erase_inventory_protection(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="protected-capability")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="installed_skill",
+        trust_level="protected",
+        protected=True,
+        reason="generic protected capability",
+    )
+    entry = TargetInventoryEntry(target=target, provenance=provenance)
+    inventory = TargetInventory(entries=(entry,))
+    report = TargetSelectionReport(
+        selected_target=entry.target,
+        confidence=1.0,
+        evidence_step_ids=("evidence-1",),
+        failure_category="explicit_target",
+        signals=("explicit_target",),
+    )
+
+    decision = build_target_selection_decision(
+        report,
+        inventory=inventory,
+        selection_origin="operator_explicit",
+    )
+
+    assert decision.provenance is entry.provenance
+    assert decision.provenance.protected is True
+
+    alias_report = TargetSelectionReport(
+        selected_target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id=target.target_id,
+            path=str(tmp_path / "alternate" / "SKILL.md"),
+        ),
+        confidence=1.0,
+        evidence_step_ids=("evidence-1",),
+        failure_category="explicit_target",
+        signals=("explicit_target",),
+    )
+    alias_decision = build_target_selection_decision(
+        alias_report,
+        inventory=inventory,
+        selection_origin="operator_explicit",
+        workspace_root=tmp_path,
+    )
+
+    assert alias_decision.provenance is None
+    assert alias_decision.provenance_resolution.status == "unresolved"
 
 
 def test_credit_assigner_falls_back_when_signaled_target_is_not_executable(tmp_path) -> None:

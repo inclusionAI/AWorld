@@ -62,7 +62,20 @@ Exactly one evaluation source is normally provided:
 - `--batch-config <path>`: batch config for a larger request.
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.
 
-When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target. Low-confidence inferred targets are blocked for `auto_verified` apply.
+When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target; low-confidence inferred targets are blocked for `auto_verified` apply.
+
+Target confidence and target provenance are independent gates. Confidence answers
+whether the trajectory evidence identifies the right capability; provenance answers
+whether that capability is authorized for mutation. An inferred generated target that
+is absent from the local inventory defaults to proposal-only, even when candidate replay
+passes. Programmatic callers must supply the named generated-target trust policy to
+authorize it; adding its type to `auto_apply_target_types` is not authorization.
+
+Aggregating multiple trajectories can strengthen target evidence and add evidence IDs,
+but it produces one provenance decision for the selected target. Aggregation cannot
+erase inventory protection or grant write trust. Behavioral replay and evaluator success
+never substitute for mutation authorization. Reports record the single provenance
+sidecar path, or a structured unresolved reason when classification is impossible.
 
 ## Replay Adaptation and Portability
 
@@ -176,6 +189,7 @@ Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
 - `apply_policy`: `proposal` or `auto_verified`.
 - `selected_candidate_id`: selected candidate when one exists.
 - `gate_results`: low-level gate decisions.
+- `target_provenance`: resolved sidecar path and reason, or an explicit unresolved status.
 - `release_checklist`: grouped release checks derived from gates.
 - `content_quality_diagnostics`: non-blocking publication/content quality diagnostics when evaluator metrics provide them.
 - `population`: generated candidates, representative screening attempts, selection reason, focused repair telemetry, concurrency, and candidate-generation token usage.
