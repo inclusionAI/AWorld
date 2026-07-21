@@ -62,7 +62,6 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.failure_events import (
-    AGGREGATED_FAILURE_SCHEMA_VERSION,
     AggregatedReplayFailure,
     ReplayFailureObservation,
     aggregate_replay_failure_observations,
@@ -2081,6 +2080,24 @@ class SelfEvolveRunner:
                     requirement_id=group.requirement_id,
                     contract_fingerprint=fingerprint,
                 )
+                group_observations = tuple(
+                    ReplayFailureObservation(
+                        event=failure_event,
+                        case_id=case_id,
+                        run_id=run_id,
+                        candidate_id=candidate.candidate_id,
+                    )
+                    for case_id in group.case_ids
+                ) or (
+                    ReplayFailureObservation(
+                        event=failure_event,
+                        run_id=run_id,
+                        candidate_id=candidate.candidate_id,
+                    ),
+                )
+                failure_aggregate = aggregate_replay_failure_observations(
+                    group_observations
+                )[0]
                 group_results.append(
                     {
                         "fingerprint": fingerprint,
@@ -2090,7 +2107,7 @@ class SelfEvolveRunner:
                         "case_ids": list(group.case_ids),
                         "artifact_ref": artifact_ref,
                         "error_type": type(exc).__name__,
-                        "failure_event": failure_event.to_dict(),
+                        "failure_event": failure_aggregate.to_dict(),
                     }
                 )
                 continue
@@ -6375,11 +6392,11 @@ def _conformance_gate_blocks_population(gate: GateResult) -> bool:
     if not isinstance(raw_event, Mapping):
         return False
     try:
-        event = ReplayFailureEvent.from_dict(raw_event)
+        event = _typed_causal_feedback_event(raw_event)
     except (TypeError, ValueError):
         return False
     return bool(
-        event.source is FailureEventSource.NATIVE
+        FailureEventSource.NATIVE.value in event.source_kinds
         and event.scope is FailureScope.SHARED_RUN
         and event.owner in {FailureOwner.INFRASTRUCTURE, FailureOwner.FRAMEWORK}
     )
@@ -7512,7 +7529,9 @@ def _typed_causal_feedback_event(
 ) -> AggregatedReplayFailure:
     """Parse causal transport without routing typed scalars through sanitization."""
 
-    if payload.get("schema_version") == AGGREGATED_FAILURE_SCHEMA_VERSION:
+    if str(payload.get("schema_version") or "").startswith(
+        "aworld.self_evolve.replay_failure_aggregate."
+    ):
         return AggregatedReplayFailure.from_dict(payload)
     if payload.get("schema_version") is not None:
         event = ReplayFailureEvent.from_dict(payload)

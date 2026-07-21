@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from aworld.self_evolve.diagnostics import (
@@ -269,6 +272,81 @@ def test_aggregate_round_trip_preserves_exact_counts_beyond_bounded_samples() ->
     assert second.emission_id != first.emission_id
 
 
+def test_v1_typed_aggregate_is_verified_before_provenance_migration() -> None:
+    event = ReplayFailureEvent(
+        event_id="legacy-event",
+        code="member_contract_rejected",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+    )
+    aggregate = aggregate_replay_failure_observations(
+        (
+            ReplayFailureObservation(
+                event=event,
+                case_id="case-a",
+                run_id="run-a",
+                task_id="task-a",
+                candidate_id="candidate-a",
+            ),
+        )
+    )[0]
+    payload = aggregate.to_dict()
+    payload["schema_version"] = "aworld.self_evolve.replay_failure_aggregate.v1"
+    payload.pop("affected_case_identity_digests")
+    payload.pop("source_identity_digests")
+    digest_payload = {
+        key: payload[key]
+        for key in (
+            "semantic_key",
+            "code",
+            "owner",
+            "stage",
+            "scope",
+            "repairable",
+            "category",
+            "capability_identity_digest",
+            "requirement_identity_digest",
+            "contract_identity_digest",
+            "occurrence_count",
+            "affected_member_count",
+            "distinct_source_count",
+            "occurrence_ids",
+            "affected_case_ids",
+            "source_run_ids",
+            "source_task_ids",
+            "source_candidate_ids",
+            "source_kinds",
+            "batch_id",
+        )
+    }
+    aggregate_digest = "replay-aggregate-sha256-" + hashlib.sha256(
+        json.dumps(
+            digest_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    payload["aggregate_digest"] = aggregate_digest
+    payload["emission_id"] = "replay-emission-sha256-" + hashlib.sha256(
+        json.dumps(
+            {"batch_id": payload["batch_id"], "aggregate_digest": aggregate_digest},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    migrated = AggregatedReplayFailure.from_dict(payload)
+    assert migrated.affected_member_count == 1
+    assert len(migrated.affected_case_identity_digests) == 1
+    tampered = {**payload, "affected_member_count": 2}
+    with pytest.raises(ValueError, match="v1 aggregate_digest"):
+        AggregatedReplayFailure.from_dict(tampered)
+
+
 def test_typed_task_evaluation_cause_suppresses_only_explained_judge_noise() -> None:
     event = ReplayFailureEvent(
         code="judge_execution_failed",
@@ -328,11 +406,13 @@ def test_shared_infrastructure_cause_retains_independent_context_evidence_and_to
 
 def test_candidate_capability_cause_retains_independent_judge_issue() -> None:
     event = ReplayFailureEvent(
-        code="capability_contract_rejected",
+        code="evaluation_candidate_protocol_failed",
         owner=FailureOwner.CANDIDATE,
         stage=FailureStage.CAPABILITY_PREFLIGHT,
         scope=FailureScope.CANDIDATE,
         repairable=True,
+        capability_id="private-capability-identity",
+        requirement_id="private-requirement-identity",
     )
     diagnostics = extract_harness_diagnostics(
         gate_results=(),
@@ -348,3 +428,9 @@ def test_candidate_capability_cause_retains_independent_judge_issue() -> None:
 
     assert [item.kind for item in diagnostics].count(HarnessDiagnosticKind.EVALUATION) == 1
     assert [item.kind for item in diagnostics].count(HarnessDiagnosticKind.TOOL_PROTOCOL) == 1
+    causal = next(item for item in diagnostics if item.kind is HarnessDiagnosticKind.TOOL_PROTOCOL)
+    assert "capability_id" not in causal.metrics
+    assert "requirement_id" not in causal.metrics
+    assert causal.metrics["capability_identity_digest"]
+    assert causal.metrics["requirement_identity_digest"]
+    assert "private-capability-identity" not in str(causal)

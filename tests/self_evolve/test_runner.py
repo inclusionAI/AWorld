@@ -5832,7 +5832,7 @@ async def test_conformance_executes_each_projected_group_once_and_attributes_fai
             requirement_id="requirement-b",
             kind="local_endpoint",
             identifier="endpoint-b",
-            case_ids=("member-c",),
+            case_ids=case_ids,
             evidence_refs=("evidence-b",),
             status="runtime_required",
         ),
@@ -5970,13 +5970,21 @@ async def test_conformance_executes_each_projected_group_once_and_attributes_fai
     assert gate.passed is False
     events = gate.details["causal_failure_events"]
     assert len(events) == 1
-    assert events[0]["capability_id"] == "generic-capability"
-    assert events[0]["requirement_id"] == "requirement-b"
-    assert events[0]["contract_fingerprint"].startswith("sha256:")
-    assert events[0]["diagnostics"]["affected_case_ids"] == ["member-c"]
+    assert events[0]["affected_member_count"] == 3
+    assert len(events[0]["affected_case_identity_digests"]) == 3
+    assert events[0]["capability_identity_digest"]
+    assert events[0]["requirement_identity_digest"]
+    assert events[0]["contract_identity_digest"]
+    assert "capability_id" not in events[0]
+    assert "requirement_id" not in events[0]
+    assert "contract_fingerprint" not in events[0]
     assert "PRIVATE_RAW_RECORDED_FIXTURE_VALUE" not in json.dumps(
         gate.details, sort_keys=True
     )
+    serialized_gate = json.dumps(gate.details, sort_keys=True)
+    assert "generic-capability" not in serialized_gate
+    assert "requirement-a" not in serialized_gate
+    assert "requirement-b" not in serialized_gate
     persisted = _candidate_validation_report_for_persistence(
         {"conformance": {"attempts": [{"details": gate.details}]}}
     )

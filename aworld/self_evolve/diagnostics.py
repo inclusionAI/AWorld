@@ -189,7 +189,10 @@ def _causal_explains_evaluation_noise(
             FailureOwner.INFRASTRUCTURE,
             FailureOwner.FRAMEWORK,
         }
-        or event.code.startswith(("judge_", "evaluation_"))
+        and (
+            event.code.startswith(("judge_", "evaluation_"))
+            or event.category in {"judge", "evaluation", "evaluator"}
+        )
         for event in events
     )
 
@@ -296,8 +299,9 @@ def _causal_diagnostic(
         "scope": event.scope.value,
         "repairable": event.repairable,
         "category": event.category,
-        "capability_id": event.capability_id,
-        "requirement_id": event.requirement_id,
+        "capability_identity_digest": event.capability_identity_digest,
+        "requirement_identity_digest": event.requirement_identity_digest,
+        "contract_identity_digest": event.contract_identity_digest,
         "occurrence_count": event.occurrence_count,
         "affected_member_count": event.affected_member_count,
         "distinct_source_count": event.distinct_source_count,

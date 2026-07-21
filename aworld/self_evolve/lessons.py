@@ -7,7 +7,6 @@ from typing import Any, Mapping, Sequence
 
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.failure_events import (
-    AGGREGATED_FAILURE_SCHEMA_VERSION,
     AggregatedReplayFailure,
     ReplayFailureEvent,
     ReplayFailureObservation,
@@ -43,6 +42,8 @@ class LessonRecord:
     affected_case_ids: tuple[str, ...] = ()
     affected_case_count: int = 0
     distinct_source_count: int = 0
+    affected_case_identity_digests: tuple[str, ...] = ()
+    source_identity_digests: tuple[str, ...] = ()
     emission_ids: tuple[str, ...] = ()
     batch_ids: tuple[str, ...] = ()
     aggregate_digests: tuple[str, ...] = ()
@@ -138,6 +139,9 @@ def _record(
     affected_case_ids: tuple[str, ...] = (),
     affected_case_count: int | None = None,
     distinct_source_count: int | None = None,
+    affected_case_identity_digests: tuple[str, ...] = (),
+    source_identity_digests: tuple[str, ...] = (),
+    source_kinds: tuple[str, ...] = (),
     emission_id: str | None = None,
     batch_id: str | None = None,
     aggregate_digest: str | None = None,
@@ -200,14 +204,41 @@ def _record(
         distinct_source_count or 0,
     )
     clean_occurrence_count = max(1, int(occurrence_count))
+    clean_affected_identity_digests = _lesson_identity_set(
+        affected_case_identity_digests,
+        field_name="affected_case_identity_digests",
+    )
+    clean_source_identity_digests = _lesson_identity_set(
+        source_identity_digests,
+        field_name="source_identity_digests",
+    )
+    if emission_id and clean_affected_case_count != len(
+        clean_affected_identity_digests
+    ):
+        raise ValueError("causal lesson affected count must match complete identities")
+    if emission_id and clean_distinct_source_count != len(
+        clean_source_identity_digests
+    ):
+        raise ValueError("causal lesson source count must match complete identities")
     emission_stats: dict[str, Mapping[str, Any]] = {}
     if emission_id:
-        emission_stats[emission_id] = {
+        emission_payload = {
             "occurrence_count": clean_occurrence_count,
             "affected_case_count": clean_affected_case_count,
             "distinct_source_count": clean_distinct_source_count,
             "batch_id": batch_id or "",
             "aggregate_digest": aggregate_digest or "",
+            "affected_case_identity_digests": list(
+                clean_affected_identity_digests
+            ),
+            "source_identity_digests": list(clean_source_identity_digests),
+            "source_kinds": sorted(set(source_kinds)),
+        }
+        emission_stats[emission_id] = {
+            **emission_payload,
+            "lesson_emission_digest": _lesson_emission_digest(
+                emission_id, emission_payload
+            ),
         }
     return LessonRecord(
         lesson_id=f"{lesson_type}-{digest}",
@@ -230,6 +261,8 @@ def _record(
         ),
         affected_case_count=clean_affected_case_count,
         distinct_source_count=clean_distinct_source_count,
+        affected_case_identity_digests=clean_affected_identity_digests,
+        source_identity_digests=clean_source_identity_digests,
         emission_ids=((emission_id,) if emission_id else ()),
         batch_ids=((batch_id,) if batch_id else ()),
         aggregate_digests=((aggregate_digest,) if aggregate_digest else ()),
@@ -255,15 +288,9 @@ def _causal_lesson_records(
             if raw_event.get("schema_version") is not None:
                 raise
             continue
-        source_run_ids = _combined_source_ids(
-            aggregate.source_run_ids, feedback.metrics.get("run_id")
-        )
-        source_task_ids = _combined_source_ids(
-            aggregate.source_task_ids, feedback.metrics.get("task_id")
-        )
-        source_candidate_ids = _combined_source_ids(
-            aggregate.source_candidate_ids, feedback.variant_id
-        )
+        source_run_ids = aggregate.source_run_ids
+        source_task_ids = aggregate.source_task_ids
+        source_candidate_ids = aggregate.source_candidate_ids
         artifact_refs = tuple(
             sanitize_path_ref(item)
             for item in aggregate.artifact_refs
@@ -301,6 +328,11 @@ def _causal_lesson_records(
                 affected_case_ids=aggregate.affected_case_ids,
                 affected_case_count=aggregate.affected_member_count,
                 distinct_source_count=aggregate.distinct_source_count,
+                affected_case_identity_digests=(
+                    aggregate.affected_case_identity_digests
+                ),
+                source_identity_digests=aggregate.source_identity_digests,
+                source_kinds=aggregate.source_kinds,
                 occurrence_count=aggregate.occurrence_count,
                 occurrence_ids=aggregate.occurrence_ids,
                 metrics=metrics,
@@ -316,7 +348,9 @@ def _causal_lesson_records(
 def _typed_causal_aggregate(
     payload: Mapping[str, Any],
 ) -> AggregatedReplayFailure:
-    if payload.get("schema_version") == AGGREGATED_FAILURE_SCHEMA_VERSION:
+    if str(payload.get("schema_version") or "").startswith(
+        "aworld.self_evolve.replay_failure_aggregate."
+    ):
         return AggregatedReplayFailure.from_dict(payload)
     if payload.get("schema_version") is not None:
         event = ReplayFailureEvent.from_dict(payload)
@@ -357,37 +391,35 @@ def aggregate_lesson_records(
                 if existing is None:
                     merged_emission_stats[emission_id] = dict(stats)
                     continue
-                for identity_field in ("batch_id", "aggregate_digest"):
-                    previous = str(existing.get(identity_field) or "")
-                    incoming = str(stats.get(identity_field) or "")
-                    if previous and incoming and previous != incoming:
-                        raise ValueError(
-                            f"lesson emission {emission_id} has conflicting {identity_field}"
-                        )
-                    if not previous and incoming:
-                        existing[identity_field] = incoming
-                for count_field in (
-                    "occurrence_count",
-                    "affected_case_count",
-                    "distinct_source_count",
-                ):
-                    existing[count_field] = max(
-                        int(existing.get(count_field) or 0),
-                        int(stats.get(count_field) or 0),
+                if existing != stats:
+                    raise ValueError(
+                        f"lesson emission {emission_id} has conflicting exact provenance"
                     )
         if merged_emission_stats:
             occurrence_count = sum(
                 max(1, int(item["occurrence_count"]))
                 for item in merged_emission_stats.values()
             )
-            affected_case_count = sum(
-                max(0, int(item["affected_case_count"]))
-                for item in merged_emission_stats.values()
+            affected_case_identity_digests = tuple(
+                sorted(
+                    {
+                        digest
+                        for item in merged_emission_stats.values()
+                        for digest in item["affected_case_identity_digests"]
+                    }
+                )
             )
-            distinct_source_count = sum(
-                max(0, int(item["distinct_source_count"]))
-                for item in merged_emission_stats.values()
+            source_identity_digests = tuple(
+                sorted(
+                    {
+                        digest
+                        for item in merged_emission_stats.values()
+                        for digest in item["source_identity_digests"]
+                    }
+                )
             )
+            affected_case_count = len(affected_case_identity_digests)
+            distinct_source_count = len(source_identity_digests)
         elif all_occurrence_ids:
             occurrence_count = max(
                 len(all_occurrence_ids),
@@ -395,6 +427,24 @@ def aggregate_lesson_records(
             )
             affected_case_count = max(item.affected_case_count for item in items)
             distinct_source_count = max(item.distinct_source_count for item in items)
+            affected_case_identity_digests = tuple(
+                sorted(
+                    {
+                        digest
+                        for item in items
+                        for digest in item.affected_case_identity_digests
+                    }
+                )
+            )
+            source_identity_digests = tuple(
+                sorted(
+                    {
+                        digest
+                        for item in items
+                        for digest in item.source_identity_digests
+                    }
+                )
+            )
         else:
             counts_by_source: dict[tuple[tuple[str, ...], ...], int] = {}
             for item in items:
@@ -410,6 +460,8 @@ def aggregate_lesson_records(
             occurrence_count = sum(counts_by_source.values())
             affected_case_count = max(item.affected_case_count for item in items)
             distinct_source_count = max(item.distinct_source_count for item in items)
+            affected_case_identity_digests = ()
+            source_identity_digests = ()
         source_run_ids = _bounded_unique_ids(
             (value for item in items for value in item.source_run_ids),
             limit=_MAX_LESSON_SOURCE_IDS,
@@ -460,6 +512,8 @@ def aggregate_lesson_records(
                         source_run_ids, source_task_ids, source_candidate_ids
                     ),
                 ),
+                affected_case_identity_digests=affected_case_identity_digests,
+                source_identity_digests=source_identity_digests,
                 emission_ids=tuple(sorted(merged_emission_stats)),
                 batch_ids=tuple(
                     sorted(
@@ -499,7 +553,52 @@ def validate_lesson_records(records: Sequence[LessonRecord]) -> None:
             raise ValueError(
                 f"lesson_id {record.lesson_id!r} has conflicting semantic payloads"
             )
-        _record_emission_stats(record)
+        emission_stats = _record_emission_stats(record)
+        complete_emission_provenance = bool(record.emission_stats) and all(
+            isinstance(item, Mapping)
+            and "affected_case_identity_digests" in item
+            and "source_identity_digests" in item
+            for item in record.emission_stats.values()
+        )
+        if complete_emission_provenance:
+            expected_occurrences = sum(
+                int(item["occurrence_count"])
+                for item in emission_stats.values()
+            )
+            expected_affected = {
+                digest
+                for item in emission_stats.values()
+                for digest in item["affected_case_identity_digests"]
+            }
+            expected_sources = {
+                digest
+                for item in emission_stats.values()
+                for digest in item["source_identity_digests"]
+            }
+            if record.occurrence_count != expected_occurrences:
+                raise ValueError("lesson occurrence_count conflicts with emissions")
+            if record.affected_case_count != len(expected_affected):
+                raise ValueError("lesson affected_case_count conflicts with emissions")
+            if record.distinct_source_count != len(expected_sources):
+                raise ValueError("lesson distinct_source_count conflicts with emissions")
+            if set(record.affected_case_identity_digests) != expected_affected:
+                raise ValueError("lesson affected identities conflict with emissions")
+            if set(record.source_identity_digests) != expected_sources:
+                raise ValueError("lesson source identities conflict with emissions")
+            expected_batches = {
+                str(item["batch_id"])
+                for item in emission_stats.values()
+                if item["batch_id"]
+            }
+            expected_aggregates = {
+                str(item["aggregate_digest"])
+                for item in emission_stats.values()
+                if item["aggregate_digest"]
+            }
+            if set(record.batch_ids) != expected_batches:
+                raise ValueError("lesson batch_ids conflict with emissions")
+            if set(record.aggregate_digests) != expected_aggregates:
+                raise ValueError("lesson aggregate_digests conflict with emissions")
 
 
 def _lesson_record_canonical_key(record: LessonRecord) -> str:
@@ -538,19 +637,71 @@ def _record_emission_stats(
             clean_id = str(emission_id)
             if not clean_id:
                 raise ValueError("lesson emission_id must be non-empty")
-            stats[clean_id] = {
-                "occurrence_count": _exact_lesson_count(
-                    raw.get("occurrence_count"), minimum=1
-                ),
-                "affected_case_count": _exact_lesson_count(
-                    raw.get("affected_case_count"), minimum=0
-                ),
-                "distinct_source_count": _exact_lesson_count(
-                    raw.get("distinct_source_count"), minimum=0
-                ),
+            occurrence_count = _exact_lesson_count(
+                raw.get("occurrence_count"), minimum=1
+            )
+            affected_case_count = _exact_lesson_count(
+                raw.get("affected_case_count"), minimum=0
+            )
+            distinct_source_count = _exact_lesson_count(
+                raw.get("distinct_source_count"), minimum=0
+            )
+            if "affected_case_identity_digests" in raw:
+                affected_identities = _lesson_identity_set(
+                    raw.get("affected_case_identity_digests", ()),
+                    field_name="affected_case_identity_digests",
+                )
+            else:
+                affected_identities = _legacy_lesson_identity_set(
+                    samples=record.affected_case_ids,
+                    exact_count=affected_case_count,
+                    namespace="affected-case",
+                    seed=clean_id,
+                )
+            if "source_identity_digests" in raw:
+                source_identities = _lesson_identity_set(
+                    raw.get("source_identity_digests", ()),
+                    field_name="source_identity_digests",
+                )
+            else:
+                source_identities = _legacy_lesson_identity_set(
+                    samples=(),
+                    exact_count=distinct_source_count,
+                    namespace="source",
+                    seed=clean_id,
+                )
+            if affected_case_count != len(affected_identities):
+                raise ValueError("lesson emission affected identities are incomplete")
+            if distinct_source_count != len(source_identities):
+                raise ValueError("lesson emission source identities are incomplete")
+            normalized = {
+                "occurrence_count": occurrence_count,
+                "affected_case_count": affected_case_count,
+                "distinct_source_count": distinct_source_count,
                 "batch_id": str(raw.get("batch_id") or ""),
                 "aggregate_digest": str(raw.get("aggregate_digest") or ""),
+                "affected_case_identity_digests": list(affected_identities),
+                "source_identity_digests": list(source_identities),
+                "source_kinds": sorted(
+                    {
+                        str(item)
+                        for item in (
+                            raw.get("source_kinds", ())
+                            if isinstance(raw.get("source_kinds", ()), (list, tuple))
+                            else ()
+                        )
+                    }
+                ),
             }
+            expected_lesson_digest = _lesson_emission_digest(clean_id, normalized)
+            serialized_lesson_digest = raw.get("lesson_emission_digest")
+            if (
+                serialized_lesson_digest is not None
+                and serialized_lesson_digest != expected_lesson_digest
+            ):
+                raise ValueError("lesson emission digest does not match exact provenance")
+            normalized["lesson_emission_digest"] = expected_lesson_digest
+            stats[clean_id] = normalized
         if record.emission_ids and set(record.emission_ids) != set(stats):
             raise ValueError("lesson emission_ids do not match emission_stats")
         return stats
@@ -571,15 +722,38 @@ def _record_emission_stats(
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+    legacy_payload = {
+        "occurrence_count": max(1, int(record.occurrence_count or 1)),
+        "affected_case_count": max(0, int(record.affected_case_count or 0)),
+        "distinct_source_count": max(
+            0, int(record.distinct_source_count or 0)
+        ),
+        "batch_id": "",
+        "aggregate_digest": "",
+        "affected_case_identity_digests": list(
+            _legacy_lesson_identity_set(
+                samples=record.affected_case_ids,
+                exact_count=max(0, int(record.affected_case_count or 0)),
+                namespace="affected-case",
+                seed=legacy_emission_id,
+            )
+        ),
+        "source_identity_digests": list(
+            _legacy_lesson_identity_set(
+                samples=(),
+                exact_count=max(0, int(record.distinct_source_count or 0)),
+                namespace="source",
+                seed=legacy_emission_id,
+            )
+        ),
+        "source_kinds": [],
+    }
     return {
         legacy_emission_id: {
-            "occurrence_count": max(1, int(record.occurrence_count or 1)),
-            "affected_case_count": max(0, int(record.affected_case_count or 0)),
-            "distinct_source_count": max(
-                0, int(record.distinct_source_count or 0)
+            **legacy_payload,
+            "lesson_emission_digest": _lesson_emission_digest(
+                legacy_emission_id, legacy_payload
             ),
-            "batch_id": "",
-            "aggregate_digest": "",
         }
     }
 
@@ -588,6 +762,50 @@ def _exact_lesson_count(value: Any, *, minimum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ValueError(f"lesson emission count must be an integer >= {minimum}")
     return value
+
+
+def _lesson_identity_set(values: Any, *, field_name: str) -> tuple[str, ...]:
+    identities = tuple(sorted({str(value) for value in values if str(value)}))
+    if any(
+        len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+        for value in identities
+    ):
+        raise ValueError(f"{field_name} must contain full sha256 digests")
+    return identities
+
+
+def _legacy_lesson_identity_set(
+    *,
+    samples: tuple[str, ...],
+    exact_count: int,
+    namespace: str,
+    seed: str,
+) -> tuple[str, ...]:
+    values = {hashlib.sha256(value.encode("utf-8")).hexdigest() for value in samples}
+    index = 0
+    while len(values) < exact_count:
+        values.add(
+            hashlib.sha256(
+                f"legacy:{namespace}:{seed}:{index}".encode("utf-8")
+            ).hexdigest()
+        )
+        index += 1
+    return tuple(sorted(values))
+
+
+def _lesson_emission_digest(
+    emission_id: str,
+    payload: Mapping[str, Any],
+) -> str:
+    return "lesson-emission-sha256-" + hashlib.sha256(
+        json.dumps(
+            {"emission_id": emission_id, **dict(payload)},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _bounded_unique_ids(values: Any, *, limit: int) -> tuple[str, ...]:

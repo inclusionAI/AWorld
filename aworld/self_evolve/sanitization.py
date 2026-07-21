@@ -55,6 +55,11 @@ _PUBLIC_PROJECTION_MAX_DEPTH = 8
 _PUBLIC_PROJECTION_MAX_MAPPING_ITEMS = 64
 _PUBLIC_PROJECTION_MAX_SEQUENCE_ITEMS = 100
 _PUBLIC_FINGERPRINT_MAX_NODES = 4_000_000
+_PUBLIC_IDENTITY_DIGEST_FIELDS = {
+    "capability_id": "capability_identity_digest",
+    "requirement_id": "requirement_identity_digest",
+    "contract_fingerprint": "contract_identity_digest",
+}
 
 
 def sanitize_text(value: Any, *, max_chars: int | None = None) -> str:
@@ -149,6 +154,12 @@ def _project_public_diagnostic(
     max_chars: int,
     max_depth: int,
 ) -> Any:
+    typed_failure = _typed_replay_failure_public_projection(value)
+    if typed_failure is not None:
+        # Typed failure transports are already raw-free, integrity checked,
+        # and cardinality exact.  Re-projecting their complete identity sets
+        # through generic sequence budgets would invalidate aggregate digests.
+        return typed_failure
     public_contract = _repair_conformance_public_projection(value)
     if public_contract is not None:
         value = public_contract
@@ -165,6 +176,22 @@ def _project_public_diagnostic(
         items = sorted(value.items(), key=lambda pair: _public_key(pair[0]))
         for raw_key, item in items[:_PUBLIC_PROJECTION_MAX_MAPPING_ITEMS]:
             key = sanitize_text(_public_key(raw_key), max_chars=120)
+            identity_digest_field = _PUBLIC_IDENTITY_DIGEST_FIELDS.get(key)
+            if identity_digest_field is not None:
+                if item is not None:
+                    identity_digest = hashlib.sha256(
+                        str(item).strip().encode("utf-8")
+                    ).hexdigest()
+                    serialized_digest = value.get(identity_digest_field)
+                    if (
+                        serialized_digest is not None
+                        and serialized_digest != identity_digest
+                    ):
+                        raise ValueError(
+                            f"{identity_digest_field} conflicts with raw identity"
+                        )
+                    projected[identity_digest_field] = identity_digest
+                continue
             if _sensitive_public_field(key):
                 summary = _private_value_summary(item)
                 projected[key + "_fingerprint"] = summary["fingerprint"]
@@ -200,6 +227,58 @@ def _project_public_diagnostic(
         "type": f"{type(value).__module__}.{type(value).__qualname__}",
         "fingerprint": _stable_public_fingerprint(value),
     }
+
+
+def _typed_replay_failure_public_projection(
+    value: Any,
+) -> Mapping[str, Any] | None:
+    """Return the verified public transport for typed replay failures.
+
+    Imports stay local because failure events use ``sanitize_text`` while
+    constructing their bounded private representation.  Typed schemas fail
+    closed here: a forged digest must never be persisted as if it were a
+    trustworthy public diagnostic.
+    """
+
+    value_type = type(value)
+    is_typed_object = (
+        value_type.__module__ == "aworld.self_evolve.failure_events"
+        and value_type.__qualname__
+        in {"AggregatedReplayFailure", "ReplayFailureEvent"}
+    )
+    schema_version = (
+        str(value.get("schema_version") or "")
+        if isinstance(value, Mapping)
+        else ""
+    )
+    if not is_typed_object and not schema_version.startswith(
+        "aworld.self_evolve.replay_failure"
+    ):
+        return None
+
+    from aworld.self_evolve.failure_events import (
+        AggregatedReplayFailure,
+        ReplayFailureEvent,
+        ReplayFailureObservation,
+        aggregate_replay_failure_observations,
+    )
+
+    if isinstance(value, AggregatedReplayFailure):
+        aggregate = value
+    elif isinstance(value, ReplayFailureEvent):
+        aggregate = aggregate_replay_failure_observations(
+            (ReplayFailureObservation(event=value),)
+        )[0]
+    elif isinstance(value, Mapping) and "replay_failure_aggregate" in schema_version:
+        aggregate = AggregatedReplayFailure.from_dict(value)
+    elif isinstance(value, Mapping):
+        event = ReplayFailureEvent.from_dict(value)
+        aggregate = aggregate_replay_failure_observations(
+            (ReplayFailureObservation(event=event),)
+        )[0]
+    else:  # pragma: no cover - guarded by the exact type/schema checks above
+        return None
+    return aggregate.to_feedback_dict()
 
 
 def _repair_conformance_public_projection(value: Any) -> Mapping[str, Any] | None:
