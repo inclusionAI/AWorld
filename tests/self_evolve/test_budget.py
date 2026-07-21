@@ -20,6 +20,7 @@ from aworld.self_evolve.budget import (
     CandidateAttemptStage,
     RepairFrontier,
     RunBudgetLedger,
+    ScheduledCandidateSlot,
     ScheduledSlotRole,
     SchedulerDecision,
     SchedulerState,
@@ -221,12 +222,18 @@ def test_stage_workload_is_cardinality_monotonic_and_shape_aware() -> None:
         repetitions=2,
         distinct_conformance_shape_count=2,
     )
+    one_case_two_shapes = StageWorkload(
+        case_count=1,
+        repetitions=2,
+        distinct_conformance_shape_count=2,
+    )
 
     assert one.units_for(BudgetStage.PAIRED_REPLAY) == 2
     assert three_same_shape.units_for(BudgetStage.PAIRED_REPLAY) == 6
     assert one.units_for(BudgetStage.CONFORMANCE) == 1
     assert three_same_shape.units_for(BudgetStage.CONFORMANCE) == 1
     assert three_two_shapes.units_for(BudgetStage.CONFORMANCE) == 2
+    assert one_case_two_shapes.units_for(BudgetStage.CONFORMANCE) == 2
     assert three_two_shapes.units_for(BudgetStage.SCREENING) == 1
 
 
@@ -473,3 +480,82 @@ def test_scheduler_fails_closed_on_untyped_frontier_and_budget_denial() -> None:
     assert denied.stop is False
     assert denied.reason_code == "focused_budget_denied"
     assert json.dumps(denied.to_dict(), sort_keys=True)
+
+
+def test_scheduler_allows_exactly_one_bounded_untyped_exploration_slot() -> None:
+    scheduler = StageAwareCandidateScheduler(exploration_population=3)
+    state = SchedulerState(initial_exploration_scheduled=True)
+
+    bounded = scheduler.schedule(
+        state=state,
+        frontiers=(),
+        untyped_feedback_present=True,
+    )
+
+    assert bounded.reason_code == "bounded_exploration_without_typed_frontier"
+    assert len(bounded.slots) == 1
+    assert bounded.slots[0].role is ScheduledSlotRole.BOUNDED_EXPLORATION
+    assert bounded.slots[0].semantic_key is None
+    exhausted = scheduler.schedule(
+        state=bounded.state,
+        frontiers=(),
+        untyped_feedback_present=True,
+    )
+    assert exhausted.slots == ()
+    assert exhausted.reason_code == "no_repairable_frontier"
+
+
+def test_focused_repair_slot_requires_typed_semantic_key() -> None:
+    with pytest.raises(ValueError, match="requires a typed semantic key"):
+        ScheduledCandidateSlot(
+            slot=0,
+            role=ScheduledSlotRole.FOCUSED_REPAIR,
+        )
+
+
+def test_candidate_lifecycle_allows_real_optional_stage_skips() -> None:
+    key = CandidateAttemptKey("run-optional", 0, 0)
+    events = (
+        CandidateAttemptEvent(key, 0, CandidateAttemptStage.GENERATED, "candidate-a"),
+        CandidateAttemptEvent(key, 1, CandidateAttemptStage.UNIQUE, "candidate-a"),
+        CandidateAttemptEvent(key, 2, CandidateAttemptStage.LOCAL_GATES, "candidate-a"),
+        CandidateAttemptEvent(
+            key,
+            3,
+            CandidateAttemptStage.SELECTED,
+            "candidate-a",
+            reason_code="candidate_selected",
+        ),
+    )
+
+    validate_candidate_attempt_lifecycle(events)
+
+
+def test_candidate_lifecycle_preserves_more_shapes_than_trajectory_cases() -> None:
+    key = CandidateAttemptKey("run-shapes", 0, 0)
+    conformance = CandidateAttemptEvent(
+        key,
+        3,
+        CandidateAttemptStage.CONFORMANCE,
+        "candidate-a",
+        case_count=1,
+        distinct_conformance_shape_count=2,
+    )
+    events = (
+        CandidateAttemptEvent(key, 0, CandidateAttemptStage.GENERATED, "candidate-a"),
+        CandidateAttemptEvent(key, 1, CandidateAttemptStage.UNIQUE, "candidate-a"),
+        CandidateAttemptEvent(key, 2, CandidateAttemptStage.LOCAL_GATES, "candidate-a"),
+        conformance,
+        CandidateAttemptEvent(
+            key,
+            4,
+            CandidateAttemptStage.REJECTED,
+            "candidate-a",
+            reason_code="candidate_validation_rejected",
+        ),
+    )
+
+    validate_candidate_attempt_lifecycle(events)
+    aggregate = aggregate_candidate_attempts(events)
+    assert aggregate.max_case_count == 1
+    assert aggregate.max_distinct_conformance_shape_count == 2

@@ -1048,8 +1048,6 @@ class StageWorkload:
                 self.distinct_conformance_shape_count,
                 field_name="distinct_conformance_shape_count",
             )
-            if shape_count > self.case_count:
-                raise ValueError("distinct conformance shapes cannot exceed case count")
             object.__setattr__(
                 self,
                 "distinct_conformance_shape_count",
@@ -1125,6 +1123,11 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.LOCAL_GATES: frozenset(
         {
             CandidateAttemptStage.ADAPTATION,
+            CandidateAttemptStage.CONFORMANCE,
+            CandidateAttemptStage.SCREENING,
+            CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+            CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
             CandidateAttemptStage.NOT_RUN,
@@ -1135,6 +1138,8 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.CONFORMANCE,
             CandidateAttemptStage.SCREENING,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+            CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
             CandidateAttemptStage.NOT_RUN,
@@ -1144,6 +1149,8 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
         {
             CandidateAttemptStage.SCREENING,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+            CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
             CandidateAttemptStage.NOT_RUN,
@@ -1152,6 +1159,8 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.SCREENING: frozenset(
         {
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+            CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
             CandidateAttemptStage.NOT_RUN,
@@ -1167,6 +1176,8 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.PAIRED_REPLAY_COMPLETED: frozenset(
         {
             CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE,
+            CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
         }
@@ -1174,6 +1185,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE: frozenset(
         {
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
         }
@@ -1301,12 +1313,6 @@ class CandidateAttemptEvent:
                     field_name,
                     _non_negative_int(value, field_name=field_name),
                 )
-        if (
-            self.case_count is not None
-            and self.distinct_conformance_shape_count is not None
-            and self.distinct_conformance_shape_count > self.case_count
-        ):
-            raise ValueError("distinct conformance shapes cannot exceed case count")
         expected_event_id = self._computed_event_id()
         if self.event_id is not None and self.event_id != expected_event_id:
             raise ValueError("candidate attempt event_id does not match payload")
@@ -1672,11 +1678,14 @@ class RepairFrontier:
 @dataclass(frozen=True)
 class SchedulerState:
     initial_exploration_scheduled: bool = False
+    untyped_frontier_exploration_scheduled: bool = False
     frontier_progress: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.initial_exploration_scheduled, bool):
             raise TypeError("initial_exploration_scheduled must be boolean")
+        if not isinstance(self.untyped_frontier_exploration_scheduled, bool):
+            raise TypeError("untyped frontier exploration flag must be boolean")
         normalized: dict[str, int] = {}
         for semantic_key, progress in self.frontier_progress.items():
             normalized[_identity(semantic_key, field_name="semantic_key")] = (
@@ -1687,6 +1696,9 @@ class SchedulerState:
     def to_dict(self) -> dict[str, object]:
         return {
             "initial_exploration_scheduled": self.initial_exploration_scheduled,
+            "untyped_frontier_exploration_scheduled": (
+                self.untyped_frontier_exploration_scheduled
+            ),
             "frontier_progress": dict(sorted(self.frontier_progress.items())),
         }
 
@@ -1698,6 +1710,9 @@ class SchedulerState:
         return cls(
             initial_exploration_scheduled=(
                 value.get("initial_exploration_scheduled") is True
+            ),
+            untyped_frontier_exploration_scheduled=(
+                value.get("untyped_frontier_exploration_scheduled") is True
             ),
             frontier_progress={
                 _identity(key, field_name="semantic_key"): _non_negative_int(
@@ -1713,6 +1728,7 @@ class ScheduledSlotRole(str, Enum):
     INITIAL_EXPLORATION = "initial_exploration"
     FOCUSED_REPAIR = "focused_repair"
     DIVERSE_EXPLORATION = "diverse_exploration"
+    BOUNDED_EXPLORATION = "bounded_exploration"
 
 
 @dataclass(frozen=True)
@@ -1730,6 +1746,16 @@ class ScheduledCandidateSlot:
                 "semantic_key",
                 _identity(self.semantic_key, field_name="semantic_key"),
             )
+        if (
+            self.role is ScheduledSlotRole.FOCUSED_REPAIR
+            and self.semantic_key is None
+        ):
+            raise ValueError("focused repair slot requires a typed semantic key")
+        if (
+            self.role is not ScheduledSlotRole.FOCUSED_REPAIR
+            and self.semantic_key is not None
+        ):
+            raise ValueError("only focused repair slots may carry a semantic key")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1822,6 +1848,7 @@ class StageAwareCandidateScheduler:
         frontiers: Sequence[RepairFrontier],
         focused_budget_available: bool = True,
         diverse_budget_available: bool = False,
+        untyped_feedback_present: bool = False,
     ) -> SchedulerDecision:
         if not isinstance(state, SchedulerState):
             raise TypeError("scheduler state must be typed")
@@ -1842,6 +1869,9 @@ class StageAwareCandidateScheduler:
         if not state.initial_exploration_scheduled and not repairable:
             next_state = SchedulerState(
                 initial_exploration_scheduled=True,
+                untyped_frontier_exploration_scheduled=(
+                    state.untyped_frontier_exploration_scheduled
+                ),
                 frontier_progress=state.frontier_progress,
             )
             return SchedulerDecision(
@@ -1855,6 +1885,27 @@ class StageAwareCandidateScheduler:
                 ),
                 stop=False,
                 state=next_state,
+            )
+        if (
+            not repairable
+            and untyped_feedback_present
+            and not state.untyped_frontier_exploration_scheduled
+            and focused_budget_available
+        ):
+            return SchedulerDecision(
+                reason_code="bounded_exploration_without_typed_frontier",
+                slots=(
+                    ScheduledCandidateSlot(
+                        slot=0,
+                        role=ScheduledSlotRole.BOUNDED_EXPLORATION,
+                    ),
+                ),
+                stop=False,
+                state=SchedulerState(
+                    initial_exploration_scheduled=True,
+                    untyped_frontier_exploration_scheduled=True,
+                    frontier_progress=state.frontier_progress,
+                ),
             )
         if not repairable:
             return SchedulerDecision(
@@ -1872,6 +1923,9 @@ class StageAwareCandidateScheduler:
                 updated_progress[frontier.semantic_key] = frontier.progress
         next_state = SchedulerState(
             initial_exploration_scheduled=True,
+            untyped_frontier_exploration_scheduled=(
+                state.untyped_frontier_exploration_scheduled
+            ),
             frontier_progress=updated_progress,
         )
         if not focused_budget_available:

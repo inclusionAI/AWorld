@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,6 +62,7 @@ from aworld.self_evolve.runner import (
     _default_iteration_budget,
     _default_post_apply_evaluator,
     _candidate_generation_limit,
+    _candidate_generation_actual_usage,
     _feedback_from_report,
     _include_prior_run_cases,
     _iteration_validation_feedback,
@@ -4402,6 +4404,7 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
     assert report["iterations"][0]["status"] == "rejected"
     assert report["iterations"][1]["candidate_id"] == "candidate-2"
     assert report["iterations"][1]["status"] == "accepted"
+    assert report["budget"]["ledger"]["outstanding_reservations"] == []
 
 
 @pytest.mark.asyncio
@@ -4528,10 +4531,11 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
     assert report["candidate_ids"] == ["candidate-weak", "candidate-strong"]
     assert report["selected_candidate_id"] == "candidate-strong"
     assert report["population"]["generated_candidate_count"] == 2
-    assert report["population"]["replayed_candidate_ids"] == [
-        "candidate-weak",
-        "candidate-strong",
-    ]
+    assert report["population"]["replayed_candidate_ids"] == []
+    assert report["population"]["lifecycle"]["stage_counts"]["evaluation"] == 2
+    assert report["population"]["lifecycle"][
+        "paired_replay_started_count"
+    ] == 0
     assert report["iterations"][0]["candidate_id"] == "candidate-weak"
     assert report["iterations"][0]["status"] == "rejected"
     assert report["iterations"][1]["candidate_id"] == "candidate-strong"
@@ -4540,7 +4544,7 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_runner_persists_non_replayed_candidate_strategies(tmp_path) -> None:
+async def test_runner_rejects_population_exceeding_scheduled_slots(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
@@ -4625,24 +4629,20 @@ async def test_runner_persists_non_replayed_candidate_strategies(tmp_path) -> No
     )
 
     report = json.loads((store.run_path("run-population-audit") / "report.json").read_text(encoding="utf-8"))
-    assert report["population"]["replayed_candidate_ids"] == ["candidate-0"]
-    assert report["population"]["non_replayed_candidate_count"] == 2
-    assert report["population"]["non_replayed_candidate_strategies"] == [
-        {
-            "candidate_id": "candidate-1",
-            "strategy_id": "strategy-candidate-1",
-            "not_replayed_reason": "not_replayed_due_to_budget",
-            "replay_priority": "medium",
-            "addressed_lessons": ["lesson-1"],
-        },
-        {
-            "candidate_id": "candidate-2",
-            "strategy_id": "strategy-candidate-2",
-            "not_replayed_reason": "not_replayed_due_to_budget",
-            "replay_priority": "medium",
-            "addressed_lessons": ["lesson-2"],
-        },
-    ]
+    population = report["population"]
+    assert population["generated_candidate_count"] == 0
+    assert population["generation_attempt_count"] == 1
+    assert population["replayed_candidate_ids"] == []
+    assert population["lifecycle"]["terminal_reason_counts"] == {
+        "candidate_population_exceeds_scheduled_slots": 1
+    }
+    diagnostics = report["optimizer_diagnostics"]
+    assert diagnostics["candidate_protocol_overflow_count"] == 2
+    assert diagnostics["candidate_protocol_error"] == {
+        "code": "candidate_population_exceeds_scheduled_slots",
+        "returned_candidate_count": 3,
+        "scheduled_slot_count": 1,
+    }
 
 
 @pytest.mark.asyncio
@@ -5147,6 +5147,13 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     )
     assert report["population"]["screening"]["selected_candidate_id"] == "candidate-1"
     assert report["population"]["screening"]["representative_case_id"] == "task-a"
+    stage_counts = report["population"]["lifecycle"]["stage_counts"]
+    assert stage_counts["representative_screening"] == 1
+    assert stage_counts["paired_replay_started"] == 1
+    assert sum(
+        stage_counts[stage]
+        for stage in ("representative_screening", "paired_replay_started")
+    ) == len(replay_backend.calls)
 
 
 @pytest.mark.asyncio
@@ -6866,7 +6873,7 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
         async def propose(self, request: OptimizerRequest) -> OptimizerResult:
             self.requests.append(request)
             return OptimizerResult(
-                candidates=(duplicate_one, duplicate_two, fresh_candidate)
+                candidates=(duplicate_one, duplicate_two)[: request.max_candidates]
             )
 
     class ReplayBackend:
@@ -6969,7 +6976,17 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
     )
     assert report["selected_candidate_id"] == "candidate-dup-2"
     assert report["optimizer_diagnostics"]["filtered_known_duplicate_candidates"] == 1
-    assert report["iterations"][0]["candidate_id"] == "candidate-dup-2"
+    assert report["iterations"][0]["candidate_id"] == "candidate-dup-1"
+    assert report["iterations"][0]["failed_gates"] == [
+        "duplicate_rejected_candidate"
+    ]
+    assert report["iterations"][1]["candidate_id"] == "candidate-dup-2"
+    lifecycle = report["population"]["lifecycle"]
+    assert lifecycle["paired_replay_started_count"] == len(
+        replay_backend.candidate_ids
+    )
+    assert lifecycle["paired_replay_completed_count"] == 1
+    assert lifecycle["paired_replay_comparable_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -11761,10 +11778,14 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
-    optimizer_iterations = report["optimizer_diagnostics"]["iterations"]
-    assert optimizer_iterations[0]["diagnostics"]["filtered_duplicate_candidates"] == 1
-    assert report["population"]["generated_candidate_count"] == 2
-    assert len(report["optimizer_diagnostics"]["iterations"]) == 2
+    optimizer_diagnostics = report["optimizer_diagnostics"]
+    assert optimizer_diagnostics["filtered_duplicate_candidates"] == 1
+    assert report["population"]["generated_candidate_count"] == 1
+    assert report["population"]["generation_attempt_count"] == 2
+    assert len(report["population"]["scheduler_decisions"]) == 2
+    assert report["population"]["scheduler_decisions"][-1]["reason_code"] == (
+        "no_repairable_frontier"
+    )
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
 
 
@@ -11893,3 +11914,318 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     journal = json.loads(Path(report["post_apply"]["journal_path"]).read_text(encoding="utf-8"))
     assert journal["status"] == "accepted"
     assert journal["target"]["target_id"] == "demo"
+
+
+def test_candidate_generation_usage_prefers_nested_total_without_double_counting() -> None:
+    tokens, wall, source = _candidate_generation_actual_usage(
+        {
+            "token_usage": {
+                "total_tokens": 900,
+                "input_tokens": 600,
+                "output_tokens": 300,
+            },
+            "elapsed_seconds": 12.5,
+        }
+    )
+
+    assert tokens == 900
+    assert wall == Decimal("12.5")
+    assert source == "telemetry_total_tokens+telemetry_elapsed_seconds"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case_count", "expected_backend_calls", "expected_terminal_reason"),
+    (
+        (1, 2, "candidate_selected"),
+        (3, 0, "judge_budget_denied"),
+    ),
+)
+async def test_evaluation_budget_is_monotonic_with_dataset_cardinality(
+    tmp_path: Path,
+    case_count: int,
+    expected_backend_calls: int,
+    expected_terminal_reason: str,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld.\n", encoding="utf-8")
+    cases = tuple(
+        EvalCase(case_id=f"case-{index}", input={"content": f"task-{index}"})
+        for index in range(case_count)
+    )
+    dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={"kind": "budget-matrix"},
+            split_seed="seed",
+            splits={"train": [case.case_id for case in cases]},
+            trainable_case_ids=tuple(case.case_id for case in cases),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-budget",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nImproved.\n",
+        rationale="budget matrix",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    class Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate_variant(self, request):
+            self.calls += 1
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": 0.9 if request.candidate is not None else 0.2,
+                    "latency_ms": 1.0,
+                    "cost_usd": 0.0,
+                },
+            )
+
+    backend = Backend()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    await SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=backend,
+        replay_candidate_limit=1,
+        total_run_token_budget=85,
+        candidate_generation_tokens_per_unit=1,
+        candidate_generation_cost_usd_per_unit=0,
+        candidate_generation_wall_seconds_per_unit=0,
+        evaluation_tokens_per_unit=10,
+        evaluation_cost_usd_per_unit=0,
+        evaluation_wall_seconds_per_unit=0,
+    ).run_explicit_target(
+        run_id=f"run-budget-{case_count}",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path(f"run-budget-{case_count}") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert backend.calls == expected_backend_calls
+    assert report["population"]["lifecycle"]["terminal_reason_counts"] == {
+        expected_terminal_reason: 1
+    }
+    assert report["budget"]["ledger"]["outstanding_reservations"] == []
+
+
+@pytest.mark.asyncio
+async def test_adaptation_only_failure_never_counts_as_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input={"content": "task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "adaptation-only"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-adaptation",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nCandidate.\n",
+        rationale="adaptation test",
+    )
+
+    class Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.calls += 1
+            raise AssertionError("adaptation failure must stop before replay")
+
+    backend = Backend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **kwargs: (
+            None,
+            GateResult(
+                "replay_adaptation",
+                False,
+                "compile failed",
+                {"failure_class": "candidate"},
+            ),
+        ),
+    )
+    lifecycle: list[str] = []
+
+    replay_result, replay_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-adaptation-only",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        selected_candidate=candidate,
+        apply_policy="auto_verified",
+        lifecycle_callback=lambda stage, payload: lifecycle.append(stage),
+    )
+
+    assert replay_result is None
+    assert replay_dataset is None
+    assert gate is not None and gate.gate_name == "replay_adaptation"
+    assert lifecycle == ["adaptation_completed"]
+    assert backend.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_per_attempt_replay_budget_denial_skips_backend(tmp_path: Path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input={"content": "task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "per-attempt-budget"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-budget",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nCandidate.\n",
+        rationale="per attempt",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    class Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.calls += 1
+            raise AssertionError("per-attempt denial must skip replay")
+
+    backend = Backend()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    await SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+        replay_candidate_limit=1,
+        per_attempt_replay_token_limit=1,
+        replay_tokens_per_unit=10,
+    ).run_explicit_target(
+        run_id="run-per-attempt-denied",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-per-attempt-denied") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert backend.calls == 0
+    assert report["population"]["lifecycle"]["terminal_reason_counts"] == {
+        "per_attempt_replay_budget_denied": 1
+    }
+    assert report["budget"]["ledger"]["outstanding_reservations"] == []
+
+
+@pytest.mark.asyncio
+async def test_replay_backend_exception_blocks_population_and_clears_budget(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input={"content": "task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "replay-exception"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+            content=f"---\nname: demo\n---\n# Demo\n\nCandidate {index}.\n",
+            rationale="backend exception",
+        )
+        for index in (1, 2)
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=candidates)
+
+    class Backend:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.calls.append(candidate.candidate_id)
+            raise RuntimeError("shared backend unavailable")
+
+    backend = Backend()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    await SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+        replay_candidate_limit=2,
+    ).run_explicit_target(
+        run_id="run-replay-exception",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-replay-exception") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert backend.calls == ["candidate-1"]
+    assert any(
+        gate["gate_name"] == "candidate_replay"
+        and gate["details"]["code"] == "candidate_replay_infrastructure_error"
+        for gate in report["gate_results"]
+    )
+    lifecycle = report["population"]["lifecycle"]
+    assert lifecycle["paired_replay_started_count"] == 1
+    assert lifecycle["terminal_reason_counts"] == {
+        "candidate_evaluation_blocked": 1,
+        "run_terminated_before_candidate": 1,
+    }
+    assert report["budget"]["ledger"]["outstanding_reservations"] == []
