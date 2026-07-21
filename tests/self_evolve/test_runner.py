@@ -49,6 +49,8 @@ from aworld.self_evolve.runner import (
     _feedback_from_report,
     _include_prior_run_cases,
     _iteration_validation_feedback,
+    _load_target_provenance,
+    _load_target_selection_report,
     _merge_validation_feedback,
     _parse_candidate_mutation_model_output,
     _next_progress_repair_extension_family,
@@ -1444,6 +1446,177 @@ def test_generated_target_aggregation_keeps_one_fail_closed_provenance_decision(
     assert aggregated.provenance.trust_level == "generated"
     assert len(aggregated.report.evidence_step_ids) == trajectory_count
     assert aggregated.report.provenance_status == "resolved"
+    assert aggregated.report.selection_origin == "inferred"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "target": {
+                "target_type": "skill",
+                "target_id": "capability",
+                "path": "/workspace/skills/capability/SKILL.md",
+            },
+            "source_kind": "skill",
+            "write_origin": "installed_skill",
+            "trust_level": "local",
+            "protected": False,
+            "reason": "legacy sidecar without schema",
+        },
+        {
+            "schema_version": 1,
+            "target": {
+                "target_type": "skill",
+                "target_id": "capability",
+                "path": "/workspace/skills/capability/SKILL.md",
+            },
+            "source_kind": "unknown",
+            "write_origin": "installed_skill",
+            "trust_level": "local",
+            "protected": False,
+            "reason": "unknown source kind",
+        },
+        {
+            "schema_version": 1,
+            "target": {
+                "target_type": "skill",
+                "target_id": "capability",
+                "path": "/workspace/skills/capability/SKILL.md",
+            },
+            "source_kind": "skill",
+            "write_origin": "target_inference",
+            "trust_level": "local",
+            "protected": False,
+            "reason": "inconsistent classification",
+        },
+    ],
+)
+def test_load_target_provenance_rejects_legacy_unknown_and_malformed_sidecars(
+    tmp_path,
+    payload,
+) -> None:
+    sidecar = tmp_path / "target_provenance.json"
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+
+    resolution = _load_target_provenance(sidecar)
+
+    assert resolution.status == "unresolved"
+    assert resolution.provenance is None
+
+
+def test_load_target_selection_report_requires_typed_selection_origin(tmp_path) -> None:
+    sidecar = tmp_path / "target_selection.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "selected_target": {
+                    "target_type": "skill",
+                    "target_id": "capability",
+                    "path": "/workspace/skills/capability/SKILL.md",
+                },
+                "confidence": 0.95,
+                "evidence_step_ids": [],
+                "failure_category": "skill",
+                "signals": ["explicit_target"],
+                "selection_origin": "unknown-origin",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = _load_target_selection_report(sidecar)
+
+    assert report is not None
+    assert report.selection_origin is None
+
+
+def test_load_target_selection_report_preserves_typed_selection_origin(tmp_path) -> None:
+    sidecar = tmp_path / "target_selection.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "selected_target": {
+                    "target_type": "skill",
+                    "target_id": "capability",
+                    "path": "/workspace/skills/capability/SKILL.md",
+                },
+                "confidence": 0.95,
+                "evidence_step_ids": [],
+                "failure_category": "skill",
+                "selection_origin": "inferred",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = _load_target_selection_report(sidecar)
+
+    assert report is not None
+    assert report.selection_origin == "inferred"
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_treat_supplied_provenance_as_inventory_authority(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "capability" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: capability\n---\n# Capability\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="member-1", input={"task": "exercise capability"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["member-1"], "validation": [], "held_out": []},
+        ),
+    )
+    report = TargetSelectionReport(
+        selected_target=target.identity,
+        confidence=1.0,
+        evidence_step_ids=(),
+        failure_category="explicit_target",
+        selection_origin="operator_explicit",
+    )
+    supplied = TargetProvenance(
+        target=target.identity,
+        source_kind="skill",
+        write_origin="operator_selection",
+        trust_level="local",
+        protected=False,
+        reason="caller-supplied authorization claim",
+    )
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+        max_iterations=0,
+        min_eval_cases=0,
+    ).run_explicit_target(
+        run_id="run-supplied-provenance",
+        target=target,
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="auto_verified",
+        target_selection_report=report,
+        target_provenance=supplied,
+    )
+
+    persisted = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-supplied-provenance"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted["target_provenance"]["status"] == "unresolved"
+    assert persisted["target_provenance"]["reason"] == (
+        "supplied provenance does not match authoritative resolution"
+    )
 
 
 def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
@@ -9782,6 +9955,7 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
     assert report["target_selection"]["selected_target"]["target_id"] == "generated-capability"
     assert report["target_selection"]["selected_target"]["path"] == str(draft_skill_path)
     assert report["target_selection"]["confidence"] == 0.85
+    assert report["target_selection"]["selection_origin"] == "inferred"
     assert "low_confidence" in report["target_selection"]["signals"]
     assert report["replay"]["baseline"]["status"] == "succeeded"
     assert report["replay"]["candidate"]["status"] == "succeeded"
@@ -10071,6 +10245,7 @@ def test_optimize_cli_request_records_explicit_target_trajectory_evidence(tmp_pa
     assert report["target_selection"]["failure_category"] == "explicit_target"
     assert report["target_selection"]["evidence_step_ids"] == ["explicit-task:step-1"]
     assert report["target_selection"]["provenance_status"] == "resolved"
+    assert report["target_selection"]["selection_origin"] == "operator_explicit"
     assert report["target_provenance"] == {
         "status": "resolved",
         "path": report_summary["target_provenance_path"],

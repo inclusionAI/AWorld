@@ -86,6 +86,10 @@ from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.provenance import (
     TargetProvenance,
+    TargetProvenanceResolution,
+    TargetProvenanceStatus,
+    TargetSelectionOrigin,
+    load_target_provenance_payload,
     resolve_target_provenance,
 )
 from aworld.self_evolve.replay import (
@@ -588,35 +592,116 @@ class SelfEvolveRunner:
         apply_policy: str = "proposal",
         target_selection_report: TargetSelectionReport | None = None,
         target_provenance: TargetProvenance | None = None,
+        target_selection_decision: TargetSelectionDecision | None = None,
     ) -> SelfEvolveRunnerResult:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
         if apply_policy not in {"proposal", "auto_verified"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
-        selection_origin = (
-            "inferred"
-            if target_selection_report is not None
-            and "explicit_target" not in target_selection_report.signals
-            else "operator_explicit"
-        )
-        inventory_provenance = target_provenance
-        if inventory_provenance is None:
-            inventory_entry = build_default_target_inventory(
-                self.store.workspace_root
-            ).find(target.identity.target_type, target.identity.target_id)
-            inventory_provenance = (
-                inventory_entry.provenance if inventory_entry is not None else None
+        supplied_provenance = target_provenance
+        supplied_decision = target_selection_decision
+        if target_selection_decision is not None:
+            target_selection_report = target_selection_decision.report
+            selection_origin = target_selection_decision.selection_origin
+        elif (
+            target_selection_report is not None
+            and target_selection_report.selection_origin is not None
+        ):
+            selection_origin = target_selection_report.selection_origin
+        elif target_selection_report is not None:
+            selection_origin = TargetSelectionOrigin.UNKNOWN
+        else:
+            selection_origin = TargetSelectionOrigin.OPERATOR_EXPLICIT
+
+        inventory = build_default_target_inventory(self.store.workspace_root)
+        if target_selection_report is not None:
+            selected_target = target_selection_report.selected_target
+            if selected_target != target.identity:
+                provenance_resolution = TargetProvenanceResolution(
+                    status=TargetProvenanceStatus.UNRESOLVED,
+                    provenance=None,
+                    reason="target selection does not match the executable target",
+                )
+                target_selection_decision = TargetSelectionDecision(
+                    report=replace(
+                        target_selection_report,
+                        provenance_status=provenance_resolution.status,
+                        provenance_reason=provenance_resolution.reason,
+                        selection_origin=selection_origin,
+                    ),
+                    provenance_resolution=provenance_resolution,
+                    selection_origin=selection_origin,
+                )
+            else:
+                target_selection_decision = build_target_selection_decision(
+                    target_selection_report,
+                    inventory=inventory,
+                    selection_origin=selection_origin,
+                    workspace_root=self.store.workspace_root,
+                )
+            target_selection_report = target_selection_decision.report
+            provenance_resolution = target_selection_decision.provenance_resolution
+        else:
+            inventory_entries = inventory.find_all(
+                target.identity.target_type,
+                target.identity.target_id,
             )
-        provenance_resolution = resolve_target_provenance(
-            target.identity,
-            selection_origin=selection_origin,
-            inventory_provenance=inventory_provenance,
-            workspace_root=self.store.workspace_root,
-        )
+            if len(inventory_entries) > 1:
+                provenance_resolution = TargetProvenanceResolution(
+                    status=TargetProvenanceStatus.UNRESOLVED,
+                    provenance=None,
+                    reason="inventory contains duplicate target identity",
+                )
+            else:
+                provenance_resolution = resolve_target_provenance(
+                    target.identity,
+                    selection_origin=selection_origin,
+                    inventory_provenance=(
+                        inventory_entries[0].provenance
+                        if inventory_entries
+                        else None
+                    ),
+                    workspace_root=self.store.workspace_root,
+                )
+
+        if supplied_decision is not None:
+            if not supplied_decision.provenance_resolution.resolved:
+                provenance_resolution = supplied_decision.provenance_resolution
+            elif (
+                supplied_decision.provenance_resolution.provenance
+                != provenance_resolution.provenance
+            ):
+                provenance_resolution = TargetProvenanceResolution(
+                    status=TargetProvenanceStatus.UNRESOLVED,
+                    provenance=None,
+                    reason=(
+                        "supplied target decision does not match authoritative resolution"
+                    ),
+                )
+
+        if (
+            supplied_provenance is not None
+            and provenance_resolution.provenance != supplied_provenance
+        ):
+            provenance_resolution = TargetProvenanceResolution(
+                status=TargetProvenanceStatus.UNRESOLVED,
+                provenance=None,
+                reason="supplied provenance does not match authoritative resolution",
+            )
+            if target_selection_report is not None:
+                target_selection_report = replace(
+                    target_selection_report,
+                    provenance_status=provenance_resolution.status,
+                    provenance_reason=provenance_resolution.reason,
+                )
+
         target_provenance = provenance_resolution.provenance
         target_provenance_unresolved_reason = (
             None if provenance_resolution.resolved else provenance_resolution.reason
         )
-        if target_selection_report is not None:
+        if target_selection_report is not None and (
+            target_selection_report.provenance_status != provenance_resolution.status
+            or target_selection_report.provenance_reason != provenance_resolution.reason
+        ):
             target_selection_report = replace(
                 target_selection_report,
                 provenance_status=provenance_resolution.status,
@@ -3018,6 +3103,7 @@ def optimize_from_cli_request(
         )
     store = FilesystemSelfEvolveStore(workspace_root)
     target_selection_report: TargetSelectionReport | None = None
+    target_selection_decision: TargetSelectionDecision | None = None
     target_provenance: TargetProvenance | None = None
     target_selection_path: Path | None = None
     target_provenance_path: Path | None = None
@@ -3137,6 +3223,7 @@ def optimize_from_cli_request(
             )
             target_selection_report = explicit_decision.report
             target_provenance = explicit_decision.provenance
+            target_selection_decision = explicit_decision
         else:
             explicit_entry = explicit_inventory.find(
                 target_adapter.identity.target_type,
@@ -3269,6 +3356,7 @@ def optimize_from_cli_request(
                 "apply_policy": apply_policy,
                 "target_selection_report": target_selection_report,
                 "target_provenance": target_provenance,
+                "target_selection_decision": target_selection_decision,
             },
         ),
         task_id=f"{run_id}-self-evolve",
@@ -3704,9 +3792,58 @@ def _rerun_evaluator_from_stored_run(
     target_selection_report = _load_target_selection_report(
         source_run_path / "target_selection.json"
     )
-    target_provenance = _load_target_provenance(
+    stored_provenance_resolution = _load_target_provenance(
         source_run_path / "target_provenance.json"
     )
+    if target_selection_report is None:
+        target_selection_report = TargetSelectionReport(
+            selected_target=candidate.target,
+            confidence=0.0,
+            evidence_step_ids=(),
+            failure_category="stored_target",
+            no_target_reason=None,
+            selection_origin=TargetSelectionOrigin.UNKNOWN,
+        )
+    selection_origin = (
+        target_selection_report.selection_origin
+        or TargetSelectionOrigin.UNKNOWN
+    )
+    if target_selection_report.selected_target != candidate.target:
+        authoritative_resolution = TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason="stored target selection does not match candidate target",
+        )
+    else:
+        authoritative_resolution = build_target_selection_decision(
+            target_selection_report,
+            inventory=build_default_target_inventory(workspace_root),
+            selection_origin=selection_origin,
+            workspace_root=workspace_root,
+        ).provenance_resolution
+    if not stored_provenance_resolution.resolved:
+        authoritative_resolution = stored_provenance_resolution
+    elif (
+        authoritative_resolution.provenance
+        != stored_provenance_resolution.provenance
+    ):
+        authoritative_resolution = TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason="stored provenance does not match authoritative resolution",
+        )
+    target_selection_report = replace(
+        target_selection_report,
+        provenance_status=authoritative_resolution.status,
+        provenance_reason=authoritative_resolution.reason,
+        selection_origin=selection_origin,
+    )
+    target_selection_decision = TargetSelectionDecision(
+        report=target_selection_report,
+        provenance_resolution=authoritative_resolution,
+        selection_origin=selection_origin,
+    )
+    target_provenance = authoritative_resolution.provenance
     if apply_policy == "auto_verified" and evaluation_backend is None:
         evaluation_backend = _evaluation_backend_from_judge_config(
             judge_config,
@@ -3774,6 +3911,7 @@ def _rerun_evaluator_from_stored_run(
                 "apply_policy": apply_policy,
                 "target_selection_report": target_selection_report,
                 "target_provenance": target_provenance,
+                "target_selection_decision": target_selection_decision,
             },
         ),
         task_id=f"{run_id}-self-evolve",
@@ -3951,6 +4089,15 @@ def _load_target_selection_report(path: Path) -> TargetSelectionReport | None:
                 else None
             ),
         )
+    selection_origin_payload = payload.get("selection_origin")
+    try:
+        selection_origin = (
+            TargetSelectionOrigin(selection_origin_payload)
+            if isinstance(selection_origin_payload, str)
+            else None
+        )
+    except ValueError:
+        selection_origin = None
     return TargetSelectionReport(
         selected_target=selected_target,
         confidence=float(payload.get("confidence") or 0.0),
@@ -3985,33 +4132,26 @@ def _load_target_selection_report(path: Path) -> TargetSelectionReport | None:
             if payload.get("provenance_reason") is not None
             else None
         ),
+        selection_origin=selection_origin,
     )
 
 
-def _load_target_provenance(path: Path) -> TargetProvenance | None:
+def _load_target_provenance(path: Path) -> TargetProvenanceResolution:
     if not path.exists():
-        return None
-    payload = _load_json_mapping(path)
-    target_payload = payload.get("target")
-    if not isinstance(target_payload, Mapping):
-        return None
-    target = SelfEvolveTargetRef(
-        target_type=str(target_payload.get("target_type") or ""),
-        target_id=str(target_payload.get("target_id") or ""),
-        path=(
-            str(target_payload.get("path"))
-            if target_payload.get("path") is not None
-            else None
-        ),
-    )
-    return TargetProvenance(
-        target=target,
-        source_kind=str(payload.get("source_kind") or "unknown"),
-        write_origin=str(payload.get("write_origin") or "unknown"),
-        trust_level=str(payload.get("trust_level") or "unknown"),
-        protected=payload.get("protected") is True,
-        reason=str(payload.get("reason") or "stored target provenance"),
-    )
+        return TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason="target provenance sidecar is missing",
+        )
+    try:
+        payload = _load_json_mapping(path)
+    except ValueError as exc:
+        return TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason=f"target provenance sidecar is unreadable: {exc}",
+        )
+    return load_target_provenance_payload(payload)
 
 
 def _rerun_cli_run_id(source_run_id: str, candidate_id: str) -> str:
@@ -8215,6 +8355,11 @@ def _aggregate_target_selection_decisions(
         )
         == selected_key
     )
+    contributing_decisions = tuple(
+        decision
+        for decision in decisions
+        if decision.report in contributing_reports
+    )
     diagnostics = dict(best_report.diagnostics or {})
     diagnostics["contributing_pack_ids"] = [
         pack_id
@@ -8239,9 +8384,31 @@ def _aggregate_target_selection_decisions(
         ),
         diagnostics=diagnostics,
     )
+    consistent_authorization = all(
+        decision.selection_origin == best_decision.selection_origin
+        and decision.provenance_resolution == best_decision.provenance_resolution
+        for decision in contributing_decisions
+    )
+    if consistent_authorization:
+        provenance_resolution = best_decision.provenance_resolution
+        selection_origin = best_decision.selection_origin
+    else:
+        provenance_resolution = TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason="aggregated target decisions disagree on authorization",
+        )
+        selection_origin = TargetSelectionOrigin.UNKNOWN
+        aggregated_report = replace(
+            aggregated_report,
+            provenance_status=provenance_resolution.status,
+            provenance_reason=provenance_resolution.reason,
+            selection_origin=selection_origin,
+        )
     return TargetSelectionDecision(
         report=aggregated_report,
-        provenance_resolution=best_decision.provenance_resolution,
+        provenance_resolution=provenance_resolution,
+        selection_origin=selection_origin,
     )
 
 
@@ -8454,6 +8621,7 @@ def _explicit_target_selection_report(
             "pack_ids": [trace_pack.pack_id for trace_pack in trace_packs],
             "target_inference": "bypassed",
         },
+        selection_origin=TargetSelectionOrigin.OPERATOR_EXPLICIT,
     )
 
 
@@ -8466,6 +8634,7 @@ def _no_evidence_target_selection_report(source_kind: str) -> TargetSelectionRep
         signals=("missing_trajectory_evidence",),
         no_target_reason="target inference requires trajectory evidence",
         diagnostics={"source_kind": source_kind},
+        selection_origin=TargetSelectionOrigin.INFERRED,
     )
 
 
@@ -8491,6 +8660,7 @@ def _blocked_low_confidence_target_selection_report(
         diagnostics=diagnostics,
         provenance_status=report.provenance_status,
         provenance_reason=report.provenance_reason,
+        selection_origin=report.selection_origin,
     )
 
 

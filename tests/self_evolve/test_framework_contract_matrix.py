@@ -17,6 +17,12 @@ from typing import Any, Literal, Sequence
 import pytest
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.credit_assignment import (
+    TargetInventory,
+    TargetSelectionReport,
+    build_target_selection_decision,
+)
+from aworld.self_evolve.gates import TrustProvenanceGate
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayMemberResult,
@@ -269,6 +275,38 @@ def test_contract_dataset_preserves_case_order_shapes_and_fingerprint(
         for kind, fixture_shape in (shape,)
     )
     assert len(contract.requirements) == len(shape_order)
+
+
+@pytest.mark.parametrize("trajectory_count", [1, 3])
+def test_high_confidence_generated_target_remains_fail_closed_across_cardinality(
+    tmp_path: Path,
+    trajectory_count: int,
+) -> None:
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="generated-capability",
+        path=str(tmp_path / "drafts" / "generated-capability" / "SKILL.md"),
+    )
+    decisions = tuple(
+        build_target_selection_decision(
+            TargetSelectionReport(
+                selected_target=target,
+                confidence=0.99,
+                evidence_step_ids=(f"member-{index}:step-1",),
+                failure_category="skill",
+            ),
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
+        )
+        for index in range(trajectory_count)
+    )
+
+    assert all(decision.report.selection_origin == "inferred" for decision in decisions)
+    assert all(decision.provenance is not None for decision in decisions)
+    assert all(
+        TrustProvenanceGate().evaluate(decision.provenance).passed is False
+        for decision in decisions
+    )
 
 
 @pytest.mark.asyncio
