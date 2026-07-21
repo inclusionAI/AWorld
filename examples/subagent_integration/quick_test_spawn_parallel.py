@@ -183,7 +183,7 @@ IMPORTANT: Must use action="spawn_parallel" for parallel execution!
     logger.info("\nNext steps:")
     logger.info("1. Run full test suite: python test_spawn_parallel_aworld.py")
     logger.info("2. Try with AWorld agent: test_spawn_parallel_with_aworld_agent()")
-    logger.info("3. Check documentation: docs/features/parallel-subagent-spawning.md")
+    logger.info("3. Check documentation: docs/Agents/Parallel Subagents.md")
 
     return True
 
