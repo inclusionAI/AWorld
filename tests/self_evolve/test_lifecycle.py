@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from pathlib import Path
 
 from aworld.self_evolve.lifecycle import (
@@ -15,6 +16,8 @@ def test_default_retention_bounds_large_replay_workspace_history() -> None:
 
     assert policy.keep_latest_runs == 2
     assert policy.raw_artifact_retention_days == 0
+    assert policy.stale_run_retention_hours == 24
+    assert policy.prune_unselected_candidate_materializations is True
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -44,6 +47,7 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         _write_json(run_dir / "report.json", {"run_id": run_dir.name, "status": status})
         _write_text(run_dir / "candidates" / "cand-1.md", "# Candidate\n")
         _write_json(run_dir / "candidates" / "cand-1.json", {"candidate_id": "cand-1"})
+        _write_text(run_dir / "candidates" / "cand-1" / "SKILL.md", "# Candidate\n")
         _write_text(run_dir / "lessons" / "lessons.jsonl", "{}\n")
         _write_json(run_dir / "optimizer_lineage" / "cand-1.json", {"candidate_id": "cand-1"})
         _write_text(run_dir / "manifest" / "evidence_manifest.jsonl", "{}\n")
@@ -52,6 +56,14 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         _write_json(
             run_dir / "replay_adaptation" / "dataset" / "workspace_seed" / "seed.json",
             {"status": "compiled"},
+        )
+        _write_text(
+            run_dir
+            / "repair_conformance"
+            / "cand-1"
+            / "replay_services"
+            / "service-1"
+            / "protocol_trace.log"
         )
         _write_json(run_dir / "evidence" / "bundle.json", {"entries": []})
         _write_text(run_dir / "overlays" / "cand-1" / "skills" / "demo" / "SKILL.md")
@@ -78,6 +90,7 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
     assert cleanup["removed_run_count"] == 1
     assert not (old_run / "replay").exists()
     assert not (old_run / "replay_adaptation").exists()
+    assert not (old_run / "repair_conformance").exists()
     assert not (old_run / "evidence").exists()
     assert not (old_run / "overlays").exists()
     assert not (old_run / "stdout.txt").exists()
@@ -87,7 +100,9 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
 
     assert (old_run / "report.json").exists()
     assert (old_run / "run.json").exists()
-    assert (old_run / "candidates" / "cand-1.md").exists()
+    assert not (old_run / "candidates" / "cand-1.md").exists()
+    assert not (old_run / "candidates" / "cand-1").exists()
+    assert (old_run / "candidates" / "cand-1.json").exists()
     assert (old_run / "lessons" / "lessons.jsonl").exists()
     assert (old_run / "optimizer_lineage" / "cand-1.json").exists()
     assert (old_run / "manifest" / "evidence_manifest.jsonl").exists()
@@ -95,6 +110,9 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
 
     assert (recent_run / "replay").exists()
     assert (recent_run / "replay_adaptation").exists()
+    assert (recent_run / "repair_conformance").exists()
+    assert (recent_run / "candidates" / "cand-1.md").exists()
+    assert (recent_run / "candidates" / "cand-1").exists()
     assert (recent_run / "overlays").exists()
     assert (artifact_root / "evaluator" / "run-recent").exists()
 
@@ -149,3 +167,99 @@ def test_cleanup_skips_running_interrupted_apply_and_lineage_referenced_runs(
     assert skipped["run-running"] == "run_not_terminal"
     assert skipped["run-apply"] == "apply_interrupted"
     assert skipped["run-source"] == "referenced_by_lineage"
+
+
+def test_cleanup_prunes_only_unselected_candidate_materializations(tmp_path: Path) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_dir = artifact_root / "run-old"
+    _write_json(
+        run_dir / "run.json",
+        {
+            "run_id": "run-old",
+            "status": "succeeded",
+            "selected_candidate_id": "cand-selected",
+        },
+    )
+    _write_json(
+        run_dir / "report.json",
+        {
+            "run_id": "run-old",
+            "status": "succeeded",
+            "selected_candidate_id": "cand-selected",
+        },
+    )
+    _write_json(
+        run_dir / "apply" / "cand-applied.journal.json",
+        {"candidate_id": "cand-applied", "status": "applied"},
+    )
+    _write_json(
+        run_dir / "optimizer_lineage" / "cand-child.json",
+        {
+            "candidate_id": "cand-child",
+            "parent_candidate_ids": ["cand-parent"],
+        },
+    )
+    for candidate_id in (
+        "cand-selected",
+        "cand-applied",
+        "cand-parent",
+        "cand-discarded",
+    ):
+        _write_json(
+            run_dir / "candidates" / f"{candidate_id}.json",
+            {"candidate_id": candidate_id},
+        )
+        _write_text(run_dir / "candidates" / f"{candidate_id}.md")
+        _write_text(run_dir / "candidates" / f"{candidate_id}.diff")
+        _write_text(run_dir / "candidates" / candidate_id / "SKILL.md")
+    _touch_tree(run_dir, 1_000.0)
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(keep_latest_runs=0),
+        now=10_000.0,
+    )
+
+    for candidate_id in ("cand-selected", "cand-applied", "cand-parent"):
+        assert (run_dir / "candidates" / f"{candidate_id}.md").exists()
+        assert (run_dir / "candidates" / f"{candidate_id}.diff").exists()
+        assert (run_dir / "candidates" / candidate_id).exists()
+    assert not (run_dir / "candidates" / "cand-discarded.md").exists()
+    assert not (run_dir / "candidates" / "cand-discarded.diff").exists()
+    assert not (run_dir / "candidates" / "cand-discarded").exists()
+    assert (run_dir / "candidates" / "cand-discarded.json").exists()
+    assert any("cand-discarded" in path for path in cleanup["removed_paths"])
+
+
+def test_cleanup_reclaims_stale_unleased_run_but_preserves_live_lease(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    stale_run = artifact_root / "run-stale"
+    live_run = artifact_root / "run-live"
+    for run_dir in (stale_run, live_run):
+        _write_json(
+            run_dir / "run.json",
+            {"run_id": run_dir.name, "status": "running"},
+        )
+        _write_text(run_dir / "replay" / "cand-1" / "stdout.txt")
+    _write_json(
+        live_run / ".active.json",
+        {"hostname": socket.gethostname(), "pid": os.getpid()},
+    )
+    _touch_tree(stale_run, 1_000.0)
+    _touch_tree(live_run, 1_000.0)
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(
+            keep_latest_runs=0,
+            stale_run_retention_hours=1,
+        ),
+        now=10_000.0,
+    )
+
+    assert not (stale_run / "replay").exists()
+    assert (live_run / "replay").exists()
+    skipped = {item["run_id"]: item["reason"] for item in cleanup["skipped_runs"]}
+    assert skipped["run-live"] == "run_active"

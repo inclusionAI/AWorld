@@ -166,13 +166,18 @@ Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
 - `evaluator_report_paths`: evaluator output artifacts.
 - `post_apply`: accepted or rolled-back apply details, backup path, journal path, runtime activation, and registry refresh status.
 
-Candidate files and diffs live under `.aworld/self_evolve/<run_id>/candidates/`. For skill candidates, proposal content is marked with `self_evolve.release_state: candidate`; verified content is marked with `self_evolve.release_state: verified` only after post-apply checks pass.
+Candidate files and diffs live under `.aworld/self_evolve/<run_id>/candidates/`. For skill candidates, proposal content is marked with `self_evolve.release_state: candidate`; verified content is marked with `self_evolve.release_state: verified` only after post-apply checks pass. Candidate JSON records are durable. After a run leaves the complete-artifact retention window, redundant Markdown, diff, and expanded package copies for unselected candidates may be reclaimed while selected, applied, and lineage-parent candidates remain intact.
 
 Replay adaptation artifacts live under
 `.aworld/self_evolve/<run_id>/replay_adaptation/<dataset_fingerprint>/`. The directory
 contains `bundle.json`, `workspace_manifest.json`, `environment_snapshot.json`, and
 `workspace_seed/`. Each executed repetition stores its disposable workspace under the
 corresponding replay repetition directory.
+
+Artifact GC runs at optimize startup and terminal completion. It preserves the two
+newest runs, lineage and apply recovery dependencies, and runs with a live process
+lease. Raw replay, replay-adaptation, repair-conformance, evaluator, overlay, and
+temporary-workspace artifacts from older eligible runs are reclaimed.
 
 ## Runtime Skill Management
 

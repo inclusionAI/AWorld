@@ -161,9 +161,9 @@ def test_feedback_from_report_restores_latest_repairable_screening_package(
             "def respond():\n    return {'id': 1, 'result': {}}\n",
         ),
     ):
-        candidate_root = run_root / "candidates" / candidate_id
-        candidate_root.mkdir(parents=True)
-        (candidate_root / "candidate.json").write_text(
+        candidate_path = run_root / "candidates" / f"{candidate_id}.json"
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text(
             json.dumps(
                 {
                     "candidate_id": candidate_id,
@@ -1524,6 +1524,7 @@ async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> N
     cleanup = report["artifact_retention"]
     assert cleanup["removed_run_count"] >= 1
     assert any("run-old-0/replay" in path for path in cleanup["removed_paths"])
+    assert "run-old-0" not in cleanup["protected_run_ids"]
     assert not (artifact_root / "run-old-0" / "replay").exists()
     assert not (artifact_root / "run-old-0" / "overlays").exists()
     assert (artifact_root / "run-old-0" / "report.json").exists()
