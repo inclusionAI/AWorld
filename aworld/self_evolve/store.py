@@ -187,7 +187,7 @@ class FilesystemSelfEvolveStore:
         self,
         event: CandidateAttemptEvent,
     ) -> Path:
-        """Validate and append one event without touching canonical artifacts."""
+        """Atomically append one event without exposing a partial JSON record."""
 
         if not isinstance(event, CandidateAttemptEvent):
             raise TypeError("candidate attempt event must be typed")
@@ -199,16 +199,50 @@ class FilesystemSelfEvolveStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.parent.is_symlink():
             raise ValueError("candidate attempt directory cannot be a symlink")
-        encoded = json.dumps(
-            event.to_dict(),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(encoded + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        encoded_events = [
+            json.dumps(
+                item.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for item in (*existing, event)
+        ]
+        payload = ("\n".join(encoded_events) + "\n").encode("utf-8")
+        temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            # Write the next complete logical stream away from the canonical
+            # path. A short write, ENOSPC, flush, or fsync failure therefore
+            # leaves the previously committed stream readable.
+            with temporary.open("xb") as stream:
+                offset = 0
+                while offset < len(payload):
+                    written = stream.write(memoryview(payload)[offset:])
+                    if (
+                        not isinstance(written, int)
+                        or isinstance(written, bool)
+                        or written <= 0
+                        or written > len(payload) - offset
+                    ):
+                        raise OSError(
+                            "candidate attempt stream write made invalid progress"
+                        )
+                    offset += written
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                # Cleanup must never replace the append/fsync/rename error.
+                # Orphaned temp files are not part of the canonical stream.
+                pass
         return path
 
     def write_candidate_attempt_event(
