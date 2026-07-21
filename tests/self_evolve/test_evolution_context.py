@@ -70,6 +70,39 @@ def _request() -> OptimizerRequest:
     )
 
 
+def test_lesson_context_ranks_unique_repairable_cause_without_occurrence_bias() -> None:
+    low_value = tuple(
+        LessonRecord(
+            lesson_id=f"success-{index:02d}",
+            lesson_type="success_memory",
+            title="Preserve success",
+            summary=f"success memory {index}",
+            occurrence_count=1000,
+        )
+        for index in range(40)
+    )
+    causal = LessonRecord(
+        lesson_id="causal-priority",
+        lesson_type="causal_failure_memory",
+        title="Repair typed cause",
+        summary="Repair a typed capability cause.",
+        metrics={"repairable": True, "causal_code": "contract_rejected"},
+        occurrence_count=1,
+        distinct_source_count=2,
+        source_task_ids=("task-a", "task-b"),
+        affected_case_ids=("case-a", "case-b"),
+    )
+    request = replace(_request(), lesson_records=(*low_value, causal, causal))
+
+    payload = compile_evolution_context(request).to_prompt_payload(candidate_index=0)
+    lesson_payloads = payload["lesson_records"]
+    assert len(lesson_payloads) == 32
+    assert lesson_payloads[0]["lesson_id"] == "causal-priority"
+    assert sum(item["lesson_id"] == "causal-priority" for item in lesson_payloads) == 1
+    assert lesson_payloads[0]["occurrence_count"] == 1
+    assert lesson_payloads[0]["distinct_source_count"] == 2
+
+
 def test_compiler_deduplicates_feedback_and_selects_typed_strategies() -> None:
     context = compile_evolution_context(_request())
 

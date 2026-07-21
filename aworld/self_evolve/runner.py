@@ -62,6 +62,8 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.failure_events import (
+    AggregatedReplayFailure,
+    aggregate_replay_failures,
     FailureEventSource,
     FailureOwner,
     FailureScope,
@@ -1503,18 +1505,22 @@ class SelfEvolveRunner:
             lessons_path = self.store.write_lesson_records(run_id, lesson_records)
             report["lessons"] = {
                 "path": str(lessons_path),
-                "count": len(lesson_records),
+                **_lesson_extraction_counts(lesson_records),
                 "types": _lesson_type_counts(lesson_records),
             }
             report["lesson_extraction"] = {
                 "path": str(lessons_path),
-                "count": len(lesson_records),
+                **_lesson_extraction_counts(lesson_records),
                 "types": _lesson_type_counts(lesson_records),
             }
         harness_diagnostics = extract_harness_diagnostics(
             gate_results=gate_results,
             summaries=(baseline_summary, candidate_summary, held_out_summary),
             replay_result=replay_result,
+            causal_events=_final_replay_causal_events(
+                replay_result=replay_result,
+                replay_dataset=replay_dataset,
+            ),
         )
         if harness_diagnostics:
             diagnostics_path = self.store.write_harness_diagnostics(
@@ -5776,6 +5782,14 @@ def _lesson_feedback_from_report(
                 "lesson_type": str(payload.get("lesson_type") or ""),
                 "lesson_title": _bounded_text(payload.get("title"), max_chars=160),
                 "lesson_summary": _bounded_text(payload.get("summary"), max_chars=320),
+                # Additive backward compatibility: legacy lesson rows predate
+                # occurrence aggregation and therefore represent one event.
+                "occurrence_count": _positive_int_or_default(
+                    payload.get("occurrence_count"), default=1
+                ),
+                "distinct_source_count": _nonnegative_int_or_default(
+                    payload.get("distinct_source_count"), default=0
+                ),
                 "run_id": report.get("run_id"),
                 "report_path": str(report_path),
             }
@@ -5786,6 +5800,12 @@ def _lesson_feedback_from_report(
         source_task_ids = _string_list(payload.get("source_task_ids"))
         if source_task_ids:
             metrics["source_task_ids"] = source_task_ids
+        source_candidate_ids = _string_list(payload.get("source_candidate_ids"))
+        if source_candidate_ids:
+            metrics["source_candidate_ids"] = source_candidate_ids
+        affected_case_ids = _string_list(payload.get("affected_case_ids"))
+        if affected_case_ids:
+            metrics["affected_case_ids"] = affected_case_ids
         items.append(
             EvaluationSummary(
                 variant_id=lesson_id,
@@ -5794,6 +5814,18 @@ def _lesson_feedback_from_report(
             )
         )
     return tuple(items)
+
+
+def _positive_int_or_default(value: Any, *, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return max(1, int(value))
+
+
+def _nonnegative_int_or_default(value: Any, *, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return max(0, int(value))
 
 
 def _lessons_path_from_report(
@@ -6070,6 +6102,14 @@ def _replay_gate_details(
     if normalized.failure_events:
         details["normalization_failures"] = [
             event.to_dict() for event in normalized.failure_events
+        ]
+    causal_failures = aggregate_replay_failures(
+        replay_result,
+        normalized=normalized,
+    )
+    if causal_failures:
+        details["causal_failure_events"] = [
+            event.to_dict() for event in causal_failures
         ]
     if normalized.members:
         details["failed_members"] = [
@@ -6911,6 +6951,23 @@ def _candidate_repair_diagnostic_view(
     they must not redirect repair attribution away from the candidate variant.
     """
 
+    causal_events = details.get("causal_failure_events")
+    if isinstance(causal_events, list):
+        candidate_causes = [
+            dict(event)
+            for event in causal_events
+            if isinstance(event, Mapping) and event.get("owner") == "candidate"
+        ]
+        if candidate_causes:
+            return {
+                "failure_class": "candidate",
+                "repairable": all(event.get("repairable") is True for event in candidate_causes),
+                "causal_failure_events": candidate_causes,
+            }
+        # Typed non-candidate causes must not be reclassified from prose stored
+        # elsewhere in the gate details.
+        return {"causal_failure_events": []}
+
     candidate_failures: list[Mapping[str, object]] = []
     direct = details.get("candidate_failure")
     if isinstance(direct, Mapping):
@@ -6941,6 +6998,7 @@ def _typed_gate_feedback_metrics(
     classification_views: list[Mapping[str, object]] = []
     failure_classes: set[str] = set()
     repairable_values: list[bool] = []
+    causal_events: dict[str, Mapping[str, object]] = {}
     for gate in failed_gate_items:
         details = gate.details
         gate_diagnostic: dict[str, object] = {
@@ -6966,6 +7024,17 @@ def _typed_gate_feedback_metrics(
         repairable = details.get("repairable")
         if isinstance(repairable, bool):
             repairable_values.append(repairable)
+        raw_causal_events = details.get("causal_failure_events")
+        if isinstance(raw_causal_events, list):
+            for event in raw_causal_events[:64]:
+                if not isinstance(event, Mapping):
+                    continue
+                semantic_key = event.get("semantic_key")
+                if not isinstance(semantic_key, str) or not semantic_key:
+                    continue
+                bounded_event = sanitize_metric_value(event, max_chars=240)
+                if isinstance(bounded_event, Mapping):
+                    causal_events.setdefault(semantic_key, dict(bounded_event))
         raw_diagnostics = details.get("diagnostics")
         if isinstance(raw_diagnostics, list):
             diagnostics.extend(
@@ -6974,6 +7043,40 @@ def _typed_gate_feedback_metrics(
                 if isinstance(item, Mapping)
             )
     result: dict[str, object] = {}
+    if causal_events:
+        ordered_events = [causal_events[key] for key in sorted(causal_events)]
+        result["causal_failure_events"] = ordered_events
+        candidate_events = [
+            event for event in ordered_events if event.get("owner") == "candidate"
+        ]
+        if candidate_events:
+            result["failure_class"] = "candidate"
+            result["repairable"] = all(
+                event.get("repairable") is True for event in candidate_events
+            )
+            result["candidate_validation_diagnostics"] = [
+                {
+                    key: event.get(key)
+                    for key in (
+                        "semantic_key",
+                        "code",
+                        "owner",
+                        "stage",
+                        "scope",
+                        "repairable",
+                        "category",
+                        "capability_id",
+                        "requirement_id",
+                        "occurrence_count",
+                        "affected_member_count",
+                    )
+                    if event.get(key) is not None
+                }
+                for event in candidate_events[:16]
+            ]
+        # Typed ownership is authoritative.  Do not add generic confidence or
+        # free-form classification noise when a concrete causal event exists.
+        return result
     if len(failure_classes) == 1:
         result["failure_class"] = next(iter(failure_classes))
     if repairable_values:
@@ -7738,6 +7841,47 @@ def _lesson_type_counts(lessons: tuple[LessonRecord, ...]) -> dict[str, int]:
     for lesson in lessons:
         counts[lesson.lesson_type] = counts.get(lesson.lesson_type, 0) + 1
     return counts
+
+
+def _final_replay_causal_events(
+    *,
+    replay_result: CandidateReplayResult | None,
+    replay_dataset: SelfEvolveDataset | None,
+) -> tuple[AggregatedReplayFailure, ...]:
+    if replay_result is None:
+        return ()
+    normalized = (
+        normalize_replay_members(dataset=replay_dataset, replay_result=replay_result)
+        if replay_dataset is not None
+        else None
+    )
+    return aggregate_replay_failures(replay_result, normalized=normalized)
+
+
+def _lesson_extraction_counts(
+    lessons: tuple[LessonRecord, ...],
+) -> dict[str, object]:
+    occurrence_counts = [max(1, lesson.occurrence_count) for lesson in lessons]
+    code_counts: dict[str, int] = {}
+    code_occurrence_counts: dict[str, int] = {}
+    for lesson in lessons:
+        code = lesson.metrics.get("causal_code")
+        if isinstance(code, str) and code:
+            code_counts[code] = code_counts.get(code, 0) + 1
+            code_occurrence_counts[code] = (
+                code_occurrence_counts.get(code, 0)
+                + max(1, lesson.occurrence_count)
+            )
+    return {
+        # Compatibility: count remains the unique persisted row count.
+        "count": len(lessons),
+        "unique_lesson_count": len(lessons),
+        "raw_occurrence_count": sum(occurrence_counts),
+        "total_occurrence_count": sum(occurrence_counts),
+        "max_occurrence_count": max(occurrence_counts, default=0),
+        "codes": code_counts,
+        "occurrences_by_code": code_occurrence_counts,
+    }
 
 
 def _harness_diagnostic_type_counts(diagnostics: tuple[object, ...]) -> dict[str, int]:

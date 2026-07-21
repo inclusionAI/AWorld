@@ -140,9 +140,20 @@ class FilesystemSelfEvolveStore:
         return path
 
     def write_lesson_records(self, run_id: str, lessons: tuple[Any, ...]) -> Path:
+        from aworld.self_evolve.lessons import LessonRecord, aggregate_lesson_records
+
         lessons_dir = self.run_path(run_id) / "lessons"
         lessons_dir.mkdir(parents=True, exist_ok=True)
         path = lessons_dir / "lessons.jsonl"
+        typed_lessons = tuple(
+            lesson for lesson in lessons if isinstance(lesson, LessonRecord)
+        )
+        if len(typed_lessons) == len(lessons):
+            lessons = aggregate_lesson_records(typed_lessons)
+        else:
+            lesson_ids = [getattr(lesson, "lesson_id", None) for lesson in lessons]
+            if len(lesson_ids) != len(set(lesson_ids)):
+                raise ValueError("duplicate lesson ids require typed LessonRecord values")
         lines = [
             json.dumps(to_json_dict(lesson), ensure_ascii=False, sort_keys=True)
             for lesson in lessons

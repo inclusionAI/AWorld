@@ -2574,6 +2574,75 @@ def test_replay_gate_marks_candidate_owned_protocol_failure_as_repairable() -> N
     assert details["failure_stage"] == "replay_capability"
 
 
+def test_typed_gate_feedback_keeps_candidate_cause_from_baseline_slot_once() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="generic")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-a", input="Replay task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["case-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-generic",
+        task_id="case-a",
+        workspace_root="/tmp/workspace",
+        target=target,
+        candidate_id="candidate-generic",
+        overlay_skill_root="/tmp/overlay",
+        task_input="Replay task",
+    )
+    cause = ReplayFailureEvent(
+        event_id="cause-once",
+        code="capability_contract_rejected",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="capability_contract",
+        diagnostics={"raw_response": "SECRET_TOKEN=abc123"},
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="failed",
+            trajectory=[],
+            failure=cause,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-generic",
+            status="blocked",
+            trajectory=[],
+            blocked_by=(cause,),
+        ),
+    )
+    details = _replay_gate_details(replay_result, dataset=dataset)
+    candidate = CandidateVariant(
+        candidate_id="candidate-generic",
+        target=target,
+        content="# Generic\n",
+        rationale="repair typed cause",
+    )
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=(
+            GateResult("candidate_replay", False, "typed replay failure", details),
+        ),
+    )
+
+    events = feedback[0].metrics["causal_failure_events"]
+    assert len(events) == 1
+    assert events[0]["owner"] == "candidate"
+    assert events[0]["occurrence_count"] == 1
+    assert events[0]["affected_member_count"] == 1
+    assert "raw_response" not in str(events)
+
+
 def test_merge_validation_feedback_accumulates_and_deduplicates_current_run_history() -> None:
     first = EvaluationSummary(
         variant_id="candidate-1",
@@ -7442,6 +7511,7 @@ async def test_runner_feeds_prior_lesson_memory_into_optimizer_request(tmp_path)
     lesson_feedback = optimizer.requests[0].prior_feedback[0]
     assert lesson_feedback.dataset_split == "lesson_memory"
     assert lesson_feedback.metrics["lesson_id"] == "required-runtime-behavior-1"
+    assert lesson_feedback.metrics["occurrence_count"] == 1
     assert "artifact_first" in lesson_feedback.metrics["required_behaviors"]
 
 

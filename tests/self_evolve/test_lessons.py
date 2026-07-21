@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from aworld.self_evolve.lessons import extract_lesson_records
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
+import json
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import EvaluationSummary
 
@@ -198,3 +200,82 @@ def test_extract_lesson_records_adds_bounded_trace_memories_without_raw_transcri
     assert lean_lesson.metrics["step_count"] == 1
     assert lean_lesson.metrics["tool_names"] == ["read_artifact"]
     assert lean_lesson.confidence == "high"
+
+
+def _causal_feedback(*, case_id: str, task_id: str, code: str = "contract_rejected") -> EvaluationSummary:
+    return EvaluationSummary(
+        variant_id=f"candidate-{case_id}",
+        dataset_split="validation",
+        metrics={
+            "run_id": "run-generic",
+            "task_id": task_id,
+            "causal_failure_events": [
+                {
+                    "semantic_key": f"replay-failure-{code}",
+                    "code": code,
+                    "owner": "candidate",
+                    "stage": "capability_preflight",
+                    "scope": "candidate",
+                    "repairable": True,
+                    "category": "capability_contract",
+                    "occurrence_count": 1,
+                    "occurrence_ids": [f"occurrence-{case_id}"],
+                    "affected_member_count": 1,
+                    "affected_case_ids": [case_id],
+                    "source_run_ids": ["run-generic"],
+                    "source_task_ids": [task_id],
+                    "source_candidate_ids": [f"candidate-{case_id}"],
+                    "artifact_refs": [f"/private/{case_id}/artifact.json"],
+                }
+            ],
+        },
+    )
+
+
+def test_causal_lessons_aggregate_same_event_across_trajectories() -> None:
+    lessons = extract_lesson_records(
+        tuple(
+            _causal_feedback(case_id=f"case-{index}", task_id=f"task-{index}")
+            for index in range(3)
+        ),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )
+
+    assert len(lessons) == 1
+    lesson = lessons[0]
+    assert lesson.lesson_type == "causal_failure_memory"
+    assert lesson.occurrence_count == 3
+    assert lesson.affected_case_ids == ("case-0", "case-1", "case-2")
+    assert lesson.affected_case_count == 3
+    assert lesson.source_task_ids == ("task-0", "task-1", "task-2")
+    assert lesson.distinct_source_count >= 3
+    assert lesson.metrics["causal_code"] == "contract_rejected"
+    assert "/private/" not in str(lesson)
+
+
+def test_causal_lessons_keep_heterogeneous_codes_distinct_and_dedupe_feedback() -> None:
+    first = _causal_feedback(case_id="case-a", task_id="task-a", code="first_code")
+    second = _causal_feedback(case_id="case-b", task_id="task-b", code="second_code")
+    lessons = extract_lesson_records(
+        (first, first, second),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )
+
+    assert len(lessons) == 2
+    by_code = {lesson.metrics["causal_code"]: lesson for lesson in lessons}
+    assert by_code["first_code"].occurrence_count == 1
+    assert by_code["first_code"].distinct_source_count == 1
+    assert by_code["second_code"].occurrence_count == 1
+
+
+def test_store_writes_one_jsonl_row_per_semantic_lesson(tmp_path) -> None:
+    lesson = extract_lesson_records(
+        (_causal_feedback(case_id="case-a", task_id="task-a"),),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )[0]
+    store = FilesystemSelfEvolveStore(tmp_path)
+    path = store.write_lesson_records("run-generic", (lesson, lesson))
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["occurrence_count"] == 1

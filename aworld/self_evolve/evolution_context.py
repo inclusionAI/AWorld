@@ -10,6 +10,7 @@ from aworld.self_evolve.capability_contracts import (
     discover_applicable_capability_contracts,
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
+from aworld.self_evolve.lessons import aggregate_lesson_records
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.repair_conformance import (
     compile_repair_conformance_contract,
@@ -1033,6 +1034,10 @@ def _serialized_size(value: Any) -> int:
 def _lesson_payloads(
     lessons: Sequence[object],
 ) -> tuple[Mapping[str, object], ...]:
+    unique_lessons = aggregate_lesson_records(
+        tuple(lesson for lesson in lessons if hasattr(lesson, "lesson_id"))
+    )
+    ranked_lessons = sorted(unique_lessons, key=_lesson_value_key)
     return tuple(
         {
             "lesson_id": sanitize_text(lesson.lesson_id, max_chars=160),
@@ -1045,8 +1050,59 @@ def _lesson_payloads(
                 for item in lesson.evidence_refs[:8]
             ],
             "metrics": sanitize_metric_value(lesson.metrics, max_chars=240),
+            "occurrence_count": max(1, int(lesson.occurrence_count)),
+            "distinct_source_count": max(0, int(lesson.distinct_source_count)),
+            "source_run_ids": [
+                sanitize_text(item, max_chars=160)
+                for item in lesson.source_run_ids[:8]
+            ],
+            "source_task_ids": [
+                sanitize_text(item, max_chars=160)
+                for item in lesson.source_task_ids[:8]
+            ],
+            "source_candidate_ids": [
+                sanitize_text(item, max_chars=160)
+                for item in lesson.source_candidate_ids[:8]
+            ],
+            "affected_case_ids": [
+                sanitize_text(item, max_chars=160)
+                for item in lesson.affected_case_ids[:16]
+            ],
+            "affected_case_count": max(0, int(lesson.affected_case_count)),
         }
-        for lesson in lessons[:MAX_CONTEXT_LESSONS]
+        for lesson in ranked_lessons[:MAX_CONTEXT_LESSONS]
+    )
+
+
+def _lesson_value_key(lesson: object) -> tuple[int, int, int, str]:
+    metrics = lesson.metrics if isinstance(lesson.metrics, Mapping) else {}
+    causal_repair = (
+        lesson.lesson_type == "causal_failure_memory"
+        and metrics.get("repairable") is True
+    )
+    required_runtime = lesson.lesson_type == "required_runtime_behavior"
+    recurrent = int(getattr(lesson, "distinct_source_count", 0)) > 1
+    success_memory = "success" in str(lesson.lesson_type)
+    if causal_repair:
+        priority = 0
+    elif required_runtime and lesson.confidence == "high":
+        priority = 1
+    elif recurrent:
+        priority = 2
+    elif required_runtime:
+        priority = 3
+    elif success_memory:
+        priority = 4
+    else:
+        priority = 3
+    confidence = {"high": 2, "medium": 1, "low": 0}.get(lesson.confidence, 0)
+    # Occurrence count is intentionally absent: copies emitted by one
+    # iteration cannot outrank evidence recurring across distinct sources.
+    return (
+        priority,
+        -int(getattr(lesson, "distinct_source_count", 0)),
+        -confidence,
+        str(lesson.lesson_id),
     )
 
 
