@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.gates import (
     BudgetGate,
@@ -551,7 +553,10 @@ def test_trust_provenance_gate_rejects_protected_generated_and_external_targets(
     )
     generated = gate.evaluate(
         TargetProvenance(
-            target=target,
+            target=SelfEvolveTargetRef(
+                target_type="workspace-artifact",
+                target_id="generated-artifact",
+            ),
             source_kind="workspace_artifact",
             write_origin="agent_generated_artifact",
             trust_level="generated",
@@ -638,3 +643,37 @@ def test_trust_provenance_gate_requires_named_policy_for_external_target() -> No
 
     assert denied.passed is False
     assert allowed.passed is True
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "write_origin", "trust_level"),
+    [
+        ("skill", "target_inference", "local"),
+        ("skill", "operator_selection", "generated"),
+        ("skill", "installed_skill", "external"),
+        ("workspace_artifact", "installed_skill", "local"),
+    ],
+)
+def test_trust_provenance_gate_fails_closed_for_malformed_enum_combinations(
+    source_kind: str,
+    write_origin: str,
+    trust_level: str,
+) -> None:
+    target = SelfEvolveTargetRef("skill", "capability")
+
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind=source_kind,
+            write_origin=write_origin,
+            trust_level=trust_level,
+            protected=False,
+            reason="malformed combination",
+        )
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance classification is not trusted"

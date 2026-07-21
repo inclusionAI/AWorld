@@ -10,6 +10,8 @@ from aworld.self_evolve.provenance import (
     TargetProvenance,
     TargetProvenanceResolution,
     TargetSelectionOrigin,
+    TargetProvenanceStatus,
+    canonical_local_target_path,
     resolve_target_provenance,
 )
 from aworld.self_evolve.trace_pack import TraceEvidenceStep, TracePack
@@ -27,12 +29,23 @@ class TargetInventoryEntry:
 class TargetInventory:
     entries: tuple[TargetInventoryEntry, ...]
     draft_skill_root: str | None = None
+    workspace_root: str | None = None
 
     def find(self, target_type: str, target_id: str) -> TargetInventoryEntry | None:
-        for entry in self.entries:
-            if entry.target.target_type == target_type and entry.target.target_id == target_id:
-                return entry
-        return None
+        matches = self.find_all(target_type, target_id)
+        return matches[0] if len(matches) == 1 else None
+
+    def find_all(
+        self,
+        target_type: str,
+        target_id: str,
+    ) -> tuple[TargetInventoryEntry, ...]:
+        return tuple(
+            entry
+            for entry in self.entries
+            if entry.target.target_type == target_type
+            and entry.target.target_id == target_id
+        )
 
     def only_target_types(self, target_types: Iterable[str]) -> TargetInventory:
         allowed = frozenset(target_types)
@@ -43,6 +56,7 @@ class TargetInventory:
             draft_skill_root=(
                 self.draft_skill_root if "skill" in allowed else None
             ),
+            workspace_root=self.workspace_root,
         )
 
 
@@ -57,6 +71,7 @@ class TargetSelectionReport:
     diagnostics: Mapping[str, Any] | None = None
     provenance_status: str | None = None
     provenance_reason: str | None = None
+    selection_origin: TargetSelectionOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,7 @@ class TargetSelectionDecision:
 
     report: TargetSelectionReport
     provenance_resolution: TargetProvenanceResolution
+    selection_origin: TargetSelectionOrigin = TargetSelectionOrigin.UNKNOWN
 
     @property
     def provenance(self) -> TargetProvenance | None:
@@ -84,34 +100,49 @@ def build_target_selection_decision(
     selection_origin: TargetSelectionOrigin,
     workspace_root: str | Path | None = None,
 ) -> TargetSelectionDecision:
+    try:
+        typed_origin = TargetSelectionOrigin(selection_origin)
+    except ValueError:
+        typed_origin = TargetSelectionOrigin.UNKNOWN
     target = report.selected_target
+    effective_workspace_root = workspace_root or inventory.workspace_root
     if target is None:
         resolution = TargetProvenanceResolution(
-            status="unresolved",
+            status=TargetProvenanceStatus.UNRESOLVED,
             provenance=None,
             reason=report.no_target_reason or "no mutation target was selected",
         )
         return TargetSelectionDecision(
-            report=report,
+            report=replace(report, selection_origin=typed_origin),
             provenance_resolution=resolution,
+            selection_origin=typed_origin,
         )
 
-    inventory_entry = inventory.find(target.target_type, target.target_id)
-    resolution = resolve_target_provenance(
-        target,
-        selection_origin=selection_origin,
-        inventory_provenance=(
-            inventory_entry.provenance if inventory_entry is not None else None
-        ),
-        workspace_root=workspace_root,
-    )
+    inventory_entries = inventory.find_all(target.target_type, target.target_id)
+    if len(inventory_entries) > 1:
+        resolution = TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason="inventory contains duplicate target identity",
+        )
+    else:
+        resolution = resolve_target_provenance(
+            target,
+            selection_origin=typed_origin,
+            inventory_provenance=(
+                inventory_entries[0].provenance if inventory_entries else None
+            ),
+            workspace_root=effective_workspace_root,
+        )
     return TargetSelectionDecision(
         report=replace(
             report,
             provenance_status=resolution.status,
             provenance_reason=resolution.reason,
+            selection_origin=typed_origin,
         ),
         provenance_resolution=resolution,
+        selection_origin=typed_origin,
     )
 
 
@@ -482,16 +513,11 @@ class TrajectoryCreditAssigner:
 
 
 def build_default_target_inventory(workspace_root: str | Path) -> TargetInventory:
-    root = Path(workspace_root)
+    root = Path(workspace_root).resolve()
     entries: list[TargetInventoryEntry] = []
-    seen: set[tuple[str, str]] = set()
 
     def add(entry: TargetInventoryEntry) -> None:
-        key = (entry.target.target_type, entry.target.target_id)
-        if key in seen:
-            return
         entries.append(entry)
-        seen.add(key)
 
     for entry in _skill_entries_from_workspace(root):
         add(entry)
@@ -538,6 +564,7 @@ def build_default_target_inventory(workspace_root: str | Path) -> TargetInventor
     return TargetInventory(
         entries=tuple(entries),
         draft_skill_root=str(root / ".aworld" / "self_evolve" / "drafts" / "skills"),
+        workspace_root=str(root),
     )
 
 
@@ -670,11 +697,25 @@ def _reusable_skill_target_id(serialized: str) -> str | None:
 def _skill_entries_from_workspace(root: Path) -> tuple[TargetInventoryEntry, ...]:
     entries: list[TargetInventoryEntry] = []
     for base in (root / "aworld-skills", root / "skills"):
-        if not base.exists():
+        if not base.exists() or base.is_symlink() or not base.is_dir():
             continue
-        for skill_path in sorted(base.glob("*/SKILL.md")):
-            target_id = skill_path.parent.name
-            frontmatter = _skill_frontmatter(skill_path)
+        for skill_dir in sorted(base.iterdir()):
+            if skill_dir.is_symlink() or not skill_dir.is_dir():
+                continue
+            skill_path = skill_dir / "SKILL.md"
+            if (
+                not skill_path.is_file()
+                or skill_path.is_symlink()
+            ):
+                continue
+            canonical_path = canonical_local_target_path(
+                skill_path,
+                workspace_root=root,
+            )
+            if canonical_path is None:
+                continue
+            target_id = skill_dir.name
+            frontmatter = _skill_frontmatter(canonical_path)
             name = frontmatter.get("name") or target_id
             description = frontmatter.get("description", "")
             aliases = tuple(
@@ -686,7 +727,7 @@ def _skill_entries_from_workspace(root: Path) -> tuple[TargetInventoryEntry, ...
                 _entry(
                     target_type="skill",
                     target_id=target_id,
-                    path=str(skill_path),
+                    path=str(canonical_path),
                     source_kind="skill",
                     write_origin="installed_skill",
                     trust_level="local",

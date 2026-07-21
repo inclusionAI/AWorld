@@ -35,6 +35,7 @@ def test_target_provenance_is_persisted_as_sidecar_without_mutating_target_file(
     assert skill_path.read_text(encoding="utf-8") == original_content
     saved = json.loads(provenance_path.read_text(encoding="utf-8"))
     assert saved["target"]["target_id"] == "demo"
+    assert saved["schema_version"] == 1
     assert saved["write_origin"] == "repository"
     assert saved["protected"] is False
 
@@ -91,6 +92,7 @@ def test_provenance_resolution_is_target_level_not_trajectory_level(
             target,
             selection_origin="inferred",
             inventory_provenance=inventory_provenance,
+            workspace_root="/workspace",
         )
         for _ in range(trajectory_count)
     )
@@ -154,3 +156,68 @@ def test_provenance_resolution_returns_structured_unresolved_result() -> None:
     assert resolution.status == "unresolved"
     assert resolution.provenance is None
     assert resolution.reason == "target identity is incomplete"
+
+
+@pytest.mark.parametrize("link_kind", ["directory", "file"])
+def test_explicit_target_locality_rejects_symlinked_paths(
+    tmp_path,
+    link_kind: str,
+) -> None:
+    real_dir = tmp_path / "real-capability"
+    real_dir.mkdir()
+    real_file = real_dir / "SKILL.md"
+    real_file.write_text("---\nname: capability\n---\n", encoding="utf-8")
+    exposed_dir = tmp_path / "skills" / "capability"
+    exposed_dir.parent.mkdir()
+    if link_kind == "directory":
+        exposed_dir.symlink_to(real_dir, target_is_directory=True)
+        selected_path = exposed_dir / "SKILL.md"
+    else:
+        exposed_dir.mkdir()
+        selected_path = exposed_dir / "SKILL.md"
+        selected_path.symlink_to(real_file)
+
+    resolution = resolve_target_provenance(
+        SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="capability",
+            path=str(selected_path),
+        ),
+        selection_origin="operator_explicit",
+        workspace_root=tmp_path,
+    )
+
+    assert resolution.status == "unresolved"
+    assert resolution.provenance is None
+    assert resolution.reason == "explicit target locality could not be established"
+
+
+def test_inventory_path_match_does_not_trust_equal_raw_symlink_paths(tmp_path) -> None:
+    real_dir = tmp_path / "real-capability"
+    real_dir.mkdir()
+    real_file = real_dir / "SKILL.md"
+    real_file.write_text("---\nname: capability\n---\n", encoding="utf-8")
+    linked_dir = tmp_path / "skills" / "capability"
+    linked_dir.parent.mkdir()
+    linked_dir.symlink_to(real_dir, target_is_directory=True)
+    linked_path = linked_dir / "SKILL.md"
+    target = SelfEvolveTargetRef("skill", "capability", str(linked_path))
+    inventory_provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="installed_skill",
+        trust_level="local",
+        protected=False,
+        reason="inventory record",
+    )
+
+    resolution = resolve_target_provenance(
+        target,
+        selection_origin="inventory",
+        inventory_provenance=inventory_provenance,
+        workspace_root=tmp_path,
+    )
+
+    assert resolution.status == "unresolved"
+    assert resolution.provenance is None
+    assert resolution.reason == "inventory provenance path does not match selected target path"

@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.provenance import (
+    TargetProvenance,
+    TargetProvenancePolicyClass,
+    target_provenance_policy_class,
+)
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
 from aworld.self_evolve.candidate_package import (
@@ -627,9 +631,6 @@ class HeldOutVerificationGate:
 
 
 class TrustProvenanceGate:
-    _GENERATED_OR_EXTERNAL_TRUST_LEVELS = {"generated", "external"}
-    _GENERATED_OR_EXTERNAL_ORIGINS = {"agent_generated_artifact", "external"}
-
     def __init__(self, *, allow_generated: bool = False, allow_external: bool = False) -> None:
         self.allow_generated = allow_generated
         self.allow_external = allow_external
@@ -652,25 +653,32 @@ class TrustProvenanceGate:
                     ),
                 },
             )
-        if provenance.protected:
+        policy_class = target_provenance_policy_class(provenance)
+        if policy_class is None:
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="target provenance classification is not trusted",
+            )
+        if policy_class == TargetProvenancePolicyClass.PROTECTED:
             return GateResult(
                 gate_name="trust_provenance",
                 passed=False,
                 reason="protected target provenance cannot be mutated",
             )
         if (
-            provenance.trust_level == "generated"
-            or provenance.write_origin == "agent_generated_artifact"
-        ) and not self.allow_generated:
+            policy_class == TargetProvenancePolicyClass.GENERATED
+            and not self.allow_generated
+        ):
             return GateResult(
                 gate_name="trust_provenance",
                 passed=False,
                 reason="generated target requires explicit trust policy",
             )
         if (
-            provenance.trust_level == "external"
-            or provenance.write_origin == "external"
-        ) and not self.allow_external:
+            policy_class == TargetProvenancePolicyClass.EXTERNAL
+            and not self.allow_external
+        ):
             return GateResult(
                 gate_name="trust_provenance",
                 passed=False,

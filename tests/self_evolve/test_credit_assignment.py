@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from aworld.self_evolve.credit_assignment import (
     LLMTargetDiagnosis,
     TargetInventory,
@@ -64,6 +66,65 @@ def test_target_inventory_can_be_scoped_to_executable_target_types(tmp_path) -> 
     assert scoped.find("skill", "demo-skill") is not None
     assert scoped.find("prompt-section", "result-validation-anchor-policy") is None
     assert scoped.draft_skill_root == inventory.draft_skill_root
+
+
+@pytest.mark.parametrize("link_kind", ["directory", "file"])
+def test_default_target_inventory_excludes_symlinked_skill_paths(
+    tmp_path,
+    link_kind: str,
+) -> None:
+    real_skill = _write_skill(tmp_path, "real-capability")
+    exposed_root = tmp_path / "skills" / "linked-capability"
+    exposed_root.parent.mkdir(parents=True)
+    if link_kind == "directory":
+        exposed_root.symlink_to(real_skill.parent, target_is_directory=True)
+    else:
+        exposed_root.mkdir()
+        (exposed_root / "SKILL.md").symlink_to(real_skill)
+
+    inventory = build_default_target_inventory(workspace_root=tmp_path)
+
+    assert inventory.find("skill", "linked-capability") is None
+
+
+def test_duplicate_inventory_identity_is_unresolved() -> None:
+    first_target = SelfEvolveTargetRef("skill", "capability", "/workspace/a/SKILL.md")
+    second_target = SelfEvolveTargetRef("skill", "capability", "/workspace/b/SKILL.md")
+    inventory = TargetInventory(
+        entries=tuple(
+            TargetInventoryEntry(
+                target=target,
+                provenance=TargetProvenance(
+                    target=target,
+                    source_kind="skill",
+                    write_origin="installed_skill",
+                    trust_level="local",
+                    protected=False,
+                    reason="inventory record",
+                ),
+            )
+            for target in (first_target, second_target)
+        )
+    )
+    report = TargetSelectionReport(
+        selected_target=first_target,
+        confidence=1.0,
+        evidence_step_ids=(),
+        failure_category="explicit_target",
+    )
+
+    decision = build_target_selection_decision(
+        report,
+        inventory=inventory,
+        selection_origin="operator_explicit",
+        workspace_root="/workspace",
+    )
+
+    assert decision.provenance is None
+    assert decision.provenance_resolution.status == "unresolved"
+    assert decision.provenance_resolution.reason == (
+        "inventory contains duplicate target identity"
+    )
 
 
 def test_credit_assignment_decision_preserves_inventory_provenance(tmp_path) -> None:
