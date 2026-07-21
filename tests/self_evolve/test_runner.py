@@ -31,6 +31,8 @@ from aworld.self_evolve.failure_events import (
     FailureStage,
     ReplayExecutionStatus,
     ReplayFailureEvent,
+    ReplayFailureObservation,
+    aggregate_replay_failure_observations,
 )
 from aworld.self_evolve.replay import (
     CandidateReplayMemberResult,
@@ -2649,6 +2651,53 @@ def test_typed_gate_feedback_keeps_candidate_cause_from_baseline_slot_once() -> 
     assert events[0]["occurrence_count"] == 1
     assert events[0]["affected_member_count"] == 1
     assert "raw_response" not in str(events)
+
+
+def test_typed_gate_feedback_preserves_exact_aggregate_scalars_without_raw_payload() -> None:
+    observations = tuple(
+        ReplayFailureObservation(
+            event=ReplayFailureEvent(
+                event_id=f"event-{index:03d}",
+                code="capability_contract_rejected",
+                owner=FailureOwner.CANDIDATE,
+                stage=FailureStage.CAPABILITY_PREFLIGHT,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+                capability_id="/private/raw/capability-identity",
+                summary=f"raw summary {index}",
+                diagnostics={"raw_response": f"SECRET_TOKEN={index}"},
+                artifact_refs=(f"/private/raw/{index}.json",),
+            ),
+            case_id=f"case-{index:03d}",
+            run_id=f"run-{index:03d}",
+            task_id=f"task-{index:03d}",
+            candidate_id=f"candidate-{index:03d}",
+        )
+        for index in range(70)
+    )
+    aggregate = aggregate_replay_failure_observations(observations)[0]
+    gate = GateResult(
+        "candidate_replay",
+        False,
+        "typed replay failed",
+        {"causal_failure_events": [aggregate.to_dict()]},
+    )
+
+    metrics = runner_module._typed_gate_feedback_metrics((gate, gate))
+    events = metrics["causal_failure_events"]
+
+    assert len(events) == 1
+    assert events[0]["occurrence_count"] == 70
+    assert events[0]["affected_member_count"] == 70
+    assert events[0]["distinct_source_count"] == 70
+    assert len(events[0]["occurrence_ids"]) == 64
+    assert len(events[0]["source_task_ids"]) == 32
+    serialized = json.dumps(events)
+    assert "raw summary" not in serialized
+    assert "raw_response" not in serialized
+    assert "SECRET_TOKEN" not in serialized
+    assert "/private/raw" not in serialized
+    assert events[0]["capability_identity_digest"] is not None
 
 
 def test_merge_validation_feedback_accumulates_and_deduplicates_current_run_history() -> None:

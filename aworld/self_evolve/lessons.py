@@ -7,10 +7,11 @@ from typing import Any, Mapping, Sequence
 
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.failure_events import (
-    FailureOwner,
-    FailureScope,
-    FailureStage,
+    AGGREGATED_FAILURE_SCHEMA_VERSION,
+    AggregatedReplayFailure,
     ReplayFailureEvent,
+    ReplayFailureObservation,
+    aggregate_replay_failure_observations,
 )
 from aworld.self_evolve.sanitization import sanitize_metric_value, sanitize_path_ref, sanitize_text
 from aworld.self_evolve.trace_pack import TracePack
@@ -42,6 +43,10 @@ class LessonRecord:
     affected_case_ids: tuple[str, ...] = ()
     affected_case_count: int = 0
     distinct_source_count: int = 0
+    emission_ids: tuple[str, ...] = ()
+    batch_ids: tuple[str, ...] = ()
+    aggregate_digests: tuple[str, ...] = ()
+    emission_stats: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 def extract_lesson_records(
@@ -132,6 +137,10 @@ def _record(
     source_candidate_ids: tuple[str, ...] = (),
     affected_case_ids: tuple[str, ...] = (),
     affected_case_count: int | None = None,
+    distinct_source_count: int | None = None,
+    emission_id: str | None = None,
+    batch_id: str | None = None,
+    aggregate_digest: str | None = None,
     semantic_identity: str | None = None,
 ) -> LessonRecord:
     clean_summary = sanitize_text(summary, max_chars=_MAX_SUMMARY_CHARS)
@@ -159,6 +168,10 @@ def _record(
             "causal_category",
             "capability_id",
             "requirement_id",
+            "contract_fingerprint",
+            "capability_identity_digest",
+            "requirement_identity_digest",
+            "contract_identity_digest",
             "required_behaviors",
         )
         if key in clean_metrics
@@ -174,6 +187,28 @@ def _record(
     digest = hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()[:16]
+    clean_affected_case_count = max(
+        len(set(affected_case_ids)),
+        affected_case_count or 0,
+    )
+    clean_distinct_source_count = max(
+        _distinct_source_count(
+            clean_source_run_ids,
+            clean_source_task_ids,
+            clean_source_candidate_ids,
+        ),
+        distinct_source_count or 0,
+    )
+    clean_occurrence_count = max(1, int(occurrence_count))
+    emission_stats: dict[str, Mapping[str, Any]] = {}
+    if emission_id:
+        emission_stats[emission_id] = {
+            "occurrence_count": clean_occurrence_count,
+            "affected_case_count": clean_affected_case_count,
+            "distinct_source_count": clean_distinct_source_count,
+            "batch_id": batch_id or "",
+            "aggregate_digest": aggregate_digest or "",
+        }
     return LessonRecord(
         lesson_id=f"{lesson_type}-{digest}",
         lesson_type=lesson_type,
@@ -185,7 +220,7 @@ def _record(
         source_run_ids=clean_source_run_ids,
         source_task_ids=clean_source_task_ids,
         metrics=clean_metrics,
-        occurrence_count=max(1, int(occurrence_count)),
+        occurrence_count=clean_occurrence_count,
         occurrence_ids=_bounded_unique_ids(
             occurrence_ids, limit=_MAX_LESSON_OCCURRENCE_IDS
         ),
@@ -193,15 +228,12 @@ def _record(
         affected_case_ids=_bounded_unique_ids(
             affected_case_ids, limit=_MAX_LESSON_SOURCE_IDS
         ),
-        affected_case_count=max(
-            len(set(affected_case_ids)),
-            affected_case_count or 0,
-        ),
-        distinct_source_count=_distinct_source_count(
-            clean_source_run_ids,
-            clean_source_task_ids,
-            clean_source_candidate_ids,
-        ),
+        affected_case_count=clean_affected_case_count,
+        distinct_source_count=clean_distinct_source_count,
+        emission_ids=((emission_id,) if emission_id else ()),
+        batch_ids=((batch_id,) if batch_id else ()),
+        aggregate_digests=((aggregate_digest,) if aggregate_digest else ()),
+        emission_stats=emission_stats,
     )
 
 
@@ -218,67 +250,47 @@ def _causal_lesson_records(
         if not isinstance(raw_event, Mapping):
             continue
         try:
-            event = ReplayFailureEvent(
-                code=str(raw_event.get("code") or ""),
-                owner=FailureOwner(str(raw_event.get("owner") or "")),
-                stage=FailureStage(str(raw_event.get("stage") or "")),
-                scope=FailureScope(str(raw_event.get("scope") or "")),
-                repairable=raw_event.get("repairable") is True,
-                category=str(raw_event.get("category") or "replay"),
-                capability_id=(
-                    str(raw_event.get("capability_id"))
-                    if raw_event.get("capability_id") is not None
-                    else None
-                ),
-                requirement_id=(
-                    str(raw_event.get("requirement_id"))
-                    if raw_event.get("requirement_id") is not None
-                    else None
-                ),
-            )
+            aggregate = _typed_causal_aggregate(raw_event)
         except (TypeError, ValueError):
+            if raw_event.get("schema_version") is not None:
+                raise
             continue
-        occurrence_count = _bounded_positive_int(
-            raw_event.get("occurrence_count"), default=1
-        )
         source_run_ids = _combined_source_ids(
-            raw_event.get("source_run_ids"), feedback.metrics.get("run_id")
+            aggregate.source_run_ids, feedback.metrics.get("run_id")
         )
         source_task_ids = _combined_source_ids(
-            raw_event.get("source_task_ids"), feedback.metrics.get("task_id")
+            aggregate.source_task_ids, feedback.metrics.get("task_id")
         )
         source_candidate_ids = _combined_source_ids(
-            raw_event.get("source_candidate_ids"), feedback.variant_id
+            aggregate.source_candidate_ids, feedback.variant_id
         )
-        affected_case_ids = _source_ids(raw_event.get("affected_case_ids"))
-        affected_case_count = _bounded_nonnegative_int(
-            raw_event.get("affected_member_count"),
-            default=len(set(affected_case_ids)),
-        )
-        occurrence_ids = _source_ids(raw_event.get("occurrence_ids"))
         artifact_refs = tuple(
             sanitize_path_ref(item)
-            for item in _source_ids(raw_event.get("artifact_refs"))
+            for item in aggregate.artifact_refs
             if item
         )
         metrics = {
-            "causal_semantic_key": event.semantic_key,
-            "causal_code": event.code,
-            "causal_owner": event.owner.value,
-            "causal_stage": event.stage.value,
-            "causal_scope": event.scope.value,
-            "causal_category": event.category,
-            "repairable": event.repairable,
-            "capability_id": event.capability_id,
-            "requirement_id": event.requirement_id,
+            "causal_semantic_key": aggregate.semantic_key,
+            "causal_code": aggregate.code,
+            "causal_owner": aggregate.owner.value,
+            "causal_stage": aggregate.stage.value,
+            "causal_scope": aggregate.scope.value,
+            "causal_category": aggregate.category,
+            "repairable": aggregate.repairable,
+            "capability_id": aggregate.capability_id,
+            "requirement_id": aggregate.requirement_id,
+            "contract_fingerprint": aggregate.contract_fingerprint,
+            "capability_identity_digest": aggregate.capability_identity_digest,
+            "requirement_identity_digest": aggregate.requirement_identity_digest,
+            "contract_identity_digest": aggregate.contract_identity_digest,
         }
         records.append(
             _record(
                 lesson_type="causal_failure_memory",
-                title=f"Repair typed replay cause {event.code}",
+                title=f"Repair typed replay cause {aggregate.code}",
                 summary=(
-                    f"Replay cause {event.code} at {event.stage.value} is "
-                    f"owned by {event.owner.value}."
+                    f"Replay cause {aggregate.code} at {aggregate.stage.value} is "
+                    f"owned by {aggregate.owner.value}."
                 ),
                 evidence_refs=artifact_refs,
                 target_scope=target_scope,
@@ -286,15 +298,34 @@ def _causal_lesson_records(
                 source_run_ids=source_run_ids,
                 source_task_ids=source_task_ids,
                 source_candidate_ids=source_candidate_ids,
-                affected_case_ids=affected_case_ids,
-                affected_case_count=affected_case_count,
-                occurrence_count=occurrence_count,
-                occurrence_ids=occurrence_ids,
+                affected_case_ids=aggregate.affected_case_ids,
+                affected_case_count=aggregate.affected_member_count,
+                distinct_source_count=aggregate.distinct_source_count,
+                occurrence_count=aggregate.occurrence_count,
+                occurrence_ids=aggregate.occurrence_ids,
                 metrics=metrics,
-                semantic_identity=event.semantic_key,
+                emission_id=aggregate.emission_id,
+                batch_id=aggregate.batch_id,
+                aggregate_digest=aggregate.aggregate_digest,
+                semantic_identity=aggregate.semantic_key,
             )
         )
     return records
+
+
+def _typed_causal_aggregate(
+    payload: Mapping[str, Any],
+) -> AggregatedReplayFailure:
+    if payload.get("schema_version") == AGGREGATED_FAILURE_SCHEMA_VERSION:
+        return AggregatedReplayFailure.from_dict(payload)
+    if payload.get("schema_version") is not None:
+        event = ReplayFailureEvent.from_dict(payload)
+        return aggregate_replay_failure_observations(
+            (ReplayFailureObservation(event=event),)
+        )[0]
+    # Legacy aggregate rows have no schema or integrity fields.  Their caller
+    # supplied semantic_key is audit-only; typed fields establish identity.
+    return AggregatedReplayFailure.from_dict(payload)
 
 
 def aggregate_lesson_records(
@@ -302,6 +333,7 @@ def aggregate_lesson_records(
 ) -> tuple[LessonRecord, ...]:
     """Merge semantic duplicates without treating repeated copies as recurrence."""
 
+    validate_lesson_records(records)
     groups: dict[str, list[LessonRecord]] = {}
     for record in records:
         groups.setdefault(record.lesson_id, []).append(record)
@@ -318,11 +350,51 @@ def aggregate_lesson_records(
             }
         )
         occurrence_ids = tuple(all_occurrence_ids[:_MAX_LESSON_OCCURRENCE_IDS])
-        if all_occurrence_ids:
+        merged_emission_stats: dict[str, dict[str, Any]] = {}
+        for item in items:
+            for emission_id, stats in _record_emission_stats(item).items():
+                existing = merged_emission_stats.get(emission_id)
+                if existing is None:
+                    merged_emission_stats[emission_id] = dict(stats)
+                    continue
+                for identity_field in ("batch_id", "aggregate_digest"):
+                    previous = str(existing.get(identity_field) or "")
+                    incoming = str(stats.get(identity_field) or "")
+                    if previous and incoming and previous != incoming:
+                        raise ValueError(
+                            f"lesson emission {emission_id} has conflicting {identity_field}"
+                        )
+                    if not previous and incoming:
+                        existing[identity_field] = incoming
+                for count_field in (
+                    "occurrence_count",
+                    "affected_case_count",
+                    "distinct_source_count",
+                ):
+                    existing[count_field] = max(
+                        int(existing.get(count_field) or 0),
+                        int(stats.get(count_field) or 0),
+                    )
+        if merged_emission_stats:
+            occurrence_count = sum(
+                max(1, int(item["occurrence_count"]))
+                for item in merged_emission_stats.values()
+            )
+            affected_case_count = sum(
+                max(0, int(item["affected_case_count"]))
+                for item in merged_emission_stats.values()
+            )
+            distinct_source_count = sum(
+                max(0, int(item["distinct_source_count"]))
+                for item in merged_emission_stats.values()
+            )
+        elif all_occurrence_ids:
             occurrence_count = max(
                 len(all_occurrence_ids),
                 max(item.occurrence_count for item in items),
             )
+            affected_case_count = max(item.affected_case_count for item in items)
+            distinct_source_count = max(item.distinct_source_count for item in items)
         else:
             counts_by_source: dict[tuple[tuple[str, ...], ...], int] = {}
             for item in items:
@@ -336,6 +408,8 @@ def aggregate_lesson_records(
                     counts_by_source.get(source_key, 0), item.occurrence_count
                 )
             occurrence_count = sum(counts_by_source.values())
+            affected_case_count = max(item.affected_case_count for item in items)
+            distinct_source_count = max(item.distinct_source_count for item in items)
         source_run_ids = _bounded_unique_ids(
             (value for item in items for value in item.source_run_ids),
             limit=_MAX_LESSON_SOURCE_IDS,
@@ -378,17 +452,66 @@ def aggregate_lesson_records(
                 affected_case_ids=affected_case_ids,
                 affected_case_count=max(
                     len(affected_case_ids),
-                    max(item.affected_case_count for item in items),
+                    affected_case_count,
                 ),
-                distinct_source_count=_distinct_source_count(
-                    source_run_ids, source_task_ids, source_candidate_ids
+                distinct_source_count=max(
+                    distinct_source_count,
+                    _distinct_source_count(
+                        source_run_ids, source_task_ids, source_candidate_ids
+                    ),
                 ),
+                emission_ids=tuple(sorted(merged_emission_stats)),
+                batch_ids=tuple(
+                    sorted(
+                        {
+                            str(stats.get("batch_id"))
+                            for stats in merged_emission_stats.values()
+                            if stats.get("batch_id")
+                        }
+                    )
+                ),
+                aggregate_digests=tuple(
+                    sorted(
+                        {
+                            str(stats.get("aggregate_digest"))
+                            for stats in merged_emission_stats.values()
+                            if stats.get("aggregate_digest")
+                        }
+                    )
+                ),
+                emission_stats={
+                    key: dict(merged_emission_stats[key])
+                    for key in sorted(merged_emission_stats)
+                },
             )
         )
     return tuple(merged)
 
 
+def validate_lesson_records(records: Sequence[LessonRecord]) -> None:
+    """Fail closed when an id is reused for a different semantic lesson."""
+
+    semantic_payloads: dict[str, str] = {}
+    for record in records:
+        canonical = _lesson_record_canonical_key(record)
+        previous = semantic_payloads.setdefault(record.lesson_id, canonical)
+        if previous != canonical:
+            raise ValueError(
+                f"lesson_id {record.lesson_id!r} has conflicting semantic payloads"
+            )
+        _record_emission_stats(record)
+
+
 def _lesson_record_canonical_key(record: LessonRecord) -> str:
+    semantic_metrics: Mapping[str, Any]
+    if record.lesson_type == "causal_failure_memory":
+        semantic_metrics = record.metrics
+    else:
+        semantic_metrics = {
+            key: record.metrics[key]
+            for key in ("required_behaviors",)
+            if key in record.metrics
+        }
     return json.dumps(
         {
             "lesson_type": record.lesson_type,
@@ -396,13 +519,75 @@ def _lesson_record_canonical_key(record: LessonRecord) -> str:
             "summary": record.summary,
             "target_scope": record.target_scope,
             "generality": record.generality,
-            "confidence": record.confidence,
-            "metrics": record.metrics,
+            "metrics": semantic_metrics,
         },
         ensure_ascii=False,
         sort_keys=True,
         default=str,
     )
+
+
+def _record_emission_stats(
+    record: LessonRecord,
+) -> dict[str, dict[str, Any]]:
+    if record.emission_stats:
+        stats: dict[str, dict[str, Any]] = {}
+        for emission_id, raw in record.emission_stats.items():
+            if not isinstance(raw, Mapping):
+                raise ValueError("lesson emission_stats values must be mappings")
+            clean_id = str(emission_id)
+            if not clean_id:
+                raise ValueError("lesson emission_id must be non-empty")
+            stats[clean_id] = {
+                "occurrence_count": _exact_lesson_count(
+                    raw.get("occurrence_count"), minimum=1
+                ),
+                "affected_case_count": _exact_lesson_count(
+                    raw.get("affected_case_count"), minimum=0
+                ),
+                "distinct_source_count": _exact_lesson_count(
+                    raw.get("distinct_source_count"), minimum=0
+                ),
+                "batch_id": str(raw.get("batch_id") or ""),
+                "aggregate_digest": str(raw.get("aggregate_digest") or ""),
+            }
+        if record.emission_ids and set(record.emission_ids) != set(stats):
+            raise ValueError("lesson emission_ids do not match emission_stats")
+        return stats
+    if record.lesson_type != "causal_failure_memory":
+        return {}
+    legacy_emission_id = "legacy-lesson-emission-" + hashlib.sha256(
+        json.dumps(
+            {
+                "semantic": _lesson_record_canonical_key(record),
+                "occurrence_ids": record.occurrence_ids,
+                "source_run_ids": record.source_run_ids,
+                "source_task_ids": record.source_task_ids,
+                "source_candidate_ids": record.source_candidate_ids,
+                "affected_case_ids": record.affected_case_ids,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        legacy_emission_id: {
+            "occurrence_count": max(1, int(record.occurrence_count or 1)),
+            "affected_case_count": max(0, int(record.affected_case_count or 0)),
+            "distinct_source_count": max(
+                0, int(record.distinct_source_count or 0)
+            ),
+            "batch_id": "",
+            "aggregate_digest": "",
+        }
+    }
+
+
+def _exact_lesson_count(value: Any, *, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"lesson emission count must be an integer >= {minimum}")
+    return value
 
 
 def _bounded_unique_ids(values: Any, *, limit: int) -> tuple[str, ...]:
@@ -422,18 +607,6 @@ def _combined_source_ids(*values: Any) -> tuple[str, ...]:
         (item for value in values for item in _source_ids(value)),
         limit=_MAX_LESSON_SOURCE_IDS,
     )
-
-
-def _bounded_positive_int(value: Any, *, default: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    return max(1, min(int(value), 1_000_000))
-
-
-def _bounded_nonnegative_int(value: Any, *, default: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    return max(0, min(int(value), 1_000_000))
 
 
 def _distinct_source_count(
@@ -700,7 +873,7 @@ def _trace_summary(pack: TracePack, *, prefix: str) -> str:
 def _source_ids(value: Any) -> tuple[str, ...]:
     if isinstance(value, str) and value:
         return (value,)
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return tuple(str(item) for item in value if isinstance(item, str) and item)
     return tuple()
 

@@ -11,6 +11,7 @@ from aworld.self_evolve.failure_events import (
     AggregatedReplayFailure,
     FailureOwner,
     FailureScope,
+    FailureStage,
     ReplayFailureEvent,
     ReplayFailureObservation,
     aggregate_replay_failure_observations,
@@ -97,7 +98,9 @@ def extract_harness_diagnostics(
                 promotion_status=LessonPromotionStatus.ADVISORY,
             )
         )
-    if "evaluation" in failed_gate_names:
+    if "evaluation" in failed_gate_names and not _causal_explains_evaluation_noise(
+        causal_aggregates
+    ):
         diagnostics.append(
             _diagnostic(
                 kind=HarnessDiagnosticKind.EVALUATION,
@@ -121,9 +124,9 @@ def extract_harness_diagnostics(
                 promotion_status=LessonPromotionStatus.ADVISORY,
             )
         )
-    if not causal_aggregates and _has_tool_protocol_diagnostic(
+    if _has_tool_protocol_diagnostic(
         summaries, replay_result=replay_result
-    ):
+    ) and not _causal_explains_tool_protocol_noise(causal_aggregates):
         diagnostics.append(
             _diagnostic(
                 kind=HarnessDiagnosticKind.TOOL_PROTOCOL,
@@ -135,7 +138,9 @@ def extract_harness_diagnostics(
                 promotion_status=LessonPromotionStatus.PROMOTED_TO_STRATEGY_HINT,
             )
         )
-    if _has_evaluator_inconsistency(summaries):
+    if _has_evaluator_inconsistency(
+        summaries
+    ) and not _causal_explains_evaluation_noise(causal_aggregates):
         diagnostics.append(
             _diagnostic(
                 kind=HarnessDiagnosticKind.EVALUATION,
@@ -171,6 +176,37 @@ def extract_harness_diagnostics(
             )
         )
     return tuple(_dedupe_diagnostics(diagnostics))
+
+
+def _causal_explains_evaluation_noise(
+    events: Sequence[AggregatedReplayFailure],
+) -> bool:
+    return any(
+        event.stage is FailureStage.EVALUATION
+        and event.owner
+        in {
+            FailureOwner.TASK,
+            FailureOwner.INFRASTRUCTURE,
+            FailureOwner.FRAMEWORK,
+        }
+        or event.code.startswith(("judge_", "evaluation_"))
+        for event in events
+    )
+
+
+def _causal_explains_tool_protocol_noise(
+    events: Sequence[AggregatedReplayFailure],
+) -> bool:
+    return any(
+        event.owner is FailureOwner.CANDIDATE
+        and event.stage
+        in {
+            FailureStage.ADAPTATION,
+            FailureStage.CAPABILITY_COMPILE,
+            FailureStage.CAPABILITY_PREFLIGHT,
+        }
+        for event in events
+    )
 
 
 def _diagnostic(
