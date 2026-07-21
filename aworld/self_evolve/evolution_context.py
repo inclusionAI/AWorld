@@ -16,6 +16,7 @@ from aworld.self_evolve.repair_conformance import (
     compile_repair_conformance_contract,
 )
 from aworld.self_evolve.sanitization import (
+    public_diagnostic_projection,
     sanitize_metric_value,
     sanitize_path_ref,
     sanitize_text,
@@ -1092,7 +1093,10 @@ def _lesson_payloads(
                     for item in lesson.evidence_refs[:8]
                 ]
             ),
-            "metrics": sanitize_metric_value(lesson.metrics, max_chars=240),
+            "metrics": public_diagnostic_projection(
+                lesson.metrics,
+                max_chars=240,
+            ),
             "occurrence_count": max(1, int(lesson.occurrence_count)),
             "distinct_source_count": max(0, int(lesson.distinct_source_count)),
             "source_run_ids": [
