@@ -641,16 +641,33 @@ class TrustProvenanceGate:
         *,
         unresolved_reason: str | None = None,
     ) -> GateResult:
-        if provenance is None or unresolved_reason:
+        if provenance is None or unresolved_reason is not None:
+            if unresolved_reason is None:
+                reason_detail: object = "no target provenance was supplied"
+            elif isinstance(unresolved_reason, str):
+                reason_detail = unresolved_reason
+            else:
+                reason_detail = (
+                    "invalid unresolved reason type: "
+                    f"{type(unresolved_reason).__name__}"
+                )
             return GateResult(
                 gate_name="trust_provenance",
                 passed=False,
                 reason="target provenance is unresolved",
                 details={
                     "provenance_status": "unresolved",
-                    "unresolved_reason": (
-                        unresolved_reason or "no target provenance was supplied"
-                    ),
+                    "unresolved_reason": reason_detail,
+                },
+            )
+        if not isinstance(provenance, TargetProvenance):
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="target provenance is invalid",
+                details={
+                    "provenance_status": "invalid",
+                    "invalid_type": type(provenance).__name__,
                 },
             )
         policy_class = target_provenance_policy_class(provenance)

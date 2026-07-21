@@ -599,6 +599,11 @@ class SelfEvolveRunner:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
         supplied_provenance = target_provenance
         supplied_decision = target_selection_decision
+        if target_selection_decision is None and target_selection_report is None:
+            target_selection_report = _explicit_target_selection_report(
+                target.identity,
+                trace_packs,
+            )
         if target_selection_decision is not None:
             target_selection_report = target_selection_decision.report
             selection_origin = target_selection_decision.selection_origin

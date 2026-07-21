@@ -609,6 +609,52 @@ def test_trust_provenance_gate_fails_closed_for_unresolved_provenance() -> None:
     }
 
 
+@pytest.mark.parametrize("unresolved_reason", ["", 0, False])
+def test_trust_provenance_gate_treats_every_supplied_reason_as_unresolved(
+    unresolved_reason,
+) -> None:
+    provenance = TargetProvenance(
+        target=SelfEvolveTargetRef("skill", "capability"),
+        source_kind="skill",
+        write_origin="repository",
+        trust_level="local",
+        protected=False,
+        reason="local capability",
+    )
+
+    result = TrustProvenanceGate().evaluate(
+        provenance,
+        unresolved_reason=unresolved_reason,
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details["provenance_status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {},
+        {"target": {"target_type": "skill", "target_id": "capability"}},
+        object(),
+        "local",
+    ],
+)
+def test_trust_provenance_gate_fails_closed_for_untyped_provenance(provenance) -> None:
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(provenance)
+
+    assert result.passed is False
+    assert result.reason == "target provenance is invalid"
+    assert result.details == {
+        "provenance_status": "invalid",
+        "invalid_type": type(provenance).__name__,
+    }
+
+
 def test_trust_provenance_gate_fails_closed_when_reason_marks_resolution_unresolved() -> None:
     provenance = TargetProvenance(
         target=SelfEvolveTargetRef("skill", "capability"),

@@ -14,6 +14,27 @@ from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import SelfEvolveRun, SelfEvolveTargetRef
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"target_type": "skill", "target_id": "capability"},
+        SelfEvolveTargetRef("", "capability"),
+        SelfEvolveTargetRef("skill", ""),
+        SelfEvolveTargetRef("skill", "capability", ""),
+    ],
+)
+def test_target_provenance_rejects_untyped_or_invalid_target_identity(target) -> None:
+    with pytest.raises(ValueError, match="target provenance requires"):
+        TargetProvenance(
+            target=target,
+            source_kind="skill",
+            write_origin="repository",
+            trust_level="local",
+            protected=False,
+            reason="local capability",
+        )
+
+
 def test_target_provenance_is_persisted_as_sidecar_without_mutating_target_file(tmp_path) -> None:
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
