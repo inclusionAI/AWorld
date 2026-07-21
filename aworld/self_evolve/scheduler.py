@@ -234,7 +234,7 @@ def _run_framework_job(
         min_eval_cases=config.min_eval_cases,
         judge_repetitions=config.judge_repetitions,
         judge_timeout_seconds=config.judge_timeout_seconds,
-        max_run_tokens=config.max_run_tokens,
+        **_framework_job_budget_kwargs(config),
         iterations=config.max_iterations,
         min_score_delta=config.min_improvement,
         auto_apply_target_types=config.auto_apply_target_types,
@@ -248,6 +248,45 @@ def _run_framework_job(
         replay_stability_margin=config.replay_stability_margin,
         runtime_registry_refresher=runtime_registry_refresher,
     )
+
+
+def _framework_job_budget_kwargs(config: SelfEvolveConfig) -> dict[str, object]:
+    """Keep background and direct optimize budget inputs structurally identical."""
+
+    return {
+        "max_run_tokens": config.max_run_tokens,
+        "total_run_token_budget": config.total_run_token_budget,
+        "per_attempt_replay_token_limit": config.per_attempt_replay_token_limit,
+        "max_run_cost_usd": config.max_run_cost_usd,
+        "max_run_wall_seconds": config.max_run_wall_seconds,
+        "candidate_generation_tokens_per_unit": (
+            config.candidate_generation_tokens_per_unit
+        ),
+        "candidate_generation_cost_usd_per_unit": (
+            config.candidate_generation_cost_usd_per_unit
+        ),
+        "candidate_generation_wall_seconds_per_unit": (
+            config.candidate_generation_wall_seconds_per_unit
+        ),
+        "candidate_screening_tokens_per_unit": (
+            config.candidate_screening_tokens_per_unit
+        ),
+        "candidate_screening_cost_usd_per_unit": (
+            config.candidate_screening_cost_usd_per_unit
+        ),
+        "candidate_screening_wall_seconds_per_unit": (
+            config.candidate_screening_wall_seconds_per_unit
+        ),
+        "replay_tokens_per_unit": config.replay_tokens_per_unit,
+        "replay_cost_usd_per_unit": config.replay_cost_usd_per_unit,
+        "replay_wall_seconds_per_unit": config.replay_wall_seconds_per_unit,
+        "evaluation_tokens_per_unit": config.evaluation_tokens_per_unit,
+        "evaluation_cost_usd_per_unit": config.evaluation_cost_usd_per_unit,
+        "evaluation_wall_seconds_per_unit": (
+            config.evaluation_wall_seconds_per_unit
+        ),
+        "deprecated_config_mappings": config.deprecated_config_mappings,
+    }
 
 
 def _effective_background_apply_policy(config: SelfEvolveConfig) -> str:

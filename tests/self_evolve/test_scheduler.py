@@ -430,6 +430,14 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
                 mode="online",
                 apply_policy="auto_verified",
                 judge_config={"mode": "agent_md", "agent_path": str(judge_agent)},
+                total_run_token_budget=90_000,
+                per_attempt_replay_token_limit=9_000,
+                max_run_cost_usd=2.5,
+                max_run_wall_seconds=1_200,
+                candidate_generation_tokens_per_unit=1_000,
+                candidate_screening_tokens_per_unit=200,
+                replay_tokens_per_unit=2_000,
+                evaluation_tokens_per_unit=500,
             ),
         )
     )
@@ -445,6 +453,15 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["replay_timeout_seconds"] == 600
     assert captured["replay_max_steps"] == 1
     assert captured["replay_candidate_limit"] == 2
+    assert captured["total_run_token_budget"] == 90_000
+    assert captured["per_attempt_replay_token_limit"] == 9_000
+    assert captured["max_run_cost_usd"] == 2.5
+    assert captured["max_run_wall_seconds"] == 1_200
+    assert captured["candidate_generation_tokens_per_unit"] == 1_000
+    assert captured["candidate_screening_tokens_per_unit"] == 200
+    assert captured["replay_tokens_per_unit"] == 2_000
+    assert captured["evaluation_tokens_per_unit"] == 500
+    assert captured["deprecated_config_mappings"] == ()
 
 
 def test_shadow_job_worker_forces_proposal_apply_policy(monkeypatch, tmp_path) -> None:

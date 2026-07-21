@@ -414,6 +414,24 @@ def test_budget_and_judge_only_gates_downgrade_or_reject() -> None:
     assert budget_gate.evaluate(budget).passed is False
     assert budget_gate.evaluate(budget).reason == "estimated replay tokens exceed max_run_tokens"
 
+    unknown_budget = ReplayCostEstimate(
+        passed=True,
+        reason="within budget",
+        baseline_replay_count=1,
+        candidate_replay_count=1,
+        total_replay_count=2,
+        verification_command_count=0,
+        judge_call_count=0,
+        estimated_tokens=None,
+        token_ceiling=10_000,
+    )
+    unknown_result = budget_gate.evaluate(unknown_budget)
+    assert unknown_result.passed is False
+    assert unknown_result.reason == (
+        "estimated replay tokens are unknown under max_run_tokens"
+    )
+    assert unknown_result.details["estimate_known"] is False
+
     judge_gate = JudgeOnlySignalGate()
     decision = CandidateConfidenceDecision(
         confidence="limited",

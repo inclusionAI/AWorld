@@ -158,6 +158,58 @@ Proposal runs default to one iteration. `auto_verified` uses the larger budget b
 
 The CLI also enables framework replay for `auto_verified`. Skill candidates must have candidate replay evidence, evaluator evidence, deterministic or objective verification signals, passing gates, and a post-apply runtime-loader check before they can remain applied.
 
+## Stage-Aware Budgets and Candidate Lifecycle
+
+`SelfEvolveConfig.total_run_token_budget` is the authoritative token ceiling for a
+complete optimize run. `per_attempt_replay_token_limit` is a separate hard ceiling
+for one replay attempt; it does not divide or replace the total-run budget. The same
+run ledger can enforce `max_run_cost_usd` and `max_run_wall_seconds` when those
+ceilings are configured.
+
+Before an expensive stage starts, the framework reserves its estimated token, cost,
+and wall usage. Completion debits observed usage and releases the reservation.
+Observed samples then replace cold-start assumptions with a conservative robust
+estimate for later units. An unknown token estimate is not zero: if a token ceiling
+is active, the budget gate denies the work until the backend proves zero usage or a
+positive cold estimate is configured. The per-unit cold-start knobs are:
+
+- `candidate_generation_tokens_per_unit`
+- `candidate_screening_tokens_per_unit`
+- `replay_tokens_per_unit`
+- `evaluation_tokens_per_unit`
+
+Each has optional matching `_cost_usd_per_unit` and `_wall_seconds_per_unit` fields.
+Token cold estimates must be positive; cost and wall estimates may be zero but cannot
+be negative.
+
+Budget units follow actual workload cardinality rather than the number of input
+files. Generation and local stages count per candidate attempt. Conformance counts
+distinct executable contract shapes, so equivalent cases share one unit while
+different response/probe shapes remain separate. Representative screening uses at
+most one case per candidate. Paired replay, evaluation, and judge usage scale with
+`case_count * repetitions`; therefore a three-trajectory dataset cannot be priced as
+a one-trajectory run.
+
+Every candidate slot has an explicit funnel record:
+`generated -> unique` (or `duplicate_filtered`) -> local gates -> adaptation ->
+repair conformance -> representative screening -> paired replay started/completed/
+comparable -> evaluation -> `selected`, `rejected`, `blocked`, or `not_run`.
+Terminal reasons and observed usage remain attached to the attempt, including work
+that was denied before replay.
+
+The scheduler begins with bounded exploration. After a candidate-owned repairable
+failure establishes a semantic frontier, the next iteration reserves one focused
+repair slot for that frontier. It may add one diverse exploration slot only for a new
+frontier and only when a separate reservation is available. Repeated failures do not
+silently recreate a full population.
+
+`max_run_tokens` remains readable for compatibility. When
+`total_run_token_budget` is omitted, configuration maps the legacy value to the new
+ceiling and reports `max_run_tokens_to_total_run_token_budget` in
+`deprecated_config_mappings`. New configurations should set
+`total_run_token_budget` directly; the mapping is a deprecated compatibility path,
+not a second independent budget.
+
 ## Output
 
 The command prints the stable artifact paths returned by the framework:

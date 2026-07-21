@@ -363,13 +363,24 @@ class ProtectedPathGate:
 
 class BudgetGate:
     def evaluate(self, estimate: ReplayCostEstimate) -> GateResult:
+        passed = estimate.passed
+        reason = estimate.reason
+        if estimate.token_ceiling is not None and not estimate.estimate_known:
+            passed = False
+            reason = "estimated replay tokens are unknown under max_run_tokens"
         return GateResult(
             gate_name="budget",
-            passed=estimate.passed,
-            reason=estimate.reason,
+            passed=passed,
+            reason=reason,
             details={
                 "estimated_tokens": estimate.estimated_tokens,
+                "estimated_tokens_per_replay": (
+                    estimate.estimated_tokens_per_replay
+                ),
                 "estimated_cost_usd": estimate.estimated_cost_usd,
+                "estimate_source": estimate.estimate_source.value,
+                "estimate_confidence": estimate.estimate_confidence.value,
+                "estimate_known": estimate.estimate_known,
                 "total_replay_count": estimate.total_replay_count,
                 "judge_call_count": estimate.judge_call_count,
                 "verification_command_count": estimate.verification_command_count,
