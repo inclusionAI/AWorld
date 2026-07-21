@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import aworld.self_evolve.runner as runner_module
+
 from aworld.config.conf import ModelConfig
 from aworld.core.common import TaskStatusValue
 from aworld.core.task import TaskResponse
@@ -50,6 +52,7 @@ from aworld.self_evolve.runner import (
     _auto_group_trajectory_log_dataset,
     _baseline_replay_artifact_dir,
     _candidate_screening_timeout,
+    _candidate_validation_report_for_persistence,
     _candidate_gate_results,
     _candidate_screening_repair_feedback,
     _default_cli_skill_candidate,
@@ -90,6 +93,8 @@ from aworld.self_evolve.provenance import (
     TargetSelectionOrigin,
 )
 from aworld.self_evolve.repair_conformance import (
+    RepairConformanceContract,
+    RepairConformanceResult,
     compile_repair_conformance_contract,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
@@ -5341,6 +5346,243 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     assert report is not None
     assert report["generated_candidate_count"] == 1
     assert report["attempted_candidate_count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case_count", [1, 3])
+async def test_repair_conformance_precedes_optional_screening_for_every_cardinality(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case_count: int,
+) -> None:
+    skill_path = tmp_path / "skills" / "generic" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: generic\n---\n# Generic\n", encoding="utf-8")
+    case_ids = tuple(f"member-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input={"task": index}) for index, case_id in enumerate(case_ids)),
+        recipe=DatasetRecipe(
+            source={"kind": "contract_matrix"},
+            split_seed="generic",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill", target_id="generic", path=str(skill_path)
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content="# Generic\n",
+            rationale="generic repair",
+        )
+        for index in (1, 2)
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="parent",
+        failure_codes=("generic_failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    preflight_calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def source_conformance(candidate, candidate_contract):
+        return RepairConformanceResult(
+            passed=candidate.candidate_id == "candidate-2",
+            code=(
+                "repair_source_passed"
+                if candidate.candidate_id == "candidate-2"
+                else "repair_branch_unchanged"
+            ),
+            reason="generic source result",
+            details={},
+        )
+
+    async def runtime_conformance(**kwargs):
+        preflight_calls.append(
+            (
+                kwargs["candidate"].candidate_id,
+                tuple(case.case_id for case in kwargs["dataset"].cases),
+            )
+        )
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=True,
+            reason="passed",
+            details={"code": "repair_conformance_passed"},
+        )
+
+    async def unexpected_task_screening(**kwargs):
+        raise AssertionError("proposal mode must not run optional task screening")
+
+    monkeypatch.setattr(
+        runner_module, "evaluate_candidate_source_conformance", source_conformance
+    )
+    monkeypatch.setattr(
+        runner, "_preflight_candidate_repair_conformance", runtime_conformance
+    )
+    monkeypatch.setattr(runner, "_replay_selected_candidate", unexpected_task_screening)
+
+    screened, report = await runner._screen_candidate_population(
+        run_id=f"run-conformance-{case_count}",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="proposal",
+        repair_conformance_contracts={
+            candidate.candidate_id: contract for candidate in candidates
+        },
+    )
+
+    assert screened == (candidates[1],)
+    assert preflight_calls == [("candidate-2", case_ids)]
+    assert report is not None
+    assert report["screening"] is None
+    assert report["conformance"]["passed_candidate_ids"] == ["candidate-2"]
+    failed_attempt = report["conformance"]["attempts"][0]
+    assert failed_attempt["stage"] == "conformance"
+    assert failed_attempt["details"]["failure_event"]["owner"] == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_repair_conformance_stops_population_only_for_typed_shared_infrastructure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "generic" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Generic\n", encoding="utf-8")
+    case_ids = ("member-a", "member-b", "member-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "contract_matrix"},
+            split_seed="generic",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill", target_id="generic", path=str(skill_path)
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content="# Generic\n",
+            rationale="repair",
+        )
+        for index in (1, 2)
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="parent",
+        failure_codes=("generic_failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"runtime.py": "sha256:base"},
+        required_branch_paths=("runtime.py",),
+        base_branch_fingerprints={"runtime.py": "sha256:branch"},
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner_module,
+        "evaluate_candidate_source_conformance",
+        lambda candidate, candidate_contract: RepairConformanceResult(
+            passed=True, code="passed", reason="passed", details={}
+        ),
+    )
+
+    async def unavailable_infrastructure(**kwargs):
+        calls.append(kwargs["candidate"].candidate_id)
+        event = ReplayFailureEvent(
+            code="conformance_sandbox_unavailable",
+            owner=FailureOwner.INFRASTRUCTURE,
+            stage=FailureStage.CAPABILITY_PREFLIGHT,
+            scope=FailureScope.SHARED_RUN,
+            repairable=False,
+            summary="sandbox unavailable",
+        )
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="shared infrastructure unavailable",
+            details={
+                "failure_class": "infrastructure",
+                "repairable": False,
+                "failure_event": event.to_dict(),
+            },
+        )
+
+    monkeypatch.setattr(
+        runner, "_preflight_candidate_repair_conformance", unavailable_infrastructure
+    )
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-shared-conformance-infrastructure",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="auto_verified",
+        repair_conformance_contracts={
+            candidate.candidate_id: contract for candidate in candidates
+        },
+    )
+
+    assert screened == ()
+    assert calls == ["candidate-1"]
+    assert report is not None
+    assert report["conformance"]["stopped_by_shared_infrastructure"] is True
+
+
+def test_persisted_conformance_report_hashes_payload_bearing_assertions() -> None:
+    persisted = _candidate_validation_report_for_persistence(
+        {
+            "attempts": [
+                {
+                    "details": {
+                        "repair_conformance": {
+                            "exact_probe": {
+                                "kind": "http",
+                                "path": "/query",
+                                "expected_response": "private-recorded-value",
+                            }
+                        },
+                        "declared_response_contains": ["private-recorded-value"],
+                    }
+                }
+            ]
+        }
+    )
+    encoded = json.dumps(persisted, sort_keys=True)
+
+    assert "private-recorded-value" not in encoded
+    assert "expected_response_fingerprint" in encoded
+    assert "declared_response_contains_fingerprint" in encoded
 
 
 @pytest.mark.asyncio

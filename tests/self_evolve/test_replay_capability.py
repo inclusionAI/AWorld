@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,10 +18,44 @@ from aworld.self_evolve.replay_capability import (
     build_replay_sandboxed_command,
     compile_and_freeze_capability,
     discover_replay_capability,
+    frozen_replay_fixture_shape_fingerprints,
     materialize_replay_evidence_derivations,
     replay_process_memory_bytes,
     verify_frozen_replay_capability,
 )
+
+
+def test_frozen_fixture_shape_fingerprint_ignores_recorded_scalar_values(
+    tmp_path: Path,
+) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "recorded.json"
+    service = SimpleNamespace(response_fixture="recorded.json")
+    capability = SimpleNamespace(
+        frozen_root=str(tmp_path),
+        services=(service,),
+    )
+    fixture_path.write_text(
+        json.dumps({"records": [{"token": "private-alpha", "count": 1}]}),
+        encoding="utf-8",
+    )
+    first = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(
+        json.dumps({"records": [{"token": "private-beta", "count": 99}]}),
+        encoding="utf-8",
+    )
+    second = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(
+        json.dumps({"records": [{"token": ["private-beta"], "count": 99}]}),
+        encoding="utf-8",
+    )
+    distinct = frozen_replay_fixture_shape_fingerprints(capability)
+
+    assert first == second
+    assert distinct != second
+    assert "private-alpha" not in json.dumps(first)
+    assert "private-beta" not in json.dumps(distinct)
 
 
 def _nested_recorded_fixture_value() -> str:

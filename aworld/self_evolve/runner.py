@@ -65,6 +65,7 @@ from aworld.self_evolve.failure_events import (
     FailureEventSource,
     FailureOwner,
     FailureScope,
+    FailureStage,
     ReplayFailureEvent,
 )
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
@@ -124,6 +125,7 @@ from aworld.self_evolve.replay import (
 from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
     RepairConformanceResult,
+    build_repair_conformance_probe_plan,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
 )
@@ -143,6 +145,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayCapabilityError,
     compile_and_freeze_capability,
     discover_replay_capability,
+    frozen_replay_fixture_shape_fingerprints,
     materialize_replay_evidence_derivations,
 )
 from aworld.self_evolve.release_checks import (
@@ -1575,23 +1578,48 @@ class SelfEvolveRunner:
         ] | None = None,
     ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
         repair_conformance_contracts = repair_conformance_contracts or {}
+        if (
+            not candidates
+            or not self.replay_enabled
+            or self.candidate_replay_backend is None
+        ):
+            return candidates, None
+
+        conformance_candidates, conformance_report = (
+            await self._validate_candidate_repair_conformance_population(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                candidates=candidates,
+                capability_requirements=capability_requirements,
+                repair_conformance_contracts=repair_conformance_contracts,
+            )
+        )
+        if not conformance_candidates:
+            return (), _combined_candidate_validation_report(
+                candidates=candidates,
+                conformance=conformance_report,
+                screening=None,
+            )
+
         screening_dataset = _candidate_screening_dataset(
             dataset,
             capability_requirements=capability_requirements,
         )
         if (
             apply_policy != "auto_verified"
-            or not candidates
             or (
-                len(candidates) == 1
+                len(conformance_candidates) == 1
                 and not capability_requirements
                 and not repair_conformance_contracts
             )
             or screening_dataset is None
-            or not self.replay_enabled
-            or self.candidate_replay_backend is None
         ):
-            return candidates, None
+            return conformance_candidates, _combined_candidate_validation_report(
+                candidates=candidates,
+                conformance=conformance_report,
+                screening=None,
+            )
 
         representative_case_id = screening_dataset.cases[0].case_id
         _emit_progress(
@@ -1599,7 +1627,7 @@ class SelfEvolveRunner:
             "candidate_screening",
             (
                 "Screening candidate population on representative case "
-                f"{representative_case_id} ({len(candidates)} candidate(s))"
+                f"{representative_case_id} ({len(conformance_candidates)} candidate(s))"
             ),
         )
         attempts: list[dict[str, object]] = []
@@ -1616,50 +1644,10 @@ class SelfEvolveRunner:
                 dataset=screening_dataset,
             ),
         )
-        for candidate in candidates:
+        for candidate in conformance_candidates:
             conformance_contract = repair_conformance_contracts.get(
                 candidate.candidate_id
             )
-            if conformance_contract is not None:
-                source_conformance = evaluate_candidate_source_conformance(
-                    candidate,
-                    conformance_contract,
-                )
-                if not source_conformance.passed:
-                    attempts.append(
-                        _repair_conformance_screening_attempt(
-                            candidate,
-                            source_conformance,
-                            contract=conformance_contract,
-                        )
-                    )
-                    continue
-                conformance_gate = (
-                    await self._preflight_candidate_repair_conformance(
-                        run_id=run_id,
-                        target=target,
-                        # Conformance probes are bounded and must cover every
-                        # fixture shape before the expensive representative
-                        # task rollout. A single-case preflight can otherwise
-                        # approve a runtime that fails immediately when the
-                        # authoritative dataset introduces another recorded
-                        # response shape.
-                        dataset=dataset,
-                        candidate=candidate,
-                        contract=conformance_contract,
-                    )
-                )
-                if not conformance_gate.passed:
-                    attempts.append(
-                        {
-                            "candidate_id": candidate.candidate_id,
-                            "screening_candidate_id": None,
-                            "passed": False,
-                            "reason": conformance_gate.reason,
-                            "details": conformance_gate.details,
-                        }
-                    )
-                    continue
             screening_candidate = replace(
                 candidate,
                 candidate_id=f"{candidate.candidate_id}--screening",
@@ -1745,14 +1733,12 @@ class SelfEvolveRunner:
                     "screening was inconclusive; authoritative full replay preserved "
                     "the ranked population"
                 )
-                selected_candidates = candidates
+                selected_candidates = conformance_candidates
         else:
             selected_candidates = (selected_candidate,)
-        return (
-            selected_candidates,
-            {
+        screening_report = {
                 "representative_case_id": representative_case_id,
-                "generated_candidate_count": len(candidates),
+                "generated_candidate_count": len(conformance_candidates),
                 "attempted_candidate_count": len(attempts),
                 "selected_candidate_id": (
                     selected_candidate.candidate_id
@@ -1766,6 +1752,101 @@ class SelfEvolveRunner:
                 "baseline_repetitions": 1,
                 "candidate_repetitions": 1,
                 "attempts": attempts,
+            }
+        return (
+            selected_candidates,
+            _combined_candidate_validation_report(
+                candidates=candidates,
+                conformance=conformance_report,
+                screening=screening_report,
+            ),
+        )
+
+    async def _validate_candidate_repair_conformance_population(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+        candidates: tuple[CandidateVariant, ...],
+        capability_requirements: tuple[ReplayCapabilityRequirement, ...],
+        repair_conformance_contracts: Mapping[str, RepairConformanceContract],
+    ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
+        applicable = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.candidate_id in repair_conformance_contracts
+        )
+        if not applicable:
+            return candidates, None
+
+        _emit_progress(
+            self.progress_callback,
+            "candidate_conformance",
+            (
+                "Validating candidate repair conformance across "
+                f"{len(dataset.cases)} dataset case(s)"
+            ),
+        )
+        attempts: list[dict[str, object]] = []
+        passed_candidates: list[CandidateVariant] = []
+        stopped_by_shared_infrastructure = False
+        for candidate in candidates:
+            contract = repair_conformance_contracts.get(candidate.candidate_id)
+            if contract is None:
+                passed_candidates.append(candidate)
+                continue
+            source_conformance = evaluate_candidate_source_conformance(
+                candidate,
+                contract,
+            )
+            if not source_conformance.passed:
+                attempts.append(
+                    _repair_conformance_screening_attempt(
+                        candidate,
+                        source_conformance,
+                        contract=contract,
+                    )
+                )
+                continue
+            gate = await self._preflight_candidate_repair_conformance(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                candidate=candidate,
+                contract=contract,
+                capability_requirements=capability_requirements,
+            )
+            attempt = {
+                "candidate_id": candidate.candidate_id,
+                "screening_candidate_id": None,
+                "stage": "conformance",
+                "passed": gate.passed,
+                "reason": gate.reason,
+                "details": gate.details,
+            }
+            attempts.append(attempt)
+            if gate.passed:
+                passed_candidates.append(candidate)
+                continue
+            if _conformance_gate_blocks_population(gate):
+                stopped_by_shared_infrastructure = True
+                passed_candidates.clear()
+                break
+
+        return (
+            tuple(passed_candidates),
+            {
+                "generated_candidate_count": len(candidates),
+                "applicable_candidate_count": len(applicable),
+                "attempted_candidate_count": len(attempts),
+                "passed_candidate_ids": [
+                    candidate.candidate_id for candidate in passed_candidates
+                ],
+                "stopped_by_shared_infrastructure": (
+                    stopped_by_shared_infrastructure
+                ),
+                "attempts": attempts,
             },
         )
 
@@ -1777,6 +1858,7 @@ class SelfEvolveRunner:
         dataset: SelfEvolveDataset,
         candidate: CandidateVariant,
         contract: RepairConformanceContract,
+        capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
     ) -> GateResult:
         if target.identity.path is None:
             return _repair_conformance_gate(
@@ -1803,17 +1885,45 @@ class SelfEvolveRunner:
             emit_progress=False,
         )
         if adaptation is None or not adaptation_gate.passed:
+            adaptation_details = dict(adaptation_gate.details or {})
+            candidate_owned = (
+                adaptation_details.get("failure_class") == "candidate"
+            )
+            failure_event = ReplayFailureEvent(
+                code="repair_capability_compile_failed",
+                owner=(
+                    FailureOwner.CANDIDATE
+                    if candidate_owned
+                    else FailureOwner.INFRASTRUCTURE
+                ),
+                stage=FailureStage.CAPABILITY_COMPILE,
+                scope=(
+                    FailureScope.CANDIDATE
+                    if candidate_owned
+                    else FailureScope.SHARED_RUN
+                ),
+                repairable=candidate_owned,
+                category="repair_conformance",
+                summary=adaptation_gate.reason,
+                diagnostics={
+                    "gate_name": adaptation_gate.gate_name,
+                    "code": adaptation_details.get("code"),
+                },
+            )
             return GateResult(
                 gate_name="candidate_repair_conformance",
                 passed=False,
                 reason=adaptation_gate.reason,
                 details={
-                    **dict(adaptation_gate.details or {}),
-                    "failure_class": "candidate",
-                    "repairable": True,
+                    **adaptation_details,
+                    "failure_class": (
+                        "candidate" if candidate_owned else "infrastructure"
+                    ),
+                    "repairable": candidate_owned,
                     "stage": "repair_conformance_compile",
                     "code": "repair_capability_compile_failed",
                     "repair_conformance": contract.to_dict(),
+                    "failure_event": failure_event.to_dict(),
                 },
             )
         capability = adaptation.replay_capability
@@ -1844,28 +1954,91 @@ class SelfEvolveRunner:
                 probe_conformance,
                 contract=contract,
             )
-        artifact_dir = (
+        probe_plan = build_repair_conformance_probe_plan(
+            capability_id=capability.capability_id,
+            services=capability.services,
+            requirements=capability_requirements,
+            fixture_shape_fingerprints=(
+                frozen_replay_fixture_shape_fingerprints(capability)
+            ),
+            contract=contract,
+            dataset_case_ids=tuple(
+                case.case_id
+                for case in dataset.cases
+                if _is_replayable_user_task_case(case)
+            ),
+        )
+        artifact_root = (
             self.store.run_path(run_id)
             / "repair_conformance"
             / _safe_artifact_name(candidate.candidate_id)
         )
-        try:
-            await preflight_frozen_replay_capability(
-                capability,
-                artifact_dir=artifact_dir,
-                required_nonempty_probe_operations=(
-                    _repair_conformance_required_nonempty_operations(contract)
-                ),
-                required_recorded_probe_operations=(
-                    (
-                        contract.required_fixture_probe_operations
-                        or contract.late_observed_operations[-1:]
-                    )
-                    if contract.requires_fixture_derived_probe
-                    else ()
-                ),
+        group_results: list[dict[str, object]] = []
+        groups = probe_plan.groups or (None,)
+        for group_index, group in enumerate(groups):
+            fingerprint = (
+                group.fingerprint
+                if group is not None
+                else _stable_json_fingerprint(
+                    {
+                        "capability_id": capability.capability_id,
+                        "kind": "default_preflight",
+                    }
+                )
             )
-        except Exception as exc:
+            artifact_dir = artifact_root / (
+                f"group-{group_index + 1:03d}-"
+                f"{fingerprint.removeprefix('sha256:')[:12]}"
+            )
+            try:
+                await preflight_frozen_replay_capability(
+                    capability,
+                    artifact_dir=artifact_dir,
+                    required_nonempty_probe_operations=(
+                        _repair_conformance_required_nonempty_operations(contract)
+                    ),
+                    required_recorded_probe_operations=(
+                        (
+                            contract.required_fixture_probe_operations
+                            or contract.late_observed_operations[-1:]
+                        )
+                        if contract.requires_fixture_derived_probe
+                        else ()
+                    ),
+                )
+            except Exception as exc:
+                group_results.append(
+                    {
+                        "fingerprint": fingerprint,
+                        "passed": False,
+                        "code": "repair_probe_execution_failed",
+                        "case_ids": list(group.case_ids if group is not None else ()),
+                        "artifact_ref": sanitize_path_ref(
+                            artifact_dir.relative_to(self.store.workspace_root).as_posix()
+                            if artifact_dir.is_relative_to(self.store.workspace_root)
+                            else artifact_dir.name
+                        ),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                continue
+            group_results.append(
+                {
+                    "fingerprint": fingerprint,
+                    "passed": True,
+                    "code": "repair_probe_group_passed",
+                    "case_ids": list(group.case_ids if group is not None else ()),
+                    "artifact_ref": sanitize_path_ref(
+                        artifact_dir.relative_to(self.store.workspace_root).as_posix()
+                        if artifact_dir.is_relative_to(self.store.workspace_root)
+                        else artifact_dir.name
+                    ),
+                }
+            )
+        failed_groups = tuple(
+            result for result in group_results if result.get("passed") is False
+        )
+        if failed_groups:
             return _repair_conformance_gate(
                 RepairConformanceResult(
                     passed=False,
@@ -1874,13 +2047,18 @@ class SelfEvolveRunner:
                         "candidate declared repair probe failed before task rollout"
                     ),
                     details={
-                        "type": type(exc).__name__,
-                        "reason": sanitize_text(str(exc), max_chars=400),
-                        "artifact_root": str(artifact_dir),
-                        "diagnostics": _repair_conformance_failure_diagnostics(
-                            capability,
-                            artifact_dir=artifact_dir,
-                        ),
+                        "artifact_root": str(artifact_root),
+                        "probe_plan": probe_plan.to_dict(),
+                        "probe_group_results": group_results[:32],
+                        "failed_probe_group_count": len(failed_groups),
+                        "failed_case_ids": list(
+                            dict.fromkeys(
+                                case_id
+                                for result in failed_groups
+                                for case_id in result.get("case_ids", [])
+                                if isinstance(case_id, str)
+                            )
+                        )[:100],
                     },
                 ),
                 contract=contract,
@@ -1894,7 +2072,9 @@ class SelfEvolveRunner:
                 ),
                 details={
                     "focus_candidate_id": contract.focus_candidate_id,
-                    "artifact_root": str(artifact_dir),
+                    "artifact_root": str(artifact_root),
+                    "probe_plan": probe_plan.to_dict(),
+                    "probe_group_results": group_results[:32],
                 },
             ),
             contract=contract,
@@ -5413,6 +5593,14 @@ def _repair_feedback_from_screening_report(
         return ()
 
     screenings: list[Mapping[str, Any]] = []
+    conformance_iterations = population.get("conformance_iterations")
+    if isinstance(conformance_iterations, list):
+        screenings.extend(
+            item for item in conformance_iterations if isinstance(item, Mapping)
+        )
+    conformance = population.get("conformance")
+    if isinstance(conformance, Mapping):
+        screenings.append(conformance)
     screening_iterations = population.get("screening_iterations")
     if isinstance(screening_iterations, list):
         screenings.extend(
@@ -5452,8 +5640,13 @@ def _repair_feedback_from_screening_report(
         if package is None:
             continue
         seen_candidate_ids.add(candidate_id)
+        gate_name = (
+            "candidate_repair_conformance"
+            if attempt.get("stage") == "conformance"
+            else "candidate_replay"
+        )
         gate = GateResult(
-            gate_name="candidate_replay",
+            gate_name=gate_name,
             passed=False,
             reason=sanitize_text(attempt.get("reason"), max_chars=320),
             details=details,
@@ -5461,7 +5654,7 @@ def _repair_feedback_from_screening_report(
         metrics = _typed_gate_feedback_metrics([gate])
         metrics.update(
             {
-                "failed_gates": ["candidate_replay"],
+                "failed_gates": [gate_name],
                 "candidate_status": "repairable",
                 "run_id": report.get("run_id") or report_path.parent.name,
                 "report_path": str(report_path),
@@ -5953,6 +6146,146 @@ def _screening_attempt_requires_candidate_repair(
     )
 
 
+def _combined_candidate_validation_report(
+    *,
+    candidates: tuple[CandidateVariant, ...],
+    conformance: Mapping[str, object] | None,
+    screening: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if conformance is None and screening is None:
+        return None
+    conformance_attempts = (
+        list(conformance.get("attempts", []))
+        if isinstance(conformance, Mapping)
+        and isinstance(conformance.get("attempts"), list)
+        else []
+    )
+    failed_conformance_attempts = [
+        attempt
+        for attempt in conformance_attempts
+        if isinstance(attempt, Mapping) and attempt.get("passed") is False
+    ]
+    screening_attempts = (
+        list(screening.get("attempts", []))
+        if isinstance(screening, Mapping)
+        and isinstance(screening.get("attempts"), list)
+        else []
+    )
+    selected_candidate_ids = (
+        list(screening.get("selected_candidate_ids", []))
+        if isinstance(screening, Mapping)
+        and isinstance(screening.get("selected_candidate_ids"), list)
+        else (
+            list(conformance.get("passed_candidate_ids", []))
+            if isinstance(conformance, Mapping)
+            and isinstance(conformance.get("passed_candidate_ids"), list)
+            else [candidate.candidate_id for candidate in candidates]
+        )
+    )
+    report: dict[str, object] = {
+        "generated_candidate_count": len(candidates),
+        "attempted_candidate_count": len(failed_conformance_attempts)
+        + len(screening_attempts),
+        "selected_candidate_id": (
+            screening.get("selected_candidate_id")
+            if isinstance(screening, Mapping)
+            else None
+        ),
+        "selected_candidate_ids": selected_candidate_ids,
+        "selection_reason": (
+            screening.get("selection_reason")
+            if isinstance(screening, Mapping)
+            else "repair conformance completed before optional task screening"
+        ),
+        "attempts": [*failed_conformance_attempts, *screening_attempts],
+        "conformance": dict(conformance) if conformance is not None else None,
+        "screening": dict(screening) if screening is not None else None,
+    }
+    if isinstance(screening, Mapping):
+        for key in (
+            "representative_case_id",
+            "baseline_repetitions",
+            "candidate_repetitions",
+        ):
+            if key in screening:
+                report[key] = screening[key]
+    return report
+
+
+_CONFORMANCE_SENSITIVE_REPORT_KEYS = frozenset(
+    {
+        "declared_response_contains",
+        "expected_preview",
+        "expected_response",
+        "previous_expected_preview",
+        "response_preview",
+    }
+)
+
+
+def _candidate_validation_report_for_persistence(
+    value: object,
+    *,
+    depth: int = 0,
+) -> object:
+    """Bound validation reports and replace payload-bearing assertions by hashes."""
+
+    if depth >= 8:
+        return sanitize_text(str(value), max_chars=160)
+    if isinstance(value, Mapping):
+        report: dict[str, object] = {}
+        for raw_key, item in list(value.items())[:64]:
+            key = sanitize_text(str(raw_key), max_chars=120)
+            if key in _CONFORMANCE_SENSITIVE_REPORT_KEYS:
+                encoded = json.dumps(
+                    item,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+                report[key + "_fingerprint"] = (
+                    "sha256:" + hashlib.sha256(encoded).hexdigest()
+                )
+                continue
+            report[key] = _candidate_validation_report_for_persistence(
+                item,
+                depth=depth + 1,
+            )
+        return report
+    if isinstance(value, (list, tuple)):
+        return [
+            _candidate_validation_report_for_persistence(
+                item,
+                depth=depth + 1,
+            )
+            for item in list(value)[:100]
+        ]
+    if isinstance(value, str):
+        return sanitize_text(value, max_chars=1_000)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return sanitize_text(str(value), max_chars=1_000)
+
+
+def _conformance_gate_blocks_population(gate: GateResult) -> bool:
+    details = gate.details
+    if not isinstance(details, Mapping):
+        return False
+    raw_event = details.get("failure_event")
+    if not isinstance(raw_event, Mapping):
+        return False
+    try:
+        event = ReplayFailureEvent.from_dict(raw_event)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        event.source is FailureEventSource.NATIVE
+        and event.scope is FailureScope.SHARED_RUN
+        and event.owner in {FailureOwner.INFRASTRUCTURE, FailureOwner.FRAMEWORK}
+    )
+
+
 def _candidate_repair_conformance_contracts(
     optimizer_diagnostics: Mapping[str, object],
 ) -> dict[str, RepairConformanceContract]:
@@ -5989,6 +6322,21 @@ def _repair_conformance_gate(
         "code": result.code,
         **dict(result.details),
     }
+    if not result.passed:
+        details["failure_event"] = ReplayFailureEvent(
+            code=result.code,
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.CAPABILITY_PREFLIGHT,
+            scope=FailureScope.CANDIDATE,
+            repairable=True,
+            category="repair_conformance",
+            summary=result.reason,
+            diagnostics={
+                "focus_candidate_id": (
+                    contract.focus_candidate_id if contract is not None else None
+                ),
+            },
+        ).to_dict()
     if contract is not None:
         details["repair_conformance"] = contract.to_dict()
     return GateResult(
@@ -6030,6 +6378,7 @@ def _repair_conformance_screening_attempt(
     return {
         "candidate_id": candidate.candidate_id,
         "screening_candidate_id": None,
+        "stage": "conformance",
         "passed": False,
         "reason": gate.reason,
         "details": gate.details,
@@ -6111,7 +6460,11 @@ def _candidate_screening_repair_feedback(
             continue
         details = attempt.get("details")
         gate = GateResult(
-            gate_name="candidate_replay",
+            gate_name=(
+                "candidate_repair_conformance"
+                if attempt.get("stage") == "conformance"
+                else "candidate_replay"
+            ),
             passed=False,
             reason=str(
                 attempt.get("reason")
@@ -7528,9 +7881,38 @@ def _population_report(
         if non_replayed:
             report["non_replayed_candidate_strategies"] = non_replayed
     if screening_reports:
-        report["screening"] = screening_reports[-1]
+        latest_validation = screening_reports[-1]
+        latest_conformance = latest_validation.get("conformance")
+        latest_screening = latest_validation.get("screening")
+        if isinstance(latest_conformance, Mapping):
+            report["conformance"] = _candidate_validation_report_for_persistence(
+                latest_conformance
+            )
+        if isinstance(latest_screening, Mapping):
+            report["screening"] = _candidate_validation_report_for_persistence(
+                latest_screening
+            )
+        elif "conformance" not in latest_validation:
+            report["screening"] = latest_validation
         if len(screening_reports) > 1:
-            report["screening_iterations"] = screening_reports
+            conformance_iterations = [
+                _candidate_validation_report_for_persistence(
+                    item["conformance"]
+                )
+                for item in screening_reports
+                if isinstance(item.get("conformance"), Mapping)
+            ]
+            task_screening_iterations = [
+                _candidate_validation_report_for_persistence(
+                    item["screening"]
+                )
+                for item in screening_reports
+                if isinstance(item.get("screening"), Mapping)
+            ]
+            if conformance_iterations:
+                report["conformance_iterations"] = conformance_iterations
+            if task_screening_iterations:
+                report["screening_iterations"] = task_screening_iterations
     return report
 
 

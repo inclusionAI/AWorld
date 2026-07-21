@@ -113,11 +113,12 @@ The framework ranks the generated population and validates repair candidates bef
 2. The candidate-owned replay capability is compiled and frozen with immutable fixture and package fingerprints. Recorded operation responses are exposed through `AWORLD_REPLAY_RESPONSE_INDEX`.
 3. Compiled probe declarations must cover the observed operation and assert a non-empty value derived from the recorded response payload.
 4. The frozen runtime is started in the replay subprocess sandbox and every declared HTTP/TCP/WebSocket readiness and protocol probe is executed. Required WebSocket probes validate handshake, ping/text exchange, operation correlation, non-empty result, and recorded-response binding.
-5. Only a candidate that passes conformance proceeds to representative screening and then the authoritative paired baseline/candidate rollout.
+5. Conformance always runs when a repair contract applies, including for a dataset with one replayable trajectory. Multiple trajectories are grouped by a stable semantic fingerprint covering the capability, service, operation, transport, recorded-response structure, exact probe, and assertion set. Equivalent shapes may execute once with every affected case ID recorded; every distinct shape is validated.
+6. Only a candidate that passes conformance proceeds to optional representative task screening and then the authoritative paired baseline/candidate rollout. Representative screening is a cost-control signal, not evidence that unselected conformance shapes work; the final paired replay remains the authoritative dataset-wide behavioral check.
 
 This sequence is generic: contracts are compiled from observed operations, protocol traces, fixture provenance, and the candidate package. There is no target-specific repair adapter for one trajectory case. A source-conformant candidate can still fail at runtime preflight; that result is intentionally reported before the longer task rollout and fed into the next focused repair iteration.
 
-Candidate repair gate diagnostics are summarized in `report.json`. When execution preflight is reached, bounded service/probe artifacts are stored under `.aworld/self_evolve/<run_id>/repair_conformance/<candidate_id>/`. Increasing `--replay-timeout` affects task rollouts but does not weaken or bypass exact repair probes.
+Candidate repair gate diagnostics are summarized in a separate population `conformance` section in `report.json`; optional task sampling remains in `screening`. Probe-group reports contain stable fingerprints, status codes, and bounded affected-case IDs, never raw recorded-response values. When execution preflight is reached, bounded service/probe artifacts are stored under `.aworld/self_evolve/<run_id>/repair_conformance/<candidate_id>/`. Increasing `--replay-timeout` affects task rollouts but does not weaken or bypass exact repair probes.
 
 ## Options
 

@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_SCHEMA_VERSION,
+    ReplayProtocolProbe,
     ReplayServiceSpec,
 )
 from aworld.self_evolve.sanitization import sanitize_path_ref, sanitize_text
@@ -21,6 +22,8 @@ _SOURCE_SUFFIXES = frozenset(
 )
 _MAX_CONTRACT_FILES = 16
 _MAX_OBSERVED_OPERATIONS = 8
+_MAX_CONFORMANCE_REPORT_CASES = 100
+_MAX_CONFORMANCE_REPORT_GROUPS = 64
 
 
 @dataclass(frozen=True)
@@ -159,6 +162,268 @@ class RepairConformanceResult:
             "reason": self.reason,
             "details": dict(self.details),
         }
+
+
+@dataclass(frozen=True)
+class RepairConformanceProbeGroup:
+    """One semantic runtime contract shared by one or more dataset cases.
+
+    The fingerprint is deliberately content-free: payload-bearing probe and
+    fixture fields contribute only through hashes or structural fingerprints.
+    Case IDs are accounting metadata and therefore do not change semantic
+    equivalence.
+    """
+
+    fingerprint: str
+    requirement_id: str
+    service_id: str
+    transport: str
+    probe_kind: str
+    probe_path: str
+    operation: str | None
+    case_ids: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "fingerprint": self.fingerprint,
+            "requirement_id": self.requirement_id,
+            "service_id": self.service_id,
+            "transport": self.transport,
+            "probe_kind": self.probe_kind,
+            "probe_path": self.probe_path,
+            "operation": self.operation,
+            "case_ids": list(self.case_ids[:_MAX_CONFORMANCE_REPORT_CASES]),
+        }
+
+
+@dataclass(frozen=True)
+class RepairConformanceProbePlan:
+    total_case_count: int
+    covered_case_ids: tuple[str, ...]
+    groups: tuple[RepairConformanceProbeGroup, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        reported_groups = self.groups[:_MAX_CONFORMANCE_REPORT_GROUPS]
+        return {
+            "total_case_count": self.total_case_count,
+            "covered_case_count": len(self.covered_case_ids),
+            "covered_case_ids": list(
+                self.covered_case_ids[:_MAX_CONFORMANCE_REPORT_CASES]
+            ),
+            "distinct_probe_group_count": len(self.groups),
+            "reported_probe_group_count": len(reported_groups),
+            "probe_groups_truncated": len(self.groups) > len(reported_groups),
+            "groups": [group.to_dict() for group in reported_groups],
+        }
+
+
+def build_repair_conformance_probe_plan(
+    *,
+    capability_id: str,
+    services: Sequence[ReplayServiceSpec],
+    requirements: Sequence[object],
+    fixture_shape_fingerprints: Mapping[str, str],
+    contract: RepairConformanceContract,
+    dataset_case_ids: Sequence[str] = (),
+) -> RepairConformanceProbePlan:
+    """Build a deterministic dataset-wide plan without retaining payloads.
+
+    Requirements are accepted structurally to keep this module independent of
+    replay adaptation orchestration.  A service/probe contract is deduplicated
+    only when every semantic field matches; all affected case IDs are then
+    retained on the group.
+    """
+
+    requirements_by_id = {
+        str(getattr(requirement, "requirement_id", "")): requirement
+        for requirement in requirements
+        if str(getattr(requirement, "requirement_id", ""))
+    }
+    grouped: dict[str, dict[str, object]] = {}
+    authoritative_case_ids = bool(dataset_case_ids)
+    all_case_ids: list[str] = [
+        normalized
+        for item in dataset_case_ids
+        for normalized in (sanitize_text(str(item), max_chars=160),)
+        if normalized
+    ]
+    for requirement in requirements:
+        for case_id in tuple(getattr(requirement, "case_ids", ()) or ()):
+            normalized_case_id = sanitize_text(str(case_id), max_chars=160)
+            if (
+                not authoritative_case_ids
+                and normalized_case_id
+                and normalized_case_id not in all_case_ids
+            ):
+                all_case_ids.append(normalized_case_id)
+
+    exact_probe_fingerprint = _conformance_sensitive_fingerprint(
+        (
+            {
+                "kind": contract.exact_probe.kind,
+                "path": contract.exact_probe.path,
+                "expected_response_sha256": hashlib.sha256(
+                    contract.exact_probe.expected_response.encode("utf-8")
+                ).hexdigest(),
+            }
+            if contract.exact_probe is not None
+            else None
+        )
+    )
+    required_nonempty = bool(
+        contract.late_observed_operations
+        and (
+            contract.requires_fixture_derived_probe
+            or contract.exact_probe is not None
+        )
+    )
+    required_recorded_operations = tuple(
+        contract.required_fixture_probe_operations
+        or (
+            contract.late_observed_operations[-1:]
+            if contract.requires_fixture_derived_probe
+            else ()
+        )
+    )
+    for service in services:
+        requirement = requirements_by_id.get(service.requirement_id)
+        case_ids = tuple(
+            dict.fromkeys(
+                sanitize_text(str(item), max_chars=160)
+                for item in tuple(getattr(requirement, "case_ids", ()) or ())
+                if str(item).strip()
+            )
+        )
+        if authoritative_case_ids:
+            case_ids = tuple(
+                case_id for case_id in all_case_ids if case_id in case_ids
+            )
+        probes: tuple[ReplayProtocolProbe | None, ...] = (
+            tuple(service.protocol_probes) or (None,)
+        )
+        for probe in probes:
+            operation = _repair_probe_operation(
+                probe.request_text if probe is not None else None
+            )
+            semantic = {
+                "capability_id": capability_id,
+                "requirement": {
+                    "id": service.requirement_id,
+                    "kind": str(getattr(requirement, "kind", "")),
+                    "identifier": str(getattr(requirement, "identifier", "")),
+                    "status": str(getattr(requirement, "status", "")),
+                    "detail_fingerprint": _conformance_sensitive_fingerprint(
+                        str(getattr(requirement, "detail", "") or "")
+                    ),
+                },
+                "service": {
+                    "id": service.service_id,
+                    "transport": service.transport,
+                },
+                "probe": {
+                    "kind": probe.kind if probe is not None else "readiness",
+                    "path": probe.path if probe is not None else service.readiness.path,
+                    "operation": operation,
+                    "request_fingerprint": _conformance_sensitive_fingerprint(
+                        probe.request_text if probe is not None else None
+                    ),
+                    "response_assertion_fingerprint": (
+                        _conformance_sensitive_fingerprint(probe.response_contains)
+                        if probe is not None
+                        else _conformance_sensitive_fingerprint(None)
+                    ),
+                    "validate_advertised_websockets": bool(
+                        probe is not None
+                        and probe.validate_advertised_websockets
+                    ),
+                },
+                "fixture_shape_fingerprint": fixture_shape_fingerprints.get(
+                    service.response_fixture,
+                    "sha256:missing",
+                ),
+                "exact_probe_fingerprint": exact_probe_fingerprint,
+                "assertions": {
+                    "requires_nonempty": required_nonempty,
+                    "requires_recorded": operation in required_recorded_operations,
+                },
+            }
+            fingerprint = _conformance_sensitive_fingerprint(semantic)
+            group = grouped.setdefault(
+                fingerprint,
+                {
+                    "requirement_id": service.requirement_id,
+                    "service_id": service.service_id,
+                    "transport": service.transport,
+                    "probe_kind": (
+                        probe.kind if probe is not None else "readiness"
+                    ),
+                    "probe_path": (
+                        probe.path if probe is not None else service.readiness.path
+                    ),
+                    "operation": operation,
+                    "case_ids": [],
+                },
+            )
+            grouped_case_ids = group["case_ids"]
+            assert isinstance(grouped_case_ids, list)
+            for case_id in case_ids:
+                if case_id not in grouped_case_ids:
+                    grouped_case_ids.append(case_id)
+
+    groups = tuple(
+        RepairConformanceProbeGroup(
+            fingerprint=fingerprint,
+            requirement_id=str(value["requirement_id"]),
+            service_id=str(value["service_id"]),
+            transport=str(value["transport"]),
+            probe_kind=str(value["probe_kind"]),
+            probe_path=str(value["probe_path"]),
+            operation=(
+                str(value["operation"])
+                if isinstance(value["operation"], str)
+                else None
+            ),
+            case_ids=tuple(value["case_ids"]),
+        )
+        for fingerprint, value in sorted(grouped.items())
+    )
+    covered_case_ids = tuple(
+        case_id
+        for case_id in all_case_ids
+        if any(case_id in group.case_ids for group in groups)
+    )
+    return RepairConformanceProbePlan(
+        total_case_count=len(all_case_ids),
+        covered_case_ids=covered_case_ids,
+        groups=groups,
+    )
+
+
+def _conformance_sensitive_fingerprint(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _repair_probe_operation(request_text: str | None) -> str | None:
+    if not isinstance(request_text, str) or not request_text.strip():
+        return None
+    try:
+        parsed = json.loads(request_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    for key in ("operation", "method", "action", "command"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            return sanitize_text(value.strip(), max_chars=160)
+    return None
 
 
 def compile_repair_conformance_contract(

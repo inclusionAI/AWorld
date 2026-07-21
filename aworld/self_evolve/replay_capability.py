@@ -329,6 +329,132 @@ class FrozenReplayCapability:
         return asdict(self)
 
 
+def frozen_replay_fixture_shape_fingerprints(
+    capability: FrozenReplayCapability,
+) -> dict[str, str]:
+    """Fingerprint frozen fixture structure without retaining payload values.
+
+    Object keys contribute only through hashes and scalar values contribute
+    only their JSON type.  This lets conformance distinguish recorded-response
+    schemas while ensuring the resulting report cannot reproduce fixture
+    content.
+    """
+
+    root = Path(capability.frozen_root).expanduser().resolve() / "fixtures"
+    fingerprints: dict[str, str] = {}
+    fixture_paths = tuple(
+        dict.fromkeys(service.response_fixture for service in capability.services)
+    )
+    for relative_path in fixture_paths:
+        try:
+            unresolved_path = root / relative_path
+            if unresolved_path.is_symlink():
+                continue
+            path = unresolved_path.resolve(strict=True)
+            if (
+                not path.is_relative_to(root)
+                or not path.is_file()
+                or path.is_symlink()
+            ):
+                continue
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        if len(raw) > 2 * 1024 * 1024:
+            descriptor: object = {
+                "kind": "oversized",
+                "size_bucket": len(raw).bit_length(),
+            }
+        else:
+            try:
+                value = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                descriptor = {
+                    "kind": "non_json",
+                    "size_bucket": max(1, len(raw)).bit_length(),
+                }
+            else:
+                descriptor = _fixture_structure_descriptor(value)
+        fingerprints[relative_path] = _json_fingerprint(descriptor)
+    return fingerprints
+
+
+def _fixture_structure_descriptor(
+    value: Any,
+    *,
+    depth: int = 0,
+    decoded_depth: int = 0,
+) -> object:
+    if depth >= 10:
+        return {"kind": "truncated"}
+    if isinstance(value, Mapping):
+        fields = []
+        for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))[:128]:
+            fields.append(
+                {
+                    "key_sha256": hashlib.sha256(
+                        str(key).encode("utf-8")
+                    ).hexdigest(),
+                    "value": _fixture_structure_descriptor(
+                        item,
+                        depth=depth + 1,
+                        decoded_depth=decoded_depth,
+                    ),
+                }
+            )
+        return {
+            "kind": "object",
+            "field_count": min(len(value), 129),
+            "fields": fields,
+        }
+    if isinstance(value, list):
+        element_shapes: dict[str, object] = {}
+        for item in value[:128]:
+            shape = _fixture_structure_descriptor(
+                item,
+                depth=depth + 1,
+                decoded_depth=decoded_depth,
+            )
+            fingerprint = _json_fingerprint(shape)
+            element_shapes.setdefault(fingerprint, shape)
+        return {
+            "kind": "array",
+            "length_bucket": min(len(value), 129),
+            "element_shapes": [
+                element_shapes[key] for key in sorted(element_shapes)
+            ],
+        }
+    if isinstance(value, str):
+        stripped = value.strip()
+        if (
+            decoded_depth < 3
+            and len(stripped) <= 256 * 1024
+            and stripped[:1] in {"{", "["}
+        ):
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(decoded, (Mapping, list)):
+                    return {
+                        "kind": "encoded_json",
+                        "value": _fixture_structure_descriptor(
+                            decoded,
+                            depth=depth + 1,
+                            decoded_depth=decoded_depth + 1,
+                        ),
+                    }
+        return {"kind": "string"}
+    if isinstance(value, bool):
+        return {"kind": "boolean"}
+    if value is None:
+        return {"kind": "null"}
+    if isinstance(value, (int, float)):
+        return {"kind": "number"}
+    return {"kind": "unknown"}
+
+
 @dataclass(frozen=True)
 class FrozenReplayCapabilityAdapter:
     capability: FrozenReplayCapability
