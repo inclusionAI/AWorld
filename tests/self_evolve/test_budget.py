@@ -493,6 +493,13 @@ def test_attempt_aggregation_keeps_duplicate_attempts_and_exact_stage_counts() -
     assert CandidateAttemptAggregate.from_dict(aggregate.to_dict()) == aggregate
 
 
+def test_attempt_aggregation_rejects_incomplete_lifecycle() -> None:
+    incomplete = _selected_attempt(CandidateAttemptKey("run-incomplete", 0, 0))[:-1]
+
+    with pytest.raises(ValueError, match="lifecycle is not terminal"):
+        aggregate_candidate_attempts(incomplete)
+
+
 def test_attempt_aggregation_counts_are_monotonic_when_attempt_is_added() -> None:
     first = _selected_attempt(CandidateAttemptKey("run-1", 0, 0))
     baseline = aggregate_candidate_attempts(first)

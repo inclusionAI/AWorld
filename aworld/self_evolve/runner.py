@@ -1062,9 +1062,10 @@ class SelfEvolveRunner:
         self.min_eval_cases = min_eval_cases
         self.judge_repetitions = judge_repetitions
         self.max_run_tokens = max_run_tokens
+        legacy_total_budget_mapping = total_run_token_budget is None
         self.total_run_token_budget = (
             max_run_tokens
-            if total_run_token_budget is None
+            if legacy_total_budget_mapping
             else total_run_token_budget
         )
         legacy_per_attempt_budget_mapping = per_attempt_replay_token_limit is None
@@ -1088,20 +1089,34 @@ class SelfEvolveRunner:
             if isinstance(deprecated_config_mappings, Mapping)
             else tuple(deprecated_config_mappings or ())
         )
-        if legacy_per_attempt_budget_mapping:
+        legacy_budget_mappings = {
+            name: target
+            for enabled, name, target in (
+                (
+                    legacy_total_budget_mapping,
+                    "max_run_tokens_to_total_run_token_budget",
+                    "total_run_token_budget",
+                ),
+                (
+                    legacy_per_attempt_budget_mapping,
+                    "max_run_tokens_to_per_attempt_replay_token_limit",
+                    "per_attempt_replay_token_limit",
+                ),
+            )
+            if enabled
+        }
+        if legacy_budget_mappings:
             if isinstance(self.deprecated_config_mappings, Mapping):
                 self.deprecated_config_mappings = {
                     **dict(self.deprecated_config_mappings),
-                    "max_run_tokens_to_per_attempt_replay_token_limit": (
-                        "per_attempt_replay_token_limit"
-                    ),
+                    **legacy_budget_mappings,
                 }
             else:
                 self.deprecated_config_mappings = tuple(
                     dict.fromkeys(
                         (
                             *self.deprecated_config_mappings,
-                            "max_run_tokens_to_per_attempt_replay_token_limit",
+                            *legacy_budget_mappings,
                         )
                     )
                 )
