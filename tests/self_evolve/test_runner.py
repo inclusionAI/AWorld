@@ -18,6 +18,14 @@ from aworld.core.task import TaskResponse
 from aworld.runner import Runners
 
 from aworld.self_evolve.candidate_generation import CandidateGenerationAgent
+from aworld.self_evolve.budget import (
+    BudgetCeilings,
+    BudgetEstimateSource,
+    BudgetStage,
+    BudgetUsage,
+    RunBudgetLedger,
+)
+from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -52,6 +60,8 @@ from aworld.self_evolve.replay_adaptation import (
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
+    _RunBudgetContext,
+    _TelemetryUsageSnapshot,
     _aggregate_target_selection_decisions,
     _auto_group_trajectory_log_dataset,
     _baseline_replay_artifact_dir,
@@ -64,9 +74,11 @@ from aworld.self_evolve.runner import (
     _default_post_apply_evaluator,
     _candidate_generation_limit,
     _candidate_generation_actual_usage,
+    _configured_budget_usage,
     _feedback_from_report,
     _include_prior_run_cases,
     _iteration_validation_feedback,
+    _judge_actual_token_usage,
     _load_target_provenance,
     _load_target_selection_report,
     _merge_validation_feedback,
@@ -88,6 +100,8 @@ from aworld.self_evolve.runner import (
     _explicit_target_selection_report,
     _source_config_from_stored_dataset_recipe,
     _summary_with_replay_evidence_metrics,
+    _stage_telemetry_usage_delta,
+    _stage_telemetry_usage_snapshot,
     _shared_replay_failure_blocks_population,
     _infer_target_from_trace_packs,
     optimize_explicit_target,
@@ -4461,6 +4475,169 @@ def _cycle1_runner_fixture(
     )
 
 
+def test_stage_telemetry_delta_uses_only_new_batch_when_token_alias_changes() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+    telemetry.record(
+        "replay",
+        {
+            "item_count": 1,
+            "elapsed_seconds": 1,
+            "token_usage": {"total_tokens": 40},
+        },
+    )
+    before = _stage_telemetry_usage_snapshot(telemetry, "replay")
+    telemetry.record(
+        "replay",
+        {
+            "item_count": 1,
+            "execution_seconds": 2,
+            "token_usage": {"prompt_tokens": 20, "completion_tokens": 5},
+        },
+    )
+
+    after = _stage_telemetry_usage_snapshot(telemetry, "replay")
+    tokens, cost, wall, source = _stage_telemetry_usage_delta(before, after)
+
+    assert tokens == 25
+    assert cost is None
+    assert wall == Decimal("2")
+    assert source == "telemetry_delta_tokens+wall_seconds"
+
+
+def test_stage_telemetry_delta_falls_back_if_any_new_batch_lacks_tokens() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+    before = _stage_telemetry_usage_snapshot(telemetry, "evaluation")
+    telemetry.record(
+        "evaluation",
+        {
+            "item_count": 1,
+            "elapsed_seconds": 1,
+            "token_usage": {"total_tokens": 10},
+        },
+    )
+    telemetry.record(
+        "evaluation",
+        {"item_count": 1, "elapsed_seconds": 2},
+    )
+
+    after = _stage_telemetry_usage_snapshot(telemetry, "evaluation")
+    tokens, cost, wall, source = _stage_telemetry_usage_delta(before, after)
+
+    assert tokens is None
+    assert cost is None
+    assert wall == Decimal("3")
+    assert source == "telemetry_delta_wall_seconds"
+
+
+def test_stage_telemetry_delta_canonicalizes_wall_alias_per_new_batch() -> None:
+    before = _TelemetryUsageSnapshot()
+    after = _TelemetryUsageSnapshot(
+        batches=(
+            {
+                "elapsed_seconds": "1.25",
+                "token_usage": {"total_tokens": 3},
+            },
+            {
+                "execution_seconds": "2.75",
+                "token_usage": {"input_tokens": 4, "output_tokens": 1},
+            },
+        )
+    )
+
+    tokens, cost, wall, source = _stage_telemetry_usage_delta(before, after)
+
+    assert tokens == 8
+    assert cost is None
+    assert wall == Decimal("4")
+    assert source == "telemetry_delta_tokens+wall_seconds"
+
+
+def test_zero_cold_start_is_not_proof_after_nonzero_actual_usage() -> None:
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(
+                total_tokens=100,
+                total_cost_usd=None,
+                wall_seconds=None,
+            )
+        ),
+        cold_start_by_stage={BudgetStage.PAIRED_REPLAY: BudgetUsage()},
+    )
+    decision = context.reserve(
+        BudgetStage.PAIRED_REPLAY,
+        "first-replay",
+    )
+    assert decision.allowed is True
+    assert decision.estimate.backend_proven_zero is False
+
+    context.debit(
+        decision,
+        tokens=9,
+        actual_source="test_nonzero_actual",
+    )
+    next_estimate = context.estimate(
+        BudgetStage.PAIRED_REPLAY,
+        "second-replay",
+    )
+
+    assert next_estimate.source is BudgetEstimateSource.OBSERVED_ROBUST
+    assert next_estimate.tokens == 9
+    assert next_estimate.backend_proven_zero is False
+    assert _configured_budget_usage(
+        tokens=0,
+        cost_usd=0,
+        wall_seconds=0,
+        token_ceiling=100,
+        cost_ceiling=None,
+        wall_ceiling=None,
+    ) is None
+
+
+def test_judge_actual_tokens_require_complete_executed_summary_set() -> None:
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        dataset_split="validation",
+        metrics={"judge_total_tokens": 11},
+    )
+    candidate_missing_output = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={"judge_estimated_input_tokens_total": 7},
+    )
+
+    tokens, source = _judge_actual_token_usage(
+        baseline,
+        candidate_missing_output,
+        expected_summary_count=2,
+    )
+
+    assert tokens is None
+    assert source == "reserved_fallback_incomplete_judge_telemetry"
+
+
+def test_judge_actual_tokens_fall_back_when_expected_heldout_never_completes() -> None:
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        dataset_split="validation",
+        metrics={"judge_input_tokens_total": 4, "judge_output_tokens_total": 2},
+    )
+    candidate = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={"judge_total_tokens": 8},
+    )
+
+    tokens, source = _judge_actual_token_usage(
+        baseline,
+        candidate,
+        None,
+        expected_summary_count=3,
+    )
+
+    assert tokens is None
+    assert source == "reserved_fallback_incomplete_judge_telemetry"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shared_stage", ("conformance", "screening"))
 async def test_shared_candidate_validation_stops_before_next_iteration(
@@ -4617,6 +4794,66 @@ async def test_persistence_error_finalizes_attempts_and_preserves_original_error
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("write_before_raise", (False, True))
+async def test_attempt_append_error_never_masks_original_and_reconciles_durable_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_before_raise: bool,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="candidate-attempt-append-error",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nImproved guidance.\n",
+        rationale="attempt durability cleanup",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(store=store, optimizer=Optimizer())
+    original_append = store.append_candidate_attempt_event
+    original_error = OSError("candidate attempt append failed")
+    call_count = 0
+
+    def failing_append(event):
+        nonlocal call_count
+        call_count += 1
+        if write_before_raise:
+            result = original_append(event)
+            if call_count == 1:
+                raise original_error
+            return result
+        if call_count == 1 or not write_before_raise:
+            raise original_error
+
+    monkeypatch.setattr(store, "append_candidate_attempt_event", failing_append)
+
+    with pytest.raises(OSError) as raised:
+        await runner.run_explicit_target(
+            run_id=f"run-attempt-append-{write_before_raise}",
+            target=SkillTextTarget(skill_path),
+            dataset=dataset,
+            trace_packs=(),
+            apply_policy="proposal",
+        )
+
+    assert raised.value is original_error
+    assert runner.run_budget_ledger.outstanding_reservations == ()
+    events = store.read_all_candidate_attempt_events(
+        f"run-attempt-append-{write_before_raise}"
+    )
+    if write_before_raise:
+        assert [event.stage.value for event in events] == ["generated", "blocked"]
+        assert events[-1].terminal is True
+        assert events[-1].reason_code == "run_unhandled_exception"
+    else:
+        assert events == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "original_error",
     (RuntimeError("capability validation failed"), asyncio.CancelledError()),
@@ -4763,10 +5000,15 @@ async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
         replay_enabled=True,
         candidate_replay_backend=object(),
         replay_candidate_limit=2,
+        max_run_cost_usd=3,
         max_run_wall_seconds=3,
+        candidate_generation_cost_usd_per_unit=0,
         candidate_generation_wall_seconds_per_unit=0,
+        candidate_screening_cost_usd_per_unit=0,
         candidate_screening_wall_seconds_per_unit=0,
+        replay_cost_usd_per_unit=1,
         replay_wall_seconds_per_unit=1,
+        evaluation_cost_usd_per_unit=1,
         evaluation_wall_seconds_per_unit=1,
     )
 
@@ -4780,6 +5022,7 @@ async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
             {
                 "item_count": 2,
                 "elapsed_seconds": 5.0,
+                "cost_usd": 4.0,
                 "token_usage": {"total_tokens": 23},
             },
         )
@@ -4820,7 +5063,9 @@ async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
     )
     assert replay_calls == ["candidate-wall-1"]
     assert replay_debit["actual"]["tokens"] == 23
+    assert replay_debit["actual"]["cost_usd"] == "4"
     assert replay_debit["actual"]["wall_seconds"] == "5"
+    assert replay_debit["ceiling_overrun"]["cost_usd"] == "1"
     assert replay_debit["ceiling_overrun"]["wall_seconds"] == "2"
     terminal_reasons = report["population"]["lifecycle"][
         "terminal_reason_counts"

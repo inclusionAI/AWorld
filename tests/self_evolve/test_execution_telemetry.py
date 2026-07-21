@@ -95,6 +95,19 @@ def test_execution_telemetry_aggregates_repair_accounting_and_bounded_usage() ->
     assert "raw_response" not in json.dumps(report)
 
 
+def test_execution_telemetry_retains_only_nonnegative_batch_cost_usage() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+    telemetry.record(
+        "replay",
+        {"item_count": 1, "cost_usd": 1.25, "total_cost_usd": -1},
+    )
+
+    batch = telemetry.to_report()["replay"]["batches"][0]
+
+    assert batch["cost_usd"] == "1.25"
+    assert "total_cost_usd" not in batch
+
+
 def test_all_ones_policy_is_the_serial_rollback() -> None:
     policy = SelfEvolveConcurrencyPolicy(
         max_total_concurrency=1,

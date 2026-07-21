@@ -215,9 +215,6 @@ class _RunBudgetContext:
             item_id=item_id,
             units=units,
             cold_start_per_unit=self.cold_start_by_stage.get(stage),
-            backend_proven_zero=(
-                self.cold_start_by_stage.get(stage) == BudgetUsage()
-            ),
         )
 
     def can_fit(self, stage: BudgetStage, item_id: str, *, units: int = 1) -> bool:
@@ -376,9 +373,9 @@ class _CandidateAttemptTracker:
         """Fail closed after an unhandled run error while preserving that error."""
 
         for key in sorted(self._events):
-            if self.terminal(key):
-                continue
             try:
+                if self.terminal(key):
+                    continue
                 self.emit(
                     key,
                     CandidateAttemptStage.BLOCKED,
@@ -425,7 +422,7 @@ class _CandidateAttemptTracker:
         case_count: int | None = None,
         distinct_conformance_shape_count: int | None = None,
     ) -> CandidateAttemptEvent:
-        values = self._events.setdefault(key, [])
+        values = self._events.get(key, ())
         event = CandidateAttemptEvent(
             key=key,
             sequence=len(values),
@@ -438,8 +435,20 @@ class _CandidateAttemptTracker:
             case_count=case_count,
             distinct_conformance_shape_count=distinct_conformance_shape_count,
         )
-        self.store.append_candidate_attempt_event(event)
-        values.append(event)
+        try:
+            self.store.append_candidate_attempt_event(event)
+        except BaseException:
+            # An fsync/rename boundary can raise after the event became
+            # durable. Reconcile only the exact deterministic event id, then
+            # preserve the storage exception for the caller.
+            try:
+                persisted = self.store.read_candidate_attempt_events(key)
+            except BaseException:
+                persisted = ()
+            if any(item.event_id == event.event_id for item in persisted):
+                self._events[key] = list(persisted)
+            raise
+        self._events.setdefault(key, []).append(event)
         return event
 
 
@@ -452,13 +461,19 @@ class _RunFailureCleanup:
 
     def cleanup(self) -> None:
         if self.attempt_tracker is not None:
-            self.attempt_tracker.block_open_best_effort(
-                reason_code="run_unhandled_exception"
-            )
+            try:
+                self.attempt_tracker.block_open_best_effort(
+                    reason_code="run_unhandled_exception"
+                )
+            except BaseException:
+                pass
         if self.budget_context is not None:
-            self.budget_context.release_all_best_effort(
-                reason_code="run_unhandled_exception_cleanup"
-            )
+            try:
+                self.budget_context.release_all_best_effort(
+                    reason_code="run_unhandled_exception_cleanup"
+                )
+            except BaseException:
+                pass
 
 
 def _configured_budget_usage(
@@ -473,7 +488,10 @@ def _configured_budget_usage(
     """Resolve only unbounded unknown dimensions to accounting-neutral zero."""
 
     if (
-        (tokens is None and token_ceiling is not None)
+        (
+            token_ceiling is not None
+            and (tokens is None or tokens <= 0)
+        )
         or (cost_usd is None and cost_ceiling is not None)
         or (wall_seconds is None and wall_ceiling is not None)
     ):
@@ -546,110 +564,136 @@ def _candidate_generation_actual_usage(
 
 @dataclass(frozen=True)
 class _TelemetryUsageSnapshot:
-    tokens: int | None = None
-    cost_usd: Decimal | None = None
-    wall_seconds: Decimal | None = None
-    batch_count: int | None = None
+    batches: tuple[Mapping[str, object], ...] = ()
+
+
+def _sanitized_telemetry_usage_batch(
+    value: Mapping[str, object],
+) -> dict[str, object]:
+    """Retain only bounded accounting fields from a telemetry batch."""
+
+    result: dict[str, object] = {}
+    token_usage = value.get("token_usage")
+    if isinstance(token_usage, Mapping):
+        result["token_usage"] = {
+            key: item
+            for key, item in token_usage.items()
+            if key
+            in {
+                "total_tokens",
+                "input_tokens",
+                "output_tokens",
+                "prompt_tokens",
+                "completion_tokens",
+            }
+            and isinstance(item, int)
+            and not isinstance(item, bool)
+            and item >= 0
+        }
+    for key in (
+        "total_cost_usd",
+        "cost_usd",
+        "elapsed_seconds",
+        "execution_seconds",
+    ):
+        item = _decimal_metric(value.get(key))
+        if item is not None:
+            result[key] = str(item)
+    return result
 
 
 def _stage_telemetry_usage_snapshot(
     telemetry: SelfEvolveExecutionTelemetry,
     stage: str,
 ) -> _TelemetryUsageSnapshot:
-    """Read cumulative, content-free usage for one execution stage."""
+    """Capture a stable cursor over sanitized per-batch stage telemetry."""
 
     report = telemetry.to_report()
     stage_report = report.get(stage)
     if not isinstance(stage_report, Mapping):
-        return _TelemetryUsageSnapshot(batch_count=0)
-    tokens: int | None = None
-    token_usage = stage_report.get("token_usage")
-    if isinstance(token_usage, Mapping):
-        total = token_usage.get("total_tokens")
-        if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
-            tokens = total
-        else:
-            for input_key, output_key in (
-                ("input_tokens", "output_tokens"),
-                ("prompt_tokens", "completion_tokens"),
-            ):
-                input_tokens = token_usage.get(input_key)
-                output_tokens = token_usage.get(output_key)
-                if all(
-                    isinstance(value, int)
-                    and not isinstance(value, bool)
-                    and value >= 0
-                    for value in (input_tokens, output_tokens)
-                ):
-                    tokens = int(input_tokens) + int(output_tokens)
-                    break
-    cost_usd = None
-    for key in ("total_cost_usd", "cost_usd"):
-        cost_usd = _decimal_metric(stage_report.get(key))
-        if cost_usd is not None:
-            break
-    wall_seconds = None
+        return _TelemetryUsageSnapshot()
     batches = stage_report.get("batches")
-    if isinstance(batches, (list, tuple)):
-        if any(
-            isinstance(item, Mapping) and "elapsed_seconds" in item
-            for item in batches
-        ):
-            wall_seconds = _decimal_metric(stage_report.get("elapsed_seconds"))
-        elif any(
-            isinstance(item, Mapping) and "execution_seconds" in item
-            for item in batches
-        ):
-            wall_seconds = _decimal_metric(stage_report.get("execution_seconds"))
-    if wall_seconds is None:
-        for key in ("elapsed_seconds", "execution_seconds", "wall_seconds"):
-            if key not in stage_report:
-                continue
-            wall_seconds = _decimal_metric(stage_report.get(key))
-            if wall_seconds is not None:
-                break
-    raw_batch_count = stage_report.get("batch_count")
-    batch_count = (
-        raw_batch_count
-        if isinstance(raw_batch_count, int)
-        and not isinstance(raw_batch_count, bool)
-        and raw_batch_count >= 0
-        else None
-    )
+    if not isinstance(batches, (list, tuple)):
+        return _TelemetryUsageSnapshot()
     return _TelemetryUsageSnapshot(
-        tokens=tokens,
-        cost_usd=cost_usd,
-        wall_seconds=wall_seconds,
-        batch_count=batch_count,
+        batches=tuple(
+            _sanitized_telemetry_usage_batch(item)
+            for item in batches
+            if isinstance(item, Mapping)
+        )
     )
+
+
+def _canonical_batch_token_usage(batch: Mapping[str, object]) -> int | None:
+    usage = batch.get("token_usage")
+    if not isinstance(usage, Mapping):
+        return None
+    total = usage.get("total_tokens")
+    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+        return total
+    for input_key, output_key in (
+        ("input_tokens", "output_tokens"),
+        ("prompt_tokens", "completion_tokens"),
+    ):
+        input_tokens = usage.get(input_key)
+        output_tokens = usage.get(output_key)
+        if all(
+            isinstance(item, int)
+            and not isinstance(item, bool)
+            and item >= 0
+            for item in (input_tokens, output_tokens)
+        ):
+            return int(input_tokens) + int(output_tokens)
+    return None
+
+
+def _canonical_batch_decimal_usage(
+    batch: Mapping[str, object],
+    *keys: str,
+) -> Decimal | None:
+    for key in keys:
+        value = _decimal_metric(batch.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _stage_telemetry_usage_delta(
     before: _TelemetryUsageSnapshot,
     after: _TelemetryUsageSnapshot,
 ) -> tuple[int | None, Decimal | None, Decimal | None, str]:
-    if (
-        before.batch_count is not None
-        and after.batch_count is not None
-        and after.batch_count <= before.batch_count
-    ):
+    cursor = len(before.batches)
+    if len(after.batches) <= cursor or after.batches[:cursor] != before.batches:
         return None, None, None, "reserved_fallback_missing_stage_telemetry_delta"
-
-    def decimal_delta(
-        previous: Decimal | None,
-        current: Decimal | None,
-    ) -> Decimal | None:
-        if current is None:
-            return None
-        return max(Decimal("0"), current - (previous or Decimal("0")))
-
+    new_batches = after.batches[cursor:]
+    batch_tokens = tuple(_canonical_batch_token_usage(batch) for batch in new_batches)
+    batch_costs = tuple(
+        _canonical_batch_decimal_usage(batch, "total_cost_usd", "cost_usd")
+        for batch in new_batches
+    )
+    batch_walls = tuple(
+        _canonical_batch_decimal_usage(
+            batch,
+            "elapsed_seconds",
+            "execution_seconds",
+        )
+        for batch in new_batches
+    )
     token_delta = (
-        max(0, after.tokens - (before.tokens or 0))
-        if after.tokens is not None
+        sum(int(value) for value in batch_tokens)
+        if all(value is not None for value in batch_tokens)
         else None
     )
-    cost_delta = decimal_delta(before.cost_usd, after.cost_usd)
-    wall_delta = decimal_delta(before.wall_seconds, after.wall_seconds)
+    cost_delta = (
+        sum((value for value in batch_costs if value is not None), Decimal("0"))
+        if all(value is not None for value in batch_costs)
+        else None
+    )
+    wall_delta = (
+        sum((value for value in batch_walls if value is not None), Decimal("0"))
+        if all(value is not None for value in batch_walls)
+        else None
+    )
     observed = [
         name
         for name, value in (
@@ -669,20 +713,27 @@ def _stage_telemetry_usage_delta(
 
 def _judge_actual_token_usage(
     *summaries: EvaluationSummary | None,
+    expected_summary_count: int | None = None,
 ) -> tuple[int | None, str]:
-    """Sum one mutually-exclusive judge token shape per executed summary."""
+    """Return actual judge tokens only for a complete set of executions."""
 
     total = 0
-    observed = False
     sources: set[str] = set()
-    for summary in summaries:
-        if summary is None or summary.dataset_split == "single_case_replay":
-            continue
+    executed = tuple(
+        summary
+        for summary in summaries
+        if summary is not None and summary.dataset_split != "single_case_replay"
+    )
+    expected = len(executed) if expected_summary_count is None else expected_summary_count
+    if isinstance(expected, bool) or expected < 0:
+        raise ValueError("expected_summary_count must be non-negative")
+    if len(executed) != expected:
+        return None, "reserved_fallback_incomplete_judge_telemetry"
+    for summary in executed:
         metrics = summary.metrics
         raw_total = metrics.get("judge_total_tokens")
         if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total >= 0:
             total += raw_total
-            observed = True
             sources.add("judge_total_tokens")
             continue
         raw_input = metrics.get("judge_input_tokens_total")
@@ -694,19 +745,12 @@ def _judge_actual_token_usage(
             for value in (raw_input, raw_output)
         ):
             total += int(raw_input) + int(raw_output)
-            observed = True
             sources.add("judge_input_output_tokens")
             continue
-        estimated = metrics.get("judge_estimated_input_tokens_total")
-        if (
-            isinstance(estimated, (int, float))
-            and not isinstance(estimated, bool)
-            and estimated >= 0
-        ):
-            total += int(estimated)
-            observed = True
-            sources.add("judge_estimated_input_tokens_total")
-    if not observed:
+        # Estimated input is useful as a diagnostic lower bound, but it is not
+        # a complete actual because output usage is absent.
+        return None, "reserved_fallback_incomplete_judge_telemetry"
+    if not executed:
         return None, "reserved_fallback_missing_judge_telemetry"
     return total, "+".join(sorted(sources))
 
@@ -1363,10 +1407,13 @@ class SelfEvolveRunner:
                 cost_ceiling=self.max_run_cost_usd,
                 wall_ceiling=self.max_run_wall_seconds,
             ),
-            BudgetStage.CONFORMANCE: BudgetUsage(
+            BudgetStage.CONFORMANCE: _configured_budget_usage(
                 tokens=0,
                 cost_usd=Decimal("0"),
                 wall_seconds=Decimal("30"),
+                token_ceiling=self.total_run_token_budget,
+                cost_ceiling=self.max_run_cost_usd,
+                wall_ceiling=self.max_run_wall_seconds,
             ),
             BudgetStage.SCREENING: _configured_budget_usage(
                 tokens=candidate_screening_tokens_per_unit,
@@ -4080,7 +4127,7 @@ class SelfEvolveRunner:
         gate_results.extend(capability_gates)
         capability_blocked = any(not gate.passed for gate in capability_gates)
         replay_started = False
-        replay_telemetry_before = _TelemetryUsageSnapshot(batch_count=0)
+        replay_telemetry_before = _TelemetryUsageSnapshot()
         replay_telemetry_after = replay_telemetry_before
 
         def replay_lifecycle(
@@ -4202,6 +4249,7 @@ class SelfEvolveRunner:
         )
         evaluation_budget: BudgetDecision | None = None
         judge_budget: BudgetDecision | None = None
+        expected_judge_summary_count = 0
         evaluation_case_count = len(evaluation_dataset.cases)
         if (
             self.evaluation_backend is not None
@@ -4214,6 +4262,7 @@ class SelfEvolveRunner:
                 and not _can_reuse_single_case_replay_validation(evaluation_dataset)
             ):
                 evaluation_variants += 1
+            expected_judge_summary_count = evaluation_variants
             evaluation_units = max(
                 1,
                 evaluation_case_count * evaluation_variants,
@@ -4448,6 +4497,7 @@ class SelfEvolveRunner:
                             baseline_summary,
                             candidate_summary,
                             held_out_summary,
+                            expected_summary_count=expected_judge_summary_count,
                         )
                         budget_context.debit(
                             judge_budget,

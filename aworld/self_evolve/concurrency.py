@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
@@ -96,6 +97,16 @@ class SelfEvolveExecutionTelemetry:
             and isinstance(value, (str, int, float, type(None)))
             and not isinstance(value, bool)
         }
+        for key in ("cost_usd", "total_cost_usd"):
+            value = observability.get(key)
+            if isinstance(value, bool) or value is None:
+                continue
+            try:
+                normalized = Decimal(str(value))
+            except (InvalidOperation, ValueError):
+                continue
+            if normalized.is_finite() and normalized >= 0:
+                record[key] = str(normalized)
         for key in ("token_usage", "initial_token_usage", "repair_token_usage"):
             usage = observability.get(key)
             if isinstance(usage, Mapping):
