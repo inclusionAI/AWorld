@@ -14,8 +14,10 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert not hasattr(config, "optimize")
     assert config.self_evolve_config.max_run_tokens == 500_000
     assert config.self_evolve_config.total_run_token_budget == 500_000
+    assert config.self_evolve_config.per_attempt_replay_token_limit == 500_000
     assert config.self_evolve_config.deprecated_config_mappings == (
         "max_run_tokens_to_total_run_token_budget",
+        "max_run_tokens_to_per_attempt_replay_token_limit",
     )
     assert config.self_evolve_config.min_eval_cases == 30
     assert config.self_evolve_config.judge_repetitions == 3
@@ -134,12 +136,34 @@ def test_self_evolve_legacy_token_budget_maps_and_reports_deprecation() -> None:
     config = SelfEvolveConfig(max_run_tokens=42_000)
 
     assert config.total_run_token_budget == 42_000
+    assert config.per_attempt_replay_token_limit == 42_000
     assert config.deprecated_config_mappings == (
         "max_run_tokens_to_total_run_token_budget",
+        "max_run_tokens_to_per_attempt_replay_token_limit",
+    )
+    dumped = config.model_dump()
+    assert dumped["per_attempt_replay_token_limit"] == 42_000
+    assert dumped["deprecated_config_mappings"] == (
+        "max_run_tokens_to_total_run_token_budget",
+        "max_run_tokens_to_per_attempt_replay_token_limit",
     )
     reloaded = SelfEvolveConfig.model_validate(config.model_dump())
     assert reloaded.total_run_token_budget == 42_000
+    assert reloaded.per_attempt_replay_token_limit == 42_000
     assert reloaded.deprecated_config_mappings == config.deprecated_config_mappings
+
+
+def test_legacy_token_budget_maps_only_missing_explicit_ceiling_fields() -> None:
+    config = SelfEvolveConfig(
+        max_run_tokens=42_000,
+        total_run_token_budget=60_000,
+    )
+
+    assert config.total_run_token_budget == 60_000
+    assert config.per_attempt_replay_token_limit == 42_000
+    assert config.deprecated_config_mappings == (
+        "max_run_tokens_to_per_attempt_replay_token_limit",
+    )
 
 
 @pytest.mark.parametrize(

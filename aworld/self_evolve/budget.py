@@ -20,8 +20,11 @@ from typing import Any, Iterable, Mapping, Sequence
 from aworld.self_evolve.failure_events import FailureOwner, FailureScope
 
 
-BUDGET_LEDGER_SCHEMA_VERSION = "aworld.self_evolve.run_budget.v1"
+BUDGET_LEDGER_SCHEMA_VERSION = "aworld.self_evolve.run_budget.v2"
 BUDGET_DECISION_SCHEMA_VERSION = "aworld.self_evolve.budget_decision.v1"
+BUDGET_DEBIT_OBSERVATION_SCHEMA_VERSION = (
+    "aworld.self_evolve.budget_debit_observation.v1"
+)
 CANDIDATE_ATTEMPT_EVENT_SCHEMA_VERSION = (
     "aworld.self_evolve.candidate_attempt_event.v1"
 )
@@ -559,12 +562,129 @@ class BudgetReservation:
 
 
 @dataclass(frozen=True)
+class BudgetDebitObservation:
+    sequence: int
+    previous_observation_id: str | None
+    reservation_id: str
+    estimate: StageBudgetEstimate
+    actual: BudgetUsage
+    per_unit_actual: BudgetUsage
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "sequence",
+            _non_negative_int(self.sequence, field_name="debit observation sequence"),
+        )
+        if self.previous_observation_id is not None:
+            object.__setattr__(
+                self,
+                "previous_observation_id",
+                _identity(
+                    self.previous_observation_id,
+                    field_name="previous_observation_id",
+                ),
+            )
+        object.__setattr__(
+            self,
+            "reservation_id",
+            _identity(self.reservation_id, field_name="reservation_id"),
+        )
+        if not isinstance(self.estimate, StageBudgetEstimate):
+            raise TypeError("debit observation estimate must be typed")
+        if not isinstance(self.actual, BudgetUsage) or not isinstance(
+            self.per_unit_actual,
+            BudgetUsage,
+        ):
+            raise TypeError("debit observation usage must be typed")
+        if self.reservation_id != self.estimate.reservation_id:
+            raise ValueError("debit observation reservation does not match estimate")
+        if self.sequence == 0 and self.previous_observation_id is not None:
+            raise ValueError("first debit observation cannot reference a predecessor")
+        if self.sequence > 0 and self.previous_observation_id is None:
+            raise ValueError("non-initial debit observation requires a predecessor")
+        expected_per_unit = _per_unit_usage(
+            self.actual,
+            units=self.estimate.units,
+        )
+        if self.per_unit_actual != expected_per_unit:
+            raise ValueError("debit observation per-unit usage is inconsistent")
+
+    @property
+    def observation_id(self) -> str:
+        return _stable_id(
+            "budget-debit-observation",
+            {
+                "sequence": self.sequence,
+                "previous_observation_id": self.previous_observation_id,
+                "reservation_id": self.reservation_id,
+                "estimate": self.estimate.to_dict(),
+                "actual": self.actual.to_dict(),
+                "per_unit_actual": self.per_unit_actual.to_dict(),
+            },
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": BUDGET_DEBIT_OBSERVATION_SCHEMA_VERSION,
+            "sequence": self.sequence,
+            "previous_observation_id": self.previous_observation_id,
+            "reservation_id": self.reservation_id,
+            "estimate": self.estimate.to_dict(),
+            "actual": self.actual.to_dict(),
+            "per_unit_actual": self.per_unit_actual.to_dict(),
+            "observation_id": self.observation_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "BudgetDebitObservation":
+        if value.get("schema_version") != BUDGET_DEBIT_OBSERVATION_SCHEMA_VERSION:
+            raise ValueError("unsupported budget debit observation schema")
+        raw_estimate = value.get("estimate")
+        raw_actual = value.get("actual")
+        raw_per_unit = value.get("per_unit_actual")
+        if not all(
+            isinstance(item, Mapping)
+            for item in (raw_estimate, raw_actual, raw_per_unit)
+        ):
+            raise ValueError("budget debit observation payload is malformed")
+        assert isinstance(raw_estimate, Mapping)
+        assert isinstance(raw_actual, Mapping)
+        assert isinstance(raw_per_unit, Mapping)
+        observation = cls(
+            sequence=_non_negative_int(
+                value.get("sequence"),
+                field_name="debit observation sequence",
+            ),
+            previous_observation_id=(
+                _identity(
+                    value.get("previous_observation_id"),
+                    field_name="previous_observation_id",
+                )
+                if value.get("previous_observation_id") is not None
+                else None
+            ),
+            reservation_id=_identity(
+                value.get("reservation_id"),
+                field_name="reservation_id",
+            ),
+            estimate=StageBudgetEstimate.from_dict(raw_estimate),
+            actual=BudgetUsage.from_dict(raw_actual),
+            per_unit_actual=BudgetUsage.from_dict(raw_per_unit),
+        )
+        if value.get("observation_id") != observation.observation_id:
+            raise ValueError("budget debit observation id does not match payload")
+        return observation
+
+
+@dataclass(frozen=True)
 class BudgetDebitResult:
     reservation_id: str
     stage: BudgetStage
     item_id: str
     reserved: BudgetUsage
     actual: BudgetUsage
+    observed_per_unit: BudgetUsage
     reservation_overrun: BudgetUsage
     ceiling_overrun: BudgetUsage
     remaining: BudgetRemaining
@@ -576,6 +696,7 @@ class BudgetDebitResult:
             "item_id": self.item_id,
             "reserved": self.reserved.to_dict(),
             "actual": self.actual.to_dict(),
+            "observed_per_unit": self.observed_per_unit.to_dict(),
             "reservation_overrun": self.reservation_overrun.to_dict(),
             "ceiling_overrun": self.ceiling_overrun.to_dict(),
             "remaining": self.remaining.to_dict(),
@@ -606,6 +727,9 @@ class RunBudgetLedger:
     _observed_by_stage: dict[BudgetStage, list[BudgetUsage]] = field(
         default_factory=dict
     )
+    _debit_observations: list[BudgetDebitObservation] = field(
+        default_factory=list
+    )
 
     @property
     def outstanding_reservations(self) -> tuple[BudgetReservation, ...]:
@@ -614,6 +738,10 @@ class RunBudgetLedger:
     @property
     def spent_by_stage(self) -> Mapping[BudgetStage, BudgetUsage]:
         return dict(self._spent_by_stage)
+
+    @property
+    def debit_observations(self) -> tuple[BudgetDebitObservation, ...]:
+        return tuple(self._debit_observations)
 
     def total_spent(self) -> BudgetUsage:
         return _sum_usage(self._spent_by_stage.values())
@@ -740,11 +868,28 @@ class RunBudgetLedger:
             self._spent_by_stage.get(reservation.estimate.stage, BudgetUsage())
             + actual
         )
+        per_unit_actual = _per_unit_usage(
+            actual,
+            units=reservation.estimate.units,
+        )
+        observation = BudgetDebitObservation(
+            sequence=len(self._debit_observations),
+            previous_observation_id=(
+                self._debit_observations[-1].observation_id
+                if self._debit_observations
+                else None
+            ),
+            reservation_id=reservation.reservation_id,
+            estimate=reservation.estimate,
+            actual=actual,
+            per_unit_actual=per_unit_actual,
+        )
+        self._debit_observations.append(observation)
         observations = self._observed_by_stage.setdefault(
             reservation.estimate.stage,
             [],
         )
-        observations.append(actual)
+        observations.append(per_unit_actual)
         del observations[:-_MAX_OBSERVED_SAMPLES_PER_STAGE]
         return BudgetDebitResult(
             reservation_id=reservation_id,
@@ -752,6 +897,7 @@ class RunBudgetLedger:
             item_id=reservation.estimate.item_id,
             reserved=reservation.usage,
             actual=actual,
+            observed_per_unit=per_unit_actual,
             reservation_overrun=_positive_usage_difference(
                 actual,
                 reservation.usage,
@@ -870,6 +1016,10 @@ class RunBudgetLedger:
                     key=lambda item: item[0].value,
                 )
             },
+            "debit_observations": [
+                observation.to_dict()
+                for observation in self._debit_observations
+            ],
             "remaining": self.remaining().to_dict(),
             "overrun": self.overrun().to_dict(),
         }
@@ -882,16 +1032,48 @@ class RunBudgetLedger:
         if not isinstance(raw_ceilings, Mapping):
             raise ValueError("run budget ledger ceilings must be a mapping")
         ledger = cls(ceilings=BudgetCeilings.from_dict(raw_ceilings))
+        raw_debit_observations = value.get("debit_observations")
+        if not isinstance(raw_debit_observations, list):
+            raise ValueError("debit_observations must be a list")
+        for index, raw_observation in enumerate(raw_debit_observations):
+            if not isinstance(raw_observation, Mapping):
+                raise ValueError("budget debit observation must be a mapping")
+            observation = BudgetDebitObservation.from_dict(raw_observation)
+            expected_previous = (
+                ledger._debit_observations[-1].observation_id
+                if ledger._debit_observations
+                else None
+            )
+            if observation.sequence != index:
+                raise ValueError("budget debit observation sequence is not contiguous")
+            if observation.previous_observation_id != expected_previous:
+                raise ValueError("budget debit observation chain is inconsistent")
+            ledger._debit_observations.append(observation)
+
+        derived_spent: dict[BudgetStage, BudgetUsage] = {}
+        derived_observed: dict[BudgetStage, list[BudgetUsage]] = {}
+        for observation in ledger._debit_observations:
+            stage = observation.estimate.stage
+            derived_spent[stage] = (
+                derived_spent.get(stage, BudgetUsage()) + observation.actual
+            )
+            samples = derived_observed.setdefault(stage, [])
+            samples.append(observation.per_unit_actual)
+            del samples[:-_MAX_OBSERVED_SAMPLES_PER_STAGE]
+
         raw_spent = value.get("spent_by_stage", {})
         if not isinstance(raw_spent, Mapping):
             raise ValueError("spent_by_stage must be a mapping")
-        ledger._spent_by_stage = {
+        serialized_spent = {
             BudgetStage(str(stage)): BudgetUsage.from_dict(usage)
             for stage, usage in raw_spent.items()
             if isinstance(usage, Mapping)
         }
-        if len(ledger._spent_by_stage) != len(raw_spent):
+        if len(serialized_spent) != len(raw_spent):
             raise ValueError("spent_by_stage contains invalid usage")
+        if serialized_spent != derived_spent:
+            raise ValueError("spent_by_stage does not match debit observations")
+        ledger._spent_by_stage = derived_spent
         raw_reservations = value.get("outstanding_reservations", [])
         if not isinstance(raw_reservations, list):
             raise ValueError("outstanding_reservations must be a list")
@@ -929,18 +1111,23 @@ class RunBudgetLedger:
         raw_observed = value.get("observed_by_stage", {})
         if not isinstance(raw_observed, Mapping):
             raise ValueError("observed_by_stage must be a mapping")
+        serialized_observed: dict[BudgetStage, list[BudgetUsage]] = {}
         for stage, samples in raw_observed.items():
             if not isinstance(samples, list):
                 raise ValueError("observed stage samples must be a list")
             if len(samples) > _MAX_OBSERVED_SAMPLES_PER_STAGE:
                 raise ValueError("observed stage samples exceed rolling window")
-            ledger._observed_by_stage[BudgetStage(str(stage))] = [
+            normalized_stage = BudgetStage(str(stage))
+            serialized_observed[normalized_stage] = [
                 BudgetUsage.from_dict(sample)
                 for sample in samples
                 if isinstance(sample, Mapping)
             ]
-            if len(ledger._observed_by_stage[BudgetStage(str(stage))]) != len(samples):
+            if len(serialized_observed[normalized_stage]) != len(samples):
                 raise ValueError("observed stage samples contain invalid usage")
+        if serialized_observed != derived_observed:
+            raise ValueError("observed_by_stage does not match debit observations")
+        ledger._observed_by_stage = derived_observed
         if value.get("remaining") != ledger.remaining().to_dict():
             raise ValueError("run budget ledger remaining summary is inconsistent")
         if value.get("overrun") != ledger.overrun().to_dict():
@@ -975,6 +1162,15 @@ def _sum_usage(values: Iterable[BudgetUsage]) -> BudgetUsage:
     for value in values:
         total = total + value
     return total
+
+
+def _per_unit_usage(actual: BudgetUsage, *, units: int) -> BudgetUsage:
+    count = _positive_int(units, field_name="units")
+    return BudgetUsage(
+        tokens=(actual.tokens + count - 1) // count,
+        cost_usd=actual.cost_usd / Decimal(count),
+        wall_seconds=actual.wall_seconds / Decimal(count),
+    )
 
 
 def _positive_usage_difference(actual: BudgetUsage, expected: BudgetUsage) -> BudgetUsage:

@@ -137,22 +137,55 @@ def test_ledger_denial_is_deterministic_and_does_not_mutate_state() -> None:
     assert ledger.outstanding_reservations == ()
 
 
-@pytest.mark.parametrize("tamper", ("remaining", "overrun", "reservation"))
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "remaining",
+        "overrun",
+        "reservation",
+        "spent",
+        "observed",
+        "debit_observation",
+    ),
+)
 def test_ledger_serialization_rejects_derived_summary_and_reservation_tamper(
     tamper: str,
 ) -> None:
     ledger = _ledger()
     decision = ledger.reserve(_estimate())
     assert decision.allowed is True
+    if tamper in {"spent", "observed", "debit_observation"}:
+        ledger.debit_actual(
+            decision.reservation_id or "",
+            BudgetUsage(
+                tokens=200,
+                cost_usd=Decimal("2"),
+                wall_seconds=Decimal("10"),
+            ),
+        )
     payload = deepcopy(ledger.to_dict())
     if tamper == "remaining":
         payload["remaining"]["tokens"] = 999  # type: ignore[index]
     elif tamper == "overrun":
         payload["overrun"]["tokens"] = 1  # type: ignore[index]
-    else:
+    elif tamper == "reservation":
         payload["outstanding_reservations"][0]["usage"]["tokens"] = 201  # type: ignore[index]
+    elif tamper == "spent":
+        payload["spent_by_stage"]["candidate_generation"]["tokens"] = 201  # type: ignore[index]
+    elif tamper == "observed":
+        payload["observed_by_stage"]["candidate_generation"][0][  # type: ignore[index]
+            "tokens"
+        ] = 201
+    else:
+        payload["debit_observations"][0]["actual"]["tokens"] = 201  # type: ignore[index]
 
-    with pytest.raises(ValueError, match="remaining|overrun|reservation usage"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            "remaining|overrun|reservation usage|spent_by_stage|"
+            "observed_by_stage|debit observation"
+        ),
+    ):
         RunBudgetLedger.from_dict(payload)
 
 
@@ -204,6 +237,119 @@ def test_observed_estimate_uses_robust_upper_value_not_single_outlier() -> None:
     )
     assert next_estimate.tokens == 39
     assert next_estimate.source is BudgetEstimateSource.OBSERVED_ROBUST
+
+
+@pytest.mark.parametrize(
+    "stage",
+    (
+        BudgetStage.CANDIDATE_GENERATION,
+        BudgetStage.CONFORMANCE,
+        BudgetStage.PAIRED_REPLAY,
+        BudgetStage.EVALUATION,
+        BudgetStage.JUDGE,
+    ),
+)
+@pytest.mark.parametrize(
+    ("first_units", "next_units", "expected_tokens"),
+    ((1, 3, 30), (3, 1, 10), (3, 3, 30)),
+)
+def test_batch_actual_history_is_normalized_per_unit_before_future_scaling(
+    stage: BudgetStage,
+    first_units: int,
+    next_units: int,
+    expected_tokens: int,
+) -> None:
+    ledger = RunBudgetLedger(
+        BudgetCeilings(
+            total_tokens=10_000,
+            total_cost_usd=Decimal("1000"),
+            wall_seconds=Decimal("1000"),
+        )
+    )
+    per_unit = BudgetUsage(
+        tokens=10,
+        cost_usd=Decimal("1.5"),
+        wall_seconds=Decimal("2.25"),
+    )
+    first = ledger.reserve(
+        ledger.estimate_next(
+            stage=stage,
+            item_id="first",
+            units=first_units,
+            cold_start_per_unit=per_unit,
+        )
+    )
+    assert first.allowed is True
+    aggregate_actual = per_unit.scale(first_units)
+    debit = ledger.debit_actual(
+        first.reservation_id or "",
+        aggregate_actual,
+    )
+
+    assert debit.actual == aggregate_actual
+    assert debit.observed_per_unit == per_unit
+    assert ledger.spent_by_stage[stage] == aggregate_actual
+    next_estimate = ledger.estimate_next(
+        stage=stage,
+        item_id="next",
+        units=next_units,
+        cold_start_per_unit=BudgetUsage(tokens=999),
+    )
+    assert next_estimate.tokens == expected_tokens
+    assert next_estimate.cost_usd == per_unit.cost_usd * next_units
+    assert next_estimate.wall_seconds == per_unit.wall_seconds * next_units
+    assert next_estimate.source is BudgetEstimateSource.OBSERVED_ROBUST
+    assert RunBudgetLedger.from_dict(ledger.to_dict()).to_dict() == ledger.to_dict()
+
+
+def test_batch_token_observation_rounds_up_without_rounding_aggregate_spend() -> None:
+    ledger = _ledger()
+    decision = ledger.reserve(
+        ledger.estimate_next(
+            stage=BudgetStage.PAIRED_REPLAY,
+            item_id="three-members",
+            units=3,
+            cold_start_per_unit=BudgetUsage(
+                tokens=10,
+                cost_usd=Decimal("1"),
+                wall_seconds=Decimal("1"),
+            ),
+        )
+    )
+    debit = ledger.debit_actual(
+        decision.reservation_id or "",
+        BudgetUsage(
+            tokens=31,
+            cost_usd=Decimal("3"),
+            wall_seconds=Decimal("6"),
+        ),
+    )
+
+    assert debit.observed_per_unit == BudgetUsage(
+        tokens=11,
+        cost_usd=Decimal("1"),
+        wall_seconds=Decimal("2"),
+    )
+    assert ledger.total_spent().tokens == 31
+
+
+def test_debit_observation_journal_rejects_removed_prefix() -> None:
+    ledger = _ledger()
+    for index in range(2):
+        decision = ledger.reserve(_estimate(item_id=f"item-{index}"))
+        ledger.debit_actual(
+            decision.reservation_id or "",
+            BudgetUsage(
+                tokens=200,
+                cost_usd=Decimal("2"),
+                wall_seconds=Decimal("10"),
+            ),
+        )
+    payload = deepcopy(ledger.to_dict())
+    del payload["debit_observations"][0]  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="sequence|chain"):
+        RunBudgetLedger.from_dict(payload)
 
 
 def test_stage_workload_is_cardinality_monotonic_and_shape_aware() -> None:
