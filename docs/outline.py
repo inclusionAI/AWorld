@@ -164,6 +164,7 @@ if __name__ == '__main__':
         "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
         "extra_css": ["css/aworld.css"],
         "extra_javascript": [
+            "js/mermaid.js",
             "js/hide-home-edit.js",
             "js/aworld-enhancements.js",
             "js/github-stars.js",
