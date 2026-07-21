@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from aworld.self_evolve.atomic_fs import atomic_exchange_paths
+from aworld.self_evolve.budget import (
+    CandidateAttemptEvent,
+    CandidateAttemptKey,
+    validate_candidate_attempt_lifecycle,
+)
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
@@ -159,6 +164,126 @@ class FilesystemSelfEvolveStore:
         path = lineage_dir / f"{lineage.candidate_id}.json"
         self._write_json(path, lineage)
         return path
+
+    def candidate_attempt_path(self, key: CandidateAttemptKey) -> Path:
+        """Return the append-only lifecycle stream path for one generation slot."""
+
+        if not isinstance(key, CandidateAttemptKey):
+            raise TypeError("candidate attempt key must be typed")
+        self._validate_id(key.run_id, "run_id")
+        run_root = self.run_path(key.run_id)
+        path = (
+            run_root
+            / "candidate_attempts"
+            / f"iteration-{key.iteration:08d}"
+            / f"slot-{key.slot:08d}"
+            / "events.jsonl"
+        )
+        if not path.resolve().is_relative_to(run_root.resolve()):
+            raise ValueError("candidate attempt path escapes its run directory")
+        return path
+
+    def append_candidate_attempt_event(
+        self,
+        event: CandidateAttemptEvent,
+    ) -> Path:
+        """Validate and append one event without touching canonical artifacts."""
+
+        if not isinstance(event, CandidateAttemptEvent):
+            raise TypeError("candidate attempt event must be typed")
+        path = self.candidate_attempt_path(event.key)
+        if path.is_symlink():
+            raise ValueError("candidate attempt event stream cannot be a symlink")
+        existing = self.read_candidate_attempt_events(event.key)
+        validate_candidate_attempt_lifecycle((*existing, event))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.parent.is_symlink():
+            raise ValueError("candidate attempt directory cannot be a symlink")
+        encoded = json.dumps(
+            event.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(encoded + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        return path
+
+    def write_candidate_attempt_event(
+        self,
+        event: CandidateAttemptEvent,
+    ) -> Path:
+        """Compatibility spelling for the explicitly append-only operation."""
+
+        return self.append_candidate_attempt_event(event)
+
+    def read_candidate_attempt_events(
+        self,
+        key: CandidateAttemptKey,
+    ) -> tuple[CandidateAttemptEvent, ...]:
+        path = self.candidate_attempt_path(key)
+        if not path.exists():
+            return ()
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("candidate attempt event stream must be a regular file")
+        events: list[CandidateAttemptEvent] = []
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if not line.strip():
+                raise ValueError(
+                    f"candidate attempt event stream has an empty line: {line_number}"
+                )
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"candidate attempt event is invalid JSON: {line_number}"
+                ) from exc
+            if not isinstance(payload, Mapping):
+                raise ValueError("candidate attempt event must be a JSON object")
+            event = CandidateAttemptEvent.from_dict(payload)
+            if event.key != key:
+                raise ValueError("candidate attempt event path/key mismatch")
+            events.append(event)
+        if events:
+            validate_candidate_attempt_lifecycle(events)
+        return tuple(events)
+
+    def read_all_candidate_attempt_events(
+        self,
+        run_id: str,
+    ) -> tuple[CandidateAttemptEvent, ...]:
+        root = self.run_path(run_id) / "candidate_attempts"
+        if not root.exists():
+            return ()
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("candidate attempt root must be a regular directory")
+        events: list[CandidateAttemptEvent] = []
+        for path in sorted(root.glob("iteration-*/slot-*/events.jsonl")):
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("candidate attempt event stream must be a regular file")
+            for line in path.read_text(encoding="utf-8").splitlines():
+                payload = json.loads(line)
+                if not isinstance(payload, Mapping):
+                    raise ValueError("candidate attempt event must be a JSON object")
+                event = CandidateAttemptEvent.from_dict(payload)
+                if event.key.run_id != run_id:
+                    raise ValueError("candidate attempt event belongs to another run")
+                if self.candidate_attempt_path(event.key) != path:
+                    raise ValueError("candidate attempt event path/key mismatch")
+                events.append(event)
+        grouped: dict[CandidateAttemptKey, list[CandidateAttemptEvent]] = {}
+        for event in events:
+            grouped.setdefault(event.key, []).append(event)
+        for values in grouped.values():
+            validate_candidate_attempt_lifecycle(values)
+        return tuple(
+            sorted(events, key=lambda item: (item.key, item.sequence))
+        )
 
     def write_lesson_records(self, run_id: str, lessons: tuple[Any, ...]) -> Path:
         from aworld.self_evolve.lessons import (
