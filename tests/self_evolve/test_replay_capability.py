@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from aworld.self_evolve import replay_capability as replay_capability_module
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.replay_capability import (
     REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
@@ -16,8 +18,66 @@ from aworld.self_evolve.replay_capability import (
     compile_and_freeze_capability,
     discover_replay_capability,
     materialize_replay_evidence_derivations,
+    replay_process_memory_bytes,
     verify_frozen_replay_capability,
 )
+
+
+def _nested_recorded_fixture_value() -> str:
+    return json.dumps(
+        {
+            "wrapper": [
+                {
+                    "action_result": [
+                        {
+                            "action_name": "records.query",
+                            "content": json.dumps(
+                                {"records": [{"id": 1, "value": "recorded"}]},
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ]
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_replay_process_memory_bytes_prefers_native_darwin_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(replay_capability_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        replay_capability_module,
+        "_darwin_process_memory_bytes",
+        lambda process_id: 12_345,
+    )
+
+    def unexpected_subprocess(*args, **kwargs):
+        raise AssertionError("/bin/ps fallback should not run")
+
+    monkeypatch.setattr(replay_capability_module.subprocess, "run", unexpected_subprocess)
+
+    assert replay_process_memory_bytes(99) == 12_345
+
+
+def test_replay_process_memory_bytes_ignores_transient_ps_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(replay_capability_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        replay_capability_module,
+        "_darwin_process_memory_bytes",
+        lambda process_id: None,
+    )
+
+    def timed_out_subprocess(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], timeout=1.0)
+
+    monkeypatch.setattr(replay_capability_module.subprocess, "run", timed_out_subprocess)
+
+    assert replay_process_memory_bytes(99) == 0
 
 
 def _request(
@@ -96,6 +156,15 @@ def _write_capability_skill(
         encoding="utf-8",
     )
     (replay / "runtime.py").write_text(
+        "import json\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "index_path = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "index = json.loads(Path(index_path).read_text()) if index_path else {}\n"
+        "for record in index.get('records', []):\n"
+        "    if record.get('non_empty') is True:\n"
+        "        response = record.get('value')\n"
+        "        break\n"
         "print('runtime')\n",
         encoding="utf-8",
     )
@@ -303,6 +372,71 @@ def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     assert probe.kind == "websocket"
     assert probe.request_text == '{"op":"read"}'
     assert probe.response_contains == "recorded fixture"
+
+
+def test_skill_runtime_with_recorded_responses_must_consume_response_index(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path, nested_fixture=True)
+    (skill / "replay/runtime.py").write_text(
+        "import os\n"
+        "os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+        "print('runtime that mentions but ignores recorded responses')\n",
+        encoding="utf-8",
+    )
+    compiler_path = skill / "replay/compiler.py"
+    compiler_path.write_text(
+        compiler_path.read_text(encoding="utf-8").replace(
+            "'transport': 'http_fixture',",
+            (
+                "'transport': 'skill_runtime',\n"
+                "        'runtime_entrypoint': 'replay/runtime.py',\n"
+                "        'protocol_probes': [{\n"
+                "            'kind': 'websocket',\n"
+                "            'path': '/events',\n"
+                "            'request_text': '{\\\"op\\\":\\\"records.query\\\"}',\n"
+                "            'response_contains': 'recorded',\n"
+                "        }],"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="must consume AWORLD_REPLAY_RESPONSE_INDEX",
+    ):
+        compile_and_freeze_capability(
+            capability,
+            _request(skill, recorded_value=_nested_recorded_fixture_value()),
+            tmp_path / "compile",
+        )
+
+
+def test_frozen_verification_rejects_recorded_response_index_tampering(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path, nested_fixture=True)
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+    frozen = compile_and_freeze_capability(
+        capability,
+        _request(skill, recorded_value=_nested_recorded_fixture_value()),
+        tmp_path / "compile",
+    )
+    fixture = Path(frozen.frozen_root) / "fixtures/fixture.txt"
+    sidecar = fixture.with_suffix(".responses.json")
+    index = json.loads(sidecar.read_text(encoding="utf-8"))
+    index["records"][0]["value"] = "tampered"
+    sidecar.write_text(json.dumps(index), encoding="utf-8")
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="response index does not match its fixture",
+    ):
+        verify_frozen_replay_capability(frozen)
 
 
 @pytest.mark.parametrize(
@@ -626,6 +760,103 @@ def test_recorded_response_index_aliases_declared_probe_to_non_empty_value() -> 
     assert aliases[0]["derived_operation"] is True
     assert aliases[0]["non_empty"] is True
     assert aliases[0]["value"] == {"tweets": [{"id": "1"}]}
+
+
+def test_recorded_response_index_prioritizes_transport_ready_decoded_records() -> None:
+    fixture = {
+        "wrapper": [
+            {
+                "action_result": [
+                    {
+                        "action_name": "records.query",
+                        "content": '{"truncated":"' + ("x" * 8192),
+                    }
+                ]
+            },
+            {
+                "action_result": [
+                    {
+                        "action_name": "records.query",
+                        "content": json.dumps(
+                            {
+                                "message": "recorded response",
+                                "items": [{"id": 1}],
+                            }
+                        ),
+                    }
+                ]
+            },
+        ]
+    }
+
+    index = _build_recorded_response_index(
+        json.dumps(fixture, ensure_ascii=False).encode("utf-8")
+    )
+
+    first_non_empty = next(
+        record
+        for record in index["records"]
+        if record.get("non_empty") is True
+    )
+    assert first_non_empty["value"] == {
+        "message": "recorded response",
+        "items": [{"id": 1}],
+    }
+    assert first_non_empty["protocol_eligible"] is True
+    assert first_non_empty["transport_ready"] is True
+    assert any(
+        isinstance(record.get("value"), str)
+        and record["value"].startswith('{"truncated":')
+        and record["protocol_eligible"] is False
+        for record in index["records"]
+    )
+    assert [record["ordinal"] for record in index["records"]] != list(
+        range(len(index["records"]))
+    )
+
+
+def test_recorded_response_index_prefers_semantically_richer_transport_record() -> None:
+    fixture = {
+        "wrapper": [
+            {
+                "action_result": [
+                    {
+                        "action_name": "records.query",
+                        "content": {
+                            "status": "SUCCESS",
+                            "command": "fetch content and save it to a local path",
+                            "output": "112 <LOCAL_PATH>",
+                        },
+                    }
+                ]
+            },
+            {
+                "action_result": [
+                    {
+                        "action_name": "records.query",
+                        "content": {
+                            "body_text": "task-bearing content " * 400,
+                            "source": "recorded artifact",
+                        },
+                    }
+                ]
+            },
+        ]
+    }
+
+    index = _build_recorded_response_index(
+        json.dumps(fixture, ensure_ascii=False).encode("utf-8")
+    )
+
+    ready = [
+        record
+        for record in index["records"]
+        if record["transport_ready"] is True
+        and record.get("operation") == "records.query"
+    ]
+    assert len(ready) >= 2
+    assert ready[0]["value"]["body_text"].startswith("task-bearing content")
+    assert ready[0]["semantic_payload_score"] > ready[1]["semantic_payload_score"]
 
 
 def test_freeze_places_operation_index_next_to_nested_fixture(tmp_path: Path) -> None:

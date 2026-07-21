@@ -1,0 +1,9 @@
+{
+  "schema_version": "aworld.skill.replay_capability.v1",
+  "capability_id": "web-content-grounding-http-replay",
+  "protocol": "aworld.replay.subprocess.v1",
+  "entrypoint": "replay/compiler.py",
+  "handles": ["http_resource"],
+  "runtime_files": ["replay/runtime.py"],
+  "concurrency_mode": "isolated"
+}

@@ -18,7 +18,10 @@ from aworld.self_evolve.concurrency import (
     CandidatePopulationResult,
     SelfEvolveConcurrencyPolicy,
 )
-from aworld.self_evolve.evolution_context import compile_evolution_context
+from aworld.self_evolve.evolution_context import (
+    _repair_feedback_reached_judged_task_output,
+    compile_evolution_context,
+)
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
@@ -67,6 +70,7 @@ class TraceReflectiveLLMMutator:
         filtered_high_baseline_regression_count = 0
         filtered_duplicate_count = 0
         filtered_invalid_patch_count = 0
+        repaired_transport_completion_violation_count = 0
         seen_content_fingerprints: set[str] = set()
         require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
@@ -136,6 +140,7 @@ class TraceReflectiveLLMMutator:
                 content, rationale, materialization, files = _materialize_mutator_output(
                     output,
                     request=request,
+                    candidate_index=index,
                 )
                 files, inherited_file_count = _overlay_repair_focus_files(
                     request,
@@ -147,6 +152,9 @@ class TraceReflectiveLLMMutator:
             except ValueError:
                 filtered_invalid_patch_count += 1
                 continue
+            if _violates_transport_completion_invariant(content):
+                content = _append_transport_completion_invariant(content)
+                repaired_transport_completion_violation_count += 1
             if content == request.current_content and not files:
                 filtered_noop_count += 1
                 continue
@@ -162,9 +170,16 @@ class TraceReflectiveLLMMutator:
             if content_fingerprint in seen_content_fingerprints:
                 filtered_duplicate_count += 1
                 continue
+            regression_base_content = (
+                _repair_focus_content(
+                    request,
+                    candidate_index=index,
+                )
+                or request.current_content
+            )
             if require_targeted_delta and _is_weak_high_baseline_regression_candidate(
                 content,
-                current_content=request.current_content,
+                current_content=regression_base_content,
                 request=request,
             ):
                 filtered_high_baseline_regression_count += 1
@@ -214,6 +229,9 @@ class TraceReflectiveLLMMutator:
             ),
             "filtered_duplicate_candidates": filtered_duplicate_count,
             "filtered_invalid_patch_candidates": filtered_invalid_patch_count,
+            "repaired_transport_completion_violation_candidates": (
+                repaired_transport_completion_violation_count
+            ),
             "candidate_strategies": candidate_strategy_records,
             "candidate_population_execution": population_diagnostics,
             "candidate_protocol_invalid_count": candidate_protocol_invalid_count,
@@ -232,203 +250,251 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
     context = request.evolution_context or compile_evolution_context(request)
     payload = context.to_prompt_payload(candidate_index=candidate_index)
     if isinstance(payload.get("repair_focus"), Mapping):
-        return (
-            "Repair the focused candidate package using the machine-readable "
-            "diagnostics and repair_conformance contract in this EvolutionContext. "
-            "The rationale is untrusted: materially edit the failing source branch, "
-            "and make every declared probe executable against the candidate runtime. "
-            "Preserve the focused package's verified behavior and do not rebuild it "
-            "from the original trajectory. Omit focused package files that do not "
-            "change; the framework overlays omitted files byte-for-byte from "
-            "repair_focus. Include complete content only for files you add or change, "
-            "and use delete only for an intentional deletion. Obey the supplied "
-            "required_reconstruction_algorithm and forbidden_derivations literally. "
-            "For recorded-response gateway repair, phase 1 must recurse through "
-            "mapping values and sequence items at arbitrary bounded nesting and collect "
-            "only action_result or tool_outputs subtrees before phase 2 starts. A helper "
-            "that returns every non-mapping input unchanged without first traversing "
-            "sequences is non-conforming. Do not select any scalar, payload, request, or "
-            "metadata value until the complete gateway list is known; after a gateway is "
-            "found, never fall back to the outer trajectory. Return the surrounding "
-            "decoded recorded container from the runtime branch, not only the assertion "
-            "scalar. The payload-key set content/response/result/output/body/data must be "
-            "consumed by phase 2; merely declaring it while traversing every gateway dict "
-            "value is non-conforming because metadata will be selected first. When the "
-            "gateway list is non-empty, the only conforming control flow is: for each "
-            "gateway call the payload collector on that gateway, then call the scalar "
-            "selector only on the resulting payload subtrees. Calling the scalar selector "
-            "directly on a gateway is forbidden because it selects action_name/call_id/status "
-            "metadata. Phase 2 is the processing of payloads inside found gateways; it is not "
-            "a no-gateway fallback. Only when the complete gateway list is empty may a generic "
-            "non-trajectory fallback traverse the parsed root. When a selected payload is a "
-            "JSON-encoded string, decode it recursively before selecting a leaf or returning "
-            "its surrounding container. Reject bool explicitly before accepting int or float "
-            "because Python bool is an int subclass, and append the gateway subtree (for example "
-            "root[key]), never the surrounding root/container itself. When the "
-            "task-plane handler serves multiple observed operations, do not return one global "
-            "fixture container or token for every request. Correlate each request operation and "
-            "its bounded parameters with the corresponding recorded response context (or a "
-            "deterministic per-operation cursor), preserving the operation's response shape; a "
-            "generic repeated container that makes the caller report empty data or retry is a "
-            "placeholder, not a reconstruction. "
-            "repair_conformance contract has required_fixture_probe_operations, compiler "
-            "output must declare an executable request_text probe for every named operation; "
-            "these are newly reached task-plane frontier operations and cannot be replaced "
-            "by a later repetition of an already-covered operation. When that field is empty, "
-            "use the final late_observed_operation. A runtime "
-            "handler without that declared probe is incomplete. Every declared probe is "
-            "executed against its exact request branch before rollout, so its actual response "
-            "must contain its own response_contains value. response_contains must remain a "
-            "recorded scalar leaf used as the provenance assertion; the runtime response must "
-            "carry the surrounding decoded container which contains that leaf. Do not replace "
-            "response_contains with a serialized container, and do not return only the scalar "
-            "from the runtime branch. Never remove or relocate the contract's exact_probe; it "
-            "For task-plane reconstruction, the framework injects the immutable sidecar path "
-            "in AWORLD_REPLAY_RESPONSE_INDEX and the raw fixture path in "
-            "AWORLD_REPLAY_FIXTURE_PATH. The changed runtime branch must load that index and "
-            "select a non_empty record for the incoming operation (or an explicitly equivalent "
-            "operation cursor); a locally invented global token/container is not equivalent. "
-            "Keep the index dependency in the returned data flow, not in dead initialization, "
-            "and preserve the recorded response shape when projecting the selected value. "
-            "is an independent regression constraint and must retain its kind, path, and a "
-            "fixture-derived scalar assertion even when a frontier probe is also required. "
-            "Do not copy one fixture assertion "
-            "onto every observed operation: operations must be implemented, but only the "
-            "required frontier operation (or final late operation when no frontier is named) "
-            "needs a fixture-derived assertion probe unless the contract names another exact "
-            "probe. Remove only redundant non-exact probes whose protocol-shaped response cannot "
-            "truthfully contain the assertion. Inspect the actual changed "
-            "source before claiming this repair. "
-            "Return the value of expected_output as exactly one JSON object, do not "
-            "wrap it. Use at most one of content or patch_intent; both may be omitted "
-            "when candidate-owned files themselves implement the reusable skill-package "
-            "behavior delta.\n"
-            + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return _focused_repair_prompt_instructions(payload) + json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
         )
     return (
-        "Generate one candidate package from this bounded EvolutionContext. "
-        "Follow its population_strategy, required_behaviors, preserved_behaviors, "
-        "capability_contracts, and acceptance_constraints. Prefer the smallest reusable "
-        "behavior delta and keep domain implementations inside candidate-owned files. "
-        "Use trace step summaries to infer reusable behavior, never to hard-code dataset "
-        "task IDs, case IDs, original endpoints, or environment-specific paths. "
-        "Replay harness files must accompany, not substitute for, a reusable task-execution "
-        "improvement in the primary target content. Reconstruct fixture-derived task data "
-        "for observed interactions; do not stop at control-plane handshakes, placeholder "
-        "tokens, or empty protocol schemas. "
-        "Evidence derivation entries may include a framework-generated response_index_path, "
-        "response_record_count, and response_operations. Treat that sidecar as a bounded "
-        "operation-to-record index: preserve it with the fixture, select the recorded "
-        "payload for the incoming operation (or a deterministic cursor when the operation "
-        "repeats), and keep the decoded response shape. Do not reduce the raw fixture to "
-        "the first scalar while discarding its response records. "
-        "During a frozen replay the same index is available to the skill runtime through "
-        "AWORLD_REPLAY_RESPONSE_INDEX, with AWORLD_REPLAY_FIXTURE_PATH naming the immutable "
-        "fixture. Read the sidecar at startup (or derive the adjacent .responses.json path), "
-        "and use its payload_path/operation records to select a bounded response; never "
-        "assume the top-level fixture is the task data. "
-        "A helper such as _normalize_fixture_list that returns FIXTURE_DATA or "
-        "FIXTURE_DATA.get(key, []) is not a reconstruction and will be rejected even "
-        "when the returned outer list is non-empty; traverse the indexed gateway payload "
-        "and project the nested recorded records instead. "
-        "The minimal acceptable runtime pattern is: index_path = os.environ.get("
-        "'AWORLD_REPLAY_RESPONSE_INDEX'); index = json.load(open(index_path)); "
-        "records = [r for r in index['records'] if r['non_empty'] and "
-        "r['operation'] == operation]; payload = records[cursor[operation]].get('value') "
-        "or resolve_payload_path(fixture, records[cursor[operation]]['payload_path']); "
-        "then return a protocol-shaped "
-        "projection of payload. Adapt the projection to the protocol, but do not "
-        "replace this operation-to-record dependency with a global fixture list. "
-        "A task-plane handler is non-conforming if an observed operation branch only "
-        "returns RESPONSE_TOKEN/FIXTURE_CONTAINER (or an equivalent module-global) after "
-        "reading params into an unused local. The required generic data flow is: derive "
-        "operation = request[method/operation/command], read bounded request parameters, "
-        "choose records = responses_by_operation[operation] (or advance a deterministic "
-        "per-operation cursor), then project the selected recorded response shape. The "
-        "operation/parameter value must reach the returned protocol result; an assignment "
-        "such as params.get('expression') that is never used in the returned value does "
-        "not satisfy this contract. "
-        "When validation_feedback contains repair_candidate_package, repair that bounded "
-        "candidate source directly and preserve its already-correct package behavior instead "
-        "of rebuilding the capability from scratch. "
-        "When repair_focus is present, use it as the base candidate source package for this "
-        "population member: satisfy its observed failure and acceptance direction before "
-        "addressing other historical feedback. When repair_support is present, it is one "
-        "bounded complementary source package: transplant only the compatible branches "
-        "that already satisfy a regression constraint, without replacing the focused base "
-        "or reintroducing the support candidate's failed gate. Treat every other current validation "
-        "diagnostic as a regression constraint on that repair: combine compatible fixes "
-        "into the focused source, preserve behaviors that already advanced farther in the "
-        "interaction, and do not mistake transport liveness for asynchronous completion. "
-        "Treat repair_conformance as a machine-enforced pre-rollout gate: materially change "
-        "one required_branch_path from the focused package; satisfy exact_probe when present; "
-        "and when requires_fixture_derived_probe is true, declare a probe for each "
-        "required_fixture_probe_operation (or the final late_observed_operation when the "
-        "required list is empty) whose non-empty response_contains comes from the recorded "
-        "fixture and whose runtime branch returns that content in a protocol-valid response. "
-        "Every declared probe will be executed before rollout. Do not mechanically declare one "
-        "probe per observed operation or reuse an assertion on a branch that does not return it: "
-        "implement all observed operations, but keep only the required frontier fixture-derived "
-        "probe plus independently valid discovery/exact probes. "
-        "For late_fixture_probe_not_recorded, late_fixture_probe_outside_recorded_payload, "
-        "or exact_repair_probe_not_recorded, replace "
-        "raw-byte token regexes and mapping-key extraction rather than adding more of them: "
-        "parse JSON or JSONL, recursively decode bounded string leaves that themselves contain "
-        "JSON objects or arrays, and recursively traverse mapping values and list items (never "
-        "mapping keys). Search arbitrary nesting with a bounded node count rather than a shallow "
-        "depth cutoff. When the fixture is a trajectory envelope, first complete a gateway-"
-        "discovery pass for action_result or tool_outputs at any depth before selecting any "
-        "scalar; if at least one gateway exists, never fall back to request/action branches. "
-        "Implement this as two genuinely separate phases: phase 1 walks every composite node "
-        "and only appends values whose key is action_result or tool_outputs to a gateways list; "
-        "phase 1 must never inspect, collect, or return a scalar. Only after phase 1 completes may "
-        "phase 2 select payload values from gateways. Do not share a found-scalars list between "
-        "gateway discovery and traversal of the outer trajectory. "
-            "The required structure is gateways = collect_gateways(root); if gateways: for gateway "
-            "in gateways: payloads = collect_payloads(gateway); select_leaf(payloads). Never call "
-            "select_leaf(gateway), and never make collect_payloads(parsed_root) the phase-2 path when "
-            "a gateway exists. Phase 2 means payload selection inside gateways, not the absence of a "
-            "gateway. Only if gateways is empty may a generic non-trajectory fallback inspect root. "
-            "When selecting scalar leaves, reject bool explicitly before accepting int or float because "
-            "Python bool is an int subclass; append the gateway subtree (for example root[key]), never "
-            "the surrounding root/container itself. "
-            "Keep the gateway-key set limited to action_result and tool_outputs; content, response, "
-        "result, output, body, and data are a separate payload-key set that is valid only after "
-        "entering a gateway. "
-        "Inside action_result, ignore metadata such as tool name, call "
-        "id, success, and timing fields until reaching a content, response, result, output, body, "
-        "or data payload. If a gateway value is a list, run this payload-key selection on each "
-        "list item; never pass the whole list to a generic scalar traversal that can see metadata. "
-        "tool_outputs itself is an output payload. Only then recursively decode "
-        "nested containers. Do not globally interpret same-named keys from request/action records "
-        "as responses. Select a deterministic non-empty scalar leaf without requiring an "
-        "alphanumeric-only shape or an arbitrary narrow length range. Never substitute a fixture "
-        "hash or placeholder when such a token regex finds nothing. "
-        "Reuse one canonical selector with identical behavior in compiler and runtime. "
-        "The same selected leaf may be reused by multiple probes; do not add key extraction "
-        "or raw-token fallbacks merely to manufacture distinct per-probe tokens. "
-        "Use that scalar only as the probe assertion: the task-plane handler must return the "
-        "surrounding non-empty decoded recorded container (or a protocol-shaped projection "
-        "that preserves multiple recorded response values), not collapse the response to the "
-        "single assertion token. Task-plane handlers must not return one global fixture "
-        "container for every observed operation: correlate each request operation and its "
-        "bounded parameters with the corresponding recorded response context (or a deterministic "
-        "per-operation cursor), preserving the operation's response shape. A repeated generic "
-        "token/container that causes the caller to report empty data or retry is a placeholder "
-        "and is non-conforming even when a probe substring matches. Choose request_text probe "
-        "inputs that actually execute this "
-        "fixture-derived branch; do not use an input that the handler maps to a constant result. "
-        "Treat any previous expected_preview as diagnostic evidence rather than a value to "
-        "hard-code. Place the selected leaf inside "
-        "the correlated protocol result payload, not in unrelated envelope metadata. "
-        "For a bounded change to a large current target, use patch_intent so all unrelated "
-        "content remains byte-for-byte preserved; do not reconstruct a shortened full copy. "
-        "Return the value of expected_output as exactly one JSON object; do not wrap it. "
-        "Use at most one of content or patch_intent; both may be omitted only when "
-        "candidate-owned files themselves implement the reusable skill-package behavior "
-        "delta rather than a fixture-only placeholder.\n"
+        "Generate one candidate package from this bounded EvolutionContext. Follow "
+        "population_strategy, required_behaviors, preserved_behaviors, "
+        "capability_contracts, acceptance_constraints, and expected_output literally. "
+        "Prefer the smallest reusable behavior delta; use patch_intent for a bounded "
+        "change to large target content, and never hard-code task ids, case ids, original "
+        "endpoints, environment paths, fixture hashes, or diagnostic previews. "
+        "For reusable large-output handling, require unknown-size responses to be redirected "
+        "to an artifact before inspection and derive only explicit byte-bounded excerpts or "
+        "selected structured fields from that file. A line-count limit such as head -N is "
+        "not a byte bound because a response may contain one very large line. "
+        "Separate transport completion from task completion for every candidate. A successful "
+        "handshake, HTTP status, structured envelope, metadata record, or tool-execution "
+        "summary is only a delivery signal. Persist the first usable response immediately, "
+        "then verify that its payload directly supports the claims requested by the user. "
+        "Stop only when that semantic check passes; otherwise try one materially different "
+        "bounded artifact-backed source or return an explicit insufficiency. Never encode "
+        "a blanket first-response-means-complete rule or a case-specific endpoint or prompt. "
+        "Keep replay schema layers distinct: replay/capability.json protocol is exactly "
+        "aworld.replay.subprocess.v1; its handles are request requirement kinds such as "
+        "http_resource, never runtime_required or skill_runtime. The compiler writes "
+        "aworld.replay.capability_result.v1, where a candidate-owned runtime is declared "
+        "with service transport skill_runtime and a runtime_entrypoint listed by the "
+        "manifest runtime_files. Do not invent supported_requirement_kinds, "
+        "runtime_required, fixture_resolver, or service-transport values in the manifest. "
+        "The framework creates only the compiler output root. The compiler owns every "
+        "declared subdirectory and must create parents such as output/fixtures before "
+        "copying or writing files; it must not assume those directories already exist. "
+        "For a skill_runtime, AWORLD_REPLAY_RESPONSE_INDEX is a filesystem path supplied "
+        "by the framework to a JSON sidecar with schema "
+        "{schema_version, operations, records}; it is not an integer, inline response, "
+        "fixture selector, or compiler-owned output. Open that path, iterate the records "
+        "array, derive the incoming operation, and select its first record whose non_empty "
+        "and protocol_eligible fields are true (or advance a deterministic per-operation "
+        "cursor); transport_ready records are ordered first. For backward-compatible "
+        "sidecars without these fields, use the first non_empty record whose value can be "
+        "recursively decoded or projected into a bounded response. Then project "
+        "record['value'] into the protocol result. Do not rescan the raw fixture as a "
+        "substitute for consuming the sidecar. Resolve record['payload_path'] from "
+        "AWORLD_REPLAY_FIXTURE_PATH only when value is absent. Index fields such as "
+        "gateway_key, operation, payload_path, shape, and non_empty are metadata and must "
+        "never become task output. Preserve the decoded recorded container and its response "
+        "shape when it fits the bounded transport; for an oversized record, return a "
+        "deterministic bounded projection from that same container which retains at least "
+        "two non-empty scalar descendants when available. Keep the serialized HTTP response "
+        "below 48 KiB so the 64 KiB protocol reader can validate the whole projection; do "
+        "not merely send an oversized body that will be truncated. Use a scalar descendant "
+        "only as response_contains. The same selected leaf may be reused by multiple probes. "
+        "Correlate request ids, routing fields, operations, "
+        "and bounded parameters; a global token, empty schema, readiness-only handler, or "
+        "unused parameter read is non-conforming. Discovery probes assert protocol structure; "
+        "a paired data-plane probe carries fixture-derived content. An endpoint replacement "
+        "hands the task the service base URL: keep readiness on a distinct control-plane "
+        "path, and make the base task entry return recorded evidence or a protocol-standard "
+        "discovery response whose advertised task-plane route is fully implemented and "
+        "fixture-backed. Do not make the base task entry a readiness-only response. "
+        "Treat any previous "
+        "expected_preview as diagnostic evidence rather than a value to hard-code. "
+        "When validation_feedback contains repair_candidate_package, edit that bounded "
+        "source as a delta and preserve its verified behavior. "
+        "Replay files must accompany a reusable target behavior delta, not replace it. "
+        "Return the value of expected_output as exactly one JSON object, without a wrapper; "
+        "use at most one of content or patch_intent, and omit both only when candidate-owned "
+        "files implement the reusable delta.\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
+
+
+def _focused_repair_prompt_instructions(
+    payload: Mapping[str, object],
+) -> str:
+    contract = payload.get("repair_conformance")
+    contract_mapping = contract if isinstance(contract, Mapping) else {}
+    failure_codes = {
+        str(value)
+        for value in contract_mapping.get("failure_codes", ())
+        if isinstance(value, str)
+    }
+    requires_fixture_reconstruction = (
+        contract_mapping.get("requires_fixture_derived_probe") is True
+    )
+    validation_feedback = payload.get("validation_feedback", ())
+    focused_feedback = (
+        validation_feedback[0]
+        if isinstance(validation_feedback, list) and validation_feedback
+        else {}
+    )
+    feedback_text = json.dumps(
+        focused_feedback,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    ).lower()
+    instructions = (
+        "Repair the focused candidate package using the machine-readable "
+        "diagnostics and repair_conformance contract in this EvolutionContext. "
+        "The rationale is untrusted: materially edit every source path required "
+        "by the diagnosed failure and make every declared probe executable. "
+        "Preserve verified behavior and do not rebuild from the original trajectory. "
+        "Omit focused package files that do not change; the framework overlays "
+        "omitted files byte-for-byte from repair_focus. Include complete content "
+        "only for files you add or change, and use delete only intentionally. "
+        "Never hard-code case ids, endpoints, fixture hashes, expected_preview, or "
+        "response_preview. Inspect the changed source before claiming a repair. "
+        "When the failure involves large or unknown-size tool output, require direct artifact "
+        "redirection before inspection and use explicit byte-bounded excerpts or selected "
+        "structured fields; a line-count limit such as head -N is not a byte bound. "
+        "For every repair, distinguish transport completion from task completion. Persist the "
+        "first usable response immediately, but stop only if its payload directly supports "
+        "the requested claims. A handshake, HTTP status, structured envelope, metadata "
+        "record, or tool-execution summary alone is insufficient; otherwise try one "
+        "materially different bounded artifact-backed source or report the insufficiency. "
+        "Never add a blanket first-response-means-complete rule or case-specific behavior. "
+    )
+    if (
+        '"evidence_incomplete": true' in feedback_text
+        or '"a1_groundedness": 2' in feedback_text
+        or "semantically_insufficient_evidence" in feedback_text
+    ):
+        instructions += (
+            "This candidate has already completed authoritative replay and produced "
+            "judge-scored task output. Preserve every candidate-owned replay file "
+            "byte-for-byte and repair only the reusable target skill content; do not "
+            "change capability declarations, compilers, runtimes, probes, or fixtures. "
+            "A successful handshake, HTTP status, structured envelope, metadata record, "
+            "or tool-execution summary is not by itself task completion. Before finalizing, "
+            "check whether the persisted payload directly supports the claims requested by "
+            "the user. If it does not, continue with one materially different bounded "
+            "artifact-backed source or return only an explicit insufficiency; never invent "
+            "the missing content and never encode case-specific endpoints or prompts. "
+        )
+    if (
+        "align_compiler_runtime_recorded_response_selection"
+        in failure_codes
+    ):
+        instructions += (
+            "This failure proves compiler/runtime recorded-response selector drift. "
+            "Change both the manifest entrypoint compiler and at least one runtime "
+            "implementation path named by required_branch_paths. Use one canonical "
+            "gateway discovery, payload traversal, recursive JSON decoding, ordering, "
+            "and fallback algorithm on both sides. The compiler's response_contains "
+            "must be a scalar descendant of the exact recorded container projected by "
+            "the runtime from AWORLD_REPLAY_RESPONSE_INDEX; do not weaken the runtime "
+            "to echo the mismatched diagnostic preview. "
+        )
+    if (
+        "invalid_replay_capability_compile" in feedback_text
+        or "repair_capability_compile_failed" in feedback_text
+    ):
+        instructions += (
+            "Repair the exact schema layer named by required_manifest_contract, "
+            "required_compile_result_contract, and layering_rules. The manifest "
+            "protocol remains aworld.replay.subprocess.v1 and handles contains only "
+            "request requirement kinds. skill_runtime belongs only in a compiled "
+            "result service's transport; runtime_required is only request status. "
+            "Do not guess alternative protocol names or add unsupported manifest "
+            "fields. Preserve the compiler's --request/--output interface and write "
+            "the declared result schema to output/result.json. The framework creates "
+            "only the output root; create every declared subdirectory and its parents "
+            "before copying or writing fixtures or runtime artifacts. "
+        )
+    if (
+        "response_contains" in feedback_text
+        and "at most 4096 characters" in feedback_text
+    ):
+        instructions += (
+            "The focused compiler emitted an overlong protocol assertion. Change "
+            "the compiler path that derives response_contains so every emitted "
+            "value is a non-empty fixture-derived scalar substring of at most 4096 "
+            "characters. Bound the assertion after selecting the recorded scalar; "
+            "the runtime must still return the complete recorded response container. "
+            "Do not hard-code fixture text or weaken the fixture-derivation check. "
+        )
+    if "surrounding recorded response context" in feedback_text:
+        instructions += (
+            "The failed data-plane body did not expose enough bounded context from one "
+            "record. AWORLD_REPLAY_RESPONSE_INDEX is already generated by the framework; "
+            "do not create, declare, embed, or copy another response-index sidecar in the "
+            "compiler. In the runtime, open that environment value as a file path and "
+            "select the first record whose non_empty and protocol_eligible fields are true "
+            "for the incoming operation; transport_ready records are ordered first "
+            "(or use the deterministic first operation for an operation-less HTTP probe). "
+            "Recursively JSON-decode its value. If its serialized container fits "
+            "below 48 KiB, return that container. If it is larger, construct a deterministic "
+            "bounded mapping/list projection from the same record: retain container shape "
+            "and at least two non-empty scalar descendants when available, truncate or "
+            "omit oversized text fields, and verify the final serialized response remains "
+            "below 48 KiB. This bounded projection is the required surrounding context; "
+            "returning one scalar, a preview-only wrapper, sidecar metadata, or a body "
+            "larger than the 64 KiB protocol reader is non-conforming. "
+        )
+    if requires_fixture_reconstruction:
+        instructions += (
+            "Obey required_reconstruction_algorithm and forbidden_derivations "
+            "literally. For recorded-response gateway repair, phase 1 must recurse "
+            "through mapping values and sequence items at arbitrary bounded nesting "
+            "and collect only action_result or tool_outputs subtrees before phase 2 "
+            "starts. A helper that returns every non-mapping input unchanged without "
+            "first traversing sequences is non-conforming. Do not select scalars or "
+            "metadata until the complete gateway list is known. Return the surrounding "
+            "decoded recorded container, not only the assertion scalar. The payload-key "
+            "set content/response/result/output/body/data must be consumed by phase 2; "
+            "merely declaring it while traversing every gateway dict value is "
+            "non-conforming. For each gateway call the payload collector, then the "
+            "scalar selector on resulting payload subtrees. Calling the scalar selector "
+            "directly on a gateway is forbidden. Phase 2 is the processing of payloads "
+            "inside found gateways; only an empty complete gateway list permits a root "
+            "fallback. Decode JSON-encoded payload strings recursively and reject bool "
+            "before int or float. Correlate each operation and bounded parameters with "
+            "its deterministic recorded-response cursor. The repair_conformance "
+            "contract's required_fixture_probe_operations cannot be replaced by a "
+            "later repetition. response_contains must remain a recorded scalar leaf, "
+            "while the runtime response must carry the surrounding decoded container or "
+            "a deterministic under-48-KiB projection retaining at least two scalar "
+            "descendants from that same container. "
+            "Never remove or relocate the contract's exact_probe. "
+            "AWORLD_REPLAY_RESPONSE_INDEX is a framework-supplied filesystem path to "
+            "a JSON object with a records array, not an integer or compiler-owned "
+            "output. Open that path, select a record whose non_empty field is true for "
+            "the incoming operation, and project record['value']; do not substitute a "
+            "recursive scan of the raw fixture. Use record['payload_path'] only when "
+            "value is absent. Index fields are metadata, not task output. "
+        )
+    if "finalize_after_successful_endpoint_interaction" in feedback_text:
+        instructions += (
+            "The replay runtime already completed the task-plane interaction. "
+            "Preserve its candidate-owned files byte-for-byte and repair the target "
+            "skill content with a small reusable finalization delta. Return content "
+            "or patch_intent that requires immediate artifact and manifest persistence "
+            "after the first successful structured extraction, stops redundant "
+            "collection once sufficient evidence exists, and returns a bounded evidence "
+            "ledger. Do not change readiness, protocol, compiler, or runtime behavior "
+            "for this failure. "
+        )
+    instructions += (
+        "Return the value of expected_output as exactly one JSON object without a "
+        "wrapper. Use at most one of content or patch_intent; both may be omitted "
+        "when candidate-owned files implement the reusable behavior delta.\n"
+    )
+    return instructions
 
 
 def _overlay_repair_focus_files(
@@ -440,8 +506,9 @@ def _overlay_repair_focus_files(
     """Apply a repair response as a delta over its focused candidate package."""
 
     context = request.evolution_context or compile_evolution_context(request)
-    payload = context.to_prompt_payload(candidate_index=candidate_index)
-    repair_focus = payload.get("repair_focus")
+    repair_focus = context.repair_focus_for_candidate(
+        candidate_index=candidate_index
+    )
     if not isinstance(repair_focus, Mapping):
         return candidate_files, 0
     package = repair_focus.get("repair_candidate_package")
@@ -465,6 +532,11 @@ def _overlay_repair_focus_files(
     )
     if not base_files:
         return candidate_files, 0
+    if _repair_feedback_reached_judged_task_output(repair_focus):
+        # Judge-stage repair is a target-behavior delta over a runtime that has
+        # already passed authoritative replay. Ignore model-proposed harness
+        # changes and carry the verified candidate-owned files byte-for-byte.
+        return base_files, len(base_files)
     replacements = {item.path: item for item in candidate_files}
     inherited = sum(1 for item in base_files if item.path not in replacements)
     merged = {
@@ -613,7 +685,13 @@ def _materialize_mutator_output(
     output: Any,
     *,
     request: OptimizerRequest,
+    candidate_index: int = 0,
 ) -> tuple[str, str, str, tuple[CandidateFileDelta, ...]]:
+    repair_base_content = _repair_focus_content(
+        request,
+        candidate_index=candidate_index,
+    )
+    base_content = repair_base_content or request.current_content
     if isinstance(output, Mapping):
         # Some structured-output providers return the schema payload under an
         # ``expected_output`` envelope even though the prompt requests the
@@ -638,7 +716,7 @@ def _materialize_mutator_output(
         rationale = ""
         raw_files = ()
     if isinstance(patch_intent, Mapping):
-        content = apply_skill_patch_intent(request.current_content, patch_intent)
+        content = apply_skill_patch_intent(base_content, patch_intent)
         materialization = "patch_intent"
     else:
         materialization = "full_content"
@@ -646,7 +724,7 @@ def _materialize_mutator_output(
         if isinstance(raw_files, (list, tuple)) and any(
             isinstance(item, Mapping) for item in raw_files
         ):
-            content = request.current_content
+            content = base_content
             materialization = "files_only"
         else:
             raise ValueError(
@@ -673,6 +751,24 @@ def _materialize_mutator_output(
     if materialization == "files_only" and not files:
         raise ValueError("files-only mutator output must include a valid file delta")
     return content, rationale, materialization, files
+
+
+def _repair_focus_content(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> str | None:
+    context = request.evolution_context or compile_evolution_context(request)
+    repair_focus = context.repair_focus_for_candidate(
+        candidate_index=candidate_index
+    )
+    package = (
+        repair_focus.get("repair_candidate_package")
+        if isinstance(repair_focus, Mapping)
+        else None
+    )
+    content = package.get("content") if isinstance(package, Mapping) else None
+    return content if isinstance(content, str) and content.strip() else None
 
 
 def _candidate_id(
@@ -714,6 +810,49 @@ def _semantic_fingerprint(content: str) -> str:
         if line.strip() and line.strip() != "---"
     ]
     return hashlib.sha256("\n".join(semantic_lines).encode("utf-8")).hexdigest()
+
+
+def _violates_transport_completion_invariant(content: str) -> bool:
+    """Reject explicit policies that equate a first transport result with task completion."""
+
+    normalized = " ".join(content.lower().split())
+    direct_completion_rules = (
+        r"\bfirst successful\b.{0,160}\b(?:response|extraction)\b"
+        r".{0,160}\b(?:treat|consider|mark)\b.{0,100}\bcomplete\b",
+        r"\bfirst successful\b.{0,160}\b(?:response|extraction)\b"
+        r".{0,100}\bcompletion signal\b",
+        r"\brequested output can be produced from the first successful\b",
+    )
+    if not any(re.search(pattern, normalized) for pattern in direct_completion_rules):
+        return False
+
+    semantic_guards = (
+        "transport completion is necessary but not sufficient",
+        "transport completion is not task completion",
+        "payload directly supports the requested claims",
+        "payload directly support the requested claims",
+        "payload directly supports the user's requested result",
+        "payload directly supports the user’s requested result",
+        "verify task semantic sufficiency",
+    )
+    return not any(guard in normalized for guard in semantic_guards)
+
+
+def _append_transport_completion_invariant(content: str) -> str:
+    return (
+        content.rstrip()
+        + "\n\n## Task Semantic Completion Invariant\n\n"
+        "This invariant overrides any earlier completion rule in this skill. A successful "
+        "handshake, HTTP status, structured envelope, metadata record, tool-execution "
+        "summary, or first data-plane response is a delivery signal, not task completion. "
+        "Persist the first usable response immediately, then verify claim by claim that its "
+        "payload directly supports the user's requested result. Stop only when that semantic "
+        "check passes. If it does not, make exactly one materially different bounded "
+        "artifact-backed attempt. Persist a manifest entry for that attempt regardless of "
+        "whether it supplies the missing content, then immediately return either the "
+        "supported answer or an explicit insufficiency. Do not issue more tool calls after "
+        "that single fallback, and never invent missing content.\n"
+    )
 
 
 def _lesson_set_fingerprint(request: OptimizerRequest) -> str | None:

@@ -6,6 +6,7 @@ import json
 from aworld.self_evolve.datasets import EvalCase
 from aworld.self_evolve.evolution_context import (
     EVOLUTION_CONTEXT_SCHEMA_VERSION,
+    MAX_CONTEXT_TRACE_CHARS,
     compile_evolution_context,
 )
 from aworld.self_evolve.lessons import LessonRecord
@@ -275,18 +276,146 @@ def test_prompt_payload_assigns_one_recent_repair_focus_per_population_member() 
     assert second_payload["repair_focus"]["repair_candidate_package"][
         "candidate_id"
     ] == "candidate-probe"
-    assert first_payload["repair_support"]["repair_candidate_package"][
-        "candidate_id"
-    ] == "candidate-probe"
-    assert second_payload["repair_support"]["repair_candidate_package"][
-        "candidate_id"
-    ] == "candidate-task"
+    assert first_payload["repair_support"]["repair_candidate_id"] == (
+        "candidate-probe"
+    )
+    assert second_payload["repair_support"]["repair_candidate_id"] == (
+        "candidate-task"
+    )
     for payload in (first_payload, second_payload):
+        assert payload["repair_support"]["repair_candidate_source_omitted"] is True
+        assert "repair_candidate_package" not in payload["repair_support"]
         assert all(
             "repair_candidate_package" not in item
             for item in payload["validation_feedback"]
         )
         assert payload["validation_feedback"][0] != payload["repair_focus"]
+
+
+def test_focused_repair_prompt_budgets_source_without_affecting_overlay_base() -> None:
+    def repair_feedback(candidate_id: str) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "interaction_progress": 10,
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": "implement_observed_endpoint_interactions",
+                        "stage": "replay_capability",
+                        "observed_request_operations": ["records.query"],
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {
+                            "path": "SKILL.md",
+                            "content": "# Skill\n" + ("s" * 15_990),
+                        },
+                        {
+                            "path": "replay/compiler.py",
+                            "content": "# compiler\n" + ("c" * 15_988),
+                        },
+                        {
+                            "path": "replay/runtime.py",
+                            "content": "# runtime\n" + ("r" * 31_990),
+                        },
+                    ],
+                },
+            },
+        )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            current_content="# Baseline\n" + ("b" * 20_000),
+            validation_feedback=(
+                repair_feedback("candidate-support"),
+                repair_feedback("candidate-focus"),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+    prompt_package = payload["repair_focus"]["repair_candidate_package"]
+    prompt_files = {
+        item["path"]: item
+        for item in prompt_package["files"]
+    }
+
+    assert payload["current_content"] == ""
+    assert payload["target_package_inventory"] == []
+    assert payload["capability_requirements"] == []
+    assert payload["capability_contracts"] == []
+    assert prompt_files["replay/runtime.py"]["content"].startswith("# runtime")
+    assert prompt_files["replay/compiler.py"]["content_omitted"] is True
+    assert "content" not in prompt_files["replay/compiler.py"]
+    assert prompt_files["SKILL.md"]["content_omitted"] is True
+    assert "content" not in prompt_files["SKILL.md"]
+    assert payload["repair_prompt_budget"] == {
+        "source_chars": 40_000,
+        "omitted_current_content_chars": 20_011,
+        "omitted_target_package_inventory_items": 1,
+        "omitted_capability_requirements": 1,
+        "omitted_capability_contracts": 1,
+    }
+    assert "repair_candidate_package" not in payload["repair_support"]
+    assert len(json.dumps(payload, ensure_ascii=False, sort_keys=True)) < 62_000
+
+    overlay_focus = context.repair_focus_for_candidate(candidate_index=0)
+    assert overlay_focus is not None
+    overlay_files = {
+        item["path"]: item
+        for item in overlay_focus["repair_candidate_package"]["files"]
+    }
+    assert overlay_files["SKILL.md"]["content"].startswith("# Skill")
+
+
+def test_prompt_payload_budgets_accumulated_historical_feedback() -> None:
+    feedback = tuple(
+        EvaluationSummary(
+            variant_id=f"candidate-{index}",
+            dataset_split="historical",
+            metrics={
+                "failed_gates": [f"gate-{index}"],
+                "required_behaviors": [
+                    f"behavior-{index}-{item}-" + ("x" * 180)
+                    for item in range(8)
+                ],
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": f"diagnostic-{index}-{item}",
+                        "stage": "candidate_replay",
+                        "reason": "r" * 1_000,
+                    }
+                    for item in range(8)
+                ],
+            },
+        )
+        for index in range(24)
+    )
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(),
+            prior_feedback=feedback,
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    serialized_feedback = json.dumps(
+        payload["validation_feedback"],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert len(serialized_feedback) <= 24_000
+    assert payload["validation_feedback"][0]["variant_id"] == "candidate-0"
+    assert len(payload["required_behaviors"]) <= 64
+    assert len(json.dumps(payload, ensure_ascii=False, sort_keys=True)) < 65_000
 
 
 def test_prompt_payload_compiles_machine_checked_repair_as_focused_context() -> None:
@@ -511,6 +640,70 @@ def test_prompt_payload_prioritizes_authoritative_repair_over_screening_progress
     assert payload["repair_focus"]["repair_candidate_package"][
         "candidate_id"
     ] == "candidate-authoritative"
+
+
+def test_prompt_payload_prioritizes_judged_held_out_repair_over_replay_history() -> None:
+    judged = EvaluationSummary(
+        variant_id="candidate-judged",
+        dataset_split="held_out",
+        metrics={
+            "score": 69.6,
+            "A1_groundedness": 3,
+            "A2_completeness": 4,
+            "evidence_incomplete": True,
+            "failed_gates": ["evidence_quality", "held_out_verification"],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-judged",
+                "files": [
+                    {"path": "SKILL.md", "content": "# judged task output\n"}
+                ],
+            },
+        },
+    )
+    stale_replay = EvaluationSummary(
+        variant_id="candidate-stale-replay",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "authoritative_replay_failure": True,
+            "interaction_progress": 999,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "missing_fixture_data",
+                    "stage": "task_rollout",
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-stale-replay",
+                "files": [
+                    {"path": "replay/runtime.py", "content": "# stale replay\n"}
+                ],
+            },
+        },
+    )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(judged, stale_replay),
+            prior_feedback=(),
+        )
+    )
+
+    first_payload = context.to_prompt_payload(candidate_index=0)
+    second_payload = context.to_prompt_payload(candidate_index=1)
+
+    assert first_payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-judged"
+    assert second_payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-judged"
+    assert first_payload["validation_feedback"][0]["dataset_split"] == "held_out"
+    assert "repair_support" not in first_payload
+    assert "repair_support" not in second_payload
+    assert "repair_conformance" not in first_payload
+    assert "repair_conformance" not in second_payload
 
 
 def test_prompt_payload_prefers_current_run_frontier_over_historical_authoritative_repair() -> None:
@@ -884,9 +1077,10 @@ def test_prompt_payload_does_not_regress_task_plane_frontier_to_transport_confor
     assert payload["repair_focus"]["repair_candidate_package"][
         "candidate_id"
     ] == "candidate-task-plane"
-    assert payload["repair_support"]["repair_candidate_package"][
-        "candidate_id"
-    ] == "candidate-conformance"
+    assert payload["repair_support"]["repair_candidate_id"] == (
+        "candidate-conformance"
+    )
+    assert payload["repair_support"]["repair_candidate_source_omitted"] is True
 
 
 def test_prompt_payload_prioritizes_conformance_that_inherits_task_plane_frontier() -> None:
@@ -1303,3 +1497,51 @@ def test_compiler_samples_trace_evidence_across_the_full_trajectory() -> None:
     assert sampled[0]["source_index"] == 0
     assert sampled[-1]["source_index"] == 11
     assert sampled[-1]["observation_excerpt"] == "recorded data-plane result"
+
+
+def test_trace_evidence_uses_one_global_budget_across_many_packs() -> None:
+    packs = tuple(
+        TracePack(
+            pack_id=f"trajectory:train-{pack_index}",
+            source_kind="trajectory_log",
+            task_id=f"train-{pack_index}",
+            steps=tuple(
+                TraceEvidenceStep(
+                    evidence_id=f"train-{pack_index}:step-{step_index}",
+                    source_index=step_index,
+                    original_id=f"step-{step_index}",
+                    state={
+                        "messages": [
+                            {
+                                "role": "tool",
+                                "content": "observation-" + ("o" * 2_000),
+                            }
+                        ]
+                    },
+                    action={"content": "action-" + ("a" * 2_000)},
+                    reward={"detail": "reward-" + ("r" * 2_000)},
+                )
+                for step_index in range(12)
+            ),
+        )
+        for pack_index in range(32)
+    )
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            trace_packs=packs,
+        )
+    )
+
+    serialized = json.dumps(
+        context.trace_evidence,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert len(context.trace_evidence) == 32
+    assert len(serialized) <= MAX_CONTEXT_TRACE_CHARS + 1_024
+    assert context.trace_evidence[0]["evidence_step_ids"] == [
+        "train-0:step-0",
+        "train-0:step-11",
+    ]

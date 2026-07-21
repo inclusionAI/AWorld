@@ -95,6 +95,33 @@ def _apply_self_evolve_config_to_swarm(swarm, self_evolve_config) -> None:
             continue
 
 
+def _apply_runtime_skill_paths_to_swarm(
+    swarm,
+    skill_paths: tuple[str, ...],
+) -> None:
+    """Expose explicit CLI skill sources to task-time skill resolution."""
+
+    if not skill_paths or swarm is None:
+        return
+    for agent in _iter_swarm_config_agents(swarm):
+        conf = getattr(agent, "conf", None)
+        if conf is None:
+            continue
+        ext = dict(getattr(conf, "ext", None) or {})
+        resolver_inputs = dict(ext.get("skill_resolver_inputs", {}) or {})
+        sources = [
+            str(item)
+            for item in resolver_inputs.get("compatibility_sources", [])
+            if str(item).strip()
+        ]
+        for skill_path in skill_paths:
+            if skill_path not in sources:
+                sources.append(skill_path)
+        resolver_inputs["compatibility_sources"] = sources
+        ext["skill_resolver_inputs"] = resolver_inputs
+        conf.ext = ext
+
+
 class CliRuntime(BaseCliRuntime):
     """
     CLI runtime that supports agents from multiple sources.
@@ -136,6 +163,7 @@ class CliRuntime(BaseCliRuntime):
         resume_cwd: str | None = None,
         fail_on_missing_agent: bool = False,
         self_evolve_config=None,
+        skill_paths: Optional[List[str]] = None,
     ):
         """
         Initialize CLI Runtime.
@@ -167,6 +195,13 @@ class CliRuntime(BaseCliRuntime):
         self._resume_cwd = resume_cwd
         self._fail_on_missing_agent = fail_on_missing_agent
         self._self_evolve_config = self_evolve_config
+        self.runtime_skill_paths = tuple(
+            dict.fromkeys(
+                str(Path(item).expanduser().resolve())
+                for item in skill_paths or ()
+                if str(item).strip()
+            )
+        )
     
     def _parse_config(
         self, 
@@ -414,6 +449,10 @@ class CliRuntime(BaseCliRuntime):
                 swarm = await local_agent.get_swarm(temp_context)
 
             _apply_self_evolve_config_to_swarm(swarm, self._self_evolve_config)
+            _apply_runtime_skill_paths_to_swarm(
+                swarm,
+                self.runtime_skill_paths,
+            )
             
             executor = LocalAgentExecutor(
                 swarm, 

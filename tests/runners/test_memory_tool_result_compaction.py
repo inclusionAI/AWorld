@@ -118,6 +118,7 @@ async def test_default_memory_handler_compacts_large_tool_results(monkeypatch):
     assert compaction["applied"] is True
     assert compaction["original_content"] == raw_output
     assert compaction["original_token_count"] > 20
+    assert compaction["original_token_count_estimated"] is False
 
 
 @pytest.mark.asyncio
@@ -432,3 +433,9 @@ async def test_default_memory_handler_compacts_large_tool_results_by_char_length
     assert stored_item.content != raw_output
     assert "Tool output compacted for context reuse." in stored_item.content
     assert stored_item.metadata["ext_info"]["tool_result_compaction"]["trigger"] == "char_threshold"
+    assert (
+        stored_item.metadata["ext_info"]["tool_result_compaction"][
+            "original_token_count_estimated"
+        ]
+        is True
+    )

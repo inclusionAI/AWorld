@@ -206,7 +206,33 @@ def compile_repair_conformance_contract(
             )
         )
     )
+    if "finalize_after_successful_endpoint_interaction" in failure_codes:
+        # The replay implementation already completed a bidirectional data-plane
+        # interaction. This repair belongs to the target skill content, not to a
+        # candidate-owned compiler/runtime branch, so source conformance must not
+        # force an unrelated protocol edit.
+        return None
     manifest_path, branch_paths = _replay_implementation_paths(base_sources)
+    compiler_path = _replay_compiler_path(
+        base_sources,
+        manifest_path=manifest_path,
+    )
+    requires_selector_alignment = (
+        "align_compiler_runtime_recorded_response_selection" in failure_codes
+    )
+    if requires_selector_alignment and compiler_path is not None:
+        branch_paths = tuple(
+            dict.fromkeys((compiler_path, *branch_paths))
+        )
+    else:
+        compile_failure_paths = _compile_failure_branch_paths(
+            diagnostics,
+            manifest_path=manifest_path,
+            compiler_path=compiler_path,
+            runtime_paths=branch_paths,
+        )
+        if compile_failure_paths:
+            branch_paths = compile_failure_paths
     exact_probe = _exact_probe_constraint(diagnostics) or (
         inherited_contract.exact_probe
         if inherited_contract is not None
@@ -292,6 +318,55 @@ def compile_repair_conformance_contract(
     )
 
 
+def _compile_failure_branch_paths(
+    diagnostics: Sequence[Mapping[str, object]],
+    *,
+    manifest_path: str | None,
+    compiler_path: str | None,
+    runtime_paths: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Attribute compile diagnostics to the manifest, compiler, or runtime layer."""
+
+    compile_diagnostics = [
+        diagnostic
+        for diagnostic in diagnostics
+        if str(diagnostic.get("code") or "") in {
+            "invalid_replay_capability_compile",
+            "repair_capability_compile_failed",
+        }
+    ]
+    if not compile_diagnostics:
+        return ()
+    reason_text = " ".join(
+        str(diagnostic.get("reason") or "").casefold()
+        for diagnostic in compile_diagnostics
+    )
+    if any(
+        marker in reason_text
+        for marker in (
+            "unsupported replay capability schema",
+            "manifest protocol",
+            "manifest handles",
+            "manifest runtime_files",
+            "capability manifest",
+        )
+    ):
+        return (manifest_path,) if manifest_path is not None else ()
+    if any(
+        marker in reason_text
+        for marker in (
+            "skill runtime",
+            "aworld_replay_response_index",
+            "runtime entrypoint",
+            "runtime file",
+        )
+    ):
+        return runtime_paths
+    if compiler_path is not None:
+        return (compiler_path,)
+    return ()
+
+
 def evaluate_candidate_source_conformance(
     candidate: CandidateVariant,
     contract: RepairConformanceContract,
@@ -345,6 +420,16 @@ def evaluate_candidate_source_conformance(
     if changed_branch_slices or changed_selector_slices or (
         not contract.base_branch_fingerprints and changed_file_paths
     ):
+        selector_alignment_failure = (
+            _compiler_runtime_selector_alignment_failure(
+                changed_file_paths=changed_file_paths,
+                changed_branch_slices=changed_branch_slices,
+                changed_selector_slices=changed_selector_slices,
+                contract=contract,
+            )
+        )
+        if selector_alignment_failure is not None:
+            return selector_alignment_failure
         structural_failure = _fixture_probe_structure_failure(
             candidate_sources,
             contract=contract,
@@ -490,6 +575,31 @@ def _operation_response_correlation_failure(
         return None
     source_text = "\n".join(sources.values())
     has_index_binding = "AWORLD_REPLAY_RESPONSE_INDEX" in source_text
+    projection_sources = {
+        path: source
+        for path, source in sources.items()
+        if not contract.required_branch_paths
+        or path in contract.required_branch_paths
+    }
+    if has_index_binding and not _projects_response_index_record_value(
+        projection_sources
+    ):
+        return RepairConformanceResult(
+            passed=False,
+            code="operation_response_uncorrelated",
+            reason=(
+                "task-plane response traverses response-index metadata instead "
+                "of projecting the indexed recorded payload"
+            ),
+            details={
+                "operation": next(iter(operations), "unknown"),
+                "required_change": (
+                    "project response-index record['value'] (or resolve "
+                    "record['payload_path'] from the immutable fixture) before "
+                    "constructing the protocol result"
+                ),
+            },
+        )
     # Once a candidate advertises the framework index, do not let a shallow
     # synthetic contract (which may lack a numeric progress counter) hide a
     # response branch that still falls back to a module-global container.  The
@@ -710,6 +820,37 @@ def _operation_response_correlation_failure(
                 },
             )
     return None
+
+
+def _projects_response_index_record_value(
+    sources: Mapping[str, str],
+) -> bool:
+    """Return whether changed source reads the sidecar payload, not its metadata."""
+
+    for path, source in sources.items():
+        if PurePosixPath(path).suffix.casefold() != ".py":
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            key: object | None = None
+            if isinstance(node, ast.Subscript):
+                slice_node = node.slice
+                if isinstance(slice_node, ast.Constant):
+                    key = slice_node.value
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                key = node.args[0].value
+            if key in {"value", "payload_path"}:
+                return True
+    return False
 
 
 def _operation_branch(
@@ -1790,7 +1931,12 @@ def evaluate_compiled_probe_conformance(
                         "select a deterministic non-empty scalar leaf without arbitrary alphanumeric or narrow length filters",
                         "reuse one selected leaf across probes unless distinct values are required",
                         "reuse the same selector in compiler and runtime",
-                        "return the surrounding decoded recorded container in the protocol result payload",
+        (
+            "return the surrounding decoded recorded container in the protocol result "
+            "payload when it fits; otherwise return a deterministic bounded projection "
+            "under 48 KiB that retains at least two non-empty scalar descendants from "
+            "that same container when available"
+        ),
                         "choose probe request inputs that execute the fixture-derived handler branch rather than a constant-result branch",
                     ],
                     "forbidden_derivations": [
@@ -2212,6 +2358,75 @@ def _replay_implementation_paths(
         if PurePosixPath(path).suffix.lower() in _SOURCE_SUFFIXES
     )
     return None, fallback
+
+
+def _replay_compiler_path(
+    sources: Mapping[str, str],
+    *,
+    manifest_path: str | None,
+) -> str | None:
+    if manifest_path is None:
+        return None
+    content = sources.get(manifest_path)
+    if not isinstance(content, str):
+        return None
+    try:
+        manifest = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, Mapping):
+        return None
+    return _bounded_relative_path(manifest.get("entrypoint"))
+
+
+def _compiler_runtime_selector_alignment_failure(
+    *,
+    changed_file_paths: Sequence[str],
+    changed_branch_slices: Sequence[str],
+    changed_selector_slices: Sequence[str],
+    contract: RepairConformanceContract,
+) -> RepairConformanceResult | None:
+    """Require both sides of a proven compiler/runtime selector drift to move."""
+
+    if (
+        "align_compiler_runtime_recorded_response_selection"
+        not in contract.failure_codes
+        or not contract.required_branch_paths
+    ):
+        return None
+    changed_paths = set(changed_file_paths)
+    for item in (*changed_branch_slices, *changed_selector_slices):
+        path, _, _ = item.partition("#")
+        if path:
+            changed_paths.add(path)
+    compiler_path = contract.required_branch_paths[0]
+    runtime_paths = contract.required_branch_paths[1:]
+    compiler_changed = compiler_path in changed_paths
+    runtime_changed = (
+        any(path in changed_paths for path in runtime_paths)
+        if runtime_paths
+        else compiler_changed
+    )
+    if compiler_changed and runtime_changed:
+        return None
+    return RepairConformanceResult(
+        passed=False,
+        code="compiler_runtime_selector_drift_unresolved",
+        reason=(
+            "recorded-response selector drift requires a coordinated compiler "
+            "and runtime source change"
+        ),
+        details={
+            "focus_candidate_id": contract.focus_candidate_id,
+            "compiler_path": compiler_path,
+            "runtime_paths": list(runtime_paths),
+            "changed_paths": sorted(changed_paths),
+            "required_change": (
+                "derive the declared probe assertion and runtime response from "
+                "one canonical recorded-response selection algorithm"
+            ),
+        },
+    )
 
 
 def _request_covers_operation(request_text: str, operation: str) -> bool:

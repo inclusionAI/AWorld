@@ -291,6 +291,71 @@ async def test_llm_mutator_inherits_primary_content_for_files_only_delta() -> No
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_preserves_focused_skill_content_for_file_delta() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "rationale": "preserve the completed runtime while repairing finalization",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "def respond():\n    return {'recorded': True}\n",
+                }
+            ],
+        }
+
+    focused_content = "# Demo\n\nPersist the first bounded extract.\n"
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-timeout",
+                dataset_split="validation",
+                metrics={
+                    "failed_gates": ["candidate_replay"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_validation_diagnostics": [
+                        {
+                            "code": (
+                                "finalize_after_successful_endpoint_interaction"
+                            ),
+                            "stage": "candidate_task_behavior",
+                        }
+                    ],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-timeout",
+                        "content": focused_content,
+                        "files": [
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def respond():\n    return {'old': True}\n",
+                            }
+                        ],
+                    },
+                },
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert result.candidates[0].content == focused_content.rstrip()
+    assert "repair the target skill content" in prompts[0]
+    assert "Do not change readiness, protocol, compiler, or runtime behavior" in (
+        prompts[0]
+    )
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> None:
     prompts: list[str] = []
 
@@ -388,6 +453,336 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
 
 
 @pytest.mark.asyncio
+async def test_llm_mutator_judge_stage_repair_freezes_verified_replay_files() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": (
+                "# Demo\n\nLimit every final claim to a directly cited bounded field.\n"
+            ),
+            "rationale": "repair held-out claim and evidence alignment",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "def respond():\n    return {'regressed': True}\n",
+                },
+                {
+                    "path": "replay/new_probe.py",
+                    "content": "raise RuntimeError('unverified')\n",
+                },
+            ],
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-judged",
+                dataset_split="held_out",
+                metrics={
+                    "score": 69.6,
+                    "A1_groundedness": 3,
+                    "A2_completeness": 4,
+                    "evidence_incomplete": True,
+                    "failed_gates": [
+                        "evidence_quality",
+                        "held_out_verification",
+                    ],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-judged",
+                        "content": "# Demo\n\nPreserve the working task flow.\n",
+                        "files": [
+                            {
+                                "path": "replay/compiler.py",
+                                "operation": "upsert",
+                                "content": "def compile():\n    return 'verified'\n",
+                            },
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def respond():\n    return {'verified': True}\n",
+                            },
+                        ],
+                    },
+                },
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert "Preserve every candidate-owned replay file byte-for-byte" in prompts[0]
+    assert "repair_conformance" not in _prompt_payload(prompts[0])
+    assert [item.path for item in result.candidates[0].files] == [
+        "replay/compiler.py",
+        "replay/runtime.py",
+    ]
+    assert result.candidates[0].files[1].content == (
+        "def respond():\n    return {'verified': True}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_compile_repair_keeps_schema_layers_distinct() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "rationale": "repair the manifest protocol layer",
+            "files": [
+                {
+                    "path": "replay/capability.json",
+                    "content": (
+                        '{"schema_version":"aworld.skill.replay_capability.v1",'
+                        '"capability_id":"demo","protocol":'
+                        '"aworld.replay.subprocess.v1","entrypoint":'
+                        '"replay/compiler.py","handles":["http_resource"]}'
+                    ),
+                }
+            ],
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-invalid-manifest",
+                dataset_split="validation",
+                metrics={
+                    "failed_gates": ["replay_adaptation"],
+                    "candidate_validation_diagnostics": [
+                        {
+                            "code": "invalid_replay_capability_compile",
+                            "required_manifest_contract": {
+                                "protocol": "aworld.replay.subprocess.v1",
+                            },
+                            "required_compile_result_contract": {
+                                "runtime_service_transport": "skill_runtime",
+                            },
+                            "layering_rules": [
+                                "skill_runtime belongs only in result services"
+                            ],
+                        }
+                    ],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-invalid-manifest",
+                        "files": [
+                            {
+                                "path": "replay/capability.json",
+                                "operation": "upsert",
+                                "content": '{"protocol":"skill_runtime"}',
+                            },
+                            {
+                                "path": "replay/compiler.py",
+                                "operation": "upsert",
+                                "content": "def main():\n    pass\n",
+                            },
+                        ],
+                    },
+                },
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=1,
+    )
+
+    await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert "Repair the exact schema layer" in prompts[0]
+    assert "skill_runtime belongs only in a compiled result service" in prompts[0]
+    assert "runtime_required is only request status" in prompts[0]
+    assert "Do not guess alternative protocol names" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_focused_compile_repair_ignores_stale_finalization_feedback() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "rationale": "bound the recorded assertion while preserving the response",
+            "files": [
+                {
+                    "path": "replay/compiler.py",
+                    "content": (
+                        "def response_contains(recorded_scalar):\n"
+                        "    return recorded_scalar[:4096]\n"
+                    ),
+                }
+            ],
+        }
+
+    def feedback(
+        candidate_id: str,
+        code: str,
+        reason: str,
+        *,
+        authoritative: bool,
+    ) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["replay_adaptation"],
+                "failure_class": "candidate",
+                "repairable": True,
+                "authoritative_replay_failure": authoritative,
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": code,
+                        "stage": "capability_compile",
+                        "reason": reason,
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "content": "# Demo\n",
+                    "files": [
+                        {
+                            "path": "replay/compiler.py",
+                            "operation": "upsert",
+                            "content": "def response_contains(value):\n    return value\n",
+                        },
+                        {
+                            "path": "replay/runtime.py",
+                            "operation": "upsert",
+                            "content": "def respond():\n    return {'recorded': True}\n",
+                        },
+                    ],
+                },
+            },
+        )
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            feedback(
+                "candidate-authoritative",
+                "invalid_replay_capability_compile",
+                (
+                    "protocol probe response_contains must be non-empty and at most "
+                    "4096 characters"
+                ),
+                authoritative=True,
+            ),
+            feedback(
+                "candidate-stale",
+                "finalize_after_successful_endpoint_interaction",
+                "task rollout reached the data plane",
+                authoritative=False,
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert "non-empty fixture-derived scalar substring" in prompts[0]
+    assert "Do not change readiness, protocol, compiler, or runtime behavior" not in (
+        prompts[0]
+    )
+    assert result.candidates[0].files == (
+        CandidateFileDelta(
+            path="replay/compiler.py",
+            content=(
+                "def response_contains(recorded_scalar):\n"
+                "    return recorded_scalar[:4096]\n"
+            ),
+        ),
+        CandidateFileDelta(
+            path="replay/runtime.py",
+            content="def respond():\n    return {'recorded': True}",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_focused_context_repair_explains_bounded_projection() -> None:
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "rationale": "bound one recorded response container for the data plane",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": (
+                        "def respond(record):\n"
+                        "    return bounded_recorded_projection(record, 48 * 1024)\n"
+                    ),
+                }
+            ],
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-context-truncated",
+                dataset_split="validation",
+                metrics={
+                    "failed_gates": ["candidate_repair_conformance"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "authoritative_replay_failure": True,
+                    "candidate_validation_diagnostics": [
+                        {
+                            "code": "repair_probe_execution_failed",
+                            "stage": "repair_conformance",
+                            "reason": (
+                                "HTTP data-plane probe must return surrounding "
+                                "recorded response context"
+                            ),
+                        }
+                    ],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-context-truncated",
+                        "content": "# Demo\n",
+                        "files": [
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def respond(record):\n    return record['value']\n",
+                            }
+                        ],
+                    },
+                },
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert "already generated by the framework" in prompts[0]
+    assert "at least two non-empty scalar descendants" in prompts[0]
+    assert "below 48 KiB" in prompts[0]
+    assert "body larger than the 64 KiB protocol reader" in prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_trace_reflective_llm_mutator_prompt_contains_replay_requirements() -> None:
     prompts: list[str] = []
 
@@ -425,6 +820,85 @@ async def test_trace_reflective_llm_mutator_prompt_contains_replay_requirements(
     assert '"target_package_inventory": ["SKILL.md"]' in prompts[0]
     assert '"files"' in prompts[0]
     assert '"patch_intent"' in prompts[0]
+    assert "protocol is exactly aworld.replay.subprocess.v1" in prompts[0]
+    assert "never runtime_required or skill_runtime" in prompts[0]
+    assert "service transport skill_runtime" in prompts[0]
+    assert "Separate transport completion from task completion" in prompts[0]
+    assert "Never encode a blanket first-response-means-complete rule" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_repairs_first_transport_response_completion_policy() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": (
+                "# Demo\n\n"
+                "After the first successful response, treat the task interaction as "
+                "complete and return without further verification.\n"
+            ),
+            "rationale": "Stop after the first transport response.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert "Task Semantic Completion Invariant" in result.candidates[0].content
+    assert "delivery signal, not task completion" in result.candidates[0].content
+    assert "make exactly one materially different bounded" in (
+        result.candidates[0].content
+    )
+    assert "Do not issue more tool calls after that single fallback" in (
+        result.candidates[0].content
+    )
+    assert result.diagnostics[
+        "repaired_transport_completion_violation_candidates"
+    ] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_does_not_duplicate_semantic_completion_override() -> None:
+    guarded_content = (
+        "# Demo\n\n"
+        "After the first successful response, treat the task interaction as complete.\n\n"
+        "## Task Semantic Completion Invariant\n\n"
+        "Transport completion is not task completion. Verify that the payload directly "
+        "supports the user's requested result before returning.\n"
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": guarded_content,
+            "rationale": "Preserve the existing semantic completion override.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].content == guarded_content
+    assert result.candidates[0].content.count(
+        "## Task Semantic Completion Invariant"
+    ) == 1
+    assert result.diagnostics[
+        "repaired_transport_completion_violation_candidates"
+    ] == 0
 
 
 @pytest.mark.asyncio
@@ -702,6 +1176,11 @@ async def test_llm_mutator_prompt_uses_canonical_compiled_context_contract() -> 
     assert "If feedback mentions" not in instruction
     assert "return the value of expected_output" in instruction.lower()
     assert "same selected leaf may be reused by multiple probes" in instruction
+    assert "head -N is not a byte bound" in instruction
+    assert "explicit byte-bounded excerpts" in instruction
+    assert "protocol_eligible" in instruction
+    assert "transport_ready" in instruction
+    assert "must create parents such as output/fixtures" in instruction
     assert "diagnostic evidence rather than a value to hard-code" in instruction
 
 
@@ -957,6 +1436,19 @@ def test_feedback_normalization_turns_held_out_failure_into_generalization_const
     assert "generalize_runtime_behavior_across_task_variants" in summary["required_behaviors"]
     assert "preserve_validation_gains_on_held_out" in summary["required_behaviors"]
     assert "repair_held_out_regression_before_release" in summary["required_behaviors"]
+    assert (
+        "verify_task_semantic_sufficiency_before_finalizing"
+        in summary["required_behaviors"]
+    )
+    assert (
+        "do_not_treat_transport_success_as_task_completion"
+        in summary["required_behaviors"]
+    )
+    assert "semantically_insufficient_evidence" in summary["repair_plan"]["issues"]
+    assert (
+        "transport_success_is_not_accepted_without_task_semantic_support"
+        in summary["repair_plan"]["acceptance_criteria"]
+    )
 
 
 def test_feedback_normalization_preserves_lesson_memory_behaviors() -> None:
@@ -1556,6 +2048,142 @@ async def test_llm_mutator_accepts_runtime_delta_that_retains_high_baseline_cont
 
     assert len(result.candidates) == 1
     assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 0
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_checks_focused_repair_against_focused_candidate() -> None:
+    focused_content = (
+        "# Demo\n\n"
+        "Use the established bounded workflow and persist its verified result.\n"
+    )
+    repaired_content = (
+        focused_content.rstrip()
+        + "\n\n## Finalization Delta\n\n"
+        "Return immediately after the persisted result satisfies the acceptance check.\n"
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": repaired_content,
+            "rationale": "Preserve the focused candidate and add bounded finalization.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-regressed",
+                metrics={
+                    "baseline_score": 91.0,
+                    "candidate_score": 89.0,
+                    "score_delta": -2.0,
+                    "failed_gates": ["candidate_replay", "score_improvement"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_validation_diagnostics": [
+                        {
+                            "code": "finalize_after_successful_endpoint_interaction",
+                            "stage": "candidate_task_behavior",
+                        }
+                    ],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-regressed",
+                        "content": focused_content,
+                        "files": [
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def respond():\n    return {'ok': True}\n",
+                            }
+                        ],
+                    },
+                },
+                dataset_split="validation",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert result.diagnostics["filtered_high_baseline_regression_candidates"] == 0
+    assert result.diagnostics["filtered_noop_candidates"] == 0
+    assert result.diagnostics["filtered_duplicate_candidates"] == 0
+    assert result.diagnostics["filtered_invalid_patch_candidates"] == 0
+    assert len(result.candidates) == 1
+    assert result.candidates[0].content == repaired_content
+
+
+@pytest.mark.asyncio
+async def test_llm_mutator_applies_replace_patch_to_focused_candidate_base() -> None:
+    focused_content = (
+        "# Demo\n\n"
+        "Use the established bounded workflow.\n\n"
+        "## Finalization\n\n"
+        "Keep collecting.\n"
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "replace_section",
+                        "heading": "Finalization",
+                        "content": "Persist the verified result and return immediately.",
+                    }
+                ]
+            },
+            "rationale": "Replace one focused-candidate section.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance without that section.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-timeout",
+                metrics={
+                    "failed_gates": ["candidate_replay"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_validation_diagnostics": [
+                        {
+                            "code": "finalize_after_successful_endpoint_interaction",
+                            "stage": "candidate_task_behavior",
+                        }
+                    ],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-timeout",
+                        "content": focused_content,
+                        "files": [
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def respond():\n    return {'ok': True}\n",
+                            }
+                        ],
+                    },
+                },
+                dataset_split="validation",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert "Persist the verified result and return immediately." in (
+        result.candidates[0].content
+    )
+    assert "Keep collecting." not in result.candidates[0].content
+    assert result.candidates[0].files[0].path == "replay/runtime.py"
 
 
 @pytest.mark.asyncio

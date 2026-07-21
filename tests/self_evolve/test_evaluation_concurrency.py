@@ -176,3 +176,35 @@ async def test_cli_judge_subprocesses_receive_distinct_env_without_parent_mutati
         for item in captured_environments
     )
     assert os.environ["AWORLD_LOG_PATH"] == "parent-log-path"
+
+
+def test_cli_judge_subprocess_failure_includes_bounded_process_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout="unused output",
+            stderr="model profile not found or incomplete: missing-profile",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.evaluation.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _run_evaluator_cli_subprocess(
+            runner_kwargs={
+                "input": str(tmp_path / "input.log"),
+                "kind": "trajectory",
+                "judge_agent_name": "judge",
+                "out_dir": str(tmp_path / "out"),
+                "output": str(tmp_path / "report.json"),
+                "judge_timeout_seconds": 10,
+            },
+            log_path=tmp_path / "logs",
+            workspace_root=tmp_path,
+        )
+
+    reason = str(exc_info.value)
+    assert "model profile not found or incomplete: missing-profile" in reason
+    assert "unused output" in reason

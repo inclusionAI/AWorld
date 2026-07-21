@@ -78,6 +78,20 @@ def _service(*probes: ReplayProtocolProbe) -> ReplayServiceSpec:
     )
 
 
+def test_completed_task_interaction_does_not_force_runtime_repair() -> None:
+    focus = {
+        "repair_candidate_package": _package(),
+        "candidate_validation_diagnostics": [
+            {
+                "code": "finalize_after_successful_endpoint_interaction",
+                "stage": "candidate_task_behavior",
+            }
+        ],
+    }
+
+    assert compile_repair_conformance_contract(focus) is None
+
+
 def test_exact_probe_contract_rejects_rationale_only_or_unrelated_source_change() -> None:
     focus = {
         "repair_candidate_package": _package(),
@@ -153,6 +167,106 @@ def test_source_conformance_treats_omitted_runtime_delta_as_unchanged() -> None:
     result = evaluate_candidate_source_conformance(compiler_only, contract)
     assert result.passed is False
     assert result.code == "repair_branch_unchanged"
+
+
+def test_selector_drift_requires_coordinated_compiler_and_runtime_change() -> None:
+    base_runtime = "def respond():\n    return {'value': 'old'}\n"
+    base_compiler = "def compile_request():\n    return 'old'\n"
+    package = _package(base_runtime)
+    package["files"][1]["content"] = base_compiler
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": package,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": (
+                        "align_compiler_runtime_recorded_response_selection"
+                    ),
+                    "stage": "replay_capability",
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/compiler.py",
+        "replay/runtime.py",
+    )
+
+    runtime_only = _candidate(
+        compiler_source=base_compiler,
+        runtime_source="def respond():\n    return {'value': 'recorded'}\n",
+    )
+    result = evaluate_candidate_source_conformance(runtime_only, contract)
+    assert result.passed is False
+    assert result.code == "compiler_runtime_selector_drift_unresolved"
+
+    compiler_only = _candidate(
+        compiler_source="def compile_request():\n    return 'recorded'\n",
+        runtime_source=base_runtime,
+    )
+    result = evaluate_candidate_source_conformance(compiler_only, contract)
+    assert result.passed is False
+    assert result.code == "compiler_runtime_selector_drift_unresolved"
+
+    coordinated = _candidate(
+        compiler_source="def compile_request():\n    return 'recorded'\n",
+        runtime_source="def respond():\n    return {'value': 'recorded'}\n",
+    )
+    result = evaluate_candidate_source_conformance(coordinated, contract)
+    assert result.passed is True
+
+
+def test_compile_probe_failure_requires_compiler_change_not_runtime_change() -> None:
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "stage": "capability_compile",
+                    "reason": (
+                        "protocol probe response_contains must be non-empty and "
+                        "at most 4096 characters"
+                    ),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/compiler.py",)
+
+    compiler_only = _candidate(
+        compiler_source=(
+            "def compile_request(recorded_scalar):\n"
+            "    return recorded_scalar[:4096]\n"
+        ),
+        runtime_source="def respond():\n    return {}\n",
+    )
+    assert evaluate_candidate_source_conformance(compiler_only, contract).passed is True
+
+
+def test_compile_runtime_semantics_failure_still_requires_runtime_change() -> None:
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "stage": "capability_compile",
+                    "reason": (
+                        "skill runtime must consume "
+                        "AWORLD_REPLAY_RESPONSE_INDEX as a file path"
+                    ),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/runtime.py",)
 
 
 def test_task_plane_conformance_rejects_global_response_after_data_plane_progress() -> None:
@@ -362,6 +476,53 @@ def test_source_conformance_rejects_index_declared_but_global_task_response() ->
     assert "response-index record" in result.details["required_change"]
 
 
+def test_source_conformance_requires_projecting_response_index_record_value() -> None:
+    base_runtime = (
+        "def handle(request):\n"
+        "    if request.get('method') == 'records.query':\n"
+        "        return {'items': []}\n"
+        "    return {}\n"
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(base_runtime),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "stage": "replay_capability",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    candidate = _candidate(
+        runtime_source=(
+            "AWORLD_REPLAY_RESPONSE_INDEX = 'responses.json'\n"
+            "RESPONSE_INDEX = {'records': ["
+            "{'operation': 'records.query', 'non_empty': True, "
+            "'value': {'items': ['recorded']}}]}\n\n"
+            "def handle(request):\n"
+            "    operation = request.get('method')\n"
+            "    if operation == 'records.query':\n"
+            "        record = next(item for item in RESPONSE_INDEX['records'] "
+            "if item.get('operation') == operation)\n"
+            "        return {'items': [record.get('operation')]}\n"
+            "    return {}\n"
+        )
+    )
+
+    result = evaluate_candidate_source_conformance(candidate, contract)
+
+    assert result.passed is False
+    assert result.code == "operation_response_uncorrelated"
+    assert result.details["required_change"] == (
+        "project response-index record['value'] (or resolve "
+        "record['payload_path'] from the immutable fixture) before constructing "
+        "the protocol result"
+    )
+
+
 def test_source_conformance_ignores_unrelated_selector_not_reached_by_probe() -> None:
     base_runtime = (
         "FIXTURE_DATA = {}\n"
@@ -388,7 +549,10 @@ def test_source_conformance_ignores_unrelated_selector_not_reached_by_probe() ->
     candidate = _candidate(
         runtime_source=(
             "AWORLD_REPLAY_RESPONSE_INDEX = 'responses.json'\n"
-            "RESPONSE_INDEX = {'records.query': {'items': ['recorded']}}\n"
+            "RESPONSE_RECORDS = ["
+            "{'operation': 'records.query', 'value': {'items': ['recorded']}}]\n"
+            "RESPONSE_INDEX = {"
+            "record['operation']: record['value'] for record in RESPONSE_RECORDS}\n"
             "FIXTURE_DATA = {}\n"
             "def _normalize_fixture_list(key):\n"
             "    return FIXTURE_DATA.get(key, [])\n\n"
@@ -1456,7 +1620,12 @@ def test_task_plane_probe_must_use_a_nested_fixture_leaf_not_a_key_token() -> No
         "select a deterministic non-empty scalar leaf without arbitrary alphanumeric or narrow length filters",
         "reuse one selected leaf across probes unless distinct values are required",
         "reuse the same selector in compiler and runtime",
-        "return the surrounding decoded recorded container in the protocol result payload",
+        (
+            "return the surrounding decoded recorded container in the protocol result "
+            "payload when it fits; otherwise return a deterministic bounded projection "
+            "under 48 KiB that retains at least two non-empty scalar descendants from "
+            "that same container when available"
+        ),
         "choose probe request inputs that execute the fixture-derived handler branch rather than a constant-result branch",
     ]
     assert "mapping keys" in result.details["forbidden_derivations"]

@@ -74,7 +74,8 @@ _COMPARABLE_TASK_FAILURE_TYPES = {
 }
 _COMPARABLE_TASK_FAILURE_REASONS = {"evidence_quality_failed"}
 _LOOPBACK_HTTP_ENDPOINT_PATTERN = re.compile(
-    r"(?i)https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d{1,5})?"
+    r"(?i)https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])"
+    r"(?::\d{1,5})?(?![:\d])"
 )
 _REPLAY_PROVENANCE_METRIC_KEYS = (
     "adaptation_fingerprint",
@@ -475,7 +476,13 @@ def _baseline_comparison_trajectory(
         return list(baseline.trajectory), (
             "replay" if baseline.succeeded else "failed_replay"
         )
-    if _is_task_rollout_capability_failure(baseline.failure):
+    if (
+        _is_task_rollout_capability_failure(baseline.failure)
+        or (
+            _replay_failure_outcome(baseline.failure) == "task_failure"
+            and _has_replay_execution_evidence(baseline)
+        )
+    ):
         failure_summary = sanitize_text(
             json.dumps(
                 baseline.failure,
@@ -496,10 +503,31 @@ def _baseline_comparison_trajectory(
                     "status": "failed",
                     "failure": failure_summary,
                 },
-                "meta": {"trajectory_source": "replay_failure"},
+                "meta": {"trajectory_source": "task_failure"},
             }
         ], "replay_failure"
     return [], "unavailable"
+
+
+def _has_replay_execution_evidence(result: ReplayVariantResult) -> bool:
+    """Require evidence that an empty failure came from this replay execution."""
+
+    if result.stdout_path or result.stderr_path:
+        return True
+    metrics = result.metrics
+    return bool(
+        isinstance(metrics, Mapping)
+        and any(
+            key in metrics
+            for key in (
+                "latency_ms",
+                "repetition_count",
+                "successful_repetition_count",
+                "failed_repetition_count",
+                *_REPLAY_PROVENANCE_METRIC_KEYS,
+            )
+        )
+    )
 
 
 class CandidateReplayBackend(Protocol):
@@ -595,6 +623,7 @@ class ReplayExecutionRequest:
     task_text: str
     skill_root: str | None
     artifact_dir: str
+    skill_names: tuple[str, ...] = ()
     agent: str | None = None
     timeout_seconds: float | None = None
     max_steps: int | None = None
@@ -956,6 +985,163 @@ def _attach_replay_service_protocol_diagnostics(
             "replay_service_protocol_trace_count": len(combined[:4]),
         },
     )
+
+
+def _classify_candidate_task_rollout_nontermination(
+    result: ReplayExecutionResult,
+    *,
+    variant_id: str,
+) -> ReplayExecutionResult:
+    """Attribute a post-response timeout to reusable candidate behavior."""
+
+    failure = result.failure
+    if (
+        variant_id == "baseline"
+        or not isinstance(failure, Mapping)
+        or failure.get("type") != "TimeoutExpired"
+        or failure.get("outcome") is not None
+    ):
+        return result
+    completed_operations = _completed_replay_data_plane_operations(failure)
+    if not completed_operations:
+        return result
+    classified = {
+        **dict(failure),
+        "outcome": "candidate_failure",
+        "failure_class": "candidate_task_behavior",
+        "failure_stage": "task_rollout",
+        "repairable": True,
+        "completed_data_plane_operations": list(completed_operations),
+    }
+    return replace(result, failure=classified)
+
+
+def _completed_replay_data_plane_operations(
+    failure: Mapping[str, Any],
+) -> tuple[str, ...]:
+    diagnostics = failure.get("diagnostics")
+    traces = (
+        diagnostics.get("replay_service_protocol_traces")
+        if isinstance(diagnostics, Mapping)
+        else None
+    )
+    if not isinstance(traces, list):
+        return ()
+    inbound: set[str] = set()
+    outbound: set[str] = set()
+    ordered: list[str] = []
+    for trace in traces[:8]:
+        if not isinstance(trace, Mapping):
+            continue
+        tail = trace.get("tail")
+        if not isinstance(tail, str):
+            continue
+        for line in tail.splitlines()[-256:]:
+            try:
+                record = json.loads(line)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, Mapping):
+                continue
+            direction = str(record.get("direction") or "").strip().casefold()
+            operations = _protocol_trace_operation_names(record)
+            if direction in {"in", "inbound", "received", "receive", "recv"}:
+                inbound.update(operations)
+            elif direction in {
+                "out",
+                "outbound",
+                "emitted",
+                "emit",
+                "send",
+                "sent",
+            }:
+                outbound.update(operations)
+            for operation in operations:
+                if operation not in ordered:
+                    ordered.append(operation)
+    return tuple(
+        operation
+        for operation in ordered
+        if operation in inbound and operation in outbound
+    )
+
+
+def _protocol_trace_operation_names(record: Mapping[str, Any]) -> tuple[str, ...]:
+    values: list[str] = []
+    control_values = {
+        "health",
+        "healthz",
+        "ready",
+        "readiness",
+        "startup",
+        "status",
+    }
+    transport_values = {
+        "get",
+        "post",
+        "put",
+        "patch",
+        "delete",
+        "head",
+        "options",
+        "http",
+        "request",
+        "response",
+    }
+
+    def append(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        if ":" in text or "=" in text:
+            separator = ":" if ":" in text else "="
+            key, nested = text.split(separator, 1)
+            if key.strip().casefold() in {
+                "method",
+                "operation",
+                "path",
+                "route",
+                "command",
+            }:
+                append(nested)
+                return
+        normalized = text.casefold().strip("/")
+        is_root_path = text == "/"
+        if (
+            (normalized or is_root_path)
+            and normalized not in control_values
+            and normalized not in transport_values
+            and text not in values
+        ):
+            values.append(text)
+
+    def visit(value: Any, *, depth: int = 0) -> None:
+        if depth > 4 or len(values) >= 32:
+            return
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                if str(key).casefold() in {
+                    "method",
+                    "operation",
+                    "path",
+                    "route",
+                    "command",
+                }:
+                    append(nested)
+                elif isinstance(nested, (Mapping, list, tuple)):
+                    visit(nested, depth=depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for nested in value[:64]:
+                if isinstance(nested, (Mapping, list, tuple)):
+                    visit(nested, depth=depth + 1)
+                else:
+                    append(nested)
+
+    visit(record.get("fields"))
+    correlation = record.get("correlation")
+    if isinstance(correlation, Mapping):
+        visit(correlation)
+    return tuple(values)
 
 
 class AWorldCliCandidateReplayBackend:
@@ -1470,6 +1656,11 @@ class AWorldCliCandidateReplayBackend:
             task_text=_task_text(task_input),
             skill_root=skill_root,
             artifact_dir=str(artifact_dir),
+            skill_names=(
+                (request.target.target_id,)
+                if skill_root and request.target.target_id
+                else ()
+            ),
             agent=request.agent,
             timeout_seconds=request.timeout_seconds,
             max_steps=request.max_steps,
@@ -1576,6 +1767,10 @@ class AWorldCliCandidateReplayBackend:
         execution_result = _attach_replay_service_protocol_diagnostics(
             execution_result,
             artifact_dir=artifact_dir,
+        )
+        execution_result = _classify_candidate_task_rollout_nontermination(
+            execution_result,
+            variant_id=variant_id,
         )
 
         metrics = {
@@ -1933,6 +2128,8 @@ class AWorldCliReplayExecutor:
             command.extend(["--agent", request.agent])
         if request.skill_root:
             command.extend(["--skill-path", request.skill_root])
+        for skill_name in request.skill_names:
+            command.extend(["--skill", skill_name])
         if request.max_steps is not None:
             command.extend(["--max-runs", str(request.max_steps)])
         if request.max_cost_usd is not None:
@@ -2767,10 +2964,12 @@ async def _start_replay_services(
     )
     endpoints: dict[str, str] = {}
     environment: dict[str, str] = {}
-    recorded_response_values = (
-        replay_capability_fixture_response_leaf_values(capability)
-        if required_recorded_probe_operations
-        else {}
+    # Read the operation-indexed response evidence for every preflight.  Strict
+    # task-plane probes use the values as acceptance requirements; ordinary
+    # probes use them only to classify compiler/runtime selector drift without
+    # exposing recorded payloads in diagnostics.
+    recorded_response_values = _replay_capability_recorded_response_values(
+        capability
     )
     fixture_service = Path(__file__).with_name("fixture_service.py").resolve()
     try:
@@ -2894,20 +3093,67 @@ async def _start_replay_services(
                     ),
                 )
                 for protocol_probe in service.protocol_probes:
-                    require_nonempty_correlated_response = any(
-                        _request_declares_operation(
-                            protocol_probe.request_text,
-                            operation,
-                        )
+                    nonempty_probe_operations = tuple(
+                        operation
                         for operation in required_nonempty_probe_operations
-                    )
-                    require_recorded_response = any(
-                        _request_declares_operation(
+                        if _request_declares_operation(
                             protocol_probe.request_text,
                             operation,
                         )
-                        for operation in required_recorded_probe_operations
                     )
+                    recorded_probe_operations = tuple(
+                        operation
+                        for operation in required_recorded_probe_operations
+                        if _request_declares_operation(
+                            protocol_probe.request_text,
+                            operation,
+                        )
+                    )
+                    require_nonempty_correlated_response = bool(
+                        nonempty_probe_operations
+                    )
+                    require_recorded_response = bool(recorded_probe_operations)
+                    fixture_operation_values = recorded_response_values.get(
+                        service.response_fixture,
+                        {},
+                    )
+                    diagnostic_recorded_response_values = tuple(
+                        value
+                        for values in fixture_operation_values.values()
+                        for value in values
+                    )
+                    required_recorded_response_values: tuple[str, ...] = ()
+                    if require_recorded_response:
+                        required_recorded_response_values = tuple(
+                            value
+                            for operation in recorded_probe_operations
+                            for value in fixture_operation_values.get(operation, ())
+                        )
+                        if not required_recorded_response_values:
+                            raise ReplayServiceProtocolError(
+                                "recorded response context is missing for required "
+                                "probe operation"
+                            )
+                    elif (
+                        service.transport == "skill_runtime"
+                        and protocol_probe.kind == "http"
+                        and fixture_operation_values
+                    ):
+                        # A compiler's response_contains is only a bounded
+                        # fixture-derived assertion leaf. For a skill runtime,
+                        # the framework-owned sidecar is the authoritative
+                        # response contract. Default an operation-less HTTP
+                        # data-plane probe to the first recorded operation,
+                        # matching the runtime's deterministic initial cursor.
+                        required_recorded_response_values = next(
+                            iter(fixture_operation_values.values())
+                        )
+                    effective_response_contains = protocol_probe.response_contains
+                    if (
+                        protocol_probe.kind == "http"
+                        and required_recorded_response_values
+                    ):
+                        effective_response_contains = None
                     await _wait_for_replay_service(
                         process,
                         host="127.0.0.1",
@@ -2919,16 +3165,15 @@ async def _start_replay_services(
                             protocol_probe.validate_advertised_websockets
                         ),
                         request_text=protocol_probe.request_text,
-                        response_contains=protocol_probe.response_contains,
+                        response_contains=effective_response_contains,
                         require_nonempty_correlated_response=(
                             require_nonempty_correlated_response
                         ),
                         required_recorded_response_values=(
-                            recorded_response_values.get(
-                                service.response_fixture, ()
-                            )
-                            if require_recorded_response
-                            else ()
+                            required_recorded_response_values
+                        ),
+                        diagnostic_recorded_response_values=(
+                            diagnostic_recorded_response_values
                         ),
                     )
                 if service.transport == "skill_runtime":
@@ -3075,6 +3320,139 @@ def replay_capability_fixture_response_leaf_values(
         for path, values in response_values.items()
         if values
     }
+
+
+def _replay_capability_recorded_response_values(
+    capability: FrozenReplayCapability,
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Read bounded strict-probe expectations from operation-indexed sidecars.
+
+    The first non-empty record for an operation is the response a fresh replay
+    runtime's deterministic per-operation cursor must serve. Keeping the values
+    grouped by operation prevents unrelated fixture outputs from satisfying (or
+    over-constraining) a task-plane probe.
+    """
+
+    fixture_root = (
+        Path(capability.frozen_root).expanduser().resolve() / "fixtures"
+    ).resolve()
+    collected: dict[str, dict[str, tuple[str, ...]]] = {}
+    for service in capability.services[:16]:
+        relative = service.response_fixture
+        if relative in collected:
+            continue
+        try:
+            fixture_path = (fixture_root / relative).resolve(strict=True)
+            if (
+                not fixture_path.is_relative_to(fixture_root)
+                or not fixture_path.is_file()
+                or fixture_path.is_symlink()
+            ):
+                continue
+            sidecar_path = fixture_path.with_suffix(".responses.json")
+            if (
+                not sidecar_path.is_file()
+                or sidecar_path.is_symlink()
+                or sidecar_path.stat().st_size > 8 * 1024 * 1024
+            ):
+                continue
+            index = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(index, Mapping):
+            continue
+        records = index.get("records")
+        if not isinstance(records, list):
+            continue
+        operation_values: dict[str, tuple[str, ...]] = {}
+        for record in records[:4096]:
+            if not isinstance(record, Mapping) or record.get("non_empty") is not True:
+                continue
+            operation = record.get("operation")
+            if (
+                not isinstance(operation, str)
+                or not operation.strip()
+                or operation in operation_values
+                or "value" not in record
+            ):
+                continue
+            values = _recorded_response_value_probe_values(record.get("value"))
+            if values:
+                operation_values[operation] = values
+        if operation_values:
+            collected[relative] = operation_values
+    return collected
+
+
+def _recorded_response_value_probe_values(value: Any) -> tuple[str, ...]:
+    """Return one container assertion plus bounded descendant scalar assertions."""
+
+    selected: list[str] = []
+
+    def append(text: str) -> None:
+        normalized = text.strip()
+        if (
+            normalized
+            and len(normalized) <= 4096
+            and normalized not in selected
+            and len(selected) < 512
+        ):
+            selected.append(normalized)
+
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    visited = 0
+    recorded_container = False
+    while pending and visited < 4096 and len(selected) < 512:
+        current, decoded_depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            if not recorded_container:
+                encoded = json.dumps(
+                    current,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                append(encoded)
+                recorded_container = True
+            pending.extend(
+                (nested, decoded_depth)
+                for nested in reversed(list(current.values())[:512])
+            )
+            continue
+        if isinstance(current, (list, tuple)):
+            if not recorded_container:
+                encoded = json.dumps(
+                    current,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                append(encoded)
+                recorded_container = True
+            pending.extend(
+                (nested, decoded_depth)
+                for nested in reversed(list(current)[:512])
+            )
+            continue
+        if isinstance(current, str):
+            stripped = current.strip()
+            if (
+                decoded_depth < 4
+                and stripped[:1] in {"{", "["}
+                and len(stripped) <= 64 * 1024
+            ):
+                try:
+                    decoded = json.loads(stripped)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, (Mapping, list)):
+                    pending.append((decoded, decoded_depth + 1))
+                    continue
+            append(stripped)
+        elif isinstance(current, (int, float)) and not isinstance(current, bool):
+            append(json.dumps(current, ensure_ascii=False))
+    return tuple(selected)
 
 
 _RECORDED_RESPONSE_CONTAINER_KEYS = frozenset(
@@ -3463,6 +3841,7 @@ async def _wait_for_replay_service(
     response_contains: str | None = None,
     require_nonempty_correlated_response: bool = False,
     required_recorded_response_values: Sequence[str] = (),
+    diagnostic_recorded_response_values: Sequence[str] = (),
 ) -> None:
     deadline = time.monotonic() + timeout_seconds
     last_error: OSError | None = None
@@ -3486,6 +3865,9 @@ async def _wait_for_replay_service(
                 ),
                 required_recorded_response_values=(
                     required_recorded_response_values
+                ),
+                diagnostic_recorded_response_values=(
+                    diagnostic_recorded_response_values
                 ),
             )
             return
@@ -3514,6 +3896,7 @@ def _probe_replay_service(
     response_contains: str | None = None,
     require_nonempty_correlated_response: bool = False,
     required_recorded_response_values: Sequence[str] = (),
+    diagnostic_recorded_response_values: Sequence[str] = (),
 ) -> None:
     if kind == "websocket":
         _probe_websocket_handshake(
@@ -3528,6 +3911,9 @@ def _probe_replay_service(
             ),
             required_recorded_response_values=(
                 required_recorded_response_values
+            ),
+            diagnostic_recorded_response_values=(
+                diagnostic_recorded_response_values
             ),
         )
         return
@@ -3579,7 +3965,22 @@ def _probe_replay_service(
                 path=path,
                 expected=response_contains,
                 response=response,
+                diagnostic_recorded_response_values=(
+                    diagnostic_recorded_response_values
+                ),
             )
+        )
+    recorded_values = _bounded_recorded_response_probe_values(
+        required_recorded_response_values
+    )
+    required_matches = min(2, len(recorded_values))
+    if required_matches and sum(
+        1
+        for value in recorded_values
+        if replay_payload_contains_expected_value(value, match_payload)
+    ) < required_matches:
+        raise ReplayServiceProtocolError(
+            "HTTP data-plane probe must return surrounding recorded response context"
         )
     if kind == "http" and (
         validate_advertised_websockets or b"ws://" in response
@@ -3706,6 +4107,7 @@ def _probe_websocket_handshake(
     response_contains: str | None = None,
     require_nonempty_correlated_response: bool = False,
     required_recorded_response_values: Sequence[str] = (),
+    diagnostic_recorded_response_values: Sequence[str] = (),
 ) -> None:
     request_path = path + (f"?{query}" if query else "")
     raw_key = b"aworld-replay-v1"
@@ -3746,6 +4148,9 @@ def _probe_websocket_handshake(
                     ),
                     required_recorded_response_values=(
                         required_recorded_response_values
+                    ),
+                    diagnostic_recorded_response_values=(
+                        diagnostic_recorded_response_values
                     ),
                 )
     except ReplayServiceProtocolError:
@@ -3816,6 +4221,7 @@ def _probe_websocket_text_exchange(
     response_contains: str | None,
     require_nonempty_correlated_response: bool = False,
     required_recorded_response_values: Sequence[str] = (),
+    diagnostic_recorded_response_values: Sequence[str] = (),
 ) -> None:
     _send_masked_websocket_frame(
         connection,
@@ -3851,6 +4257,9 @@ def _probe_websocket_text_exchange(
                 path=path,
                 expected=response_contains,
                 response=response_payload,
+                diagnostic_recorded_response_values=(
+                    diagnostic_recorded_response_values
+                ),
             )
         )
 
@@ -3970,17 +4379,41 @@ def _nonempty_protocol_result(value: Any) -> bool:
 
 
 def _protocol_result_contains(value: Any, expected: str) -> bool:
+    expected_container: Mapping[str, Any] | list[Any] | None = None
+    stripped_expected = expected.strip()
+    if (
+        stripped_expected[:1] in {"{", "["}
+        and len(stripped_expected) <= 4096
+    ):
+        try:
+            decoded_expected = json.loads(stripped_expected)
+        except json.JSONDecodeError:
+            decoded_expected = None
+        if isinstance(decoded_expected, (Mapping, list)):
+            expected_container = decoded_expected
+
     pending: list[Any] = [value]
     visited = 0
     while pending and visited < 4096:
         current = pending.pop()
         visited += 1
         if isinstance(current, str):
+            if expected_container is not None and len(current) <= 64 * 1024:
+                try:
+                    decoded_current = json.loads(current)
+                except json.JSONDecodeError:
+                    decoded_current = None
+                if decoded_current == expected_container:
+                    return True
             if expected in current:
                 return True
         elif isinstance(current, Mapping):
+            if expected_container is not None and current == expected_container:
+                return True
             pending.extend(list(current.values())[:512])
         elif isinstance(current, (list, tuple)):
+            if expected_container is not None and list(current) == expected_container:
+                return True
             pending.extend(list(current)[:512])
         elif current is not None and expected in str(current):
             return True
@@ -3993,6 +4426,7 @@ def _protocol_probe_response_mismatch(
     path: str,
     expected: str,
     response: bytes,
+    diagnostic_recorded_response_values: Sequence[str] = (),
 ) -> str:
     expected_bytes = expected.encode("utf-8")
     preview_bytes = (
@@ -4008,6 +4442,17 @@ def _protocol_probe_response_mismatch(
         expected,
         max_chars=120,
     ).replace("\n", " ")
+    selector_drift = _recorded_response_selector_drift(
+        expected=expected,
+        response=preview_bytes,
+        recorded_response_values=diagnostic_recorded_response_values,
+    )
+    classification = (
+        " classification=recorded_response_selector_drift"
+        " required_change=align_compiler_runtime_recorded_response_selection"
+        if selector_drift
+        else ""
+    )
     return (
         "protocol probe response mismatch: "
         f"kind={sanitize_text(kind, max_chars=24)} "
@@ -4018,6 +4463,51 @@ def _protocol_probe_response_mismatch(
         f"expected_preview={expected_preview} "
         f"response_bytes={len(response)} "
         f"response_preview={preview}"
+        f"{classification}"
+    )
+
+
+def _recorded_response_selector_drift(
+    *,
+    expected: str,
+    response: bytes,
+    recorded_response_values: Sequence[str],
+) -> bool:
+    """Classify a probe whose two candidate-owned selectors chose differently.
+
+    The framework does not choose a replacement assertion. It only observes
+    that the runtime response contains immutable recorded-response evidence
+    while the compiler-declared assertion is not part of that indexed evidence.
+    This gives the next repair a precise, payload-free failure class.
+    """
+
+    values = _bounded_recorded_response_probe_values(recorded_response_values)
+    if not values:
+        return False
+    expected_is_recorded = any(
+        _protocol_probe_values_equivalent(expected, value)
+        for value in values
+    )
+    if expected_is_recorded:
+        return False
+    return any(
+        replay_payload_contains_expected_value(value, response)
+        for value in values
+    )
+
+
+def _protocol_probe_values_equivalent(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    try:
+        decoded_left = json.loads(left)
+        decoded_right = json.loads(right)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(decoded_left, (Mapping, list))
+        and isinstance(decoded_right, (Mapping, list))
+        and decoded_left == decoded_right
     )
 
 
@@ -4322,8 +4812,10 @@ Self-evolve replay evidence requirements:
 - Preserve the original user task above, but execute it with artifact-first evidence handling.
 - Do not stream large raw tool outputs, full pages, full documents, large JSON, or long logs directly into the conversation.
 - Persist large or unknown-size source material under this exact artifact directory before inspecting or summarizing it: {artifact_dir}
+- Redirect large or unknown-size responses directly to an artifact file. A line-count limit such as `head -N` is not a byte bound because JSON, HTML, and logs may contain one very large line; inspect only an explicit byte-bounded excerpt or selected structured fields from the saved artifact.
 - Also export or use AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR={artifact_dir} when invoking tools that can receive environment variables.
 - Append one JSON object per evidence source to this exact replay evidence_manifest.jsonl file: {evidence_manifest}
+- Serialize each manifest object compactly on one physical line (for example with json.dumps and no indentation), then parse that line once before appending it; do not append pretty-printed multi-line JSON.
 - Also export or use AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST={evidence_manifest} when invoking tools that can receive environment variables.
 - Each manifest object must include source_id, extraction_method, and the bounded excerpt or field list used for the final answer.
 - File-backed evidence must include artifact_path. Non-file operation evidence must instead use evidence_type="metadata" with a structured metadata object; never place job IDs, status text, or multiple values into artifact_path.
@@ -4516,17 +5008,15 @@ def _evidence_manifest_metrics(
     entries: list[Mapping[str, Any]] = []
     invalid_reasons: list[str] = []
     archived_entry_count = 0
-    for line_number, line in enumerate(
-        evidence_manifest.read_text(encoding="utf-8", errors="replace").splitlines(),
-        start=1,
+    manifest_text = evidence_manifest.read_text(
+        encoding="utf-8",
+        errors="replace",
+    )
+    for line_number, entry, decode_error in _decode_evidence_manifest_stream(
+        manifest_text
     ):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            entry = json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            invalid_reasons.append(f"line {line_number}: {exc.msg}")
+        if decode_error is not None:
+            invalid_reasons.append(f"line {line_number}: {decode_error}")
             continue
         if not isinstance(entry, Mapping):
             invalid_reasons.append(f"line {line_number}: entry is not an object")
@@ -4563,6 +5053,47 @@ def _evidence_manifest_metrics(
     )
     metrics.update(bundle_metrics)
     return metrics
+
+
+def _decode_evidence_manifest_stream(
+    manifest_text: str,
+) -> list[tuple[int, Any, str | None]]:
+    """Decode JSONL plus whitespace-separated pretty-printed JSON objects.
+
+    The replay contract asks agents to append one compact object per line, but
+    shell heredocs and ``json.dumps(..., indent=2)`` commonly produce a stream
+    of complete multi-line objects. Treat object boundaries from the JSON
+    grammar as authoritative while preserving line-local diagnostics for
+    malformed content. Every decoded value still passes the same schema,
+    artifact-boundary, and bounded-evidence checks below.
+    """
+
+    decoder = json.JSONDecoder()
+    decoded: list[tuple[int, Any, str | None]] = []
+    cursor = 0
+    text_length = len(manifest_text)
+    while cursor < text_length:
+        while cursor < text_length and manifest_text[cursor].isspace():
+            cursor += 1
+        if cursor >= text_length:
+            break
+        line_number = manifest_text.count("\n", 0, cursor) + 1
+        try:
+            value, end = decoder.raw_decode(manifest_text, cursor)
+        except json.JSONDecodeError as exc:
+            decoded.append(
+                (
+                    line_number,
+                    None,
+                    exc.msg,
+                )
+            )
+            newline = manifest_text.find("\n", cursor)
+            cursor = text_length if newline < 0 else newline + 1
+            continue
+        decoded.append((line_number, value, None))
+        cursor = end
+    return decoded
 
 
 def _write_evidence_bundle(
@@ -4622,7 +5153,7 @@ def _canonical_evidence_entry(
     }
     if evidence_type == "metadata":
         canonical["evidence_type"] = "metadata"
-        canonical["metadata"] = dict(entry.get("metadata") or {})
+        canonical["metadata"] = _metadata_evidence_payload(entry)
     elif artifact_path is not None:
         canonical["artifact_path"] = str(artifact_path)
     return canonical
@@ -4633,7 +5164,27 @@ def _bounded_evidence_payload(entry: Mapping[str, Any]) -> dict[str, Any]:
     for key in _MANIFEST_EVIDENCE_PAYLOAD_KEYS:
         if key in entry:
             payload[key] = entry[key]
+    for alias, canonical_key in _MANIFEST_EVIDENCE_PAYLOAD_ALIASES.items():
+        if canonical_key not in payload and alias in entry:
+            payload[canonical_key] = entry[alias]
     return payload
+
+
+def _metadata_evidence_payload(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the bounded structured payload for non-file evidence.
+
+    The preferred manifest shape nests operation data under ``metadata``.
+    Agents also commonly emit the same bounded data through one of the
+    manifest's established evidence payload fields (for example,
+    ``bounded_excerpt``).  Canonicalize that equivalent shape instead of
+    rejecting otherwise verifiable evidence; both forms remain subject to the
+    same JSON-serialization and size checks.
+    """
+
+    metadata = entry.get("metadata")
+    if isinstance(metadata, Mapping) and metadata:
+        return dict(metadata)
+    return _bounded_evidence_payload(entry)
 
 
 def _invalid_evidence_manifest_entry_reason(
@@ -4646,8 +5197,8 @@ def _invalid_evidence_manifest_entry_reason(
             return f"missing {key}"
     evidence_type = _manifest_evidence_type(entry)
     if evidence_type == "metadata":
-        metadata = entry.get("metadata")
-        if not isinstance(metadata, Mapping) or not metadata:
+        metadata = _metadata_evidence_payload(entry)
+        if not metadata:
             return "missing metadata"
         try:
             serialized_metadata = json.dumps(
@@ -4780,6 +5331,15 @@ _MANIFEST_EVIDENCE_PAYLOAD_KEYS = (
 )
 
 
+# Generated skills sometimes describe a list of bounded excerpts as the fields
+# selected from an artifact.  Normalize that structurally equivalent spelling
+# into the canonical bundle schema so downstream judges consume the explicit
+# evidence instead of falling back to a truncated artifact preview.
+_MANIFEST_EVIDENCE_PAYLOAD_ALIASES = {
+    "bounded_excerpt_fields": "bounded_excerpts",
+}
+
+
 _MANIFEST_INLINE_BOUNDED_EVIDENCE_KEYS = (
     "excerpt",
     "excerpts",
@@ -4789,11 +5349,15 @@ _MANIFEST_INLINE_BOUNDED_EVIDENCE_KEYS = (
     "claims_supported_by",
     "summary",
     "structured_summary",
+    *_MANIFEST_EVIDENCE_PAYLOAD_ALIASES,
 )
 
 
 def _has_manifest_evidence_payload(entry: Mapping[str, Any]) -> bool:
-    return _has_any_manifest_payload(entry, keys=_MANIFEST_EVIDENCE_PAYLOAD_KEYS)
+    return _has_any_manifest_payload(
+        entry,
+        keys=(*_MANIFEST_EVIDENCE_PAYLOAD_KEYS, *_MANIFEST_EVIDENCE_PAYLOAD_ALIASES),
+    )
 
 
 def _has_inline_bounded_evidence_payload(entry: Mapping[str, Any]) -> bool:

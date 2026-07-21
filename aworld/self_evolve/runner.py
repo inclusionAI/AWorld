@@ -117,6 +117,11 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayCapabilityRequirement,
 )
 from aworld.self_evolve.replay_capability import (
+    REPLAY_CAPABILITY_PROTOCOL_VERSION,
+    REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
+    REPLAY_CAPABILITY_SCHEMA_VERSION,
+    REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS,
+    REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS,
     FrozenReplayCapabilityAdapter,
     ReplayCapabilityCompileRequest,
     ReplayCapabilityError,
@@ -291,7 +296,7 @@ def _default_iteration_budget(
     return 10 if apply_policy == "auto_verified" else 1
 
 
-_DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 180
+_DEFAULT_CANDIDATE_SCREENING_TIMEOUT_SECONDS = 240
 
 
 def _candidate_screening_timeout(authoritative_timeout_seconds: int) -> int:
@@ -338,6 +343,23 @@ def _status_without_selected_candidate(
     return SelfEvolveRunStatus.REJECTED
 
 
+def _retryable_candidate_generation_failure(
+    failure: Mapping[str, object],
+) -> bool:
+    error_type = str(failure.get("error_type") or "").strip().casefold()
+    stage = str(failure.get("stage") or "").strip().casefold()
+    if stage not in {"model_provider", "model_response"}:
+        return False
+    return error_type in {
+        "apiconnectionerror",
+        "apitimeouterror",
+        "connectionerror",
+        "llmresponseerror",
+        "ratelimiterror",
+        "timeouterror",
+    }
+
+
 def _infrastructure_prevented_comparable_evaluation(
     failed_gates: Iterable[GateResult],
     *,
@@ -373,6 +395,49 @@ def _replay_adaptation_exception_details(
             "failure_class": "candidate",
             "repairable": True,
             "reason": reason,
+            "required_manifest_contract": {
+                "schema_version": REPLAY_CAPABILITY_SCHEMA_VERSION,
+                "protocol": REPLAY_CAPABILITY_PROTOCOL_VERSION,
+                "handles_values": list(
+                    REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS
+                ),
+                "entrypoint_role": (
+                    "relative compiler entrypoint that writes output/result.json"
+                ),
+                "runtime_files_role": (
+                    "candidate-owned files available to result service "
+                    "runtime_entrypoint"
+                ),
+            },
+            "required_compile_result_contract": {
+                "schema_version": REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
+                "service_transport_values": list(
+                    REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS
+                ),
+                "runtime_service_transport": "skill_runtime",
+                "requirement_classification": (
+                    "classify every request requirement_id exactly once as "
+                    "handled or unhandled"
+                ),
+            },
+            "layering_rules": [
+                (
+                    "manifest protocol is always the subprocess compiler "
+                    "protocol, never a service transport"
+                ),
+                (
+                    "manifest handles contains request requirement kinds, "
+                    "never readiness states or service transports"
+                ),
+                (
+                    "runtime_required is a requirement status and must not "
+                    "appear in handles"
+                ),
+                (
+                    "skill_runtime is a compile-result service transport and "
+                    "must not appear as manifest protocol or handles"
+                ),
+            ],
         }
         return {
             "failure_class": "candidate",
@@ -655,6 +720,7 @@ class SelfEvolveRunner:
         infrastructure_blocked = False
         progress_repair_families: set[str] = set()
         duplicate_population_stalls = 0
+        candidate_generation_infrastructure_retries = 0
         iteration_budget = (
             self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
         )
@@ -785,6 +851,14 @@ class SelfEvolveRunner:
                             "failed_gates": ["candidate_generation"],
                         }
                     )
+                    if (
+                        candidate_generation_infrastructure_retries < 2
+                        and _retryable_candidate_generation_failure(
+                            generation_failure
+                        )
+                    ):
+                        candidate_generation_infrastructure_retries += 1
+                        continue
                     break
                 protocol_invalid_count = _non_negative_int(
                     optimizer_result.diagnostics.get(
@@ -914,6 +988,7 @@ class SelfEvolveRunner:
                 continue
 
             duplicate_population_stalls = 0
+            candidate_generation_infrastructure_retries = 0
 
             screening_candidates = candidate_population
             repair_conformance_contracts = (
@@ -1395,7 +1470,13 @@ class SelfEvolveRunner:
                     await self._preflight_candidate_repair_conformance(
                         run_id=run_id,
                         target=target,
-                        dataset=screening_dataset,
+                        # Conformance probes are bounded and must cover every
+                        # fixture shape before the expensive representative
+                        # task rollout. A single-case preflight can otherwise
+                        # approve a runtime that fails immediately when the
+                        # authoritative dataset introduces another recorded
+                        # response shape.
+                        dataset=dataset,
                         candidate=candidate,
                         contract=conformance_contract,
                     )
@@ -4702,24 +4783,45 @@ def _repair_feedback_from_selected_candidate(
     if package is None:
         return ()
 
+    judge_metrics, judge_split = _selected_candidate_judge_metrics(
+        report,
+        candidate_id=candidate_id,
+    )
+    judge_repair_gates = {
+        "evidence_quality",
+        "required_verification",
+        "held_out_verification",
+        "judge_only_signal",
+        "global_regression_benchmark",
+        "score_improvement",
+        "cost_latency",
+        "replay_stability",
+    }
+
     gates: list[GateResult] = []
     for item in raw_gates:
         if not isinstance(item, Mapping) or item.get("passed") is not False:
             continue
         details = item.get("details")
-        if (
-            not isinstance(details, Mapping)
-            or details.get("failure_class") != "candidate"
-            or details.get("repairable") is not True
-        ):
-            continue
         gate_name = item.get("gate_name")
         if not isinstance(gate_name, str) or not gate_name:
             continue
-        bounded_details = dict(details)
+        candidate_repair = (
+            isinstance(details, Mapping)
+            and details.get("failure_class") == "candidate"
+            and details.get("repairable") is True
+        )
+        judge_repair = bool(judge_metrics) and gate_name in judge_repair_gates
+        if not candidate_repair and not judge_repair:
+            continue
+        bounded_details = dict(details) if isinstance(details, Mapping) else {}
+        if judge_repair:
+            bounded_details.setdefault("failure_class", "candidate")
+            bounded_details.setdefault("repairable", True)
+            bounded_details.setdefault("failure_stage", "judge_evaluation")
         failure_artifacts = _historical_failure_artifact_excerpts(
             report_path=report_path,
-            artifact_root=details.get("artifact_root"),
+            artifact_root=bounded_details.get("artifact_root"),
         )
         if failure_artifacts:
             bounded_details["failure_artifacts"] = list(failure_artifacts)
@@ -4734,6 +4836,7 @@ def _repair_feedback_from_selected_candidate(
     if not gates:
         return ()
     metrics = _typed_gate_feedback_metrics(gates)
+    metrics.update(judge_metrics)
     metrics.update(
         {
             "failed_gates": [gate.gate_name for gate in gates],
@@ -4748,9 +4851,70 @@ def _repair_feedback_from_selected_candidate(
         EvaluationSummary(
             variant_id=candidate_id,
             metrics=metrics,
-            dataset_split="historical_repair",
+            dataset_split=judge_split or "historical_repair",
         ),
     )
+
+
+def _selected_candidate_judge_metrics(
+    report: Mapping[str, Any],
+    *,
+    candidate_id: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Rehydrate judge metrics onto the selected candidate repair package.
+
+    Iteration history stores evaluated metrics separately from the candidate
+    source package.  Joining them here preserves the deepest repair frontier
+    when a later optimize run learns from a rejected report.
+    """
+
+    iterations = report.get("iterations")
+    if not isinstance(iterations, list):
+        return {}, None
+    for iteration in reversed(iterations):
+        if (
+            not isinstance(iteration, Mapping)
+            or iteration.get("candidate_id") != candidate_id
+        ):
+            continue
+        candidate_metrics = iteration.get("candidate_metrics")
+        held_out_metrics = iteration.get("held_out_metrics")
+        selected_metrics: Mapping[str, Any] | None = None
+        selected_split: str | None = None
+        if isinstance(held_out_metrics, Mapping) and any(
+            key in held_out_metrics
+            for key in (
+                "score",
+                "A1_groundedness",
+                "A2_completeness",
+                "evidence_incomplete",
+                "veto_triggered",
+            )
+        ):
+            selected_metrics = held_out_metrics
+            selected_split = "held_out"
+        elif isinstance(candidate_metrics, Mapping) and any(
+            key in candidate_metrics
+            for key in (
+                "score",
+                "A1_groundedness",
+                "A2_completeness",
+                "evidence_incomplete",
+                "veto_triggered",
+            )
+        ):
+            selected_metrics = candidate_metrics
+            selected_split = "validation"
+        if selected_metrics is None:
+            return {}, None
+        metrics = dict(selected_metrics)
+        failed_gates = iteration.get("failed_gates")
+        if isinstance(failed_gates, list):
+            metrics["failed_gates"] = [
+                str(gate) for gate in failed_gates if str(gate)
+            ]
+        return metrics, selected_split
+    return {}, None
 
 
 def _historical_failure_artifact_excerpts(
@@ -4945,11 +5109,15 @@ def _stored_repair_candidate_package(
         files.append(file_payload)
     if not files:
         return None
-    return {
+    package = {
         "candidate_id": sanitize_text(candidate_id, max_chars=160),
         "rationale": sanitize_text(payload.get("rationale"), max_chars=1_000),
         "files": files,
     }
+    raw_content = payload.get("content")
+    if isinstance(raw_content, str) and raw_content.strip():
+        package["content"] = sanitize_source_text(raw_content, max_chars=8_000)
+    return package
 
 
 def _lesson_feedback_from_report(
@@ -5697,6 +5865,11 @@ def _iteration_validation_feedback(
     )
     if repair_candidate_package is not None:
         typed_gate_metrics["repair_candidate_package"] = repair_candidate_package
+        # This helper is called only from the full candidate evaluation path.
+        # Mark its repair frontier explicitly so bounded representative screening
+        # or historical task-rollout feedback cannot outrank a later failure
+        # discovered across the authoritative dataset.
+        typed_gate_metrics["authoritative_replay_failure"] = True
     comparison_metrics = _baseline_comparison_feedback_metrics(
         baseline_summary=baseline_summary,
         candidate_summary=candidate_summary,
@@ -5990,6 +6163,11 @@ def _typed_gate_feedback_metrics(
     protocol_probe_mismatch = _diagnostic_protocol_probe_mismatch(
         tuple(classification_views)
     )
+    completed_data_plane_operations = (
+        _diagnostic_completed_data_plane_operations(
+            tuple(classification_views)
+        )
+    )
     if interaction_progress:
         result["interaction_progress"] = interaction_progress
     diagnostic_text = json.dumps(
@@ -6029,6 +6207,64 @@ def _typed_gate_feedback_metrics(
                     "handled requirement (including requirements that share an evidence "
                     "reference), or write without preserving source permissions. Ensure "
                     "every declared fixture path matches the file actually written."
+                ),
+            },
+        )
+    elif (
+        "protocol_trace.jsonl" in diagnostic_text
+        and any(
+            marker in diagnostic_text
+            for marker in (
+                "missing required summary fields",
+                "fields must be a list",
+                "correlation must be an object",
+                "direction must describe",
+                "must record both received and emitted",
+                "must contain one json object per line",
+                "records must be json objects",
+                "wrote an empty",
+                "did not write",
+            )
+        )
+    ):
+        diagnostics.insert(
+            0,
+            {
+                "code": "repair_protocol_trace_contract",
+                "stage": "replay_capability",
+                "failure_class": "candidate",
+                "repairable": True,
+                "reason": (
+                    "Repair the candidate runtime's bounded protocol_trace.jsonl "
+                    "writer. Every interaction record must be one JSON object with "
+                    "direction, sequence, kind, fields, and correlation. fields must "
+                    "be a list, correlation must be an object, and direction must "
+                    "describe only a received/inbound or emitted/outbound interaction. "
+                    "Record both sides of readiness and data-plane exchanges; do not "
+                    "write lifecycle-only directions such as system. Keep payload "
+                    "bodies and credentials out of the trace."
+                ),
+            },
+        )
+    elif "classification=recorded_response_selector_drift" in diagnostic_text:
+        diagnostics.insert(
+            0,
+            {
+                "code": "align_compiler_runtime_recorded_response_selection",
+                "stage": "replay_capability",
+                "failure_class": "candidate",
+                "repairable": True,
+                **protocol_probe_mismatch,
+                "reason": (
+                    "The runtime response already contains immutable recorded-response "
+                    "evidence, but the compiler-declared response_contains assertion "
+                    "comes from a different fixture selection path. Change both the "
+                    "compiler probe builder and the runtime selector. They must share "
+                    "one deterministic gateway, payload, decoding, ordering, and "
+                    "fallback algorithm so the declared scalar is a descendant of the "
+                    "exact recorded container returned by the runtime. Do not replace "
+                    "the runtime's response-index projection with the mismatched "
+                    "diagnostic preview, and do not hard-code either preview."
                 ),
             },
         )
@@ -6124,6 +6360,48 @@ def _typed_gate_feedback_metrics(
             },
         )
     elif (
+        "replay timed out" in diagnostic_text
+        and completed_data_plane_operations
+        and "candidate_task_behavior" in diagnostic_text
+    ):
+        result["required_behaviors"] = [
+            "persist_first_successful_structured_evidence",
+            "write_manifest_before_additional_collection",
+            "verify_task_semantic_sufficiency_before_finalizing",
+            "do_not_treat_transport_success_as_task_completion",
+            "continue_bounded_acquisition_when_payload_is_only_metadata_or_execution_summary",
+            "stop_after_sufficient_evidence",
+            "return_bounded_evidence_ledger",
+        ]
+        diagnostics.insert(
+            0,
+            {
+                "code": "finalize_after_successful_endpoint_interaction",
+                "stage": "candidate_task_behavior",
+                "failure_class": "candidate",
+                "repairable": True,
+                "completed_data_plane_operations": list(
+                    completed_data_plane_operations
+                ),
+                "reason": (
+                    "The supplied replay service completed a bidirectional "
+                    "non-control interaction, but the candidate continued until "
+                    "the outer task timeout instead of returning a bounded result. "
+                    "Preserve the verified replay runtime. Repair the reusable target "
+                    "instructions so the first successful structured extraction is "
+                    "persisted immediately, a valid evidence manifest is written before "
+                    "additional collection, and the saved payload is checked for direct "
+                    "semantic support of the requested claims. A handshake, HTTP success, "
+                    "structured envelope, metadata record, or execution summary is a delivery "
+                    "signal rather than task completion. If the payload is insufficient, use "
+                    "one materially different bounded artifact-backed source or report that "
+                    "insufficiency; stop only once sufficient evidence exists. Return only "
+                    "the requested bounded result and evidence ledger. "
+                    "Do not hard-code an operation, endpoint, task, or fixture value."
+                ),
+            },
+        )
+    elif (
         "discovery methods failed" in diagnostic_text
         or "failed to deserialize" in diagnostic_text
         or "missing field" in diagnostic_text
@@ -6194,6 +6472,30 @@ def _typed_gate_feedback_metrics(
     if diagnostics:
         result["candidate_validation_diagnostics"] = diagnostics[:16]
     return result
+
+
+def _diagnostic_completed_data_plane_operations(value: Any) -> tuple[str, ...]:
+    operations: list[str] = []
+
+    def visit(item: Any, *, depth: int = 0) -> None:
+        if depth > 8 or len(operations) >= 32:
+            return
+        if isinstance(item, Mapping):
+            raw = item.get("completed_data_plane_operations")
+            if isinstance(raw, (list, tuple)):
+                for operation in raw[:32]:
+                    text = str(operation or "").strip()
+                    if text and text not in operations:
+                        operations.append(text)
+            for nested in item.values():
+                if isinstance(nested, (Mapping, list, tuple)):
+                    visit(nested, depth=depth + 1)
+        elif isinstance(item, (list, tuple)):
+            for nested in item[:128]:
+                visit(nested, depth=depth + 1)
+
+    visit(value)
+    return tuple(operations)
 
 
 def _diagnostic_protocol_probe_mismatch(value: Any) -> dict[str, str]:
@@ -6272,6 +6574,68 @@ def _diagnostic_observed_request_operations(value: Any) -> tuple[str, ...]:
     observed: list[tuple[int, str]] = []
     operation_keys = {"action", "command", "method", "operation", "path", "route"}
     inbound_directions = {"in", "inbound", "receive", "received", "recv"}
+    transport_methods = {
+        "CONNECT",
+        "DELETE",
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PUT",
+        "TRACE",
+    }
+
+    def record_operation(raw_operation: str, *, sequence_number: int) -> None:
+        operation = sanitize_text(raw_operation, max_chars=120).strip()
+        if not operation or operation.upper() in transport_methods:
+            return
+        observed.append((sequence_number, operation))
+
+    def collect_operations(
+        source: Any,
+        *,
+        sequence_number: int,
+        depth: int = 0,
+    ) -> None:
+        if depth > 4:
+            return
+        if isinstance(source, Mapping):
+            for key, nested in list(source.items())[:64]:
+                normalized_key = str(key).strip().lower()
+                if normalized_key in operation_keys and isinstance(nested, str):
+                    record_operation(
+                        nested,
+                        sequence_number=sequence_number,
+                    )
+                    continue
+                if isinstance(nested, (Mapping, list, tuple)):
+                    collect_operations(
+                        nested,
+                        sequence_number=sequence_number,
+                        depth=depth + 1,
+                    )
+            return
+        if isinstance(source, (list, tuple)):
+            for nested in source[:64]:
+                collect_operations(
+                    nested,
+                    sequence_number=sequence_number,
+                    depth=depth + 1,
+                )
+            return
+        if not isinstance(source, str):
+            return
+        field_name, separator, field_value = source.partition(":")
+        if not separator:
+            field_name, separator, field_value = source.partition("=")
+        if field_name.strip().lower() not in operation_keys:
+            return
+        record_operation(
+            field_value,
+            sequence_number=sequence_number,
+        )
+
     for tail in trace_tails[:16]:
         for raw_line in tail.splitlines()[-256:]:
             try:
@@ -6290,19 +6654,10 @@ def _diagnostic_observed_request_operations(value: Any) -> tuple[str, ...]:
                 if isinstance(sequence, (int, float)) and not isinstance(sequence, bool)
                 else 0
             )
-            sources = [record]
-            correlation = record.get("correlation")
-            if isinstance(correlation, Mapping):
-                sources.append(correlation)
-            for source in sources:
-                for key, nested in source.items():
-                    if str(key).lower() not in operation_keys:
-                        continue
-                    if not isinstance(nested, str):
-                        continue
-                    operation = sanitize_text(nested, max_chars=120).strip()
-                    if operation:
-                        observed.append((sequence_number, operation))
+            collect_operations(
+                record,
+                sequence_number=sequence_number,
+            )
 
     ordered: list[str] = []
     for _, operation in sorted(observed, key=lambda item: item[0]):
@@ -6481,6 +6836,7 @@ def _repair_candidate_package_feedback(
     return {
         "candidate_id": sanitize_text(candidate.candidate_id, max_chars=160),
         "rationale": sanitize_text(candidate.rationale, max_chars=1_000),
+        "content": sanitize_source_text(candidate.content, max_chars=8_000),
         "files": files,
     }
 
@@ -7321,6 +7677,18 @@ def _runtime_behavior_rules_from_mutation_prompt(
             "and retain only claims it directly supports."
         )
 
+    if required_behaviors & {
+        "verify_task_semantic_sufficiency_before_finalizing",
+        "do_not_treat_transport_success_as_task_completion",
+        "continue_bounded_acquisition_when_payload_is_only_metadata_or_execution_summary",
+    } or repair_plan["issues"] & {"semantically_insufficient_evidence"}:
+        add(
+            "Treat transport success and structured envelopes as delivery signals, not task "
+            "completion: stop only when the saved payload directly supports the requested "
+            "claims; otherwise try one materially different bounded artifact-backed source "
+            "or report the insufficiency explicitly."
+        )
+
     if _feedback_has_scope_or_cost_issue(prompt) or required_behaviors & {
         "plan_before_tools",
         "prefer_direct_structured_extraction",
@@ -7447,10 +7815,10 @@ def _target_from_cli_ref(
     allow_auto_apply: bool = False,
 ) -> SelfEvolveTarget:
     target_type, _, target_id = target.partition(":")
-    if target_type != "skill" or not target_id:
+    if not target_type or not target_id:
         raise NotImplementedError(f"CLI target adapter is not implemented for {target!r}")
-    return _skill_target_from_id(
-        target_id,
+    return _target_from_ref(
+        SelfEvolveTargetRef(target_type=target_type, target_id=target_id),
         workspace_root=workspace_root,
         allow_auto_apply=allow_auto_apply,
     )
@@ -7485,35 +7853,49 @@ def _target_from_ref(
     workspace_root: str | Path,
     allow_auto_apply: bool = False,
 ) -> SelfEvolveTarget:
-    if target_ref.target_type == "skill":
-        if target_ref.path:
-            path = Path(target_ref.path)
-            if path.exists():
-                return SkillTextTarget(
-                    path,
-                    target_id=target_ref.target_id,
-                    allow_auto_apply=allow_auto_apply,
-                )
-            return DraftSkillTextTarget(
+    adapter_factory = _CLI_TARGET_ADAPTER_FACTORIES.get(target_ref.target_type)
+    if adapter_factory is None:
+        raise NotImplementedError(
+            "target inference selected "
+            f"{target_ref.target_type}:{target_ref.target_id}, but that target adapter "
+            "is not implemented for phase 1 CLI runs"
+        )
+    return adapter_factory(
+        target_ref,
+        workspace_root=workspace_root,
+        allow_auto_apply=allow_auto_apply,
+    )
+
+
+def _skill_target_adapter(
+    target_ref: SelfEvolveTargetRef,
+    *,
+    workspace_root: str | Path,
+    allow_auto_apply: bool = False,
+) -> SelfEvolveTarget:
+    if target_ref.path:
+        path = Path(target_ref.path)
+        if path.exists():
+            return SkillTextTarget(
                 path,
                 target_id=target_ref.target_id,
-                release_path=(
-                    Path(workspace_root)
-                    / "aworld-skills"
-                    / target_ref.target_id
-                    / "SKILL.md"
-                ),
                 allow_auto_apply=allow_auto_apply,
             )
-        return _skill_target_from_id(
-            target_ref.target_id,
-            workspace_root=workspace_root,
+        return DraftSkillTextTarget(
+            path,
+            target_id=target_ref.target_id,
+            release_path=(
+                Path(workspace_root)
+                / "aworld-skills"
+                / target_ref.target_id
+                / "SKILL.md"
+            ),
             allow_auto_apply=allow_auto_apply,
         )
-    raise NotImplementedError(
-        "target inference selected "
-        f"{target_ref.target_type}:{target_ref.target_id}, but that target adapter "
-        "is not implemented for phase 1 CLI runs"
+    return _skill_target_from_id(
+        target_ref.target_id,
+        workspace_root=workspace_root,
+        allow_auto_apply=allow_auto_apply,
     )
 
 
@@ -7534,6 +7916,14 @@ def _skill_target_from_id(
     raise FileNotFoundError(f"skill target not found: skill:{target_id}")
 
 
+_CLI_TARGET_ADAPTER_FACTORIES: Mapping[
+    str,
+    Callable[..., SelfEvolveTarget],
+] = {
+    "skill": _skill_target_adapter,
+}
+
+
 def _infer_target_from_trace_packs(
     trace_packs: tuple[TracePack, ...],
     *,
@@ -7542,7 +7932,9 @@ def _infer_target_from_trace_packs(
     if not trace_packs:
         raise ValueError("target inference requires trajectory evidence")
 
-    inventory = build_default_target_inventory(workspace_root)
+    inventory = build_default_target_inventory(workspace_root).only_target_types(
+        _CLI_TARGET_ADAPTER_FACTORIES
+    )
     assigner = TrajectoryCreditAssigner(inventory=inventory)
     reports = [assigner.assign(trace_pack) for trace_pack in trace_packs]
     best_report = max(

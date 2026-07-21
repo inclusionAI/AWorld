@@ -29,27 +29,46 @@ def apply_skill_patch_intent(
 ) -> str:
     """Apply a bounded skill markdown patch intent to full SKILL.md content."""
 
+    validate_skill_patch_intent(patch_intent)
     operations = patch_intent.get("operations")
-    if not isinstance(operations, list) or not operations:
-        raise ValueError("patch_intent.operations must be a non-empty list")
+    assert isinstance(operations, list)
     updated = content
     for index, operation in enumerate(operations):
-        if not isinstance(operation, Mapping):
-            raise ValueError(f"patch operation {index} must be an object")
+        assert isinstance(operation, Mapping)
         op = operation.get("op")
         heading = _required_text(operation.get("heading"), field=f"operations[{index}].heading")
         body = _required_text(operation.get("content"), field=f"operations[{index}].content")
-        _reject_protected_references(body)
         if op == "replace_section":
             updated = _replace_section(updated, heading=heading, body=body)
         elif op == "append_section":
             updated = _append_section(updated, heading=heading, body=body)
-        else:
-            raise ValueError(f"unsupported patch operation: {op!r}")
     updated = _ensure_trailing_newline(updated)
     if len(updated) > max_chars:
         raise ValueError("materialized skill exceeds size limit")
     return updated
+
+
+def validate_skill_patch_intent(patch_intent: Mapping[str, Any]) -> None:
+    """Validate patch syntax and safety without assuming a materialization base."""
+
+    operations = patch_intent.get("operations")
+    if not isinstance(operations, list) or not operations:
+        raise ValueError("patch_intent.operations must be a non-empty list")
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, Mapping):
+            raise ValueError(f"patch operation {index} must be an object")
+        op = operation.get("op")
+        if op not in {"replace_section", "append_section"}:
+            raise ValueError(f"unsupported patch operation: {op!r}")
+        _required_text(
+            operation.get("heading"),
+            field=f"operations[{index}].heading",
+        )
+        body = _required_text(
+            operation.get("content"),
+            field=f"operations[{index}].content",
+        )
+        _reject_protected_references(body)
 
 
 def _replace_section(content: str, *, heading: str, body: str) -> str:

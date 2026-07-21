@@ -1085,6 +1085,7 @@ async def _run_direct_mode(
     prompt: str,
     agent_name: str,
     requested_skill_names: Optional[list[str]] = None,
+    skill_paths: Optional[list[str]] = None,
     max_runs: Optional[int] = None,
     max_cost: Optional[float] = None,
     max_duration: Optional[str] = None,
@@ -1146,6 +1147,7 @@ async def _run_direct_mode(
         resume_cwd=resume_cwd,
         fail_on_missing_agent=fail_on_missing_agent,
         self_evolve_config=self_evolve_config,
+        skill_paths=skill_paths,
     )
     all_agents = await runtime._load_agents()
 

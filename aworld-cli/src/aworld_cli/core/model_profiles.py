@@ -14,15 +14,17 @@ def resolve_model_profile(
     *,
     config_dict: Mapping[str, Any] | None = None,
 ) -> ModelConfig | None:
-    """Resolve a named model profile from CLI config without mutating env."""
+    """Resolve a named profile or one uniquely configured model without mutating env."""
     profile = str(profile_name or "").strip()
     if not profile:
         return None
 
+    model_sources: list[Mapping[str, Any]] = []
     candidates: list[Mapping[str, Any]] = []
     if config_dict is not None:
         models = config_dict.get("models") if isinstance(config_dict, Mapping) else None
         if isinstance(models, Mapping):
+            model_sources.append(models)
             candidate = models.get(profile)
             if isinstance(candidate, Mapping):
                 candidates.append(candidate)
@@ -31,6 +33,7 @@ def resolve_model_profile(
     if workspace_config is not None:
         models = workspace_config.get("models")
         if isinstance(models, Mapping):
+            model_sources.append(models)
             candidate = models.get(profile)
             if isinstance(candidate, Mapping):
                 candidates.append(candidate)
@@ -40,6 +43,7 @@ def resolve_model_profile(
 
         models = get_config().load_config().get("models") or {}
         if isinstance(models, Mapping):
+            model_sources.append(models)
             candidate = models.get(profile)
             if isinstance(candidate, Mapping):
                 candidates.append(candidate)
@@ -55,6 +59,38 @@ def resolve_model_profile(
         model_config = _model_config_from_profile(candidate)
         if model_config is not None:
             return model_config
+
+    # The CLI option is historically named ``--*-model-profile``, but callers
+    # commonly receive a concrete model identifier from configuration UIs.  If
+    # there is no profile with that exact name, accept the identifier only when
+    # it maps to one complete profile in the highest-priority configuration
+    # source.  This keeps endpoint and credential selection deterministic.
+    if not candidates:
+        for models in model_sources:
+            alias_matches: list[tuple[str, ModelConfig]] = []
+            for name, candidate in models.items():
+                if not isinstance(candidate, Mapping):
+                    continue
+                model_name = _profile_value(
+                    candidate,
+                    "llm_model_name",
+                    "model",
+                    "model_name",
+                    "LLM_MODEL_NAME",
+                    "MODEL",
+                )
+                if str(model_name or "").strip() != profile:
+                    continue
+                model_config = _model_config_from_profile(candidate)
+                if model_config is not None:
+                    alias_matches.append((str(name), model_config))
+            if len(alias_matches) == 1:
+                return alias_matches[0][1]
+            if len(alias_matches) > 1:
+                names = ", ".join(sorted(name for name, _ in alias_matches))
+                raise KeyError(
+                    f"model profile alias is ambiguous: {profile}; matches: {names}"
+                )
     raise KeyError(f"model profile not found or incomplete: {profile}")
 
 
