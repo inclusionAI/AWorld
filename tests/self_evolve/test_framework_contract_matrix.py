@@ -24,11 +24,14 @@ from aworld.self_evolve.credit_assignment import (
 )
 from aworld.self_evolve.gates import TrustProvenanceGate
 from aworld.self_evolve.failure_events import (
+    aggregate_replay_failures,
     FailureOwner,
     FailureScope,
     FailureStage,
     ReplayExecutionStatus,
 )
+from aworld.self_evolve.diagnostics import HarnessDiagnosticKind, extract_harness_diagnostics
+from aworld.self_evolve.lessons import extract_lesson_records
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayMemberResult,
@@ -54,6 +57,8 @@ from aworld.self_evolve.types import (
     CandidateVariant,
     DatasetRecipe,
     SelfEvolveTargetRef,
+    EvaluationSummary,
+    GateResult,
 )
 
 
@@ -632,12 +637,24 @@ async def test_replay_lifecycle_contract_is_cardinality_neutral(
             and member.candidate.blocked_by[0].event_id == event.event_id
             for member in normalized.members
         )
+        causal = aggregate_replay_failures(result, normalized=normalized)
+        assert len(causal) == 1
+        assert causal[0].occurrence_count == 1
+        assert causal[0].affected_member_count == len(contract.case_ids)
     elif scenario == "shared_infrastructure":
         event = normalized.members[0].baseline.failure
         assert event is not None
         assert event.owner is FailureOwner.INFRASTRUCTURE
         assert event.scope is FailureScope.SHARED_RUN
         assert coverage["candidate_executed_count"] == 0
+        causal = aggregate_replay_failures(result, normalized=normalized)
+        diagnostics = extract_harness_diagnostics(
+            gate_results=(GateResult("candidate_replay", False, "failed"),),
+            causal_events=causal,
+        )
+        assert len(diagnostics) == 1
+        assert diagnostics[0].kind is HarnessDiagnosticKind.WORKFLOW
+        assert diagnostics[0].metrics["affected_member_count"] == len(contract.case_ids)
     elif scenario == "candidate_task_failure":
         assert coverage["candidate_execution_failure_count"] == 1
         assert coverage["candidate_failure_count"] == 1
@@ -645,3 +662,75 @@ async def test_replay_lifecycle_contract_is_cardinality_neutral(
     else:
         assert coverage["task_failure_pair_count"] == 1
         assert coverage["comparable_pair_count"] == len(contract.case_ids)
+
+
+@pytest.mark.parametrize("trajectory_count", [1, 3])
+def test_causal_lesson_contract_aggregates_by_semantics_not_cardinality(
+    trajectory_count: int,
+) -> None:
+    feedback = tuple(
+        EvaluationSummary(
+            variant_id=f"candidate-{index}",
+            dataset_split="validation",
+            metrics={
+                "task_id": f"task-{index}",
+                "causal_failure_events": [
+                    {
+                        "semantic_key": "caller-key-is-audit-only",
+                        "code": "generic_contract_rejected",
+                        "owner": "candidate",
+                        "stage": "capability_preflight",
+                        "scope": "candidate",
+                        "repairable": True,
+                        "category": "capability_contract",
+                        "occurrence_count": 1,
+                        "occurrence_ids": [f"event-{index}"],
+                        "affected_case_ids": [f"case-{index}"],
+                    }
+                ],
+            },
+        )
+        for index in range(trajectory_count)
+    )
+
+    lessons = extract_lesson_records(
+        feedback,
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )
+    assert len(lessons) == 1
+    assert lessons[0].occurrence_count == trajectory_count
+    assert len(lessons[0].affected_case_ids) == trajectory_count
+
+
+def test_causal_lesson_contract_keeps_heterogeneous_events_distinct() -> None:
+    feedback = tuple(
+        EvaluationSummary(
+            variant_id=f"candidate-{index}",
+            dataset_split="validation",
+            metrics={
+                "task_id": f"task-{index}",
+                "causal_failure_events": [
+                    {
+                        "code": code,
+                        "owner": "candidate",
+                        "stage": "task_rollout",
+                        "scope": "member",
+                        "repairable": True,
+                        "category": "task_contract",
+                        "occurrence_ids": [f"event-{index}"],
+                        "affected_case_ids": [f"case-{index}"],
+                    }
+                ],
+            },
+        )
+        for index, code in enumerate(("first_contract", "first_contract", "second_contract"))
+    )
+    lessons = extract_lesson_records(
+        feedback,
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )
+
+    assert {lesson.metrics["causal_code"]: lesson.occurrence_count for lesson in lessons} == {
+        "first_contract": 2,
+        "second_contract": 1,
+    }
