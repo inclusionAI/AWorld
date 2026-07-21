@@ -11,7 +11,7 @@ import pytest
 
 import aworld.self_evolve.runner as runner_module
 
-from aworld.config.conf import ModelConfig
+from aworld.config.conf import ModelConfig, SelfEvolveConfig
 from aworld.core.common import TaskStatusValue
 from aworld.core.task import TaskResponse
 from aworld.runner import Runners
@@ -734,6 +734,19 @@ class EmptyOptimizer:
             lineage=(),
             diagnostics={"filtered_noop_candidates": 1},
         )
+
+
+def test_runner_legacy_per_attempt_budget_fallback_is_reportable(tmp_path) -> None:
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+        max_run_tokens=42_000,
+    )
+
+    assert runner.per_attempt_replay_token_limit == 42_000
+    assert runner.deprecated_config_mappings == (
+        "max_run_tokens_to_per_attempt_replay_token_limit",
+    )
 
 
 class CaptureOptimizer:
@@ -2104,10 +2117,19 @@ async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None
         task_id="task-1",
     )
 
+    legacy_budget_config = SelfEvolveConfig(max_run_tokens=42_000)
     result = await SelfEvolveRunner(
         store=store,
         optimizer=EmptyOptimizer(),
         evaluation_backend=None,
+        max_run_tokens=legacy_budget_config.max_run_tokens,
+        total_run_token_budget=legacy_budget_config.total_run_token_budget,
+        per_attempt_replay_token_limit=(
+            legacy_budget_config.per_attempt_replay_token_limit
+        ),
+        deprecated_config_mappings=(
+            legacy_budget_config.deprecated_config_mappings
+        ),
     ).run_explicit_target(
         run_id="run-proposal-no-candidate",
         target=target,
@@ -2131,6 +2153,10 @@ async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None
     assert report["no_op"]["status"] == "no_candidate"
     assert report["no_op"]["reason"] == "optimizer did not produce a candidate"
     assert report["population"]["generated_candidate_count"] == 0
+    assert report["deprecated_config_mappings"] == [
+        "max_run_tokens_to_total_run_token_budget",
+        "max_run_tokens_to_per_attempt_replay_token_limit",
+    ]
     assert report["gate_results"] == [
         {
             "gate_name": "no_candidate",

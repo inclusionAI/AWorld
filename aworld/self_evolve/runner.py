@@ -1067,9 +1067,10 @@ class SelfEvolveRunner:
             if total_run_token_budget is None
             else total_run_token_budget
         )
+        legacy_per_attempt_budget_mapping = per_attempt_replay_token_limit is None
         self.per_attempt_replay_token_limit = (
             max_run_tokens
-            if per_attempt_replay_token_limit is None
+            if legacy_per_attempt_budget_mapping
             else per_attempt_replay_token_limit
         )
         self.max_run_cost_usd = (
@@ -1087,6 +1088,23 @@ class SelfEvolveRunner:
             if isinstance(deprecated_config_mappings, Mapping)
             else tuple(deprecated_config_mappings or ())
         )
+        if legacy_per_attempt_budget_mapping:
+            if isinstance(self.deprecated_config_mappings, Mapping):
+                self.deprecated_config_mappings = {
+                    **dict(self.deprecated_config_mappings),
+                    "max_run_tokens_to_per_attempt_replay_token_limit": (
+                        "per_attempt_replay_token_limit"
+                    ),
+                }
+            else:
+                self.deprecated_config_mappings = tuple(
+                    dict.fromkeys(
+                        (
+                            *self.deprecated_config_mappings,
+                            "max_run_tokens_to_per_attempt_replay_token_limit",
+                        )
+                    )
+                )
         candidate_generation_tokens_per_unit = (
             4_096
             if candidate_generation_tokens_per_unit is None

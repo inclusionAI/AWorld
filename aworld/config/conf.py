@@ -304,16 +304,20 @@ class SelfEvolveConfig(BaseConfig):
             value = getattr(self, field_name)
             if value is not None and value < 0:
                 raise ValueError(f"{field_name} must be non-negative")
+        deprecated_mappings = list(self.deprecated_config_mappings)
         if self.total_run_token_budget is None:
             self.total_run_token_budget = self.max_run_tokens
-            self.deprecated_config_mappings = tuple(
-                dict.fromkeys(
-                    (
-                        *self.deprecated_config_mappings,
-                        "max_run_tokens_to_total_run_token_budget",
-                    )
-                )
+            deprecated_mappings.append(
+                "max_run_tokens_to_total_run_token_budget"
             )
+        if self.per_attempt_replay_token_limit is None:
+            self.per_attempt_replay_token_limit = self.max_run_tokens
+            deprecated_mappings.append(
+                "max_run_tokens_to_per_attempt_replay_token_limit"
+            )
+        self.deprecated_config_mappings = tuple(
+            dict.fromkeys(deprecated_mappings)
+        )
         return self
 
 
