@@ -30,13 +30,14 @@ Verified apply for an allowlisted skill target:
 
 ```bash
 aworld-cli optimize \
-  --target skill:login \
-  --from-trajectory trajectory.log \
+  --from-trajectory ~/Documents/trajectory1.log \
   --apply auto_verified \
-  --judge-agent judges/login_quality.md \
-  --judge-model-profile judge \
-  --replay-timeout 900
+  --judge-agent ~/Documents/agent.md \
+  --judge-timeout 600 \
+  --judge-model-profile gpt-5.5
 ```
+
+`--judge-model-profile` is the name of a configured CLI model profile. It does not directly set a provider model id. Add `--target skill:<name>` when you want to bypass target inference.
 
 Drain pending post-run jobs:
 
@@ -61,7 +62,7 @@ Exactly one evaluation source is normally provided:
 - `--batch-config <path>`: batch config for a larger request.
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.
 
-When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. Low-confidence inferred targets are blocked for `auto_verified` apply.
+When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target. Low-confidence inferred targets are blocked for `auto_verified` apply.
 
 ## Replay Adaptation and Portability
 
@@ -89,11 +90,27 @@ inspection, but an evaluator-resume that could authorize verified apply requires
 replay provenance. Rerun the full optimize flow for legacy artifacts; they are not reused
 as a new strict baseline.
 
+## Candidate Generation, Repair, and Preflight
+
+The CLI builds a typed, bounded `EvolutionContext` and runs each candidate-generation slot as an isolated AWorld task. The context contains only trainable cases, bounded trace evidence, reusable lessons, capability requirements, prior validation feedback, and acceptance constraints. Candidate output must match the framework JSON package contract; a skill candidate may contain `SKILL.md`, a bounded patch intent, and candidate-owned replay files such as `replay/capability.json`, a compiler, and a runtime.
+
+The framework ranks the generated population and validates repair candidates before an expensive task rollout:
+
+1. `candidate_repair_conformance` first proves that the candidate materially changed the failed source branch and that the request operation participates in the response data flow.
+2. The candidate-owned replay capability is compiled and frozen with immutable fixture and package fingerprints. Recorded operation responses are exposed through `AWORLD_REPLAY_RESPONSE_INDEX`.
+3. Compiled probe declarations must cover the observed operation and assert a non-empty value derived from the recorded response payload.
+4. The frozen runtime is started in the replay subprocess sandbox and every declared HTTP/TCP/WebSocket readiness and protocol probe is executed. Required WebSocket probes validate handshake, ping/text exchange, operation correlation, non-empty result, and recorded-response binding.
+5. Only a candidate that passes conformance proceeds to representative screening and then the authoritative paired baseline/candidate rollout.
+
+This sequence is generic: contracts are compiled from observed operations, protocol traces, fixture provenance, and the candidate package. There is no target-specific repair adapter for one trajectory case. A source-conformant candidate can still fail at runtime preflight; that result is intentionally reported before the longer task rollout and fed into the next focused repair iteration.
+
+Candidate repair gate diagnostics are summarized in `report.json`. When execution preflight is reached, bounded service/probe artifacts are stored under `.aworld/self_evolve/<run_id>/repair_conformance/<candidate_id>/`. Increasing `--replay-timeout` affects task rollouts but does not weaken or bypass exact repair probes.
+
 ## Options
 
 - `--agent`: agent name or id used by replay/evaluator request context.
 - `--task`: task text used by framework target inference and dataset context.
-- `--target`: explicit target reference. Phase 1 CLI runs support `skill:<name>` end to end. Other target forms are framework-level roadmap types until their CLI adapters are implemented.
+- `--target`: explicit target reference. Phase 1 CLI runs support `skill:<name>` end to end. Automatic inference uses the same adapter registry and therefore considers skills only. Other target forms remain framework/SDK types until general CLI adapters are implemented.
 - `--iterations`: maximum candidate optimization iterations.
 - `--apply`: `proposal` or `auto_verified`. The default is `proposal`.
 - `--judge-agent`: markdown judge agent path.
@@ -121,7 +138,9 @@ When `--apply auto_verified` is used and the caller does not override values, th
 - `--judge-timeout 120`
 - `--baseline-replay-repetitions 2`
 - `--candidate-replay-repetitions 3`
-- `--iterations 1`
+- `--iterations 10`
+
+Proposal runs default to one iteration. `auto_verified` uses the larger budget because each verified runtime repair can expose a new protocol frontier. The runner stops early when verification succeeds or progress stalls, and it may grant up to six bounded extension iterations only for newly observed repairable failure families. Duplicate candidates and repeated failure families do not consume unbounded retries.
 
 The CLI also enables framework replay for `auto_verified`. Skill candidates must have candidate replay evidence, evaluator evidence, deterministic or objective verification signals, passing gates, and a post-apply runtime-loader check before they can remain applied.
 
@@ -147,6 +166,8 @@ Resume evaluator: aworld-cli optimize --from-run <run_id> --rerun-evaluator
 
 If replay repetitions are missing, rerun full optimize with a larger `--replay-timeout`; evaluator-only resume cannot add new replay rollouts.
 
+For an `auto_verified` release, treat the run as successful only when `report.json` has `status: "succeeded"`, no blocking failed gate, a selected candidate, and `post_apply.status: "accepted"` with `release_state: "verified"`. `status: "rejected"`, `post_apply.status: "rolled_back"`, or a missing post-apply record is not a successful verified release even if candidate generation or source conformance passed.
+
 ## Report Files
 
 Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
@@ -157,6 +178,7 @@ Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
 - `gate_results`: low-level gate decisions.
 - `release_checklist`: grouped release checks derived from gates.
 - `content_quality_diagnostics`: non-blocking publication/content quality diagnostics when evaluator metrics provide them.
+- `population`: generated candidates, representative screening attempts, selection reason, focused repair telemetry, concurrency, and candidate-generation token usage.
 - `optimizer_lineage`: candidate lineage artifact links, including content, semantic, and lesson-set fingerprints when available.
 - `lessons`: normalized lesson artifact links and counts.
 - `harness_diagnostics`: advisory framework diagnostic artifact links and counts.
@@ -165,8 +187,11 @@ Open `.aworld/self_evolve/<run_id>/report.json` for the release-facing result:
 - `replay.adaptation`: adaptation readiness plus workspace, environment, task, dataset, and current-skill fingerprints for completed paired replay.
 - `evaluator_report_paths`: evaluator output artifacts.
 - `post_apply`: accepted or rolled-back apply details, backup path, journal path, runtime activation, and registry refresh status.
+- `artifact_retention`: merged startup/terminal cleanup result, including policy, protected runs, skipped runs, and removed paths.
 
-Candidate files and diffs live under `.aworld/self_evolve/<run_id>/candidates/`. For skill candidates, proposal content is marked with `self_evolve.release_state: candidate`; verified content is marked with `self_evolve.release_state: verified` only after post-apply checks pass. Candidate JSON records are durable. After a run leaves the complete-artifact retention window, redundant Markdown, diff, and expanded package copies for unselected candidates may be reclaimed while selected, applied, and lineage-parent candidates remain intact.
+Candidate files and diffs live under `.aworld/self_evolve/<run_id>/candidates/`. For skill candidates, proposal content is marked with `self_evolve.release_state: candidate`; verified content is marked with `self_evolve.release_state: verified` only after post-apply checks pass. `<candidate_id>.json` is the durable normalized record; `<candidate_id>/` is the expanded multi-file materialization. After a run leaves the complete-artifact retention window, redundant Markdown, diff, and expanded package copies for unselected candidates may be reclaimed while selected, applied, and lineage-parent candidates remain intact.
+
+Repair preflight artifacts live under `.aworld/self_evolve/<run_id>/repair_conformance/<candidate_id>/`. They contain bounded frozen-capability and service/probe diagnostics for failures that occurred before task rollout.
 
 Replay adaptation artifacts live under
 `.aworld/self_evolve/<run_id>/replay_adaptation/<dataset_fingerprint>/`. The directory
@@ -178,6 +203,8 @@ Artifact GC runs at optimize startup and terminal completion. It preserves the t
 newest runs, lineage and apply recovery dependencies, and runs with a live process
 lease. Raw replay, replay-adaptation, repair-conformance, evaluator, overlay, and
 temporary-workspace artifacts from older eligible runs are reclaimed.
+
+The default store is `<workspace>/.aworld/self_evolve`. The framework does not create or manage a top-level `self_evolve_artifacts/` directory.
 
 ## Runtime Skill Management
 
@@ -196,7 +223,7 @@ aworld-cli skill remove <skill-name>
 
 ## Boundaries
 
-The CLI does not infer targets itself. `--task` without `--target` delegates target selection to framework credit assignment. If inference selects a target type without a phase-1 CLI adapter, the request is persisted as an unsupported-target result rather than applied.
+The CLI does not score targets itself. `--task` without `--target` delegates target selection to framework credit assignment after the framework filters the inventory through the CLI adapter registry. This prevents an unsupported target type from winning inference. An explicitly requested unsupported target is rejected; adding a general tested adapter is the extension path, not adding a trajectory-specific exception.
 
 The CLI also does not own scheduler behavior, evaluator behavior, optimizer semantics, durable job formats, or agent opt-in configuration. Configure opt-in with `AgentConfig.self_evolve_config`, then use this command as a manual/debug entrypoint for the same framework APIs.
 
