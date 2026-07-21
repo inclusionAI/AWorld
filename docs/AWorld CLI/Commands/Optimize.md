@@ -203,12 +203,13 @@ repair slot for that frontier. It may add one diverse exploration slot only for 
 frontier and only when a separate reservation is available. Repeated failures do not
 silently recreate a full population.
 
-`max_run_tokens` remains readable for compatibility. When
-`total_run_token_budget` is omitted, configuration maps the legacy value to the new
-ceiling and reports `max_run_tokens_to_total_run_token_budget` in
-`deprecated_config_mappings`. New configurations should set
-`total_run_token_budget` directly; the mapping is a deprecated compatibility path,
-not a second independent budget.
+`max_run_tokens` remains readable for compatibility. When the new fields are
+omitted, both `SelfEvolveConfig` and direct `SelfEvolveRunner` construction map the
+legacy value to `total_run_token_budget` and `per_attempt_replay_token_limit`.
+Reports expose those decisions as `max_run_tokens_to_total_run_token_budget` and
+`max_run_tokens_to_per_attempt_replay_token_limit` in
+`deprecated_config_mappings`. New callers should set both fields directly; these
+mappings are deprecated compatibility paths, not additional independent budgets.
 
 ## Output
 

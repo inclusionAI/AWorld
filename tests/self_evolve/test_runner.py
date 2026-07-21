@@ -736,7 +736,7 @@ class EmptyOptimizer:
         )
 
 
-def test_runner_legacy_per_attempt_budget_fallback_is_reportable(tmp_path) -> None:
+def test_runner_legacy_budget_fallbacks_are_reportable(tmp_path) -> None:
     runner = SelfEvolveRunner(
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=EmptyOptimizer(),
@@ -745,6 +745,7 @@ def test_runner_legacy_per_attempt_budget_fallback_is_reportable(tmp_path) -> No
 
     assert runner.per_attempt_replay_token_limit == 42_000
     assert runner.deprecated_config_mappings == (
+        "max_run_tokens_to_total_run_token_budget",
         "max_run_tokens_to_per_attempt_replay_token_limit",
     )
 

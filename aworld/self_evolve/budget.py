@@ -1784,7 +1784,10 @@ def aggregate_candidate_attempts(
     max_shape_count = 0
     for key in sorted(grouped):
         attempt_events = sorted(grouped[key], key=lambda item: item.sequence)
-        validate_candidate_attempt_lifecycle(attempt_events)
+        validate_candidate_attempt_lifecycle(
+            attempt_events,
+            require_terminal=True,
+        )
         for event in attempt_events:
             stage = event.stage.value
             stage_counts[stage] = stage_counts.get(stage, 0) + 1
