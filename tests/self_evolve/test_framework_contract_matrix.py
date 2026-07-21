@@ -41,6 +41,15 @@ from aworld.self_evolve.replay import (
     replay_dataset_fingerprint,
 )
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
+from aworld.self_evolve.repair_conformance import (
+    RepairConformanceContract,
+    build_repair_conformance_probe_plan,
+)
+from aworld.self_evolve.replay_capability import (
+    ReplayProtocolProbe,
+    ReplayReadinessProbe,
+    ReplayServiceSpec,
+)
 from aworld.self_evolve.types import (
     CandidateVariant,
     DatasetRecipe,
@@ -216,6 +225,88 @@ CONTRACT_CARDINALITIES = (
     THREE_SAME_SHAPE_CASES,
     THREE_DISTINCT_SHAPE_CASES,
 )
+
+
+def _generic_conformance_plan(contract: FrameworkContractDataset):
+    services = tuple(
+        ReplayServiceSpec(
+            service_id=f"service-{index}",
+            requirement_id=requirement.requirement_id,
+            transport="skill_runtime",
+            response_fixture=f"fixtures/shape-{index}.json",
+            runtime_entrypoint="replay/runtime.py",
+            readiness=ReplayReadinessProbe(
+                kind="http", timeout_seconds=1, path="/ready"
+            ),
+            protocol_probes=(
+                ReplayProtocolProbe(
+                    kind="http",
+                    timeout_seconds=1,
+                    path="/query",
+                    request_text=(
+                        '{"operation":"operation.' + str(index) + '"}'
+                    ),
+                    response_contains=f"private-recorded-value-{index}",
+                ),
+            ),
+        )
+        for index, requirement in enumerate(contract.requirements, start=1)
+    )
+    return build_repair_conformance_probe_plan(
+        capability_id="generic-capability",
+        services=services,
+        requirements=contract.requirements,
+        fixture_shape_fingerprints={
+            service.response_fixture: (
+                "sha256:" + contract.requirement_shapes[index - 1][1]
+            )
+            for index, service in enumerate(services, start=1)
+        },
+        contract=RepairConformanceContract(
+            focus_candidate_id="candidate-parent",
+            failure_codes=("generic_failure",),
+            interaction_progress=1,
+            base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+            required_branch_paths=("replay/runtime.py",),
+            base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+        ),
+        dataset_case_ids=contract.case_ids,
+    )
+
+
+@pytest.mark.parametrize(
+    ("contract", "expected_group_count"),
+    (
+        (SINGLE_CASE, 1),
+        (THREE_SAME_SHAPE_CASES, 1),
+        (THREE_DISTINCT_SHAPE_CASES, 2),
+    ),
+    ids=("one-case", "three-repeated", "three-distinct"),
+)
+def test_conformance_probe_groups_cover_every_distinct_shape_at_any_cardinality(
+    contract: FrameworkContractDataset,
+    expected_group_count: int,
+) -> None:
+    plan = _generic_conformance_plan(contract)
+
+    assert plan.total_case_count == len(contract.case_ids)
+    assert plan.covered_case_ids == contract.case_ids
+    assert len(plan.groups) == expected_group_count
+    report = str(plan.to_dict())
+    assert "private-recorded-value" not in report
+
+
+def test_conformance_failed_distinct_group_has_bounded_affected_case_ids() -> None:
+    plan = _generic_conformance_plan(THREE_DISTINCT_SHAPE_CASES)
+    failed_group = next(
+        group for group in plan.groups if group.case_ids == ("member-blue",)
+    )
+
+    assert failed_group.fingerprint.startswith("sha256:")
+    assert failed_group.case_ids == ("member-blue",)
+    assert set(
+        case_id for group in plan.groups for case_id in group.case_ids
+    ) == set(THREE_DISTINCT_SHAPE_CASES.case_ids)
 
 
 def _normalized_members(

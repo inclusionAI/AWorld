@@ -4,6 +4,7 @@ import json
 
 from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
+    build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
@@ -13,6 +14,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayReadinessProbe,
     ReplayServiceSpec,
 )
+from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, SelfEvolveTargetRef
 
 
@@ -75,6 +77,87 @@ def _service(*probes: ReplayProtocolProbe) -> ReplayServiceSpec:
         runtime_entrypoint="replay/runtime.py",
         readiness=ReplayReadinessProbe(kind="http", timeout_seconds=1, path="/ready"),
         protocol_probes=tuple(probes),
+    )
+
+
+def test_probe_plan_deduplicates_repeated_cases_and_preserves_distinct_shapes() -> None:
+    repeated = ReplayCapabilityRequirement(
+        requirement_id="requirement-1",
+        kind="local_endpoint",
+        identifier="endpoint-alpha",
+        case_ids=("case-a", "case-b"),
+        evidence_refs=("evidence-a", "evidence-b"),
+        status="runtime_required",
+        detail="shape=object-list",
+    )
+    distinct = ReplayCapabilityRequirement(
+        requirement_id="requirement-2",
+        kind="stateful_tool",
+        identifier="tool-beta",
+        case_ids=("case-c",),
+        evidence_refs=("evidence-c",),
+        status="runtime_required",
+        detail="shape=array-record",
+    )
+    services = (
+        _service(
+            ReplayProtocolProbe(
+                kind="http",
+                timeout_seconds=1,
+                path="/query",
+                request_text='{"operation":"records.query"}',
+                response_contains="private-recorded-value",
+            )
+        ),
+        ReplayServiceSpec(
+            service_id="service-2",
+            requirement_id="requirement-2",
+            transport="skill_runtime",
+            response_fixture="fixtures/second.json",
+            runtime_entrypoint="replay/runtime.py",
+            readiness=ReplayReadinessProbe(
+                kind="http", timeout_seconds=1, path="/ready"
+            ),
+            protocol_probes=(
+                ReplayProtocolProbe(
+                    kind="websocket",
+                    timeout_seconds=1,
+                    path="/stream",
+                    request_text='{"operation":"records.stream"}',
+                ),
+            ),
+        ),
+    )
+
+    plan = build_repair_conformance_probe_plan(
+        capability_id="generic-capability",
+        services=services,
+        requirements=(repeated, distinct),
+        fixture_shape_fingerprints={
+            "fixtures/recorded.json": "sha256:shape-one",
+            "fixtures/second.json": "sha256:shape-two",
+        },
+        contract=RepairConformanceContract(
+            focus_candidate_id="candidate-parent",
+            failure_codes=("generic_failure",),
+            interaction_progress=1,
+            base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+            required_branch_paths=("replay/runtime.py",),
+            base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+        ),
+    )
+
+    assert plan.total_case_count == 3
+    assert plan.covered_case_ids == ("case-a", "case-b", "case-c")
+    assert len(plan.groups) == 2
+    assert {group.case_ids for group in plan.groups} == {
+        ("case-a", "case-b"),
+        ("case-c",),
+    }
+    report_text = json.dumps(plan.to_dict(), sort_keys=True)
+    assert "private-recorded-value" not in report_text
+    assert tuple(group.fingerprint for group in plan.groups) == tuple(
+        sorted(group.fingerprint for group in plan.groups)
     )
 
 
