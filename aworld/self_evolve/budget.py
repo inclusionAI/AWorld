@@ -1742,6 +1742,7 @@ class CandidateAttemptStage(str, Enum):
     ADAPTATION = "adaptation_compile"
     CONFORMANCE = "repair_conformance"
     SCREENING = "representative_screening"
+    REPLAY_EVIDENCE_REUSED = "replay_evidence_reused"
     PAIRED_REPLAY_STARTED = "paired_replay_started"
     PAIRED_REPLAY_COMPLETED = "paired_replay_completed"
     PAIRED_REPLAY_COMPARABLE = "paired_replay_comparable"
@@ -1786,6 +1787,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.ADAPTATION,
             CandidateAttemptStage.CONFORMANCE,
             CandidateAttemptStage.SCREENING,
+            CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
             CandidateAttemptStage.SELECTED,
@@ -1798,6 +1800,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
         {
             CandidateAttemptStage.CONFORMANCE,
             CandidateAttemptStage.SCREENING,
+            CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
             CandidateAttemptStage.SELECTED,
@@ -1809,6 +1812,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.CONFORMANCE: frozenset(
         {
             CandidateAttemptStage.SCREENING,
+            CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
             CandidateAttemptStage.SELECTED,
@@ -1819,7 +1823,17 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     ),
     CandidateAttemptStage.SCREENING: frozenset(
         {
+            CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+            CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.SELECTED,
+            CandidateAttemptStage.REJECTED,
+            CandidateAttemptStage.BLOCKED,
+            CandidateAttemptStage.NOT_RUN,
+        }
+    ),
+    CandidateAttemptStage.REPLAY_EVIDENCE_REUSED: frozenset(
+        {
             CandidateAttemptStage.EVALUATION,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,

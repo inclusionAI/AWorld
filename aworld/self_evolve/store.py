@@ -143,6 +143,23 @@ class FilesystemSelfEvolveStore:
         self._write_json(path, report)
         return path
 
+    def write_replay_evidence_reuse(
+        self,
+        run_id: str,
+        candidate_id: str,
+        report: Mapping[str, Any],
+    ) -> Path:
+        """Persist provenance for replay evidence reused without execution."""
+
+        self._validate_id(candidate_id, "candidate_id")
+        path = (
+            self.run_path(run_id)
+            / "replay_evidence_reuse"
+            / f"{candidate_id}.json"
+        )
+        self._write_json(path, report)
+        return path
+
     def write_target_provenance(self, run_id: str, provenance: TargetProvenance) -> Path:
         path = self.run_path(run_id) / "target_provenance.json"
         self._write_json(path, provenance)

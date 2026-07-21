@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import aworld.self_evolve.runner as runner_module
+import aworld.self_evolve.replay as replay_module
 
 from aworld.config.conf import ModelConfig, SelfEvolveConfig
 from aworld.core.common import TaskStatusValue
@@ -60,6 +61,7 @@ from aworld.self_evolve.replay_adaptation import (
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
+    _FixedCandidateOptimizer,
     _RunBudgetContext,
     _StoredCandidateReplayBackend,
     _TelemetryUsageSnapshot,
@@ -1909,6 +1911,51 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
                         }
                     ],
                 ),
+                member_results=tuple(
+                    CandidateReplayMemberResult(
+                        case_id=case.case_id,
+                        request=replace(
+                            request,
+                            task_id=case.case_id,
+                            task_input=case.input,
+                        ),
+                        baseline=ReplayVariantResult(
+                            variant_id="baseline",
+                            status="succeeded",
+                            trajectory=[
+                                {
+                                    "state": {"input": case.input},
+                                    "action": {"content": "old"},
+                                }
+                            ],
+                            metrics={
+                                "repetition_count": 1,
+                                "successful_repetition_count": 1,
+                                "failed_repetition_count": 0,
+                                "blocked_repetition_count": 0,
+                                "not_run_repetition_count": 0,
+                            },
+                        ),
+                        candidate=ReplayVariantResult(
+                            variant_id=candidate.candidate_id,
+                            status="succeeded",
+                            trajectory=[
+                                {
+                                    "state": {"input": case.input},
+                                    "action": {"content": "improved"},
+                                }
+                            ],
+                            metrics={
+                                "repetition_count": 1,
+                                "successful_repetition_count": 1,
+                                "failed_repetition_count": 0,
+                                "blocked_repetition_count": 0,
+                                "not_run_repetition_count": 0,
+                            },
+                        ),
+                    )
+                    for case in dataset.cases
+                ),
             )
             replay_root = (
                 Path(request.workspace_root)
@@ -1923,20 +1970,58 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
                 json.dumps(to_json_dict(request), sort_keys=True),
                 encoding="utf-8",
             )
-            for directory_name, variant in (
-                ("baseline", result.baseline),
-                (candidate.candidate_id, result.candidate),
-            ):
-                variant_root = replay_root / directory_name
-                variant_root.mkdir(parents=True, exist_ok=True)
-                (variant_root / "trajectory.json").write_text(
-                    json.dumps(to_json_dict(variant.trajectory), sort_keys=True),
+            members_root = replay_root / "members"
+            members_root.mkdir(parents=True, exist_ok=True)
+            (members_root / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "aworld.self_evolve.member_replay.v3",
+                        "repetition_semantics": "per_member_v3",
+                        "members": [
+                            {
+                                "case_id": member.case_id,
+                                "path": _member_artifact_name(member.case_id),
+                                "baseline_status": member.baseline.status.value,
+                                "candidate_status": member.candidate.status.value,
+                                "blocked_by": [],
+                            }
+                            for member in result.member_results or ()
+                        ],
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            for member in result.member_results or ():
+                member_root = members_root / _member_artifact_name(member.case_id)
+                member_root.mkdir(parents=True, exist_ok=True)
+                (member_root / "request.json").write_text(
+                    json.dumps(to_json_dict(member.request), sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
-                (variant_root / "metrics.json").write_text(
-                    json.dumps(to_json_dict(variant.metrics), sort_keys=True),
-                    encoding="utf-8",
+                replay_module._persist_variant_lifecycle(
+                    member_root / "baseline",
+                    member.baseline,
                 )
+                replay_module._persist_variant_lifecycle(
+                    member_root / candidate.candidate_id,
+                    member.candidate,
+                )
+            replay_module._aggregate_member_variant_results(
+                base_variant_id="baseline",
+                members=result.member_results or (),
+                select=lambda member: member.baseline,
+                artifact_dir=replay_root / "baseline",
+                persist=True,
+            )
+            replay_module._aggregate_member_variant_results(
+                base_variant_id=candidate.candidate_id,
+                members=result.member_results or (),
+                select=lambda member: member.candidate,
+                artifact_dir=replay_root / candidate.candidate_id,
+                persist=True,
+            )
             return result
 
     initial = optimize_from_cli_request(
@@ -1956,7 +2041,11 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
     assert initial["selected_candidate_id"] is not None
 
     class EvaluationBackend:
+        def __init__(self) -> None:
+            self.calls = []
+
         async def evaluate_variant(self, request):
+            self.calls.append(request)
             score = 0.2 if request.candidate is None else 0.8
             return EvaluationSummary(
                 variant_id=(
@@ -1968,12 +2057,13 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
                 dataset_split=request.dataset_split,
             )
 
+    evaluation_backend = EvaluationBackend()
     rerun = optimize_from_cli_request(
         workspace_root=tmp_path,
         from_run=initial["run_id"],
         rerun_evaluator=True,
         apply_policy="proposal",
-        evaluation_backend=EvaluationBackend(),
+        evaluation_backend=evaluation_backend,
         min_eval_cases=0,
     )
 
@@ -1985,6 +2075,28 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
     assert rerun_selection["evidence_step_ids"] == []
     assert rerun_report["target_selection"]["selection_origin"] == "operator_explicit"
     assert rerun_report["target_provenance"]["status"] == "resolved"
+    assert len(evaluation_backend.calls) == 2
+    assert sum(call.candidate is None for call in evaluation_backend.calls) == 1
+    assert rerun_report["status"] == "succeeded"
+    assert rerun_report["candidate_ids"] == [initial["selected_candidate_id"]]
+    assert rerun_report["selected_candidate_id"] == initial["selected_candidate_id"]
+    lifecycle = rerun_report["population"]["lifecycle"]
+    assert lifecycle["stage_counts"]["replay_evidence_reused"] == 1
+    assert lifecycle["paired_replay_started_count"] == 0
+    assert lifecycle["paired_replay_completed_count"] == 0
+    assert lifecycle["paired_replay_comparable_count"] == 0
+    replay_budget_stages = {
+        item["stage"]
+        for key in ("decisions", "debits", "releases")
+        for item in rerun_report["budget"][key]
+    }
+    assert "paired_replay" not in replay_budget_stages
+    reuse = rerun_report["replay_evidence_reuse"]
+    assert reuse["disposition"]["kind"] == "stored_source_reuse"
+    assert reuse["disposition"]["source_run_id"] == initial["run_id"]
+    assert reuse["replay_case_count"] == 1
+    assert reuse["normalized_member_count"] == 1
+    assert Path(reuse["provenance_path"]).exists()
     stored_generation_debits = [
         item
         for item in rerun_report["budget"]["debits"]
@@ -2009,6 +2121,211 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
     assert (
         stored_generation_debits[0]["actual"]
         == stored_generation_debits[0]["reserved"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "capability" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: capability\n---\n# Capability\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    target = SkillTextTarget(skill_path)
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(
+                case_id=f"member-{index}",
+                input={"task": f"exercise capability {index}"},
+            )
+            for index in range(1, 3)
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["member-1", "member-2"]},
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="stored-candidate",
+        target=target.identity,
+        content=(
+            "---\nname: capability\n---\n# Capability\n\nImproved guidance.\n"
+        ),
+        rationale="source candidate",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+    source_request = CandidateReplayRequest(
+        run_id="source-run",
+        task_id="member-1",
+        workspace_root=str(tmp_path),
+        target=target.identity,
+        candidate_id=candidate.candidate_id,
+        overlay_skill_root=str(tmp_path / "source-overlay"),
+        task_input=dataset.cases[0].input,
+        dataset_fingerprint=runner_module.replay_dataset_fingerprint(dataset),
+        baseline_skill_fingerprint=candidate.target_fingerprint,
+        adaptation_fingerprint="source-adaptation",
+        workspace_seed_fingerprint="source-workspace",
+        task_input_fingerprint="source-input",
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "old"}}],
+        metrics={"repetition_count": 1, "successful_repetition_count": 1},
+    )
+    improved = ReplayVariantResult(
+        variant_id=candidate.candidate_id,
+        status="succeeded",
+        trajectory=[{"action": {"content": "improved"}}],
+        metrics={"repetition_count": 1, "successful_repetition_count": 1},
+    )
+    source_replay = CandidateReplayResult(
+        request=source_request,
+        baseline=baseline,
+        candidate=improved,
+        member_results=tuple(
+            CandidateReplayMemberResult(
+                case_id=case.case_id,
+                request=replace(
+                    source_request,
+                    task_id=case.case_id,
+                    task_input=case.input,
+                ),
+                baseline=baseline,
+                candidate=improved,
+            )
+            for case in dataset.cases
+        ),
+    )
+
+    class EvaluationBackend:
+        def __init__(self, *, fail_candidate: bool = False) -> None:
+            self.fail_candidate = fail_candidate
+            self.calls = []
+
+        async def evaluate_variant(self, request):
+            self.calls.append(request)
+            if self.fail_candidate and request.candidate is not None:
+                raise RuntimeError("fresh evaluator failed")
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.2 if request.candidate is None else 0.8,
+                    "latency_ms": 1.0,
+                    "cost_usd": 0.0,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    def make_runner(
+        evaluation_backend: EvaluationBackend | None,
+    ) -> SelfEvolveRunner:
+        return SelfEvolveRunner(
+            store=FilesystemSelfEvolveStore(tmp_path),
+            optimizer=_FixedCandidateOptimizer(candidate, "source-run"),
+            evaluation_backend=evaluation_backend,
+            replay_enabled=True,
+            candidate_replay_backend=_StoredCandidateReplayBackend(
+                replay_result=source_replay,
+                source_run_id="source-run",
+                source_replay_path=str(tmp_path / "source-replay"),
+            ),
+            max_iterations=1,
+            replay_candidate_limit=1,
+            min_eval_cases=0,
+        )
+
+    successful_backend = EvaluationBackend()
+    successful = await make_runner(successful_backend).run_explicit_target(
+        run_id="stored-multi-success",
+        target=target,
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+    successful_report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "stored-multi-success"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert successful.run.status is SelfEvolveRunStatus.SUCCEEDED
+    assert successful.selected_candidate == candidate
+    assert len(successful_backend.calls) == 2
+    assert successful_report["replay_evidence_reuse"]["replay_case_count"] == 2
+    assert successful_report["replay_evidence_reuse"]["normalized_member_count"] == 2
+    assert successful_report["population"]["lifecycle"]["max_case_count"] == 2
+    assert (
+        successful_report["population"]["lifecycle"]["paired_replay_started_count"]
+        == 0
+    )
+    assert not any(
+        item["stage"] == "paired_replay"
+        for key in ("decisions", "debits", "releases")
+        for item in successful_report["budget"][key]
+    )
+
+    failing_backend = EvaluationBackend(fail_candidate=True)
+    failed = await make_runner(failing_backend).run_explicit_target(
+        run_id="stored-multi-failure",
+        target=target,
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+    failed_report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "stored-multi-failure"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert len(failing_backend.calls) == 2
+    assert failed.run.status is SelfEvolveRunStatus.FAILED
+    assert failed.selected_candidate is None
+    assert failed_report["selected_candidate_id"] is None
+    failed_lifecycle = failed_report["population"]["lifecycle"]
+    assert failed_lifecycle["stage_counts"]["replay_evidence_reused"] == 1
+    assert failed_lifecycle["stage_counts"]["evaluation"] == 1
+    assert failed_lifecycle["stage_counts"]["blocked"] == 1
+    assert failed_lifecycle["paired_replay_started_count"] == 0
+
+    missing_evaluator = await make_runner(None).run_explicit_target(
+        run_id="stored-multi-missing-evaluator",
+        target=target,
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+    missing_report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "stored-multi-missing-evaluator"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert missing_evaluator.run.status is SelfEvolveRunStatus.FAILED
+    assert missing_evaluator.selected_candidate is None
+    assert missing_report["selected_candidate_id"] is None
+    assert "evaluation" not in missing_report["population"]["lifecycle"][
+        "stage_counts"
+    ]
+    assert any(
+        gate["gate_name"] == "fresh_evaluator_rerun"
+        and gate["passed"] is False
+        for gate in missing_report["gate_results"]
     )
 
 
@@ -4643,6 +4960,7 @@ def test_stored_replay_backend_explicitly_proves_zero_for_multi_trajectory_reuse
 
     backend = _StoredCandidateReplayBackend(
         replay_result=None,  # type: ignore[arg-type]
+        source_run_id="source-run",
         source_replay_path="stored/replay",
     )
     assert _backend_proves_zero_budget_usage(

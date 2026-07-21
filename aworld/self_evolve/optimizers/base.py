@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Mapping, Protocol
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
@@ -17,6 +18,55 @@ if TYPE_CHECKING:
     from aworld.self_evolve.evolution_context import EvolutionContext
     from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
     from aworld.self_evolve.repair_conformance import RepairConformanceContract
+
+
+class CandidateSourceKind(str, Enum):
+    """How an optimizer obtained the candidate returned for this attempt."""
+
+    GENERATED = "generated"
+    STORED_EVIDENCE_RERUN = "stored_evidence_rerun"
+
+
+@dataclass(frozen=True)
+class CandidateSourceDisposition:
+    """Typed candidate-source semantics consumed by the orchestration layer.
+
+    A stored-evidence rerun is a new evaluation attempt over an existing source
+    candidate.  It may bypass historical deduplication, but never same-run
+    collision checks or the requirement to complete a fresh evaluation.
+    """
+
+    kind: CandidateSourceKind = CandidateSourceKind.GENERATED
+    source_run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", CandidateSourceKind(self.kind))
+        if self.kind is CandidateSourceKind.STORED_EVIDENCE_RERUN:
+            if (
+                not isinstance(self.source_run_id, str)
+                or not self.source_run_id.strip()
+            ):
+                raise ValueError("stored-evidence rerun requires source_run_id")
+        elif self.source_run_id is not None:
+            raise ValueError("generated candidate source cannot declare source_run_id")
+
+    @property
+    def bypass_historical_deduplication(self) -> bool:
+        return self.kind is CandidateSourceKind.STORED_EVIDENCE_RERUN
+
+    @property
+    def requires_fresh_evaluation(self) -> bool:
+        return self.kind is CandidateSourceKind.STORED_EVIDENCE_RERUN
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "source_run_id": self.source_run_id,
+            "bypass_historical_deduplication": (
+                self.bypass_historical_deduplication
+            ),
+            "requires_fresh_evaluation": self.requires_fresh_evaluation,
+        }
 
 
 @dataclass(frozen=True)
@@ -79,6 +129,9 @@ class OptimizerResult:
         default_factory=dict,
         repr=False,
         compare=False,
+    )
+    source_disposition: CandidateSourceDisposition = field(
+        default_factory=CandidateSourceDisposition
     )
 
 
