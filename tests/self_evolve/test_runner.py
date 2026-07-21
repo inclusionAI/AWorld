@@ -35,7 +35,9 @@ from aworld.self_evolve.replay import (
     CandidateReplayRequest,
     CandidateReplayResult as _CandidateReplayResult,
     ReplayVariantResult,
+    _distributed_member_repetitions,
     _member_artifact_name,
+    _member_baseline_replay_dir,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
@@ -653,18 +655,50 @@ def CandidateReplayResult(*args, **kwargs):
             },
         )
 
-    members = (
-        None
-        if result.member_results is None
-        else tuple(
-            replace(
-                member,
-                baseline=attested(member.baseline, member.request),
-                candidate=attested(member.candidate, member.request),
+    members = None
+    if result.member_results is not None:
+        member_count = len(result.member_results)
+        normalized_members = []
+        for member in result.member_results:
+            adaptation_case = (
+                result.request.replay_adaptation.case(member.case_id)
+                if result.request.replay_adaptation is not None
+                else None
             )
-            for member in result.member_results
-        )
-    )
+            member_request = replace(
+                member.request,
+                task_input=(
+                    adaptation_case.adapted_task_input
+                    if adaptation_case is not None
+                    else member.request.task_input
+                ),
+                task_input_fingerprint=(
+                    adaptation_case.task_input_fingerprint
+                    if adaptation_case is not None
+                    else result.request.task_input_fingerprint
+                ),
+                baseline_replay_dir=_member_baseline_replay_dir(
+                    result.request.baseline_replay_dir,
+                    member.case_id,
+                ),
+                baseline_repetitions=_distributed_member_repetitions(
+                    result.request.baseline_repetitions,
+                    member_count=member_count,
+                ),
+                candidate_repetitions=_distributed_member_repetitions(
+                    result.request.candidate_repetitions,
+                    member_count=member_count,
+                ),
+            )
+            normalized_members.append(
+                replace(
+                    member,
+                    request=member_request,
+                    baseline=attested(member.baseline, member_request),
+                    candidate=attested(member.candidate, member_request),
+                )
+            )
+        members = tuple(normalized_members)
     return replace(
         result,
         baseline=attested(result.baseline, result.request),
@@ -1027,7 +1061,7 @@ def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
             ),
             CandidateReplayMemberResult(
                 case_id="task-b",
-                request=replace(request, task_id="task-b"),
+                request=replace(request, task_id="task-b", task_input="task B"),
                 baseline=timeout,
                 candidate=succeeded,
             ),
@@ -5781,7 +5815,11 @@ async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(t
                 member_results=tuple(
                     CandidateReplayMemberResult(
                         case_id=case.case_id,
-                        request=replace(request, task_id=case.case_id),
+                        request=replace(
+                            request,
+                            task_id=case.case_id,
+                            task_input=case.input,
+                        ),
                         baseline=baseline,
                         candidate=candidate_result,
                     )
@@ -10869,7 +10907,11 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
                 member_results=tuple(
                     CandidateReplayMemberResult(
                         case_id=case.case_id,
-                        request=replace(request, task_id=case.case_id),
+                        request=replace(
+                            request,
+                            task_id=case.case_id,
+                            task_input=case.input,
+                        ),
                         baseline=baseline,
                         candidate=candidate_result,
                     )

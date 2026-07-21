@@ -912,6 +912,7 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
 
     legacy_request = replace(
         result.request,
+        task_input=dataset.cases[0].input,
         replay_adaptation=None,
         adaptation_fingerprint=None,
         workspace_seed_fingerprint=None,
@@ -926,6 +927,7 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
                 member,
                 request=replace(
                     member.request,
+                    task_input=dataset.cases[0].input,
                     replay_adaptation=None,
                     adaptation_fingerprint=None,
                     workspace_seed_fingerprint=None,

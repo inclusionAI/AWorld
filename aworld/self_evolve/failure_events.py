@@ -197,6 +197,8 @@ class ReplayFailureEvent(Mapping[str, Any]):
     def from_dict(cls, payload: Mapping[str, Any]) -> "ReplayFailureEvent":
         if payload.get("schema_version") != FAILURE_EVENT_SCHEMA_VERSION:
             return cls.from_legacy_mapping(payload)
+        if "source" not in payload:
+            raise ValueError("v2 replay failure event source is required")
         diagnostics = payload.get("diagnostics")
         artifact_refs = payload.get("artifact_refs")
         causes = payload.get("causes")
@@ -216,7 +218,7 @@ class ReplayFailureEvent(Mapping[str, Any]):
                 if isinstance(artifact_refs, list)
                 else ()
             ),
-            source=FailureEventSource(str(payload.get("source") or "native")),
+            source=FailureEventSource(str(payload.get("source") or "")),
             causes=(
                 tuple(str(item) for item in causes) if isinstance(causes, list) else ()
             ),

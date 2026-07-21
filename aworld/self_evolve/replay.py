@@ -255,35 +255,25 @@ class NormalizedReplayMembers:
         return not self.failure_events
 
 
-_MEMBER_SPECIFIC_REQUEST_FIELDS = frozenset(
-    {
-        "task_id",
-        "task_input",
-        "task_input_fingerprint",
-        "baseline_replay_dir",
-        "baseline_repetitions",
-        "candidate_repetitions",
-    }
-)
-
-
 def _member_request_mismatch_fields(
     *,
     root_request: CandidateReplayRequest,
     member_request: CandidateReplayRequest,
-    case_id: str,
+    case: EvalCase,
     member_count: int,
 ) -> tuple[str, ...]:
     mismatches: list[str] = []
-    if member_request.task_id != case_id:
-        mismatches.append("task_id")
-    for request_field in dataclass_fields(CandidateReplayRequest):
-        field_name = request_field.name
-        if field_name in _MEMBER_SPECIFIC_REQUEST_FIELDS:
-            continue
-        if getattr(member_request, field_name) != getattr(root_request, field_name):
-            mismatches.append(field_name)
-    expected_repetitions = {
+    derived_values = {
+        "task_id": case.case_id,
+        "task_input": _adapted_task_input(root_request, case),
+        "task_input_fingerprint": _adapted_task_input_fingerprint(
+            root_request,
+            case,
+        ),
+        "baseline_replay_dir": _member_baseline_replay_dir(
+            root_request.baseline_replay_dir,
+            case.case_id,
+        ),
         "baseline_repetitions": _distributed_member_repetitions(
             root_request.baseline_repetitions,
             member_count=member_count,
@@ -293,8 +283,10 @@ def _member_request_mismatch_fields(
             member_count=member_count,
         ),
     }
-    for field_name, expected in expected_repetitions.items():
-        if getattr(member_request, field_name) != expected:
+    for request_field in dataclass_fields(CandidateReplayRequest):
+        field_name = request_field.name
+        expected = derived_values.get(field_name, getattr(root_request, field_name))
+        if to_json_dict(getattr(member_request, field_name)) != to_json_dict(expected):
             mismatches.append(field_name)
     return tuple(sorted(set(mismatches)))
 
@@ -350,31 +342,43 @@ def normalize_replay_members(
         else:
             raw_members = ()
 
-    members_by_id: dict[str, CandidateReplayMemberResult] = {}
+    occurrences_by_case_id: dict[str, list[CandidateReplayMemberResult]] = {
+        case.case_id: [] for case in replayable_cases
+    }
     for member in raw_members:
         if member.case_id not in cases_by_id:
             unexpected.append(member.case_id)
             continue
-        if member.case_id in members_by_id:
-            duplicates.append(member.case_id)
-            continue
-        member_mismatches = _member_request_mismatch_fields(
-            root_request=replay_result.request,
-            member_request=member.request,
-            case_id=member.case_id,
-            member_count=len(replayable_cases),
-        )
-        if member_mismatches:
-            mismatches.append(member.case_id)
-            mismatch_fields[member.case_id] = member_mismatches
-            continue
-        members_by_id[member.case_id] = member
+        occurrences_by_case_id[member.case_id].append(member)
+    unexpected = sorted(set(unexpected))
     normalized: list[NormalizedReplayMember] = []
     for case in replayable_cases:
-        member = members_by_id.get(case.case_id)
-        if member is None:
+        occurrences = occurrences_by_case_id[case.case_id]
+        if not occurrences:
             missing.append(case.case_id)
             continue
+        occurrence_mismatch_fields = tuple(
+            sorted(
+                {
+                    field_name
+                    for member in occurrences
+                    for field_name in _member_request_mismatch_fields(
+                        root_request=replay_result.request,
+                        member_request=member.request,
+                        case=case,
+                        member_count=len(replayable_cases),
+                    )
+                }
+            )
+        )
+        if len(occurrences) > 1:
+            duplicates.append(case.case_id)
+        if occurrence_mismatch_fields:
+            mismatches.append(case.case_id)
+            mismatch_fields[case.case_id] = occurrence_mismatch_fields
+        if len(occurrences) != 1 or occurrence_mismatch_fields:
+            continue
+        member = occurrences[0]
         normalized.append(
             NormalizedReplayMember(
                 case=case,
@@ -623,12 +627,6 @@ def candidate_replay_pair_coverage(
     blocked_member_count = 0
     not_run_variant_count = 0
     owner_counts = {owner: 0 for owner in FailureOwner}
-    incomparable_pair_count = (
-        len(normalized.missing_case_ids)
-        + len(normalized.duplicate_case_ids)
-        + len(normalized.unexpected_case_ids)
-        + len(normalized.request_mismatch_case_ids)
-    )
     for member in normalized.members:
         case = member.case
         baseline = member.baseline
@@ -655,7 +653,6 @@ def candidate_replay_pair_coverage(
             candidate_execution_failure_count += 1
             candidate_failure_count += 1
         if not candidate.succeeded:
-            incomparable_pair_count += 1
             continue
         if baseline.succeeded:
             strict_pair_count += 1
@@ -671,10 +668,11 @@ def candidate_replay_pair_coverage(
             if trajectory:
                 task_failure_pair_count += 1
                 continue
-        incomparable_pair_count += 1
-
-    member_count = len(normalized.members) + len(normalized.missing_case_ids)
+    member_count = sum(
+        1 for case in dataset.cases if _is_replayable_user_task_case(case)
+    )
     comparable_pair_count = strict_pair_count + task_failure_pair_count
+    incomparable_pair_count = member_count - comparable_pair_count
     return {
         "member_count": member_count,
         "returned_member_count": len(normalized.members),

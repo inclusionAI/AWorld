@@ -82,6 +82,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayReadinessProbe,
     ReplayServiceSpec,
 )
+from aworld.self_evolve.runner import _replay_result_has_reusable_baseline
 from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
@@ -166,6 +167,49 @@ def test_non_native_failure_event_cannot_claim_shared_run_scope() -> None:
     }
     with pytest.raises(ValueError, match="native failure events"):
         ReplayFailureEvent.from_dict(payload)
+
+
+def test_v2_failure_event_requires_explicit_source() -> None:
+    event = ReplayFailureEvent(
+        code="task_failed",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+    )
+    payload = event.to_dict()
+    payload.pop("source")
+
+    with pytest.raises(ValueError, match="source is required"):
+        ReplayFailureEvent.from_dict(payload)
+
+
+def test_lifecycle_loader_rejects_v2_failure_without_source(tmp_path: Path) -> None:
+    variant_dir = tmp_path / "missing-source"
+    variant_dir.mkdir()
+    event = ReplayFailureEvent(
+        code="task_failed",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+    ).to_dict()
+    event.pop("source")
+    (variant_dir / "lifecycle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.replay_lifecycle.v2",
+                "variant_id": "candidate",
+                "status": "failed",
+                "failure": event,
+                "blocked_by": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="source is required"):
+        _load_variant_result_from_dir(variant_dir, base_variant_id="candidate")
 
 
 def test_lifecycle_loader_rejects_non_native_shared_run_failure(tmp_path: Path) -> None:
@@ -392,7 +436,13 @@ def test_normalized_replay_members_are_dataset_ordered_and_detect_contract_gaps(
     members = tuple(
         CandidateReplayMemberResult(
             case_id=case_id,
-            request=replace(root_request, task_id=case_id),
+            request=replace(
+                root_request,
+                task_id=case_id,
+                task_input=next(
+                    case.input for case in dataset.cases if case.case_id == case_id
+                ),
+            ),
             baseline=succeeded,
             candidate=replace(succeeded, variant_id=candidate.candidate_id),
         )
@@ -519,11 +569,207 @@ def test_structurally_invalid_members_are_never_comparable_without_adaptation(
         dataset=dataset,
         replay_result=replay_result,
     ) is False
-    assert candidate_replay_pair_coverage(
+    coverage = candidate_replay_pair_coverage(
         dataset=dataset,
         replay_result=replay_result,
         normalized=normalized,
-    )["normalization_failure_count"] > 0
+    )
+    assert coverage["normalization_failure_count"] > 0
+    assert coverage["member_count"] == case_count
+    assert (
+        coverage["comparable_pair_count"] + coverage["incomparable_pair_count"]
+        == case_count
+    )
+
+
+@pytest.mark.parametrize("case_count", (1, 3))
+@pytest.mark.parametrize(
+    ("field_name", "tampered_value"),
+    (
+        ("task_input", {"tampered": True}),
+        ("task_input_fingerprint", "sha256:tampered"),
+        ("baseline_replay_dir", "/tmp/tampered-baseline"),
+    ),
+)
+def test_member_derived_request_fields_fail_closed_for_comparison_and_reuse(
+    tmp_path: Path,
+    case_count: int,
+    field_name: str,
+    tampered_value: object,
+) -> None:
+    case_ids = tuple(f"derived-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"index": index})
+            for index, case_id in enumerate(case_ids)
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "member_derived_identity"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-derived-identity",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=case_count,
+        candidate_repetitions=case_count,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case.case_id,
+            request=replace(
+                root_request,
+                task_id=case.case_id,
+                task_input=(tampered_value if index == 0 and field_name == "task_input" else case.input),
+                task_input_fingerprint=(
+                    tampered_value
+                    if index == 0 and field_name == "task_input_fingerprint"
+                    else root_request.task_input_fingerprint
+                ),
+                baseline_replay_dir=(
+                    tampered_value
+                    if index == 0 and field_name == "baseline_replay_dir"
+                    else None
+                ),
+                baseline_repetitions=1,
+                candidate_repetitions=1,
+            ),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+        for index, case in enumerate(dataset.cases)
+    )
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=members,
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    coverage = candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+        normalized=normalized,
+    )
+
+    assert normalized.request_mismatch_case_ids == (case_ids[0],)
+    mismatch = next(
+        event
+        for event in normalized.failure_events
+        if event.code == "replay_request_member_mismatch"
+    )
+    assert field_name in mismatch.diagnostics["fields"]
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replay_result,
+        normalized=normalized,
+    ) is False
+    assert _replay_result_has_reusable_baseline(
+        dataset=dataset,
+        replay_result=replay_result,
+    ) is False
+    assert coverage["member_count"] == case_count
+    assert coverage["comparable_pair_count"] + coverage["incomparable_pair_count"] == case_count
+
+
+@pytest.mark.parametrize(
+    "occurrence_order",
+    ("bad_bad", "bad_good", "good_bad"),
+)
+def test_duplicate_member_occurrences_are_order_independent_and_never_selected(
+    tmp_path: Path,
+    occurrence_order: str,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-a", input={"expected": True}),),
+        recipe=DatasetRecipe(
+            source={"kind": "duplicate_occurrence_contract"},
+            split_seed="seed",
+            splits={"train": ["case-a"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-duplicate-occurrence",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+
+    def occurrence(**request_updates: object) -> CandidateReplayMemberResult:
+        derived_request_values = {
+            "task_id": "case-a",
+            "task_input": dataset.cases[0].input,
+            **request_updates,
+        }
+        return CandidateReplayMemberResult(
+            case_id="case-a",
+            request=replace(root_request, **derived_request_values),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+
+    good = occurrence()
+    bad_input = occurrence(task_input={"bad": "input"})
+    bad_fingerprint = occurrence(task_input_fingerprint="sha256:bad")
+    occurrence_pairs = {
+        "bad_bad": (bad_input, bad_fingerprint),
+        "bad_good": (bad_input, good),
+        "good_bad": (good, bad_input),
+    }
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=occurrence_pairs[occurrence_order],
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    coverage = candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+        normalized=normalized,
+    )
+
+    assert normalized.members == ()
+    assert normalized.missing_case_ids == ()
+    assert normalized.duplicate_case_ids == ("case-a",)
+    assert normalized.request_mismatch_case_ids == ("case-a",)
+    mismatch = next(
+        event
+        for event in normalized.failure_events
+        if event.code == "replay_request_member_mismatch"
+    )
+    expected_fields = (
+        {"task_input", "task_input_fingerprint"}
+        if occurrence_order == "bad_bad"
+        else {"task_input"}
+    )
+    assert set(mismatch.diagnostics["fields"]) == expected_fields
+    assert coverage["member_count"] == 1
+    assert coverage["comparable_pair_count"] == 0
+    assert coverage["incomparable_pair_count"] == 1
+    assert coverage["duplicate_member_count"] == 1
+    assert coverage["request_mismatch_count"] == 1
 
 
 def test_member_request_repetition_distribution_is_part_of_normalization_contract(
@@ -3065,7 +3311,7 @@ def test_paired_replay_dataset_requires_successful_candidate_replay() -> None:
             target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
             candidate_id="cand-1",
             overlay_skill_root="/tmp/overlay",
-            task_input="task",
+            task_input=dataset.cases[0].input,
         ),
         baseline=ReplayVariantResult(
             variant_id="baseline",
@@ -3109,7 +3355,7 @@ def test_paired_replay_dataset_rejects_source_trajectory_baseline_fallback() -> 
             target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
             candidate_id="cand-1",
             overlay_skill_root="/tmp/overlay",
-            task_input="task",
+            task_input=dataset.cases[0].input,
         ),
         baseline=ReplayVariantResult(
             variant_id="baseline",
@@ -3154,7 +3400,7 @@ def test_paired_replay_dataset_rejects_infrastructure_baseline_failure() -> None
             target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
             candidate_id="cand-1",
             overlay_skill_root="/tmp/overlay",
-            task_input="task",
+            task_input=dataset.cases[0].input,
         ),
         baseline=ReplayVariantResult(
             variant_id="baseline",
