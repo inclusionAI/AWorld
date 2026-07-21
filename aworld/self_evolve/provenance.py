@@ -69,6 +69,26 @@ class TargetProvenance:
     schema_version: int = TARGET_PROVENANCE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        if not isinstance(self.target, SelfEvolveTargetRef):
+            raise ValueError(
+                "target provenance requires a typed target reference"
+            )
+        if (
+            not isinstance(self.target.target_type, str)
+            or not self.target.target_type.strip()
+            or not isinstance(self.target.target_id, str)
+            or not self.target.target_id.strip()
+            or (
+                self.target.path is not None
+                and (
+                    not isinstance(self.target.path, str)
+                    or not self.target.path.strip()
+                )
+            )
+        ):
+            raise ValueError(
+                "target provenance requires valid target identity fields"
+            )
         object.__setattr__(
             self,
             "source_kind",

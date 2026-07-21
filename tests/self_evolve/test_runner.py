@@ -1690,6 +1690,47 @@ async def test_runner_treats_supplied_decision_as_consistency_claim_only(tmp_pat
     assert not (run_path / "target_provenance.json").exists()
 
 
+@pytest.mark.asyncio
+async def test_runner_persists_authoritative_explicit_selection_without_traces(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "capability" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: capability\n---\n# Capability\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="member-1", input={"task": "exercise capability"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["member-1"], "validation": [], "held_out": []},
+        ),
+    )
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+        max_iterations=0,
+        min_eval_cases=0,
+    ).run_explicit_target(
+        run_id="run-direct-explicit",
+        target=target,
+        dataset=dataset,
+        trace_packs=(),
+    )
+
+    run_path = tmp_path / ".aworld" / "self_evolve" / "run-direct-explicit"
+    selection = json.loads(
+        (run_path / "target_selection.json").read_text(encoding="utf-8")
+    )
+    report = json.loads((run_path / "report.json").read_text(encoding="utf-8"))
+    assert selection["selected_target"] == to_json_dict(target.identity)
+    assert selection["selection_origin"] == "operator_explicit"
+    assert selection["evidence_step_ids"] == []
+    assert report["target_selection"] == selection
+
+
 def test_explicit_target_selection_report_is_typed_without_trace_packs() -> None:
     report = _explicit_target_selection_report(
         SelfEvolveTargetRef("skill", "capability", "/workspace/capability/SKILL.md"),
