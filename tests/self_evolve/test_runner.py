@@ -22,6 +22,13 @@ from aworld.self_evolve.datasets import (
 )
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayExecutionStatus,
+    ReplayFailureEvent,
+)
 from aworld.self_evolve.replay import (
     CandidateReplayMemberResult,
     CandidateReplayRequest,
@@ -644,13 +651,17 @@ def CandidateReplayResult(*args, **kwargs):
             },
         )
 
-    members = tuple(
-        replace(
-            member,
-            baseline=attested(member.baseline, member.request),
-            candidate=attested(member.candidate, member.request),
+    members = (
+        None
+        if result.member_results is None
+        else tuple(
+            replace(
+                member,
+                baseline=attested(member.baseline, member.request),
+                candidate=attested(member.candidate, member.request),
+            )
+            for member in result.member_results
         )
-        for member in result.member_results
     )
     return replace(
         result,
@@ -877,17 +888,29 @@ def test_multi_member_replay_reuses_member_baseline_root(tmp_path: Path) -> None
         "/replay/candidate-1/members"
     )
     replay_report = _replay_report(result)
-    assert replay_report["members"] == [
-        {
-            "case_id": "task-a",
-            "baseline_status": "succeeded",
-            "candidate_status": "succeeded",
-            "baseline_metrics": {},
-            "candidate_metrics": {},
-            "baseline_failure": None,
-            "candidate_failure": None,
-        }
-    ]
+    member_report = replay_report["members"][0]
+    assert {
+        key: member_report[key]
+        for key in (
+            "case_id",
+            "baseline_status",
+            "candidate_status",
+            "baseline_metrics",
+            "candidate_metrics",
+            "baseline_failure",
+            "candidate_failure",
+        )
+    } == {
+        "case_id": "task-a",
+        "baseline_status": "succeeded",
+        "candidate_status": "succeeded",
+        "baseline_metrics": {},
+        "candidate_metrics": {},
+        "baseline_failure": None,
+        "candidate_failure": None,
+    }
+    assert member_report["baseline_lifecycle"]["blocked_by"] == []
+    assert member_report["candidate_lifecycle"]["failure_event"] is None
 
 
 def test_multi_member_replay_advances_from_historical_to_current_member_root(
@@ -1002,7 +1025,7 @@ def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
             ),
             CandidateReplayMemberResult(
                 case_id="task-b",
-                request=request,
+                request=replace(request, task_id="task-b"),
                 baseline=timeout,
                 candidate=succeeded,
             ),
@@ -4587,8 +4610,28 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
 
 
 @pytest.mark.asyncio
-async def test_runner_stops_candidate_population_after_baseline_preflight_failure(
+@pytest.mark.parametrize(
+    ("failure_owner", "failure_scope", "expected_candidate_ids"),
+    (
+        pytest.param(
+            FailureOwner.CANDIDATE,
+            FailureScope.CANDIDATE,
+            ["candidate-one", "candidate-two"],
+            id="candidate_owned_continues",
+        ),
+        pytest.param(
+            FailureOwner.INFRASTRUCTURE,
+            FailureScope.SHARED_RUN,
+            ["candidate-one"],
+            id="shared_run_stops",
+        ),
+    ),
+)
+async def test_runner_population_disposition_uses_typed_failure_owner_and_scope(
     tmp_path: Path,
+    failure_owner: FailureOwner,
+    failure_scope: FailureScope,
+    expected_candidate_ids: list[str],
 ) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -4644,19 +4687,26 @@ async def test_runner_stops_candidate_population_after_baseline_preflight_failur
 
         async def replay_candidate(self, request, *, candidate, dataset):
             self.candidate_ids.append(candidate.candidate_id)
+            event = ReplayFailureEvent(
+                code="candidate_capability_preflight_failed",
+                owner=failure_owner,
+                stage=FailureStage.CAPABILITY_PREFLIGHT,
+                scope=failure_scope,
+                repairable=failure_owner is FailureOwner.CANDIDATE,
+            )
             return CandidateReplayResult(
                 request=request,
                 baseline=ReplayVariantResult(
                     variant_id="baseline",
-                    status="failed",
+                    status=ReplayExecutionStatus.FAILED,
                     trajectory=[],
-                    failure={"reason": "replay_compacted_argument_unavailable"},
+                    failure=event,
                 ),
                 candidate=ReplayVariantResult(
                     variant_id=candidate.candidate_id,
-                    status="failed",
+                    status=ReplayExecutionStatus.BLOCKED,
                     trajectory=[],
-                    failure={"reason": "baseline_preflight_failed"},
+                    blocked_by=(event,),
                 ),
             )
 
@@ -4679,7 +4729,7 @@ async def test_runner_stops_candidate_population_after_baseline_preflight_failur
     )
 
     assert result.run.status.value == "rejected"
-    assert replay_backend.candidate_ids == ["candidate-one"]
+    assert replay_backend.candidate_ids == expected_candidate_ids
 
 
 @pytest.mark.asyncio
@@ -4859,7 +4909,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
             members = tuple(
                 CandidateReplayMemberResult(
                     case_id=case.case_id,
-                    request=request,
+                    request=replace(request, task_id=case.case_id),
                     baseline=baseline,
                     candidate=candidate_result,
                 )
@@ -4869,7 +4919,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
                 request=request,
                 baseline=baseline,
                 candidate=candidate_result,
-                member_results=members if len(members) > 1 else (),
+                member_results=members,
             )
 
     class EvaluationBackend:
@@ -5011,7 +5061,7 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     assert report is not None
     assert report["selected_candidate_id"] is None
     assert report["selected_candidate_ids"] == ["candidate-1", "candidate-2"]
-    assert report["attempted_candidate_count"] == 1
+    assert report["attempted_candidate_count"] == 2
     assert "preserved the ranked population" in report["selection_reason"]
 
     async def repairable_capability_replay(**kwargs):
@@ -5543,19 +5593,30 @@ async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(t
 
         async def replay_candidate(self, request, *, candidate, dataset):
             self.baseline_replay_dirs.append(getattr(request, "baseline_replay_dir", None))
+            baseline = ReplayVariantResult(
+                variant_id="baseline",
+                status="succeeded",
+                trajectory=[{"action": {"content": "baseline"}}],
+                metrics={"repetition_count": 2, "successful_repetition_count": 2},
+            )
+            candidate_result = ReplayVariantResult(
+                variant_id=candidate.candidate_id,
+                status="succeeded",
+                trajectory=[{"action": {"content": candidate.candidate_id}}],
+                metrics={"repetition_count": 3, "successful_repetition_count": 3},
+            )
             return CandidateReplayResult(
                 request=request,
-                baseline=ReplayVariantResult(
-                    variant_id="baseline",
-                    status="succeeded",
-                    trajectory=[{"action": {"content": "baseline"}}],
-                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
-                ),
-                candidate=ReplayVariantResult(
-                    variant_id=candidate.candidate_id,
-                    status="succeeded",
-                    trajectory=[{"action": {"content": candidate.candidate_id}}],
-                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                baseline=baseline,
+                candidate=candidate_result,
+                member_results=tuple(
+                    CandidateReplayMemberResult(
+                        case_id=case.case_id,
+                        request=replace(request, task_id=case.case_id),
+                        baseline=baseline,
+                        candidate=candidate_result,
+                    )
+                    for case in dataset.cases
                 ),
             )
 
@@ -10616,23 +10677,34 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
 
     class SuccessfulReplayBackend:
         async def replay_candidate(self, request, *, candidate, dataset):
+            baseline = ReplayVariantResult(
+                variant_id="baseline",
+                status="succeeded",
+                trajectory=[
+                    {"state": {"input": request.task_input}, "action": {"content": "old"}}
+                ],
+                metrics={"repetition_count": 1},
+            )
+            candidate_result = ReplayVariantResult(
+                variant_id=candidate.candidate_id,
+                status="succeeded",
+                trajectory=[
+                    {"state": {"input": request.task_input}, "action": {"content": "new"}}
+                ],
+                metrics={"repetition_count": 1},
+            )
             return CandidateReplayResult(
                 request=request,
-                baseline=ReplayVariantResult(
-                    variant_id="baseline",
-                    status="succeeded",
-                    trajectory=[
-                        {"state": {"input": request.task_input}, "action": {"content": "old"}}
-                    ],
-                    metrics={"repetition_count": 1},
-                ),
-                candidate=ReplayVariantResult(
-                    variant_id=candidate.candidate_id,
-                    status="succeeded",
-                    trajectory=[
-                        {"state": {"input": request.task_input}, "action": {"content": "new"}}
-                    ],
-                    metrics={"repetition_count": 1},
+                baseline=baseline,
+                candidate=candidate_result,
+                member_results=tuple(
+                    CandidateReplayMemberResult(
+                        case_id=case.case_id,
+                        request=replace(request, task_id=case.case_id),
+                        baseline=baseline,
+                        candidate=candidate_result,
+                    )
+                    for case in dataset.cases
                 ),
             )
 

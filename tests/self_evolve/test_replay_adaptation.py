@@ -933,33 +933,46 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
         for key, value in result.baseline.metrics.items()
         if not key.startswith("isolated_workspace_path")
     }
+    assert result.member_results is not None
+    member = result.member_results[0]
     assert candidate_replay_is_comparable(
         dataset=dataset,
         replay_result=replace(
             result,
-            baseline=replace(
-                result.baseline,
-                metrics=missing_workspace_provenance,
+            member_results=(
+                replace(
+                    member,
+                    baseline=replace(
+                        member.baseline,
+                        metrics=missing_workspace_provenance,
+                    ),
+                ),
             ),
         ),
     ) is False
 
-    missing_provenance_baseline = replace(result.baseline, metrics={})
+    missing_provenance_baseline = replace(member.baseline, metrics={})
     assert candidate_replay_is_comparable(
         dataset=dataset,
-        replay_result=replace(result, baseline=missing_provenance_baseline),
+        replay_result=replace(
+            result,
+            member_results=(replace(member, baseline=missing_provenance_baseline),),
+        ),
     ) is False
 
     mismatched_candidate = replace(
-        result.candidate,
+        member.candidate,
         metrics={
-            **dict(result.candidate.metrics),
+            **dict(member.candidate.metrics),
             "workspace_seed_fingerprint": "sha256:different-seed",
         },
     )
     assert candidate_replay_is_comparable(
         dataset=dataset,
-        replay_result=replace(result, candidate=mismatched_candidate),
+        replay_result=replace(
+            result,
+            member_results=(replace(member, candidate=mismatched_candidate),),
+        ),
     ) is False
 
     lookup = {

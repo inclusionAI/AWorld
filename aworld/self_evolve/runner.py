@@ -61,6 +61,11 @@ from aworld.self_evolve.gates import (
     TrustProvenanceGate,
 )
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    ReplayFailureEvent,
+)
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.candidate_package import candidate_package_fingerprint
 from aworld.self_evolve.candidate_protocol import (
@@ -102,6 +107,7 @@ from aworld.self_evolve.replay import (
     build_replay_request,
     candidate_replay_is_comparable,
     candidate_replay_pair_coverage,
+    normalize_replay_members,
     load_candidate_replay_result,
     preflight_frozen_replay_capability,
     replay_capability_fixture_leaf_values,
@@ -1259,7 +1265,7 @@ class SelfEvolveRunner:
                     rejected_candidate_ids.add(iteration_candidate.candidate_id)
                 if (
                     isinstance(replay_state, CandidateReplayResult)
-                    and _baseline_preflight_blocks_population(replay_state)
+                    and _shared_replay_failure_blocks_population(replay_state)
                 ):
                     baseline_preflight_blocked = True
                     break
@@ -1709,7 +1715,7 @@ class SelfEvolveRunner:
                 break
             if (
                 replay_result is not None
-                and _baseline_preflight_blocks_population(replay_result)
+                and _shared_replay_failure_blocks_population(replay_result)
                 and not _screening_attempt_requires_candidate_repair(attempts[-1])
             ):
                 break
@@ -4160,6 +4166,27 @@ def _rerun_cli_run_id(source_run_id: str, candidate_id: str) -> str:
 
 
 def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
+    def lifecycle(variant: ReplayVariantResult) -> dict[str, object]:
+        return {
+            "variant_id": variant.variant_id,
+            "status": variant.status,
+            "metrics": dict(variant.metrics),
+            "stdout_path": variant.stdout_path,
+            "stderr_path": variant.stderr_path,
+            # Retained for readers of v1 reports.
+            "failure": (
+                variant.failure.compatibility_dict()
+                if isinstance(variant.failure, ReplayFailureEvent)
+                else variant.failure
+            ),
+            "failure_event": (
+                variant.failure.to_dict()
+                if isinstance(variant.failure, ReplayFailureEvent)
+                else None
+            ),
+            "blocked_by": [event.to_dict() for event in variant.blocked_by],
+        }
+
     report: dict[str, object] = {
         "request": {
             "run_id": replay_result.request.run_id,
@@ -4182,22 +4209,8 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
             ),
         },
         "overlay_skill_root": replay_result.request.overlay_skill_root,
-        "baseline": {
-            "variant_id": replay_result.baseline.variant_id,
-            "status": replay_result.baseline.status,
-            "metrics": dict(replay_result.baseline.metrics),
-            "stdout_path": replay_result.baseline.stdout_path,
-            "stderr_path": replay_result.baseline.stderr_path,
-            "failure": replay_result.baseline.failure,
-        },
-        "candidate": {
-            "variant_id": replay_result.candidate.variant_id,
-            "status": replay_result.candidate.status,
-            "metrics": dict(replay_result.candidate.metrics),
-            "stdout_path": replay_result.candidate.stdout_path,
-            "stderr_path": replay_result.candidate.stderr_path,
-            "failure": replay_result.candidate.failure,
-        },
+        "baseline": lifecycle(replay_result.baseline),
+        "candidate": lifecycle(replay_result.candidate),
     }
     if replay_result.request.replay_adaptation is not None:
         adaptation = replay_result.request.replay_adaptation
@@ -4229,8 +4242,10 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
                 "candidate_status": member.candidate.status,
                 "baseline_metrics": dict(member.baseline.metrics),
                 "candidate_metrics": dict(member.candidate.metrics),
-                "baseline_failure": member.baseline.failure,
-                "candidate_failure": member.candidate.failure,
+                "baseline_failure": lifecycle(member.baseline)["failure"],
+                "candidate_failure": lifecycle(member.candidate)["failure"],
+                "baseline_lifecycle": lifecycle(member.baseline),
+                "candidate_lifecycle": lifecycle(member.candidate),
             }
             for member in replay_result.member_results
         ]
@@ -4344,9 +4359,15 @@ def _find_reusable_baseline_replay_dir(
                 continue
             if replay_result.request.baseline_repetitions != baseline_repetitions:
                 continue
-            if replay_result.member_results:
-                member_case_ids = tuple(member.case_id for member in replay_result.member_results)
-                if set(member_case_ids) != set(case_ids):
+            normalized = normalize_replay_members(
+                dataset=dataset,
+                replay_result=replay_result,
+            )
+            if not normalized.valid:
+                continue
+            if replay_result.member_results is not None:
+                member_case_ids = tuple(member.case_id for member in normalized.members)
+                if member_case_ids != case_ids:
                     continue
                 member_repetitions = _distributed_member_repetitions(
                     baseline_repetitions,
@@ -4355,7 +4376,7 @@ def _find_reusable_baseline_replay_dir(
                 if all(
                     member.baseline.succeeded
                     and _successful_replay_count(member.baseline) == member_repetitions
-                    for member in replay_result.member_results
+                    for member in normalized.members
                 ):
                     members_dir = replay_dir / "members"
                     if (members_dir / "manifest.json").exists():
@@ -5772,11 +5793,29 @@ def _replay_gate_details(
     *,
     dataset: SelfEvolveDataset,
 ) -> dict[str, object]:
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    def compatibility_failure(variant: ReplayVariantResult) -> object:
+        return (
+            variant.failure.compatibility_dict()
+            if isinstance(variant.failure, ReplayFailureEvent)
+            else variant.failure
+        )
+
     details: dict[str, object] = {
         "baseline_status": replay_result.baseline.status,
         "candidate_status": replay_result.candidate.status,
-        "baseline_failure": replay_result.baseline.failure,
-        "candidate_failure": replay_result.candidate.failure,
+        "baseline_failure": compatibility_failure(replay_result.baseline),
+        "candidate_failure": compatibility_failure(replay_result.candidate),
+        "baseline_failure_event": (
+            replay_result.baseline.failure.to_dict()
+            if isinstance(replay_result.baseline.failure, ReplayFailureEvent)
+            else None
+        ),
+        "candidate_failure_event": (
+            replay_result.candidate.failure.to_dict()
+            if isinstance(replay_result.candidate.failure, ReplayFailureEvent)
+            else None
+        ),
         **candidate_replay_pair_coverage(
             dataset=dataset,
             replay_result=replay_result,
@@ -5790,17 +5829,33 @@ def _replay_gate_details(
             replay_result.request.baseline_skill_fingerprint
         ),
     }
-    if replay_result.member_results:
-        details["member_count"] = len(replay_result.member_results)
+    details["member_count"] = len(normalized.members) + len(
+        normalized.missing_case_ids
+    )
+    if normalized.failure_events:
+        details["normalization_failures"] = [
+            event.to_dict() for event in normalized.failure_events
+        ]
+    if normalized.members:
         details["failed_members"] = [
             {
                 "case_id": member.case_id,
                 "baseline_status": member.baseline.status,
                 "candidate_status": member.candidate.status,
-                "baseline_failure": member.baseline.failure,
-                "candidate_failure": member.candidate.failure,
+                "baseline_failure": compatibility_failure(member.baseline),
+                "candidate_failure": compatibility_failure(member.candidate),
+                "baseline_failure_event": (
+                    member.baseline.failure.to_dict()
+                    if isinstance(member.baseline.failure, ReplayFailureEvent)
+                    else None
+                ),
+                "candidate_failure_event": (
+                    member.candidate.failure.to_dict()
+                    if isinstance(member.candidate.failure, ReplayFailureEvent)
+                    else None
+                ),
             }
-            for member in replay_result.member_results
+            for member in normalized.members
             if not member.succeeded
         ]
     if _candidate_replay_has_repairable_capability_failure(replay_result):
@@ -5817,12 +5872,14 @@ def _candidate_replay_has_repairable_capability_failure(
         replay_result.baseline.failure,
         replay_result.candidate.failure,
     ]
-    for member in replay_result.member_results:
+    for member in replay_result.member_results or ():
         failures.extend((member.baseline.failure, member.candidate.failure))
     return any(_repairable_capability_failure(failure) for failure in failures)
 
 
 def _repairable_capability_failure(failure: Mapping[str, Any] | None) -> bool:
+    if isinstance(failure, ReplayFailureEvent):
+        return failure.owner is FailureOwner.CANDIDATE and failure.repairable
     if not isinstance(failure, Mapping):
         return False
     if failure.get("outcome") == "candidate_failure":
@@ -6086,18 +6143,21 @@ def _replay_adaptation_details(
     return details
 
 
-def _baseline_preflight_blocks_population(
+def _shared_replay_failure_blocks_population(
     replay_result: CandidateReplayResult,
 ) -> bool:
-    candidates = (
-        [member.candidate for member in replay_result.member_results]
-        if replay_result.member_results
-        else [replay_result.candidate]
-    )
+    variants = [replay_result.baseline, replay_result.candidate]
+    for member in replay_result.member_results or ():
+        variants.extend((member.baseline, member.candidate))
+    events: list[ReplayFailureEvent] = []
+    for variant in variants:
+        if isinstance(variant.failure, ReplayFailureEvent):
+            events.append(variant.failure)
+        events.extend(variant.blocked_by)
     return any(
-        isinstance(candidate.failure, Mapping)
-        and candidate.failure.get("reason") == "baseline_preflight_failed"
-        for candidate in candidates
+        event.scope is FailureScope.SHARED_RUN
+        and event.owner in {FailureOwner.INFRASTRUCTURE, FailureOwner.FRAMEWORK}
+        for event in events
     )
 
 
@@ -6113,6 +6173,8 @@ def _replay_confidence_gate(
         dataset=dataset,
         replay_result=replay_result,
     )
+    if coverage["candidate_executed_count"] == 0:
+        return None
     baseline_source = replay_result.baseline.metrics.get("replay_source")
     candidate_repetitions = replay_result.candidate.metrics.get("repetition_count")
     candidate_successful_repetitions = replay_result.candidate.metrics.get(
