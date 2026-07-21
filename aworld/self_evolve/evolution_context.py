@@ -1084,10 +1084,14 @@ def _lesson_payloads(
             "title": sanitize_text(lesson.title, max_chars=240),
             "summary": sanitize_text(lesson.summary, max_chars=1_000),
             "confidence": sanitize_text(lesson.confidence, max_chars=40),
-            "evidence_refs": [
-                sanitize_text(item, max_chars=160)
-                for item in lesson.evidence_refs[:8]
-            ],
+            "evidence_refs": (
+                []
+                if lesson.lesson_type == "causal_failure_memory"
+                else [
+                    sanitize_text(item, max_chars=160)
+                    for item in lesson.evidence_refs[:8]
+                ]
+            ),
             "metrics": sanitize_metric_value(lesson.metrics, max_chars=240),
             "occurrence_count": max(1, int(lesson.occurrence_count)),
             "distinct_source_count": max(0, int(lesson.distinct_source_count)),

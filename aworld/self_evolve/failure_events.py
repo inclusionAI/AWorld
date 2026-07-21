@@ -19,7 +19,9 @@ from typing import Any
 
 from aworld.self_evolve.sanitization import sanitize_text
 
-FAILURE_EVENT_SCHEMA_VERSION = "aworld.self_evolve.replay_failure.v2"
+FAILURE_EVENT_SCHEMA_VERSION = "aworld.self_evolve.replay_failure.v3"
+_LEGACY_TYPED_FAILURE_EVENT_SCHEMA_VERSION = "aworld.self_evolve.replay_failure.v2"
+AGGREGATED_FAILURE_SCHEMA_VERSION = "aworld.self_evolve.replay_failure_aggregate.v1"
 _MAX_SUMMARY_CHARS = 1_000
 _MAX_CATEGORY_CHARS = 128
 _MAX_DIAGNOSTIC_ITEMS = 32
@@ -28,6 +30,7 @@ _MAX_ARTIFACT_REFS = 16
 _MAX_OCCURRENCE_IDS = 64
 _MAX_SOURCE_IDS = 32
 _CODE_RE = re.compile(r"[^a-z0-9_]+")
+_SHA256_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*-sha256-[0-9a-f]{64}$")
 
 
 class ReplayExecutionStatus(str, Enum):
@@ -97,8 +100,105 @@ def _stable_code(value: Any, *, default: str) -> str:
 def _semantic_identity(value: Any) -> str | None:
     if value is None:
         return None
-    clean = sanitize_text(str(value), max_chars=160).strip()
+    clean = str(value).strip()
     return clean or None
+
+
+def _identity_digest(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _validate_identity_digest(
+    *,
+    field_name: str,
+    value: str | None,
+    digest: str | None,
+    allow_digest_only: bool = False,
+) -> str | None:
+    expected = _identity_digest(value)
+    if digest is None:
+        return expected
+    if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
+        raise ValueError(f"{field_name} must be a full sha256 digest")
+    if value is None and allow_digest_only:
+        return digest
+    if expected != digest:
+        raise ValueError(f"{field_name} does not match its canonical identity")
+    return digest
+
+
+def _exact_occurrence_id(value: Any, *, field_name: str = "event_id") -> str:
+    clean = str(value)
+    if not clean:
+        raise ValueError(f"failure {field_name} must be non-empty")
+    if clean != clean.strip():
+        raise ValueError(f"failure {field_name} must not have surrounding whitespace")
+    if len(clean) > 160:
+        raise ValueError(f"failure {field_name} exceeds 160 characters")
+    if any(ord(char) < 32 or ord(char) == 127 for char in clean):
+        raise ValueError(f"failure {field_name} must not contain control characters")
+    return clean
+
+
+def _failure_semantic_key(
+    *,
+    owner: FailureOwner,
+    stage: FailureStage,
+    code: str,
+    scope: FailureScope,
+    capability_identity_digest: str | None,
+    requirement_identity_digest: str | None,
+    contract_identity_digest: str | None,
+    repairable: bool,
+    category: str,
+) -> str:
+    payload = {
+        "owner": owner.value,
+        "stage": stage.value,
+        "code": code,
+        "scope": scope.value,
+        "capability_identity_digest": capability_identity_digest,
+        "requirement_identity_digest": requirement_identity_digest,
+        "contract_identity_digest": contract_identity_digest,
+        "repairable": repairable,
+        "category": category,
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"replay-failure-{digest}"
+
+
+def _stable_digest_id(prefix: str, payload: Mapping[str, Any]) -> str:
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"{prefix}-sha256-{digest}"
+
+
+def _identity_sample(value: str, *, max_chars: int = 160) -> str:
+    """Return a bounded display sample without using it as identity."""
+
+    sanitized = sanitize_text(value, max_chars=max_chars)
+    if sanitized == value and len(value) <= max_chars:
+        return sanitized
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    suffix = f"...#{digest}"
+    prefix = sanitize_text(value, max_chars=max(1, max_chars - len(suffix)))
+    return f"{prefix}{suffix}"[:max_chars]
 
 
 @dataclass(frozen=True, eq=False)
@@ -119,11 +219,16 @@ class ReplayFailureEvent(Mapping[str, Any]):
     capability_id: str | None = None
     requirement_id: str | None = None
     contract_fingerprint: str | None = None
+    capability_identity_digest: str | None = None
+    requirement_identity_digest: str | None = None
+    contract_identity_digest: str | None = None
     event_id: str = field(default_factory=lambda: f"replay-event-{uuid.uuid4().hex}")
     schema_version: str = FAILURE_EVENT_SCHEMA_VERSION
     _compatibility: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
+        if self.schema_version != FAILURE_EVENT_SCHEMA_VERSION:
+            raise ValueError("unsupported replay failure schema_version")
         try:
             owner = FailureOwner(self.owner)
             stage = FailureStage(self.stage)
@@ -141,9 +246,7 @@ class ReplayFailureEvent(Mapping[str, Any]):
         code = _stable_code(self.code, default="replay_failure")
         if code != self.code:
             raise ValueError("failure event code must be a stable lowercase identifier")
-        event_id = sanitize_text(str(self.event_id), max_chars=160).strip()
-        if not event_id:
-            raise ValueError("failure event_id must be non-empty")
+        event_id = _exact_occurrence_id(self.event_id)
         compatibility = _bounded_value(self._compatibility)
         if not isinstance(compatibility, Mapping):
             compatibility = {}
@@ -171,10 +274,17 @@ class ReplayFailureEvent(Mapping[str, Any]):
                 if str(item).strip()
             ),
         )
+        if len(self.causes) > 32:
+            raise ValueError("failure causes exceeds 32 event ids")
         object.__setattr__(
             self,
             "causes",
-            tuple(dict.fromkeys(str(item) for item in self.causes if str(item).strip()))[:32],
+            tuple(
+                dict.fromkeys(
+                    _exact_occurrence_id(item, field_name="cause event_id")
+                    for item in self.causes
+                )
+            ),
         )
         object.__setattr__(self, "_compatibility", dict(compatibility))
         # Only exact machine identity fields may flow out of the compatibility
@@ -183,15 +293,42 @@ class ReplayFailureEvent(Mapping[str, Any]):
             "replay_capability_id"
         )
         compatibility_requirement_id = compatibility.get("requirement_id")
+        capability_id = _semantic_identity(
+            self.capability_id or compatibility_capability_id
+        )
+        requirement_id = _semantic_identity(
+            self.requirement_id or compatibility_requirement_id
+        )
+        contract_fingerprint = _semantic_identity(self.contract_fingerprint)
+        object.__setattr__(self, "capability_id", capability_id)
+        object.__setattr__(self, "requirement_id", requirement_id)
+        object.__setattr__(self, "contract_fingerprint", contract_fingerprint)
         object.__setattr__(
             self,
-            "capability_id",
-            _semantic_identity(self.capability_id or compatibility_capability_id),
+            "capability_identity_digest",
+            _validate_identity_digest(
+                field_name="capability_identity_digest",
+                value=capability_id,
+                digest=self.capability_identity_digest,
+            ),
         )
         object.__setattr__(
             self,
-            "requirement_id",
-            _semantic_identity(self.requirement_id or compatibility_requirement_id),
+            "requirement_identity_digest",
+            _validate_identity_digest(
+                field_name="requirement_identity_digest",
+                value=requirement_id,
+                digest=self.requirement_identity_digest,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "contract_identity_digest",
+            _validate_identity_digest(
+                field_name="contract_identity_digest",
+                value=contract_fingerprint,
+                digest=self.contract_identity_digest,
+            ),
         )
         object.__setattr__(
             self,
@@ -203,21 +340,17 @@ class ReplayFailureEvent(Mapping[str, Any]):
     def semantic_key(self) -> str:
         """Stable failure identity with all occurrence data deliberately excluded."""
 
-        payload = {
-            "owner": self.owner.value,
-            "stage": self.stage.value,
-            "code": self.code,
-            "scope": self.scope.value,
-            "capability_id": self.capability_id,
-            "requirement_id": self.requirement_id,
-            "contract_fingerprint": self.contract_fingerprint,
-            "repairable": self.repairable,
-            "category": self.category,
-        }
-        digest = hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:24]
-        return f"replay-failure-{digest}"
+        return _failure_semantic_key(
+            owner=self.owner,
+            stage=self.stage,
+            code=self.code,
+            scope=self.scope,
+            capability_identity_digest=self.capability_identity_digest,
+            requirement_identity_digest=self.requirement_identity_digest,
+            contract_identity_digest=self.contract_identity_digest,
+            repairable=self.repairable,
+            category=self.category,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -237,6 +370,9 @@ class ReplayFailureEvent(Mapping[str, Any]):
             "capability_id": self.capability_id,
             "requirement_id": self.requirement_id,
             "contract_fingerprint": self.contract_fingerprint,
+            "capability_identity_digest": self.capability_identity_digest,
+            "requirement_identity_digest": self.requirement_identity_digest,
+            "contract_identity_digest": self.contract_identity_digest,
             "semantic_key": self.semantic_key,
         }
 
@@ -254,14 +390,32 @@ class ReplayFailureEvent(Mapping[str, Any]):
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ReplayFailureEvent":
-        if payload.get("schema_version") != FAILURE_EVENT_SCHEMA_VERSION:
+        serialized_schema = payload.get("schema_version")
+        if serialized_schema not in {
+            FAILURE_EVENT_SCHEMA_VERSION,
+            _LEGACY_TYPED_FAILURE_EVENT_SCHEMA_VERSION,
+        }:
             return cls.from_legacy_mapping(payload)
         if "source" not in payload:
             raise ValueError("v2 replay failure event source is required")
+        if serialized_schema == FAILURE_EVENT_SCHEMA_VERSION:
+            if not payload.get("semantic_key"):
+                raise ValueError("v3 replay failure event semantic_key is required")
+            for identity_field, digest_field in (
+                ("capability_id", "capability_identity_digest"),
+                ("requirement_id", "requirement_identity_digest"),
+                ("contract_fingerprint", "contract_identity_digest"),
+            ):
+                if payload.get(identity_field) is not None and not payload.get(
+                    digest_field
+                ):
+                    raise ValueError(
+                        f"v3 replay failure {identity_field} requires {digest_field}"
+                    )
         diagnostics = payload.get("diagnostics")
         artifact_refs = payload.get("artifact_refs")
         causes = payload.get("causes")
-        return cls(
+        event = cls(
             schema_version=FAILURE_EVENT_SCHEMA_VERSION,
             event_id=str(payload.get("event_id") or ""),
             code=str(payload.get("code") or ""),
@@ -296,7 +450,30 @@ class ReplayFailureEvent(Mapping[str, Any]):
                 if payload.get("contract_fingerprint") is not None
                 else None
             ),
+            capability_identity_digest=(
+                str(payload.get("capability_identity_digest"))
+                if payload.get("capability_identity_digest") is not None
+                else None
+            ),
+            requirement_identity_digest=(
+                str(payload.get("requirement_identity_digest"))
+                if payload.get("requirement_identity_digest") is not None
+                else None
+            ),
+            contract_identity_digest=(
+                str(payload.get("contract_identity_digest"))
+                if payload.get("contract_identity_digest") is not None
+                else None
+            ),
         )
+        serialized_key = payload.get("semantic_key")
+        if (
+            serialized_schema == FAILURE_EVENT_SCHEMA_VERSION
+            and serialized_key is not None
+            and serialized_key != event.semantic_key
+        ):
+            raise ValueError("replay failure semantic_key does not match typed identity")
+        return event
 
     @classmethod
     def from_legacy_mapping(cls, payload: Mapping[str, Any]) -> "ReplayFailureEvent":
@@ -395,7 +572,7 @@ class ReplayFailureEvent(Mapping[str, Any]):
 def causal_failure_events(events: tuple[ReplayFailureEvent, ...]) -> tuple[ReplayFailureEvent, ...]:
     """Return occurrence-unique causal leaves in stable order."""
 
-    by_id = {event.event_id: event for event in events}
+    by_id = _events_by_id(events)
     result: list[ReplayFailureEvent] = []
     seen: set[str] = set()
 
@@ -446,8 +623,12 @@ class AggregatedReplayFailure:
     capability_id: str | None = None
     requirement_id: str | None = None
     contract_fingerprint: str | None = None
+    capability_identity_digest: str | None = None
+    requirement_identity_digest: str | None = None
+    contract_identity_digest: str | None = None
     occurrence_count: int = 1
     affected_member_count: int = 0
+    distinct_source_count: int = 0
     occurrence_ids: tuple[str, ...] = ()
     affected_case_ids: tuple[str, ...] = ()
     source_run_ids: tuple[str, ...] = ()
@@ -455,20 +636,194 @@ class AggregatedReplayFailure:
     source_candidate_ids: tuple[str, ...] = ()
     artifact_refs: tuple[str, ...] = ()
     source_kinds: tuple[str, ...] = ()
+    batch_id: str = ""
+    emission_id: str = ""
+    aggregate_digest: str = ""
+    schema_version: str = AGGREGATED_FAILURE_SCHEMA_VERSION
 
-    @property
-    def distinct_source_count(self) -> int:
-        # IDs are parallel dimensions of the same observations, not additive
-        # evidence sources.  One run/task/candidate tuple is one source.
-        return max(
-            len(self.source_run_ids),
-            len(self.source_task_ids),
-            len(self.source_candidate_ids),
-            0,
+    def __post_init__(self) -> None:
+        if self.schema_version != AGGREGATED_FAILURE_SCHEMA_VERSION:
+            raise ValueError("unsupported aggregate replay failure schema_version")
+        try:
+            owner = FailureOwner(self.owner)
+            stage = FailureStage(self.stage)
+            scope = FailureScope(self.scope)
+        except ValueError as exc:
+            raise ValueError("invalid aggregate replay failure enum value") from exc
+        code = _stable_code(self.code, default="replay_failure")
+        if code != self.code:
+            raise ValueError("aggregate failure code must be a stable lowercase identifier")
+        category = sanitize_text(str(self.category), max_chars=_MAX_CATEGORY_CHARS)
+        capability_id = _semantic_identity(self.capability_id)
+        requirement_id = _semantic_identity(self.requirement_id)
+        contract_fingerprint = _semantic_identity(self.contract_fingerprint)
+        capability_digest = _validate_identity_digest(
+            field_name="capability_identity_digest",
+            value=capability_id,
+            digest=self.capability_identity_digest,
+            allow_digest_only=True,
         )
+        requirement_digest = _validate_identity_digest(
+            field_name="requirement_identity_digest",
+            value=requirement_id,
+            digest=self.requirement_identity_digest,
+            allow_digest_only=True,
+        )
+        contract_digest = _validate_identity_digest(
+            field_name="contract_identity_digest",
+            value=contract_fingerprint,
+            digest=self.contract_identity_digest,
+            allow_digest_only=True,
+        )
+        expected_key = _failure_semantic_key(
+            owner=owner,
+            stage=stage,
+            code=code,
+            scope=scope,
+            capability_identity_digest=capability_digest,
+            requirement_identity_digest=requirement_digest,
+            contract_identity_digest=contract_digest,
+            repairable=self.repairable,
+            category=category,
+        )
+        if self.semantic_key != expected_key:
+            raise ValueError("aggregate semantic_key does not match typed identity")
+        occurrence_count = _exact_nonnegative_count(
+            self.occurrence_count,
+            field_name="occurrence_count",
+            minimum=1,
+        )
+        affected_member_count = _exact_nonnegative_count(
+            self.affected_member_count,
+            field_name="affected_member_count",
+        )
+        distinct_source_count = _exact_nonnegative_count(
+            self.distinct_source_count,
+            field_name="distinct_source_count",
+        )
+        occurrence_ids = _bounded_id_samples(
+            self.occurrence_ids,
+            limit=_MAX_OCCURRENCE_IDS,
+            exact_occurrence_ids=True,
+        )
+        affected_case_ids = _bounded_id_samples(
+            self.affected_case_ids, limit=_MAX_SOURCE_IDS
+        )
+        source_run_ids = _bounded_id_samples(
+            self.source_run_ids, limit=_MAX_SOURCE_IDS
+        )
+        source_task_ids = _bounded_id_samples(
+            self.source_task_ids, limit=_MAX_SOURCE_IDS
+        )
+        source_candidate_ids = _bounded_id_samples(
+            self.source_candidate_ids, limit=_MAX_SOURCE_IDS
+        )
+        if occurrence_count < len(occurrence_ids):
+            raise ValueError("occurrence_count cannot be smaller than occurrence samples")
+        if affected_member_count < len(affected_case_ids):
+            raise ValueError(
+                "affected_member_count cannot be smaller than affected case samples"
+            )
+        if distinct_source_count < max(
+            len(source_run_ids),
+            len(source_task_ids),
+            len(source_candidate_ids),
+            0,
+        ):
+            raise ValueError(
+                "distinct_source_count cannot be smaller than source id samples"
+            )
+        artifact_refs = tuple(
+            sanitize_text(str(item), max_chars=512)
+            for item in self.artifact_refs[:_MAX_ARTIFACT_REFS]
+            if str(item).strip()
+        )
+        source_kinds = tuple(
+            sorted(
+                {
+                    FailureEventSource(str(item)).value
+                    for item in self.source_kinds
+                }
+            )
+        )
+        object.__setattr__(self, "owner", owner)
+        object.__setattr__(self, "stage", stage)
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "category", category)
+        object.__setattr__(self, "capability_id", capability_id)
+        object.__setattr__(self, "requirement_id", requirement_id)
+        object.__setattr__(self, "contract_fingerprint", contract_fingerprint)
+        object.__setattr__(self, "capability_identity_digest", capability_digest)
+        object.__setattr__(self, "requirement_identity_digest", requirement_digest)
+        object.__setattr__(self, "contract_identity_digest", contract_digest)
+        object.__setattr__(self, "occurrence_count", occurrence_count)
+        object.__setattr__(self, "affected_member_count", affected_member_count)
+        object.__setattr__(self, "distinct_source_count", distinct_source_count)
+        object.__setattr__(self, "occurrence_ids", occurrence_ids)
+        object.__setattr__(self, "affected_case_ids", affected_case_ids)
+        object.__setattr__(self, "source_run_ids", source_run_ids)
+        object.__setattr__(self, "source_task_ids", source_task_ids)
+        object.__setattr__(self, "source_candidate_ids", source_candidate_ids)
+        object.__setattr__(self, "artifact_refs", artifact_refs)
+        object.__setattr__(self, "source_kinds", source_kinds)
+        batch_id = self.batch_id or _stable_digest_id(
+            "replay-batch",
+            {
+                "semantic_key": expected_key,
+                "occurrence_count": occurrence_count,
+                "affected_member_count": affected_member_count,
+                "distinct_source_count": distinct_source_count,
+                "occurrence_ids": occurrence_ids,
+                "affected_case_ids": affected_case_ids,
+                "source_run_ids": source_run_ids,
+                "source_task_ids": source_task_ids,
+                "source_candidate_ids": source_candidate_ids,
+            },
+        )
+        _validate_digest_id(batch_id, prefix="replay-batch")
+        object.__setattr__(self, "batch_id", batch_id)
+        aggregate_digest = _stable_digest_id(
+            "replay-aggregate",
+            self._digest_payload(),
+        )
+        if self.aggregate_digest and self.aggregate_digest != aggregate_digest:
+            raise ValueError("aggregate_digest does not match typed aggregate payload")
+        object.__setattr__(self, "aggregate_digest", aggregate_digest)
+        emission_id = _stable_digest_id(
+            "replay-emission",
+            {"batch_id": batch_id, "aggregate_digest": aggregate_digest},
+        )
+        if self.emission_id and self.emission_id != emission_id:
+            raise ValueError("emission_id does not match aggregate emission")
+        object.__setattr__(self, "emission_id", emission_id)
+
+    def _digest_payload(self) -> dict[str, Any]:
+        return {
+            "semantic_key": self.semantic_key,
+            "code": self.code,
+            "owner": self.owner.value,
+            "stage": self.stage.value,
+            "scope": self.scope.value,
+            "repairable": self.repairable,
+            "category": self.category,
+            "capability_identity_digest": self.capability_identity_digest,
+            "requirement_identity_digest": self.requirement_identity_digest,
+            "contract_identity_digest": self.contract_identity_digest,
+            "occurrence_count": self.occurrence_count,
+            "affected_member_count": self.affected_member_count,
+            "distinct_source_count": self.distinct_source_count,
+            "occurrence_ids": list(self.occurrence_ids),
+            "affected_case_ids": list(self.affected_case_ids),
+            "source_run_ids": list(self.source_run_ids),
+            "source_task_ids": list(self.source_task_ids),
+            "source_candidate_ids": list(self.source_candidate_ids),
+            "source_kinds": list(self.source_kinds),
+            "batch_id": self.batch_id,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "semantic_key": self.semantic_key,
             "code": self.code,
             "owner": self.owner.value,
@@ -479,6 +834,9 @@ class AggregatedReplayFailure:
             "capability_id": self.capability_id,
             "requirement_id": self.requirement_id,
             "contract_fingerprint": self.contract_fingerprint,
+            "capability_identity_digest": self.capability_identity_digest,
+            "requirement_identity_digest": self.requirement_identity_digest,
+            "contract_identity_digest": self.contract_identity_digest,
             "occurrence_count": self.occurrence_count,
             "affected_member_count": self.affected_member_count,
             "occurrence_ids": list(self.occurrence_ids),
@@ -489,7 +847,212 @@ class AggregatedReplayFailure:
             "distinct_source_count": self.distinct_source_count,
             "artifact_refs": list(self.artifact_refs),
             "source_kinds": list(self.source_kinds),
+            "batch_id": self.batch_id,
+            "emission_id": self.emission_id,
+            "aggregate_digest": self.aggregate_digest,
         }
+
+    def to_feedback_dict(self) -> dict[str, Any]:
+        """Return the typed, path-free optimizer/lesson transport payload."""
+
+        payload = self.to_dict()
+        payload.pop("artifact_refs", None)
+        # Full canonical identifiers remain in persisted typed artifacts where
+        # their digests can be verified. Optimizer transport needs only the
+        # identity digests; prose/path-like identifier values are not copied.
+        payload.pop("capability_id", None)
+        payload.pop("requirement_id", None)
+        payload.pop("contract_fingerprint", None)
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "AggregatedReplayFailure":
+        serialized_schema = payload.get("schema_version")
+        strict = serialized_schema == AGGREGATED_FAILURE_SCHEMA_VERSION
+        if serialized_schema is not None and not strict:
+            raise ValueError("unsupported aggregate replay failure schema_version")
+        if strict:
+            required = {
+                "semantic_key",
+                "occurrence_count",
+                "affected_member_count",
+                "distinct_source_count",
+                "batch_id",
+                "emission_id",
+                "aggregate_digest",
+            }
+            missing = sorted(
+                key for key in required if key not in payload or payload.get(key) == ""
+            )
+            if missing:
+                raise ValueError(
+                    "typed aggregate is missing required fields: " + ", ".join(missing)
+                )
+            for identity_field, digest_field in (
+                ("capability_id", "capability_identity_digest"),
+                ("requirement_id", "requirement_identity_digest"),
+                ("contract_fingerprint", "contract_identity_digest"),
+            ):
+                if payload.get(identity_field) is not None and not payload.get(
+                    digest_field
+                ):
+                    raise ValueError(
+                        f"typed aggregate {identity_field} requires {digest_field}"
+                    )
+        owner = FailureOwner(str(payload.get("owner") or ""))
+        stage = FailureStage(str(payload.get("stage") or ""))
+        scope = FailureScope(str(payload.get("scope") or ""))
+        code = str(payload.get("code") or "")
+        category = str(payload.get("category") or "replay")
+        capability_id = _optional_string(payload.get("capability_id"))
+        requirement_id = _optional_string(payload.get("requirement_id"))
+        contract_fingerprint = _optional_string(payload.get("contract_fingerprint"))
+        capability_digest = _validate_identity_digest(
+            field_name="capability_identity_digest",
+            value=capability_id,
+            digest=_optional_string(payload.get("capability_identity_digest")),
+            allow_digest_only=True,
+        )
+        requirement_digest = _validate_identity_digest(
+            field_name="requirement_identity_digest",
+            value=requirement_id,
+            digest=_optional_string(payload.get("requirement_identity_digest")),
+            allow_digest_only=True,
+        )
+        contract_digest = _validate_identity_digest(
+            field_name="contract_identity_digest",
+            value=contract_fingerprint,
+            digest=_optional_string(payload.get("contract_identity_digest")),
+            allow_digest_only=True,
+        )
+        semantic_key = _failure_semantic_key(
+            owner=owner,
+            stage=stage,
+            code=code,
+            scope=scope,
+            capability_identity_digest=capability_digest,
+            requirement_identity_digest=requirement_digest,
+            contract_identity_digest=contract_digest,
+            repairable=payload.get("repairable") is True,
+            category=sanitize_text(category, max_chars=_MAX_CATEGORY_CHARS),
+        )
+        if strict and payload.get("semantic_key") != semantic_key:
+            raise ValueError("serialized aggregate semantic_key is invalid")
+        occurrence_ids = _mapping_string_tuple(payload.get("occurrence_ids"))
+        affected_case_ids = _mapping_string_tuple(payload.get("affected_case_ids"))
+        source_run_ids = _mapping_string_tuple(payload.get("source_run_ids"))
+        source_task_ids = _mapping_string_tuple(payload.get("source_task_ids"))
+        source_candidate_ids = _mapping_string_tuple(
+            payload.get("source_candidate_ids")
+        )
+        occurrence_count = _payload_count(
+            payload,
+            "occurrence_count",
+            default=max(1, len(occurrence_ids)),
+            minimum=1,
+        )
+        affected_member_count = _payload_count(
+            payload,
+            "affected_member_count",
+            default=len(affected_case_ids),
+        )
+        distinct_source_count = _payload_count(
+            payload,
+            "distinct_source_count",
+            default=max(
+                len(source_run_ids),
+                len(source_task_ids),
+                len(source_candidate_ids),
+                0,
+            ),
+        )
+        source_kinds = _mapping_string_tuple(payload.get("source_kinds"))
+        if not source_kinds:
+            source_kinds = (FailureEventSource.LEGACY_INFERRED.value,)
+        return cls(
+            semantic_key=semantic_key,
+            code=code,
+            owner=owner,
+            stage=stage,
+            scope=scope,
+            repairable=payload.get("repairable") is True,
+            category=category,
+            capability_id=capability_id,
+            requirement_id=requirement_id,
+            contract_fingerprint=contract_fingerprint,
+            capability_identity_digest=capability_digest,
+            requirement_identity_digest=requirement_digest,
+            contract_identity_digest=contract_digest,
+            occurrence_count=occurrence_count,
+            affected_member_count=affected_member_count,
+            distinct_source_count=distinct_source_count,
+            occurrence_ids=occurrence_ids,
+            affected_case_ids=affected_case_ids,
+            source_run_ids=source_run_ids,
+            source_task_ids=source_task_ids,
+            source_candidate_ids=source_candidate_ids,
+            artifact_refs=_mapping_string_tuple(payload.get("artifact_refs")),
+            source_kinds=source_kinds,
+            batch_id=(str(payload.get("batch_id") or "") if strict else ""),
+            emission_id=(str(payload.get("emission_id") or "") if strict else ""),
+            aggregate_digest=(
+                str(payload.get("aggregate_digest") or "") if strict else ""
+            ),
+        )
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _mapping_string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(item) for item in value if str(item).strip())
+
+
+def _exact_nonnegative_count(
+    value: Any,
+    *,
+    field_name: str,
+    minimum: int = 0,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{field_name} must be an integer >= {minimum}")
+    return value
+
+
+def _payload_count(
+    payload: Mapping[str, Any],
+    field_name: str,
+    *,
+    default: int,
+    minimum: int = 0,
+) -> int:
+    value = payload.get(field_name, default)
+    return _exact_nonnegative_count(value, field_name=field_name, minimum=minimum)
+
+
+def _bounded_id_samples(
+    values: tuple[str, ...],
+    *,
+    limit: int,
+    exact_occurrence_ids: bool = False,
+) -> tuple[str, ...]:
+    samples: list[str] = []
+    for value in values[:limit]:
+        if exact_occurrence_ids:
+            samples.append(_exact_occurrence_id(value, field_name="occurrence sample"))
+        else:
+            samples.append(_identity_sample(str(value)))
+    return tuple(dict.fromkeys(samples))
+
+
+def _validate_digest_id(value: str, *, prefix: str) -> None:
+    if not _SHA256_ID_RE.fullmatch(value) or not value.startswith(f"{prefix}-sha256-"):
+        raise ValueError(f"{prefix} id must contain a full sha256 digest")
 
 
 def aggregate_replay_failure_observations(
@@ -498,7 +1061,7 @@ def aggregate_replay_failure_observations(
     """Aggregate causal leaves by semantic identity in deterministic order."""
 
     all_events = tuple(observation.event for observation in observations)
-    by_id = {event.event_id: event for event in all_events}
+    by_id = _events_by_id(all_events)
     expanded: list[ReplayFailureObservation] = []
 
     def visit(
@@ -576,6 +1139,36 @@ def aggregate_replay_failure_observations(
                 if ref
             }
         )
+        distinct_source_count = max(
+            len(run_ids), len(task_ids), len(candidate_ids), 0
+        )
+        batch_id = _stable_digest_id(
+            "replay-batch",
+            {
+                "semantic_key": semantic_key,
+                "observations": sorted(
+                    [
+                    (
+                        item.event.event_id,
+                        _semantic_identity(item.case_id),
+                        _semantic_identity(item.run_id),
+                        _semantic_identity(item.task_id),
+                        _semantic_identity(item.candidate_id),
+                        item.execution_failure,
+                    )
+                    for item in items
+                    ],
+                    key=lambda value: json.dumps(
+                        value, ensure_ascii=False, separators=(",", ":")
+                    ),
+                ),
+                "occurrence_ids": sorted(occurrence_ids),
+                "case_ids": case_ids,
+                "run_ids": run_ids,
+                "task_ids": task_ids,
+                "candidate_ids": candidate_ids,
+            },
+        )
         aggregates.append(
             AggregatedReplayFailure(
                 semantic_key=semantic_key,
@@ -588,20 +1181,47 @@ def aggregate_replay_failure_observations(
                 capability_id=event.capability_id,
                 requirement_id=event.requirement_id,
                 contract_fingerprint=event.contract_fingerprint,
+                capability_identity_digest=event.capability_identity_digest,
+                requirement_identity_digest=event.requirement_identity_digest,
+                contract_identity_digest=event.contract_identity_digest,
                 occurrence_count=max(1, len(occurrence_ids)),
                 affected_member_count=len(case_ids),
+                distinct_source_count=distinct_source_count,
                 occurrence_ids=tuple(sorted(occurrence_ids)[:_MAX_OCCURRENCE_IDS]),
-                affected_case_ids=tuple(case_ids[:_MAX_SOURCE_IDS]),
-                source_run_ids=tuple(run_ids[:_MAX_SOURCE_IDS]),
-                source_task_ids=tuple(task_ids[:_MAX_SOURCE_IDS]),
-                source_candidate_ids=tuple(candidate_ids[:_MAX_SOURCE_IDS]),
+                affected_case_ids=tuple(
+                    _identity_sample(item) for item in case_ids[:_MAX_SOURCE_IDS]
+                ),
+                source_run_ids=tuple(
+                    _identity_sample(item) for item in run_ids[:_MAX_SOURCE_IDS]
+                ),
+                source_task_ids=tuple(
+                    _identity_sample(item) for item in task_ids[:_MAX_SOURCE_IDS]
+                ),
+                source_candidate_ids=tuple(
+                    _identity_sample(item)
+                    for item in candidate_ids[:_MAX_SOURCE_IDS]
+                ),
                 artifact_refs=tuple(artifact_refs[:_MAX_ARTIFACT_REFS]),
                 source_kinds=tuple(
                     sorted({item.event.source.value for item in items})
                 ),
+                batch_id=batch_id,
             )
         )
     return tuple(aggregates)
+
+
+def _events_by_id(
+    events: tuple[ReplayFailureEvent, ...],
+) -> dict[str, ReplayFailureEvent]:
+    by_id: dict[str, ReplayFailureEvent] = {}
+    for event in events:
+        previous = by_id.setdefault(event.event_id, event)
+        if previous.to_dict() != event.to_dict():
+            raise ValueError(
+                f"replay failure event_id {event.event_id!r} was reused for a different occurrence"
+            )
+    return by_id
 
 
 def observe_replay_failures(

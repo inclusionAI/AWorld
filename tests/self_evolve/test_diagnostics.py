@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from aworld.self_evolve.diagnostics import (
     HarnessDiagnosticKind,
     extract_harness_diagnostics,
@@ -8,7 +10,10 @@ from aworld.self_evolve.failure_events import (
     FailureOwner,
     FailureScope,
     FailureStage,
+    AggregatedReplayFailure,
     ReplayFailureEvent,
+    ReplayFailureObservation,
+    aggregate_replay_failure_observations,
 )
 from aworld.self_evolve.types import EvaluationSummary, GateResult
 
@@ -161,3 +166,185 @@ def test_extract_harness_diagnostics_maps_shared_infrastructure_to_workflow() ->
     assert len(diagnostics) == 1
     assert diagnostics[0].kind is HarnessDiagnosticKind.WORKFLOW
     assert diagnostics[0].metrics["scope"] == "shared_run"
+
+
+def test_failure_identity_uses_full_canonical_values_and_rejects_lossy_event_ids() -> None:
+    shared_prefix = "capability/" + ("same-prefix-" * 20)
+    first = ReplayFailureEvent(
+        event_id="event-first",
+        code="contract_rejected",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        capability_id=shared_prefix + "first",
+        requirement_id=shared_prefix + "requirement-first",
+        contract_fingerprint=shared_prefix + "contract-first",
+    )
+    second = ReplayFailureEvent(
+        event_id="event-second",
+        code="contract_rejected",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        capability_id=shared_prefix + "second",
+        requirement_id=shared_prefix + "requirement-second",
+        contract_fingerprint=shared_prefix + "contract-second",
+    )
+
+    assert first.semantic_key != second.semantic_key
+    assert len(first.semantic_key.removeprefix("replay-failure-")) == 64
+    assert ReplayFailureEvent.from_dict(first.to_dict()) == first
+    tampered = first.to_dict()
+    tampered["capability_identity_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="canonical identity"):
+        ReplayFailureEvent.from_dict(tampered)
+    with pytest.raises(ValueError, match="exceeds 160"):
+        ReplayFailureEvent(
+            event_id="x" * 161,
+            code="contract_rejected",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.CAPABILITY_PREFLIGHT,
+            scope=FailureScope.CANDIDATE,
+            repairable=True,
+        )
+    with pytest.raises(ValueError, match="reused for a different occurrence"):
+        aggregate_replay_failure_observations(
+            (
+                ReplayFailureObservation(event=first),
+                ReplayFailureObservation(
+                    event=ReplayFailureEvent(
+                        event_id=first.event_id,
+                        code="different_contract_rejected",
+                        owner=FailureOwner.CANDIDATE,
+                        stage=FailureStage.CAPABILITY_PREFLIGHT,
+                        scope=FailureScope.CANDIDATE,
+                        repairable=True,
+                    )
+                ),
+            )
+        )
+
+
+def test_aggregate_round_trip_preserves_exact_counts_beyond_bounded_samples() -> None:
+    def observations(batch: str) -> tuple[ReplayFailureObservation, ...]:
+        return tuple(
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    event_id=f"{batch}-event-{index:03d}",
+                    code="member_contract_rejected",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.MEMBER,
+                    repairable=True,
+                    capability_id="generic-capability",
+                ),
+                case_id=f"{batch}-case-{index:03d}",
+                run_id=f"{batch}-run-{index:03d}",
+                task_id=f"{batch}-task-{index:03d}",
+                candidate_id=f"{batch}-candidate-{index:03d}",
+            )
+            for index in range(70)
+        )
+
+    first = aggregate_replay_failure_observations(observations("first"))[0]
+    repeated = aggregate_replay_failure_observations(observations("first"))[0]
+    second = aggregate_replay_failure_observations(observations("second"))[0]
+
+    assert first.occurrence_count == 70
+    assert first.affected_member_count == 70
+    assert first.distinct_source_count == 70
+    assert len(first.occurrence_ids) == 64
+    assert len(first.source_task_ids) == 32
+    loaded = AggregatedReplayFailure.from_dict(first.to_dict())
+    assert loaded.to_dict() == first.to_dict()
+    tampered = first.to_dict()
+    tampered["occurrence_count"] = 71
+    with pytest.raises(ValueError, match="aggregate_digest"):
+        AggregatedReplayFailure.from_dict(tampered)
+    assert repeated.batch_id == first.batch_id
+    assert repeated.emission_id == first.emission_id
+    assert second.batch_id != first.batch_id
+    assert second.emission_id != first.emission_id
+
+
+def test_typed_task_evaluation_cause_suppresses_only_explained_judge_noise() -> None:
+    event = ReplayFailureEvent(
+        code="judge_execution_failed",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+    )
+    diagnostics = extract_harness_diagnostics(
+        gate_results=(GateResult("evaluation", False, "judge failed"),),
+        summaries=(
+            EvaluationSummary(
+                variant_id="candidate",
+                dataset_split="validation",
+                metrics={"judge_failure_count": 2, "judge_success_count": 0},
+            ),
+        ),
+        causal_events=(event,),
+    )
+
+    assert len(diagnostics) == 1
+    assert diagnostics[0].metrics["code"] == "judge_execution_failed"
+
+
+def test_shared_infrastructure_cause_retains_independent_context_evidence_and_tool_issue() -> None:
+    event = ReplayFailureEvent(
+        code="sandbox_unavailable",
+        owner=FailureOwner.INFRASTRUCTURE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.SHARED_RUN,
+        repairable=False,
+    )
+    diagnostics = extract_harness_diagnostics(
+        gate_results=(
+            GateResult("candidate_replay", False, "sandbox unavailable"),
+            GateResult("evidence_quality", False, "evidence incomplete"),
+        ),
+        summaries=(
+            EvaluationSummary(
+                variant_id="candidate",
+                dataset_split="validation",
+                metrics={
+                    "trajectory_context_missing": True,
+                    "replay_failure_types": ["invalid_tool_arguments"],
+                },
+            ),
+        ),
+        causal_events=(event,),
+    )
+
+    kinds = [item.kind for item in diagnostics]
+    assert HarnessDiagnosticKind.WORKFLOW in kinds
+    assert HarnessDiagnosticKind.ARTIFACT_LIFECYCLE in kinds
+    assert HarnessDiagnosticKind.CONTEXT in kinds
+    assert HarnessDiagnosticKind.TOOL_PROTOCOL in kinds
+
+
+def test_candidate_capability_cause_retains_independent_judge_issue() -> None:
+    event = ReplayFailureEvent(
+        code="capability_contract_rejected",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+    )
+    diagnostics = extract_harness_diagnostics(
+        gate_results=(),
+        summaries=(
+            EvaluationSummary(
+                variant_id="candidate",
+                dataset_split="validation",
+                metrics={"judge_failure_count": 1, "judge_success_count": 0},
+            ),
+        ),
+        causal_events=(event,),
+    )
+
+    assert [item.kind for item in diagnostics].count(HarnessDiagnosticKind.EVALUATION) == 1
+    assert [item.kind for item in diagnostics].count(HarnessDiagnosticKind.TOOL_PROTOCOL) == 1

@@ -140,7 +140,11 @@ class FilesystemSelfEvolveStore:
         return path
 
     def write_lesson_records(self, run_id: str, lessons: tuple[Any, ...]) -> Path:
-        from aworld.self_evolve.lessons import LessonRecord, aggregate_lesson_records
+        from aworld.self_evolve.lessons import (
+            LessonRecord,
+            aggregate_lesson_records,
+            validate_lesson_records,
+        )
 
         lessons_dir = self.run_path(run_id) / "lessons"
         lessons_dir.mkdir(parents=True, exist_ok=True)
@@ -149,7 +153,9 @@ class FilesystemSelfEvolveStore:
             lesson for lesson in lessons if isinstance(lesson, LessonRecord)
         )
         if len(typed_lessons) == len(lessons):
+            validate_lesson_records(typed_lessons)
             lessons = aggregate_lesson_records(typed_lessons)
+            validate_lesson_records(lessons)
         else:
             lesson_ids = [getattr(lesson, "lesson_id", None) for lesson in lessons]
             if len(lesson_ids) != len(set(lesson_ids)):

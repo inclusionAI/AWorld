@@ -1,6 +1,20 @@
 from __future__ import annotations
 
-from aworld.self_evolve.lessons import extract_lesson_records
+import pytest
+
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayFailureEvent,
+    ReplayFailureObservation,
+    aggregate_replay_failure_observations,
+)
+from aworld.self_evolve.lessons import (
+    LessonRecord,
+    aggregate_lesson_records,
+    extract_lesson_records,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 import json
 from aworld.self_evolve.trace_pack import build_trace_pack
@@ -279,3 +293,77 @@ def test_store_writes_one_jsonl_row_per_semantic_lesson(tmp_path) -> None:
     lines = path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["occurrence_count"] == 1
+
+
+def test_causal_lessons_are_idempotent_per_emission_and_add_exact_cross_batch_counts() -> None:
+    def aggregate(batch: str):
+        observations = tuple(
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    event_id=f"{batch}-event-{index:03d}",
+                    code="generic_contract_rejected",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.MEMBER,
+                    repairable=True,
+                    capability_id="generic-capability",
+                ),
+                case_id=f"{batch}-case-{index:03d}",
+                run_id=f"{batch}-run-{index:03d}",
+                task_id=f"{batch}-task-{index:03d}",
+                candidate_id=f"{batch}-candidate-{index:03d}",
+            )
+            for index in range(70)
+        )
+        return aggregate_replay_failure_observations(observations)[0]
+
+    first = aggregate("first")
+    second = aggregate("second")
+
+    def feedback(item) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id="candidate",
+            dataset_split="validation",
+            metrics={"causal_failure_events": [item.to_feedback_dict()]},
+        )
+
+    lessons = extract_lesson_records(
+        (feedback(first), feedback(first), feedback(second)),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )
+
+    assert len(lessons) == 1
+    lesson = lessons[0]
+    assert lesson.occurrence_count == 140
+    assert lesson.affected_case_count == 140
+    assert lesson.distinct_source_count == 140
+    assert len(lesson.occurrence_ids) == 64
+    assert len(lesson.source_task_ids) == 32
+    assert lesson.emission_ids == tuple(sorted((first.emission_id, second.emission_id)))
+    assert set(lesson.batch_ids) == {first.batch_id, second.batch_id}
+
+
+def test_lesson_aggregation_and_store_fail_closed_on_semantic_id_collision(
+    tmp_path,
+) -> None:
+    first = LessonRecord(
+        lesson_id="forged-causal-id",
+        lesson_type="causal_failure_memory",
+        title="Repair typed cause",
+        summary="Repair first typed cause.",
+        metrics={"causal_code": "first_code", "repairable": True},
+    )
+    second = LessonRecord(
+        lesson_id="forged-causal-id",
+        lesson_type="causal_failure_memory",
+        title="Repair typed cause",
+        summary="Repair second typed cause.",
+        metrics={"causal_code": "second_code", "repairable": True},
+    )
+
+    with pytest.raises(ValueError, match="conflicting semantic payloads"):
+        aggregate_lesson_records((first, second))
+    with pytest.raises(ValueError, match="conflicting semantic payloads"):
+        FilesystemSelfEvolveStore(tmp_path).write_lesson_records(
+            "run-generic", (first, second)
+        )

@@ -62,7 +62,10 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.failure_events import (
+    AGGREGATED_FAILURE_SCHEMA_VERSION,
     AggregatedReplayFailure,
+    ReplayFailureObservation,
+    aggregate_replay_failure_observations,
     aggregate_replay_failures,
     FailureEventSource,
     FailureOwner,
@@ -7091,7 +7094,7 @@ def _typed_gate_feedback_metrics(
     classification_views: list[Mapping[str, object]] = []
     failure_classes: set[str] = set()
     repairable_values: list[bool] = []
-    causal_events: dict[str, Mapping[str, object]] = {}
+    causal_events: dict[tuple[str, str], Mapping[str, object]] = {}
     candidate_causal_contexts: dict[str, Mapping[str, object]] = {}
     for gate in failed_gate_items:
         details = gate.details
@@ -7123,26 +7126,33 @@ def _typed_gate_feedback_metrics(
             for event in raw_causal_events[:64]:
                 if not isinstance(event, Mapping):
                     continue
-                semantic_key = event.get("semantic_key")
-                if not isinstance(semantic_key, str) or not semantic_key:
+                try:
+                    typed_event = _typed_causal_feedback_event(event)
+                except (TypeError, ValueError):
+                    if event.get("schema_version") is not None:
+                        raise
                     continue
-                bounded_event = sanitize_metric_value(event, max_chars=240)
-                if isinstance(bounded_event, Mapping):
-                    causal_events.setdefault(semantic_key, dict(bounded_event))
-                    repair_conformance = details.get("repair_conformance")
-                    if (
-                        event.get("owner") == "candidate"
-                        and isinstance(repair_conformance, Mapping)
-                    ):
-                        bounded_contract = sanitize_metric_value(
-                            repair_conformance,
-                            max_chars=400,
+                transport = typed_event.to_feedback_dict()
+                emission_key = (typed_event.semantic_key, typed_event.emission_id)
+                previous = causal_events.setdefault(emission_key, transport)
+                if previous != transport:
+                    raise ValueError(
+                        "causal emission id was reused with a different typed payload"
+                    )
+                repair_conformance = details.get("repair_conformance")
+                if (
+                    typed_event.owner is FailureOwner.CANDIDATE
+                    and isinstance(repair_conformance, Mapping)
+                ):
+                    bounded_contract = sanitize_metric_value(
+                        repair_conformance,
+                        max_chars=400,
+                    )
+                    if isinstance(bounded_contract, Mapping):
+                        candidate_causal_contexts.setdefault(
+                            typed_event.semantic_key,
+                            dict(bounded_contract),
                         )
-                        if isinstance(bounded_contract, Mapping):
-                            candidate_causal_contexts.setdefault(
-                                semantic_key,
-                                dict(bounded_contract),
-                            )
         raw_diagnostics = details.get("diagnostics")
         if isinstance(raw_diagnostics, list):
             diagnostics.extend(
@@ -7527,6 +7537,21 @@ def _typed_gate_feedback_metrics(
     if diagnostics:
         result["candidate_validation_diagnostics"] = diagnostics[:16]
     return result
+
+
+def _typed_causal_feedback_event(
+    payload: Mapping[str, object],
+) -> AggregatedReplayFailure:
+    """Parse causal transport without routing typed scalars through sanitization."""
+
+    if payload.get("schema_version") == AGGREGATED_FAILURE_SCHEMA_VERSION:
+        return AggregatedReplayFailure.from_dict(payload)
+    if payload.get("schema_version") is not None:
+        event = ReplayFailureEvent.from_dict(payload)
+        return aggregate_replay_failure_observations(
+            (ReplayFailureObservation(event=event),)
+        )[0]
+    return AggregatedReplayFailure.from_dict(payload)
 
 
 def _diagnostic_completed_data_plane_operations(value: Any) -> tuple[str, ...]:
