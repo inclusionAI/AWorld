@@ -559,6 +559,16 @@ def test_trust_provenance_gate_rejects_protected_generated_and_external_targets(
             reason="generated artifact",
         )
     )
+    external = gate.evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind="skill",
+            write_origin="external",
+            trust_level="external",
+            protected=False,
+            reason="external capability",
+        )
+    )
     trusted = gate.evaluate(
         TargetProvenance(
             target=target,
@@ -574,4 +584,57 @@ def test_trust_provenance_gate_rejects_protected_generated_and_external_targets(
     assert protected.reason == "protected target provenance cannot be mutated"
     assert generated.passed is False
     assert generated.reason == "generated target requires explicit trust policy"
+    assert external.passed is False
+    assert external.reason == "external target requires explicit trust policy"
     assert trusted.passed is True
+
+
+def test_trust_provenance_gate_fails_closed_for_unresolved_provenance() -> None:
+    result = TrustProvenanceGate().evaluate(
+        None,
+        unresolved_reason="target identity is incomplete",
+    )
+
+    assert result.gate_name == "trust_provenance"
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details == {
+        "provenance_status": "unresolved",
+        "unresolved_reason": "target identity is incomplete",
+    }
+
+
+def test_trust_provenance_gate_requires_named_policy_for_generated_target() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="generated")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="inferred target is absent from inventory",
+    )
+
+    denied = TrustProvenanceGate().evaluate(provenance)
+    allowed = TrustProvenanceGate(allow_generated=True).evaluate(provenance)
+
+    assert denied.passed is False
+    assert allowed.passed is True
+
+
+def test_trust_provenance_gate_requires_named_policy_for_external_target() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="external-capability")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="external",
+        trust_level="external",
+        protected=False,
+        reason="external capability",
+    )
+
+    denied = TrustProvenanceGate().evaluate(provenance)
+    allowed = TrustProvenanceGate(allow_external=True).evaluate(provenance)
+
+    assert denied.passed is False
+    assert allowed.passed is True

@@ -14,9 +14,10 @@ from aworld.logs.util import logger
 from aworld.runner import Runners
 from aworld.runners.batch import DeterministicTaskBatchExecutor
 from aworld.self_evolve.credit_assignment import (
-    TargetInventoryEntry,
+    TargetSelectionDecision,
     TargetSelectionReport,
     TrajectoryCreditAssigner,
+    build_target_selection_decision,
     build_default_target_inventory,
 )
 from aworld.self_evolve.datasets import (
@@ -83,7 +84,10 @@ from aworld.self_evolve.concurrency import (
 from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.provenance import (
+    TargetProvenance,
+    resolve_target_provenance,
+)
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayBackend,
@@ -516,6 +520,8 @@ class SelfEvolveRunner:
         judge_repetitions: int = 3,
         max_run_tokens: int = 500_000,
         auto_apply_target_types: tuple[str, ...] = ("skill",),
+        allow_generated_target_mutation: bool = False,
+        allow_external_target_mutation: bool = False,
         replay_enabled: bool = False,
         candidate_replay_backend: CandidateReplayBackend | None = None,
         replay_timeout_seconds: int = 600,
@@ -544,6 +550,8 @@ class SelfEvolveRunner:
         self.judge_repetitions = judge_repetitions
         self.max_run_tokens = max_run_tokens
         self.auto_apply_target_types = tuple(auto_apply_target_types)
+        self.allow_generated_target_mutation = allow_generated_target_mutation
+        self.allow_external_target_mutation = allow_external_target_mutation
         self.replay_enabled = replay_enabled
         self.candidate_replay_backend = candidate_replay_backend
         self.replay_timeout_seconds = replay_timeout_seconds
@@ -584,6 +592,36 @@ class SelfEvolveRunner:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
         if apply_policy not in {"proposal", "auto_verified"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
+        selection_origin = (
+            "inferred"
+            if target_selection_report is not None
+            and "explicit_target" not in target_selection_report.signals
+            else "operator_explicit"
+        )
+        inventory_provenance = target_provenance
+        if inventory_provenance is None:
+            inventory_entry = build_default_target_inventory(
+                self.store.workspace_root
+            ).find(target.identity.target_type, target.identity.target_id)
+            inventory_provenance = (
+                inventory_entry.provenance if inventory_entry is not None else None
+            )
+        provenance_resolution = resolve_target_provenance(
+            target.identity,
+            selection_origin=selection_origin,
+            inventory_provenance=inventory_provenance,
+            workspace_root=self.store.workspace_root,
+        )
+        target_provenance = provenance_resolution.provenance
+        target_provenance_unresolved_reason = (
+            None if provenance_resolution.resolved else provenance_resolution.reason
+        )
+        if target_selection_report is not None:
+            target_selection_report = replace(
+                target_selection_report,
+                provenance_status=provenance_resolution.status,
+                provenance_reason=provenance_resolution.reason,
+            )
         _emit_progress(
             self.progress_callback,
             "start",
@@ -607,8 +645,21 @@ class SelfEvolveRunner:
         self.store.write_dataset_recipe(run_id, dataset.recipe)
         if target_selection_report is not None:
             self.store.write_target_selection_report(run_id, target_selection_report)
+        target_provenance_path: Path | None = None
         if target_provenance is not None:
-            self.store.write_target_provenance(run_id, target_provenance)
+            target_provenance_path = self.store.write_target_provenance(
+                run_id,
+                target_provenance,
+            )
+        target_provenance_report = {
+            "status": provenance_resolution.status,
+            "path": (
+                str(target_provenance_path)
+                if target_provenance_path is not None
+                else None
+            ),
+            "reason": provenance_resolution.reason,
+        }
 
         stopping_gate = StoppingConditionGate(
             max_iterations=self.max_iterations,
@@ -630,6 +681,7 @@ class SelfEvolveRunner:
                 "candidate_ids": [],
                 "selected_candidate_id": None,
                 "status": SelfEvolveRunStatus.REJECTED.value,
+                "target_provenance": target_provenance_report,
                 "stopping_condition": {
                     "gate_name": stopping_result.gate_name,
                     "passed": stopping_result.passed,
@@ -1079,6 +1131,9 @@ class SelfEvolveRunner:
                     candidate=iteration_candidate,
                     apply_policy=apply_policy,
                     target_provenance=target_provenance,
+                    target_provenance_unresolved_reason=(
+                        target_provenance_unresolved_reason
+                    ),
                     iteration_number=iteration_index + 1,
                     candidate_number=candidate_index + 1,
                     candidate_count=len(candidate_population),
@@ -1231,6 +1286,7 @@ class SelfEvolveRunner:
                 selected_candidate.candidate_id if selected_candidate is not None else None
             ),
             "status": final_status.value,
+            "target_provenance": target_provenance_report,
             "optimizer_diagnostics": (
                 optimizer_diagnostics[0]["diagnostics"]
                 if len(optimizer_diagnostics) == 1
@@ -1746,6 +1802,7 @@ class SelfEvolveRunner:
         candidate: CandidateVariant,
         apply_policy: str,
         target_provenance: TargetProvenance | None,
+        target_provenance_unresolved_reason: str | None = None,
         iteration_number: int,
         candidate_number: int,
         candidate_count: int,
@@ -1769,6 +1826,15 @@ class SelfEvolveRunner:
                 workspace_root=self.store.workspace_root,
                 max_chars=self.max_run_tokens,
                 target_provenance=target_provenance,
+                target_provenance_unresolved_reason=(
+                    target_provenance_unresolved_reason
+                ),
+                allow_generated_target_mutation=(
+                    self.allow_generated_target_mutation
+                ),
+                allow_external_target_mutation=(
+                    self.allow_external_target_mutation
+                ),
             )
         )
         if not self.skip_duplicate_rejected_candidate_gate:
@@ -2841,6 +2907,8 @@ def optimize_from_cli_request(
     max_run_tokens: int = 500_000,
     min_score_delta: float = 0.0,
     auto_apply_target_types: tuple[str, ...] = ("skill",),
+    allow_generated_target_mutation: bool = False,
+    allow_external_target_mutation: bool = False,
     judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None = None,
     mutation_model_config: ModelConfig | None = None,
     replay_enabled: bool = False,
@@ -2881,6 +2949,8 @@ def optimize_from_cli_request(
             max_run_tokens=max_run_tokens,
             min_score_delta=min_score_delta,
             auto_apply_target_types=auto_apply_target_types,
+            allow_generated_target_mutation=allow_generated_target_mutation,
+            allow_external_target_mutation=allow_external_target_mutation,
             judge_config=judge_config,
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
@@ -2971,10 +3041,12 @@ def optimize_from_cli_request(
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
             )
-        target_selection_report, inventory_entry = _infer_target_from_trace_packs(
+        target_selection_decision = _infer_target_from_trace_packs(
             trace_packs,
             workspace_root=workspace_root,
         )
+        target_selection_report = target_selection_decision.report
+        target_provenance = target_selection_decision.provenance
         target_selection_key = (
             f"{target_selection_report.selected_target.target_type}:"
             f"{target_selection_report.selected_target.target_id}"
@@ -3011,8 +3083,6 @@ def optimize_from_cli_request(
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
             )
-        if inventory_entry is not None:
-            target_provenance = inventory_entry.provenance
         try:
             target_adapter = _target_from_ref(
                 target_selection_report.selected_target,
@@ -3057,6 +3127,30 @@ def optimize_from_cli_request(
             target_adapter.identity,
             trace_packs,
         )
+        explicit_inventory = build_default_target_inventory(workspace_root)
+        if target_selection_report is not None:
+            explicit_decision = build_target_selection_decision(
+                target_selection_report,
+                inventory=explicit_inventory,
+                selection_origin="operator_explicit",
+                workspace_root=workspace_root,
+            )
+            target_selection_report = explicit_decision.report
+            target_provenance = explicit_decision.provenance
+        else:
+            explicit_entry = explicit_inventory.find(
+                target_adapter.identity.target_type,
+                target_adapter.identity.target_id,
+            )
+            explicit_resolution = resolve_target_provenance(
+                target_adapter.identity,
+                selection_origin="operator_explicit",
+                inventory_provenance=(
+                    explicit_entry.provenance if explicit_entry is not None else None
+                ),
+                workspace_root=workspace_root,
+            )
+            target_provenance = explicit_resolution.provenance
 
     if include_prior_runs:
         built_dataset = _include_prior_run_cases(
@@ -3142,6 +3236,8 @@ def optimize_from_cli_request(
         judge_repetitions=judge_repetitions,
         max_run_tokens=max_run_tokens,
         auto_apply_target_types=auto_apply_target_types,
+        allow_generated_target_mutation=allow_generated_target_mutation,
+        allow_external_target_mutation=allow_external_target_mutation,
         replay_enabled=replay_enabled,
         candidate_replay_backend=candidate_replay_backend,
         replay_timeout_seconds=replay_timeout_seconds,
@@ -3209,6 +3305,14 @@ def optimize_from_cli_request(
         summary["target_selection_path"] = str(target_selection_path)
     if target_provenance_path is not None:
         summary["target_provenance_path"] = str(target_provenance_path)
+    elif (
+        target_selection_report is not None
+        and target_selection_report.selected_target is not None
+    ):
+        summary["target_provenance"] = {
+            "status": target_selection_report.provenance_status or "unresolved",
+            "reason": target_selection_report.provenance_reason,
+        }
     if report_path.exists():
         try:
             report_payload = _load_json_mapping(report_path)
@@ -3545,6 +3649,8 @@ def _rerun_evaluator_from_stored_run(
     max_run_tokens: int,
     min_score_delta: float,
     auto_apply_target_types: tuple[str, ...],
+    allow_generated_target_mutation: bool,
+    allow_external_target_mutation: bool,
     judge_config: SelfEvolveJudgeConfig | Mapping[str, Any] | None,
     replay_timeout_seconds: int,
     replay_max_steps: int | None,
@@ -3598,6 +3704,9 @@ def _rerun_evaluator_from_stored_run(
     target_selection_report = _load_target_selection_report(
         source_run_path / "target_selection.json"
     )
+    target_provenance = _load_target_provenance(
+        source_run_path / "target_provenance.json"
+    )
     if apply_policy == "auto_verified" and evaluation_backend is None:
         evaluation_backend = _evaluation_backend_from_judge_config(
             judge_config,
@@ -3629,6 +3738,8 @@ def _rerun_evaluator_from_stored_run(
         judge_repetitions=judge_repetitions,
         max_run_tokens=max_run_tokens,
         auto_apply_target_types=auto_apply_target_types,
+        allow_generated_target_mutation=allow_generated_target_mutation,
+        allow_external_target_mutation=allow_external_target_mutation,
         replay_enabled=True,
         candidate_replay_backend=_StoredCandidateReplayBackend(
             replay_result=replay_result,
@@ -3662,6 +3773,7 @@ def _rerun_evaluator_from_stored_run(
                 "trace_packs": trace_packs,
                 "apply_policy": apply_policy,
                 "target_selection_report": target_selection_report,
+                "target_provenance": target_provenance,
             },
         ),
         task_id=f"{run_id}-self-evolve",
@@ -3695,6 +3807,9 @@ def _rerun_evaluator_from_stored_run(
     target_selection_path = run_path / "target_selection.json"
     if target_selection_path.exists():
         summary["target_selection_path"] = str(target_selection_path)
+    target_provenance_path = run_path / "target_provenance.json"
+    if target_provenance_path.exists():
+        summary["target_provenance_path"] = str(target_provenance_path)
     evaluator_report_paths = report.get("evaluator_report_paths")
     if isinstance(evaluator_report_paths, list):
         summary["evaluator_report_paths"] = evaluator_report_paths
@@ -3860,6 +3975,42 @@ def _load_target_selection_report(path: Path) -> TargetSelectionReport | None:
             if isinstance(payload.get("diagnostics"), Mapping)
             else None
         ),
+        provenance_status=(
+            str(payload.get("provenance_status"))
+            if payload.get("provenance_status") is not None
+            else None
+        ),
+        provenance_reason=(
+            str(payload.get("provenance_reason"))
+            if payload.get("provenance_reason") is not None
+            else None
+        ),
+    )
+
+
+def _load_target_provenance(path: Path) -> TargetProvenance | None:
+    if not path.exists():
+        return None
+    payload = _load_json_mapping(path)
+    target_payload = payload.get("target")
+    if not isinstance(target_payload, Mapping):
+        return None
+    target = SelfEvolveTargetRef(
+        target_type=str(target_payload.get("target_type") or ""),
+        target_id=str(target_payload.get("target_id") or ""),
+        path=(
+            str(target_payload.get("path"))
+            if target_payload.get("path") is not None
+            else None
+        ),
+    )
+    return TargetProvenance(
+        target=target,
+        source_kind=str(payload.get("source_kind") or "unknown"),
+        write_origin=str(payload.get("write_origin") or "unknown"),
+        trust_level=str(payload.get("trust_level") or "unknown"),
+        protected=payload.get("protected") is True,
+        reason=str(payload.get("reason") or "stored target provenance"),
     )
 
 
@@ -7914,6 +8065,9 @@ def _candidate_gate_results(
     workspace_root: str | Path,
     max_chars: int,
     target_provenance: TargetProvenance | None,
+    target_provenance_unresolved_reason: str | None = None,
+    allow_generated_target_mutation: bool = False,
+    allow_external_target_mutation: bool = False,
 ) -> list[GateResult]:
     results = [
         NoopCandidateGate().evaluate(current_content=current_content, candidate=candidate),
@@ -7925,8 +8079,15 @@ def _candidate_gate_results(
     ]
     if candidate.target.target_type == "skill":
         results.append(SkillMarkdownGate().evaluate(candidate))
-    if target_provenance is not None:
-        results.append(TrustProvenanceGate().evaluate(target_provenance))
+    results.append(
+        TrustProvenanceGate(
+            allow_generated=allow_generated_target_mutation,
+            allow_external=allow_external_target_mutation,
+        ).evaluate(
+            target_provenance,
+            unresolved_reason=target_provenance_unresolved_reason,
+        )
+    )
     return results
 
 
@@ -8011,7 +8172,7 @@ def _infer_target_from_trace_packs(
     trace_packs: tuple[TracePack, ...],
     *,
     workspace_root: str | Path,
-) -> tuple[TargetSelectionReport, TargetInventoryEntry | None]:
+) -> TargetSelectionDecision:
     if not trace_packs:
         raise ValueError("target inference requires trajectory evidence")
 
@@ -8019,21 +8180,84 @@ def _infer_target_from_trace_packs(
         _CLI_TARGET_ADAPTER_FACTORIES
     )
     assigner = TrajectoryCreditAssigner(inventory=inventory)
-    reports = [assigner.assign(trace_pack) for trace_pack in trace_packs]
-    best_report = max(
-        reports,
+    decisions = [assigner.assign_decision(trace_pack) for trace_pack in trace_packs]
+    return _aggregate_target_selection_decisions(tuple(decisions))
+
+
+def _aggregate_target_selection_decisions(
+    decisions: tuple[TargetSelectionDecision, ...],
+) -> TargetSelectionDecision:
+    if not decisions:
+        raise ValueError("target decision aggregation requires at least one decision")
+    best_decision = max(
+        decisions,
         key=lambda item: (
-            item.selected_target is not None,
-            item.confidence,
-            _target_selection_priority(item),
+            item.report.selected_target is not None,
+            item.report.confidence,
+            _target_selection_priority(item.report),
         ),
     )
-    if best_report.selected_target is not None:
-        return best_report, inventory.find(
-            best_report.selected_target.target_type,
-            best_report.selected_target.target_id,
+    best_report = best_decision.report
+    if best_report.selected_target is None:
+        return best_decision
+
+    selected_key = (
+        best_report.selected_target.target_type,
+        best_report.selected_target.target_id,
+    )
+    contributing_reports = tuple(
+        decision.report
+        for decision in decisions
+        if decision.report.selected_target is not None
+        and (
+            decision.report.selected_target.target_type,
+            decision.report.selected_target.target_id,
         )
-    return best_report, None
+        == selected_key
+    )
+    diagnostics = dict(best_report.diagnostics or {})
+    diagnostics["contributing_pack_ids"] = [
+        pack_id
+        for report in contributing_reports
+        for pack_id in _target_selection_pack_ids(report)
+    ]
+    aggregated_report = replace(
+        best_report,
+        evidence_step_ids=tuple(
+            dict.fromkeys(
+                evidence_id
+                for report in contributing_reports
+                for evidence_id in report.evidence_step_ids
+            )
+        ),
+        signals=tuple(
+            dict.fromkeys(
+                signal
+                for report in contributing_reports
+                for signal in report.signals
+            )
+        ),
+        diagnostics=diagnostics,
+    )
+    return TargetSelectionDecision(
+        report=aggregated_report,
+        provenance_resolution=best_decision.provenance_resolution,
+    )
+
+
+def _target_selection_pack_ids(report: TargetSelectionReport) -> tuple[str, ...]:
+    diagnostics = report.diagnostics
+    if not isinstance(diagnostics, Mapping):
+        return ()
+    pack_id = diagnostics.get("pack_id")
+    if isinstance(pack_id, str) and pack_id:
+        return (pack_id,)
+    pack_ids = diagnostics.get("pack_ids")
+    if isinstance(pack_ids, (list, tuple)):
+        return tuple(
+            str(item) for item in pack_ids if isinstance(item, str) and item
+        )
+    return ()
 
 
 def _auto_group_trajectory_log_dataset(
@@ -8044,7 +8268,7 @@ def _auto_group_trajectory_log_dataset(
     workspace_root: str | Path,
     infer_target: Callable[
         [tuple[TracePack, ...]],
-        tuple[TargetSelectionReport, TargetInventoryEntry | None],
+        TargetSelectionDecision,
     ]
     | None = None,
 ) -> tuple[SelfEvolveDataset, tuple[TracePack, ...], dict[str, object]]:
@@ -8062,7 +8286,7 @@ def _auto_group_trajectory_log_dataset(
     )
     groups: dict[str, dict[str, object]] = {}
     for trace_pack in trace_packs:
-        report, _ = infer((trace_pack,), workspace_root=workspace_root)
+        report = infer((trace_pack,), workspace_root=workspace_root).report
         group_id = _target_group_id(report, fallback=trace_pack.task_id)
         group = groups.setdefault(
             group_id,
@@ -8246,8 +8470,6 @@ def _no_evidence_target_selection_report(source_kind: str) -> TargetSelectionRep
 
 
 def _inferred_target_confident_for_auto_apply(report: TargetSelectionReport) -> bool:
-    if "new_skill_candidate" in report.signals and report.selected_target is not None:
-        return report.selected_target.target_type == "skill"
     return report.confidence >= 0.9 and "low_confidence" not in report.signals
 
 
@@ -8267,6 +8489,8 @@ def _blocked_low_confidence_target_selection_report(
             "auto_verified target inference requires confidence >= 0.9 without low_confidence signal"
         ),
         diagnostics=diagnostics,
+        provenance_status=report.provenance_status,
+        provenance_reason=report.provenance_reason,
     )
 
 
@@ -8348,6 +8572,17 @@ def _persist_unsupported_target_cli_result(
         "selected_candidate_id": None,
         "status": run.status.value,
         "target_selection": to_json_dict(target_selection_report),
+        "target_provenance": {
+            "status": (
+                "resolved" if target_provenance_path is not None else "unresolved"
+            ),
+            "path": (
+                str(target_provenance_path)
+                if target_provenance_path is not None
+                else None
+            ),
+            "reason": target_selection_report.provenance_reason,
+        },
         "unsupported_target": {
             "target_ref": _target_ref_text(target),
             "reason": reason,
@@ -8364,6 +8599,11 @@ def _persist_unsupported_target_cli_result(
     }
     if target_provenance_path is not None:
         summary["target_provenance_path"] = str(target_provenance_path)
+    else:
+        summary["target_provenance"] = {
+            "status": "unresolved",
+            "reason": target_selection_report.provenance_reason,
+        }
     return summary
 
 

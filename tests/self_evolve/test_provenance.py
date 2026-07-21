@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from aworld.self_evolve.provenance import TargetProvenance
+import pytest
+
+from aworld.self_evolve.provenance import (
+    TargetProvenance,
+    resolve_target_provenance,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import SelfEvolveRun, SelfEvolveTargetRef
 
@@ -61,3 +66,91 @@ def test_protected_provenance_records_reason_without_touching_target_metadata(tm
     saved = json.loads(provenance_path.read_text(encoding="utf-8"))
     assert saved["protected"] is True
     assert saved["reason"] == "app_evaluator is read-only for self-evolve"
+
+
+@pytest.mark.parametrize("trajectory_count", [1, 3])
+def test_provenance_resolution_is_target_level_not_trajectory_level(
+    trajectory_count: int,
+) -> None:
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path="/workspace/aworld-skills/demo/SKILL.md",
+    )
+    inventory_provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="installed_skill",
+        trust_level="local",
+        protected=False,
+        reason="installed local skill",
+    )
+
+    resolutions = tuple(
+        resolve_target_provenance(
+            target,
+            selection_origin="inferred",
+            inventory_provenance=inventory_provenance,
+        )
+        for _ in range(trajectory_count)
+    )
+
+    assert all(resolution.status == "resolved" for resolution in resolutions)
+    assert all(
+        resolution.provenance is inventory_provenance for resolution in resolutions
+    )
+    assert len({resolution.provenance for resolution in resolutions}) == 1
+
+
+def test_provenance_resolution_classifies_explicit_and_inferred_targets() -> None:
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="draft",
+        path="/workspace/.aworld/self_evolve/drafts/skills/draft/SKILL.md",
+    )
+
+    explicit = resolve_target_provenance(
+        target,
+        selection_origin="operator_explicit",
+        workspace_root="/workspace",
+    )
+    inferred = resolve_target_provenance(
+        target,
+        selection_origin="inferred",
+    )
+
+    assert explicit.status == "resolved"
+    assert explicit.provenance is not None
+    assert explicit.provenance.write_origin == "operator_selection"
+    assert explicit.provenance.trust_level == "local"
+    assert inferred.status == "resolved"
+    assert inferred.provenance is not None
+    assert inferred.provenance.write_origin == "target_inference"
+    assert inferred.provenance.trust_level == "generated"
+
+
+def test_explicit_target_outside_workspace_is_unresolved_without_inventory() -> None:
+    resolution = resolve_target_provenance(
+        SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="external-capability",
+            path="/external/skills/external-capability/SKILL.md",
+        ),
+        selection_origin="operator_explicit",
+        workspace_root="/workspace",
+    )
+
+    assert resolution.status == "unresolved"
+    assert resolution.provenance is None
+    assert resolution.reason == "explicit target locality could not be established"
+
+
+def test_provenance_resolution_returns_structured_unresolved_result() -> None:
+    resolution = resolve_target_provenance(
+        SelfEvolveTargetRef(target_type="", target_id=""),
+        selection_origin="inferred",
+    )
+
+    assert resolution.status == "unresolved"
+    assert resolution.provenance is None
+    assert resolution.reason == "target identity is incomplete"

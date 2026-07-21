@@ -634,7 +634,24 @@ class TrustProvenanceGate:
         self.allow_generated = allow_generated
         self.allow_external = allow_external
 
-    def evaluate(self, provenance: TargetProvenance) -> GateResult:
+    def evaluate(
+        self,
+        provenance: TargetProvenance | None,
+        *,
+        unresolved_reason: str | None = None,
+    ) -> GateResult:
+        if provenance is None:
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="target provenance is unresolved",
+                details={
+                    "provenance_status": "unresolved",
+                    "unresolved_reason": (
+                        unresolved_reason or "no target provenance was supplied"
+                    ),
+                },
+            )
         if provenance.protected:
             return GateResult(
                 gate_name="trust_provenance",

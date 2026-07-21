@@ -36,9 +36,11 @@ from aworld.self_evolve.replay_adaptation import (
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
+    _aggregate_target_selection_decisions,
     _auto_group_trajectory_log_dataset,
     _baseline_replay_artifact_dir,
     _candidate_screening_timeout,
+    _candidate_gate_results,
     _candidate_screening_repair_feedback,
     _default_cli_skill_candidate,
     _default_iteration_budget,
@@ -63,17 +65,24 @@ from aworld.self_evolve.runner import (
     _candidate_screening_dataset,
     _source_config_from_stored_dataset_recipe,
     _summary_with_replay_evidence_metrics,
+    _infer_target_from_trace_packs,
     optimize_explicit_target,
     optimize_from_cli_request,
 )
 from aworld.self_evolve.replay_capability import ReplayCapabilityError
+from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.repair_conformance import (
     compile_repair_conformance_contract,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
-from aworld.self_evolve.credit_assignment import TargetSelectionReport
+from aworld.self_evolve.credit_assignment import (
+    TargetInventory,
+    TargetSelectionDecision,
+    TargetSelectionReport,
+    build_target_selection_decision,
+)
 from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
@@ -1171,7 +1180,7 @@ def test_auto_groups_multi_task_trajectory_log_by_inferred_target(tmp_path) -> N
     def fake_infer(pack_group, *, workspace_root):
         pack = pack_group[0]
         target = beta_target if pack.task_id == "task-beta" else alpha_target
-        return (
+        return build_target_selection_decision(
             TargetSelectionReport(
                 selected_target=target,
                 confidence=0.9,
@@ -1180,7 +1189,8 @@ def test_auto_groups_multi_task_trajectory_log_by_inferred_target(tmp_path) -> N
                 signals=("test_signal",),
                 diagnostics={"task_id": pack.task_id},
             ),
-            None,
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
         )
 
     grouped_dataset, grouped_trace_packs, grouping = _auto_group_trajectory_log_dataset(
@@ -1260,7 +1270,7 @@ def test_auto_group_prefers_larger_group_when_confidence_ties_by_bucket(tmp_path
     def fake_infer(pack_group, *, workspace_root):
         pack = pack_group[0]
         is_singleton = pack.task_id == "task-singleton"
-        return (
+        return build_target_selection_decision(
             TargetSelectionReport(
                 selected_target=singleton_target if is_singleton else cluster_target,
                 confidence=0.9 if is_singleton else 0.8999999999999999,
@@ -1269,7 +1279,8 @@ def test_auto_group_prefers_larger_group_when_confidence_ties_by_bucket(tmp_path
                 signals=("test_signal",),
                 diagnostics={"task_id": pack.task_id},
             ),
-            None,
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
         )
 
     grouped_dataset, _, grouping = _auto_group_trajectory_log_dataset(
@@ -1287,6 +1298,152 @@ def test_auto_group_prefers_larger_group_when_confidence_ties_by_bucket(tmp_path
         "task-cluster-1",
         "task-cluster-2",
     ]
+
+
+@pytest.mark.parametrize("trajectory_count", [1, 3])
+def test_inferred_target_provenance_and_evidence_are_target_level(
+    tmp_path,
+    trajectory_count: int,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "generic-capability" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: generic-capability\n---\n# Generic capability\n",
+        encoding="utf-8",
+    )
+    packs = tuple(
+        build_trace_pack(
+            [
+                {
+                    "meta": {"step": 1},
+                    "state": {
+                        "input": {
+                            "content": "Use generic-capability for this workflow."
+                        }
+                    },
+                    "action": {"content": "The generic capability workflow failed."},
+                    "reward": {"status": "failed"},
+                }
+            ],
+            source_kind="current_trajectory",
+            task_id=f"browser-member-{index}",
+        )
+        for index in range(trajectory_count)
+    )
+
+    decision = _infer_target_from_trace_packs(packs, workspace_root=tmp_path)
+
+    assert isinstance(decision, TargetSelectionDecision)
+    assert decision.report.selected_target is not None
+    assert decision.report.selected_target.target_id == "generic-capability"
+    assert decision.provenance is not None
+    assert decision.provenance.trust_level == "local"
+    assert decision.provenance.protected is False
+    assert len(decision.report.evidence_step_ids) == trajectory_count
+    assert len({decision.provenance}) == 1
+
+
+def test_candidate_gate_results_never_omit_unresolved_trust_gate(tmp_path) -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate-unresolved",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(tmp_path / "SKILL.md"),
+        ),
+        content="---\nname: demo\n---\n# Demo\n",
+        rationale="test unresolved provenance",
+        target_fingerprint="sha256:old",
+    )
+
+    results = _candidate_gate_results(
+        candidate,
+        current_content="---\nname: demo\n---\n# Old\n",
+        workspace_root=tmp_path,
+        max_chars=10_000,
+        target_provenance=None,
+    )
+
+    trust_results = [result for result in results if result.gate_name == "trust_provenance"]
+    assert len(trust_results) == 1
+    assert trust_results[0].passed is False
+
+
+def test_candidate_gate_results_require_named_generated_mutation_policy(tmp_path) -> None:
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="generated-capability",
+        path=str(tmp_path / "drafts" / "generated-capability" / "SKILL.md"),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-generated",
+        target=target,
+        content="---\nname: generated-capability\n---\n# Generated capability\n",
+        rationale="generic generated proposal",
+        target_fingerprint="sha256:old",
+    )
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="inferred target is absent from inventory",
+    )
+
+    denied = _candidate_gate_results(
+        candidate,
+        current_content="---\nname: generated-capability\n---\n# Old\n",
+        workspace_root=tmp_path,
+        max_chars=10_000,
+        target_provenance=provenance,
+    )
+    allowed = _candidate_gate_results(
+        candidate,
+        current_content="---\nname: generated-capability\n---\n# Old\n",
+        workspace_root=tmp_path,
+        max_chars=10_000,
+        target_provenance=provenance,
+        allow_generated_target_mutation=True,
+    )
+
+    assert next(result for result in denied if result.gate_name == "trust_provenance").passed is False
+    assert next(result for result in allowed if result.gate_name == "trust_provenance").passed is True
+
+
+@pytest.mark.parametrize("trajectory_count", [1, 3])
+def test_generated_target_aggregation_keeps_one_fail_closed_provenance_decision(
+    tmp_path,
+    trajectory_count: int,
+) -> None:
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="generated-capability",
+        path=str(tmp_path / "drafts" / "generated-capability" / "SKILL.md"),
+    )
+    decisions = tuple(
+        build_target_selection_decision(
+            TargetSelectionReport(
+                selected_target=target,
+                confidence=0.85,
+                evidence_step_ids=(f"member-{index}:step-1",),
+                failure_category="skill",
+                signals=("new_skill_candidate", "low_confidence"),
+                diagnostics={"pack_id": f"pack-{index}"},
+            ),
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
+        )
+        for index in range(trajectory_count)
+    )
+
+    aggregated = _aggregate_target_selection_decisions(decisions)
+
+    assert aggregated.provenance is decisions[0].provenance
+    assert aggregated.provenance is not None
+    assert aggregated.provenance.trust_level == "generated"
+    assert len(aggregated.report.evidence_step_ids) == trajectory_count
+    assert aggregated.report.provenance_status == "resolved"
 
 
 def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
@@ -6541,7 +6698,14 @@ async def test_iteration_duplicate_rejection_preserves_feedback_state(
         dataset=dataset,
         candidate=candidate,
         apply_policy="auto_verified",
-        target_provenance=None,
+        target_provenance=TargetProvenance(
+            target=candidate.target,
+            source_kind="skill",
+            write_origin="operator_selection",
+            trust_level="local",
+            protected=False,
+            reason="explicit local target for duplicate-gate isolation",
+        ),
         iteration_number=1,
         candidate_number=1,
         candidate_count=1,
@@ -9416,7 +9580,7 @@ def test_default_cli_skill_candidate_turns_compacted_tool_arguments_into_recover
     assert "podcast" not in candidate_content.lower()
 
 
-def test_auto_verified_inferred_target_can_create_new_skill_draft(
+def test_proposal_inferred_target_can_preserve_generated_skill_draft(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -9447,18 +9611,18 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
         / "self_evolve"
         / "drafts"
         / "skills"
-        / "web-content-grounding"
+        / "generated-capability"
         / "SKILL.md"
     )
-    new_skill_path = tmp_path / "aworld-skills" / "web-content-grounding" / "SKILL.md"
+    new_skill_path = tmp_path / "aworld-skills" / "generated-capability" / "SKILL.md"
     inferred_target = SelfEvolveTargetRef(
         target_type="skill",
-        target_id="web-content-grounding",
+        target_id="generated-capability",
         path=str(draft_skill_path),
     )
 
     def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
-        return (
+        return build_target_selection_decision(
             TargetSelectionReport(
                 selected_target=inferred_target,
                 confidence=0.85,
@@ -9467,7 +9631,8 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
                 signals=("low_confidence", "new_skill_candidate"),
                 diagnostics={"rationale": "task needs a dedicated grounded web-summary skill"},
             ),
-            None,
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
         )
 
     class FakeReplayBackend:
@@ -9571,7 +9736,7 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
         current_trajectory=trajectory,
         task="weak-task",
         target=None,
-        apply_policy="auto_verified",
+        apply_policy="proposal",
         infer_target=True,
         candidate_replay_backend=replay_backend,
         evaluation_backend=evaluation_backend,
@@ -9586,13 +9751,14 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
     )
 
     assert report_summary["status"] == "succeeded"
+    assert report_summary["best_candidate_id"] is None
     assert replay_backend.requests
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
     assert replay_backend.requests[0].baseline_skill_root is None
     assert Path(
         replay_backend.requests[0].overlay_skill_root,
-        "web-content-grounding",
+        "generated-capability",
         "SKILL.md",
     ).exists()
     assert skill_path.read_text(encoding="utf-8") == original_content
@@ -9600,26 +9766,30 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
         "validation",
         "validation",
     ]
-    assert new_skill_path.exists()
-    assert "release_state: verified" in new_skill_path.read_text(encoding="utf-8")
-    assert "web-content-grounding" in new_skill_path.read_text(encoding="utf-8")
+    assert not new_skill_path.exists()
+    assert Path(report_summary["target_provenance_path"]).exists()
+    provenance = json.loads(
+        Path(report_summary["target_provenance_path"]).read_text(encoding="utf-8")
+    )
+    assert provenance["trust_level"] == "generated"
+    assert provenance["write_origin"] == "target_inference"
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
-    assert report["apply_policy"] == "auto_verified"
-    assert report["target"]["target_id"] == "web-content-grounding"
+    assert report["apply_policy"] == "proposal"
+    assert report["target"]["target_id"] == "generated-capability"
     assert report["target"]["path"] == str(draft_skill_path)
     assert report["candidate_ids"]
     assert report["selected_candidate_id"] == report["candidate_ids"][0]
-    assert report["target_selection"]["selected_target"]["target_id"] == "web-content-grounding"
+    assert report["target_selection"]["selected_target"]["target_id"] == "generated-capability"
     assert report["target_selection"]["selected_target"]["path"] == str(draft_skill_path)
     assert report["target_selection"]["confidence"] == 0.85
     assert "low_confidence" in report["target_selection"]["signals"]
     assert report["replay"]["baseline"]["status"] == "succeeded"
     assert report["replay"]["candidate"]["status"] == "succeeded"
     assert any(
-        gate["gate_name"] == "held_out_verification" and gate["passed"] is True
+        gate["gate_name"] == "trust_provenance" and gate["passed"] is False
         for gate in report["gate_results"]
     )
-    assert report["post_apply"]["status"] == "accepted"
+    assert "post_apply" not in report
 
 
 def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
@@ -9641,21 +9811,30 @@ def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
     ]
     inferred_target = SelfEvolveTargetRef(
         target_type="skill",
-        target_id="agent-browser",
-        path=str(skill_path),
+        target_id="generated-capability",
+        path=str(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "drafts"
+            / "skills"
+            / "generated-capability"
+            / "SKILL.md"
+        ),
     )
 
     def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
-        return (
+        return build_target_selection_decision(
             TargetSelectionReport(
                 selected_target=inferred_target,
                 confidence=0.85,
                 evidence_step_ids=("weak-task:step-1",),
                 failure_category="skill",
-                signals=("low_confidence", "skill_alias_match:agent-browser"),
-                diagnostics={"matched_aliases": ["browser"]},
+                signals=("low_confidence", "new_skill_candidate"),
+                diagnostics={"draft_skill_reason": "reusable capability gap"},
             ),
-            None,
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
         )
 
     def fail_if_target_is_loaded(*args, **kwargs):
@@ -9686,7 +9865,9 @@ def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
         "auto_verified target inference requires confidence >= 0.9 without low_confidence signal"
     )
     assert "auto_verified_low_confidence_blocked" in report["target_selection"]["signals"]
-    assert report["target_selection"]["diagnostics"]["blocked_selected_target"]["target_id"] == "agent-browser"
+    assert report["target_selection"]["diagnostics"]["blocked_selected_target"][
+        "target_id"
+    ] == "generated-capability"
 
 
 def test_optimize_cli_request_filters_unsupported_inferred_target_before_adapter(
@@ -9885,9 +10066,16 @@ def test_optimize_cli_request_records_explicit_target_trajectory_evidence(tmp_pa
     )
 
     assert Path(report_summary["target_selection_path"]).exists()
+    assert Path(report_summary["target_provenance_path"]).exists()
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["target_selection"]["failure_category"] == "explicit_target"
     assert report["target_selection"]["evidence_step_ids"] == ["explicit-task:step-1"]
+    assert report["target_selection"]["provenance_status"] == "resolved"
+    assert report["target_provenance"] == {
+        "status": "resolved",
+        "path": report_summary["target_provenance_path"],
+        "reason": "selected target uses inventory provenance",
+    }
 
 
 def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled(
