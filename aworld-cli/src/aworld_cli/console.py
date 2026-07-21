@@ -1002,7 +1002,7 @@ class AWorldCLI:
             audio_cfg.pop('api_key', None)
 
         current_audio_model = audio_cfg.get('model', '')
-        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from Media/default[/dim]")
+        self.console.print("  [dim]e.g. doubao-tts · seed-tts-2.0 · Enter to inherit from Media/default[/dim]")
         audio_model = Prompt.ask("  AUDIO_MODEL_NAME", default=current_audio_model)
         if audio_model:
             audio_cfg['model'] = audio_model
@@ -1017,6 +1017,7 @@ class AWorldCLI:
             audio_cfg.pop('base_url', None)
 
         current_audio_provider = audio_cfg.get('provider', 'openai')
+        self.console.print("  [dim]e.g. doubao_tts · seed_tts · volcano_openspeech_tts[/dim]")
         audio_provider = Prompt.ask("  AUDIO_PROVIDER", default=current_audio_provider)
         if audio_provider:
             audio_cfg['provider'] = audio_provider

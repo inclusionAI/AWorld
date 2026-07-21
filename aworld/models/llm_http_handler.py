@@ -77,8 +77,28 @@ class LLMHTTPHandler:
 
             return json.loads(line_str)
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            logger.warning(f"Failed to parse SSE line: {line}, error: {str(e)}")
+            preview = line[:200] + (b"..." if len(line) > 200 else b"")
+            logger.warning(
+                f"Failed to parse SSE line ({len(line)} bytes): {preview!r}, error: {str(e)}"
+            )
             return None
+
+    def _sse_control_or_data(self, line: bytes) -> Optional[Dict[str, Any]]:
+        """Parse one complete SSE line into a control status dict or JSON payload."""
+        if not line or not line.strip():
+            return None
+        line_str = line.decode("utf-8", errors="replace").strip()
+        if line_str.startswith("data:"):
+            line_content = line_str[5:].lstrip()
+            if line_content == "[DONE]":
+                return {"status": "done", "message": "Stream completed"}
+            if line_content == "[REVOKE]":
+                return {"status": "revoke", "message": "Content should be revoked"}
+            if line_content == "[FAIL]":
+                return {"status": "fail", "message": "Request failed"}
+            if line_content.startswith("[FAIL]_stream was reset: CANCEL"):
+                return {"status": "cancel", "message": "Stream was cancelled"}
+        return self._parse_sse_line(line)
 
     def _make_request(
         self,
@@ -134,28 +154,15 @@ class LLMHTTPHandler:
                     response.raise_for_status()
 
                     def generate_chunks():
-                        for line in response.iter_lines(chunk_size=1024):
-                            if line:
-                                line_str = line.decode('utf-8').strip()
-                                if line_str.startswith('data: '):
-                                    line_content = line_str[6:]
-
-                                    if line_content == "[DONE]":
-                                        yield {"status": "done", "message": "Stream completed"}
-                                        break
-                                    elif line_content == "[REVOKE]":
-                                        yield {"status": "revoke", "message": "Content should be revoked"}
-                                        continue
-                                    elif line_content == "[FAIL]":
-                                        yield {"status": "fail", "message": "Request failed"}
-                                        break
-                                    elif line_content.startswith("[FAIL]_stream was reset: CANCEL"):
-                                        yield {"status": "cancel", "message": "Stream was cancelled"}
-                                        break
-
-                                chunk = self._parse_sse_line(line)
-                                if chunk is not None:
-                                    yield chunk
+                        for line in response.iter_lines(chunk_size=8192):
+                            if not line:
+                                continue
+                            chunk = self._sse_control_or_data(line)
+                            if chunk is None:
+                                continue
+                            yield chunk
+                            if chunk.get("status") in ("done", "fail", "cancel"):
+                                break
                     return generate_chunks()
             else:
                 response = requests.post(
@@ -220,31 +227,32 @@ class LLMHTTPHandler:
             )
             response.raise_for_status()
 
-            # Use chunked iteration for proper streaming handling
-            async for chunk in response.content.iter_chunked(1024):
-                # Process each chunk and split by newlines
-                for line in chunk.split(b'\n'):
-                    if line:
-                        line_str = line.decode('utf-8').strip()
-                        if line_str.startswith('data: '):
-                            line_content = line_str[6:]
+            # Buffer across network chunks: TTS/SSE audio lines are often >> 1KB
+            # of base64, so splitting each chunk on ``\n`` alone drops partial lines.
+            buffer = b""
+            async for chunk in response.content.iter_any():
+                if not chunk:
+                    continue
+                buffer += chunk
+                while True:
+                    nl = buffer.find(b"\n")
+                    if nl < 0:
+                        break
+                    line, buffer = buffer[:nl], buffer[nl + 1 :]
+                    if line.endswith(b"\r"):
+                        line = line[:-1]
+                    event = self._sse_control_or_data(line)
+                    if event is None:
+                        continue
+                    yield event
+                    if event.get("status") in ("done", "fail", "cancel"):
+                        return
 
-                            if line_content == "[DONE]":
-                                yield {"status": "done", "message": "Stream completed"}
-                                break
-                            elif line_content == "[REVOKE]":
-                                yield {"status": "revoke", "message": "Content should be revoked"}
-                                continue
-                            elif line_content == "[FAIL]":
-                                yield {"status": "fail", "message": "Request failed"}
-                                break
-                            elif line_content.startswith("[FAIL]_stream was reset: CANCEL"):
-                                yield {"status": "cancel", "message": "Stream was cancelled"}
-                                break
-
-                        chunk_data = self._parse_sse_line(line)
-                        if chunk_data is not None:
-                            yield chunk_data
+            # Flush trailing line without a final newline
+            if buffer.strip():
+                event = self._sse_control_or_data(buffer)
+                if event is not None:
+                    yield event
         except Exception as e:
             logger.error(f"Error in stream: {str(e)}")
             raise

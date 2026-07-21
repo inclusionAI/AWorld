@@ -392,6 +392,11 @@ def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
     Optional keys:
     - appid: Volcengine app id for ``volcano_openspeech_tts`` (sets AUDIO_APPID / VOLCANO_TTS_APPID).
     - params: Extra ModelConfig.params (merged into AUDIO_MODEL_PARAMS_JSON for the audio agent).
+
+    Supported providers (examples):
+    - ``doubao_tts`` + model ``doubao-tts`` (MatrixCube genericCall ``/api/v1/tts``)
+    - ``seed_tts`` + model ``seed-tts-2.0`` (MatrixCube genericCall SSE ``/api/v3/tts/unidirectional/sse``)
+    - ``volcano_openspeech_tts`` (direct OpenSpeech HTTP; needs ``appid``)
     """
     audio_cfg = models_config.get('audio')
     audio_cfg = audio_cfg if isinstance(audio_cfg, dict) else {}

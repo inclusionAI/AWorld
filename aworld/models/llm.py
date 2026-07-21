@@ -62,6 +62,7 @@ PROVIDER_CLASSES = {
     "speech": None,  # Lazy loaded to avoid circular import
     "doubao_tts": None,  # Lazy loaded to avoid circular import
     "volcano_openspeech_tts": None,  # Lazy loaded; direct ByteDance OpenSpeech HTTP TTS
+    "seed_tts": None,  # Lazy loaded; MatrixCube seed-tts-2.0 SSE TTS
     "image": None,  # Lazy loaded to avoid circular import
     "kling_image": None,  # Lazy loaded to avoid circular import
     "ant_gpt_image": None,  # Lazy loaded to avoid circular import
@@ -386,6 +387,11 @@ class LLMModel:
                 )
 
                 provider_class = VolcanoOpenSpeechTTSProvider
+                PROVIDER_CLASSES[self.provider_name] = provider_class
+            elif provider_class is None and self.provider_name == "seed_tts":
+                from aworld.models.seed_tts_provider import SeedTTSProvider
+
+                provider_class = SeedTTSProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
             elif provider_class is None and self.provider_name == "image":
                 from aworld.models.image_provider import ImageProvider

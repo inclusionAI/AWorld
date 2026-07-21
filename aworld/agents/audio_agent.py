@@ -51,10 +51,16 @@ from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.models.doubao_tts_provider import DoubaoTTSProvider
 from aworld.models.volcano_openspeech_tts_provider import VolcanoOpenSpeechTTSProvider
+from aworld.models.seed_tts_provider import SeedTTSProvider
 from aworld.models.model_response import ModelResponse
 
 # TTS backends supported by AudioAgent (company gateway or direct OpenSpeech HTTP).
-_AUDIO_TTS_PROVIDERS = frozenset({"doubao_tts", "volcano_openspeech_tts"})
+_AUDIO_TTS_PROVIDERS = frozenset({"doubao_tts", "volcano_openspeech_tts", "seed_tts"})
+_AUDIO_TTS_PROVIDER_TYPES = (
+    DoubaoTTSProvider,
+    VolcanoOpenSpeechTTSProvider,
+    SeedTTSProvider,
+)
 from aworld.output.base import Output
 
 
@@ -86,8 +92,9 @@ class AudioAgent(LLMAgent):
         """Normalize config to a supported TTS provider.
         
         Allowed ``llm_provider`` values: ``doubao_tts`` (company genericCall gateway),
-        ``volcano_openspeech_tts`` (direct OpenSpeech HTTP). If missing, defaults to
-        ``doubao_tts``. Any other value is replaced with ``doubao_tts`` and a warning.
+        ``volcano_openspeech_tts`` (direct OpenSpeech HTTP), ``seed_tts`` (MatrixCube
+        seed-tts-2.0 SSE). If missing, defaults to ``doubao_tts``. Any other value is
+        replaced with ``doubao_tts`` and a warning.
         
         Args:
             conf: Input configuration (AgentConfig, dict, or ConfigDict)
@@ -162,8 +169,9 @@ class AudioAgent(LLMAgent):
         Args:
             name: Agent name
             conf: AgentConfig specifying the TTS provider, API key, and base URL.
-                Must not be None. ``llm_provider`` must be ``doubao_tts`` or
-                ``volcano_openspeech_tts`` (or omitted, defaulting to ``doubao_tts``).
+                Must not be None. ``llm_provider`` must be ``doubao_tts``,
+                ``volcano_openspeech_tts``, or ``seed_tts`` (or omitted, defaulting
+                to ``doubao_tts``).
             desc: Agent description exposed as tool description
             agent_id: Explicit agent ID; auto-generated if None
             default_voice_type: Default voice type identifier
@@ -178,7 +186,7 @@ class AudioAgent(LLMAgent):
             
         Raises:
             ValueError: If conf is None or invalid
-            TypeError: If the provider is not DoubaoTTSProvider after initialization
+            TypeError: If the provider is not a supported TTS provider after initialization
         """
         conf = self._ensure_audio_tts_provider_config(conf)
         
@@ -191,13 +199,11 @@ class AudioAgent(LLMAgent):
         )
         
         if self.llm and self.llm.provider:
-            if not isinstance(
-                self.llm.provider,
-                (DoubaoTTSProvider, VolcanoOpenSpeechTTSProvider),
-            ):
+            if not isinstance(self.llm.provider, _AUDIO_TTS_PROVIDER_TYPES):
                 error_msg = (
-                    f"[AudioAgent:{self.id()}] Expected DoubaoTTSProvider or "
-                    f"VolcanoOpenSpeechTTSProvider, but got {type(self.llm.provider).__name__}. "
+                    f"[AudioAgent:{self.id()}] Expected one of "
+                    f"{[t.__name__ for t in _AUDIO_TTS_PROVIDER_TYPES]}, "
+                    f"but got {type(self.llm.provider).__name__}. "
                     f"Check llm_provider and provider registration."
                 )
                 logger.error(error_msg)
@@ -422,11 +428,12 @@ class AudioAgent(LLMAgent):
         provider = self.llm.provider
         
         # Verify provider type
-        if not isinstance(provider, (DoubaoTTSProvider, VolcanoOpenSpeechTTSProvider)):
+        if not isinstance(provider, _AUDIO_TTS_PROVIDER_TYPES):
             raise TypeError(
-                f"AudioAgent requires DoubaoTTSProvider or VolcanoOpenSpeechTTSProvider, "
+                f"AudioAgent requires a TTS provider "
+                f"({', '.join(t.__name__ for t in _AUDIO_TTS_PROVIDER_TYPES)}), "
                 f"but got {type(provider).__name__}. "
-                f"Set llm_provider to 'doubao_tts' or 'volcano_openspeech_tts'."
+                f"Set llm_provider to one of {sorted(_AUDIO_TTS_PROVIDERS)}."
             )
         
         # Check if provider has the required methods
