@@ -18,8 +18,9 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields as dataclass_fields, replace
+from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
@@ -968,6 +969,51 @@ class CandidateReplayBackend(Protocol):
         dataset: SelfEvolveDataset,
     ) -> CandidateReplayResult:
         """Replay baseline/candidate variants and return their trajectories."""
+
+
+class ReplayEvidenceDispositionKind(str, Enum):
+    """Whether replay evidence is executed now or reused from a source run."""
+
+    STORED_SOURCE_REUSE = "stored_source_reuse"
+
+
+@dataclass(frozen=True)
+class ReplayEvidenceReuseDisposition:
+    kind: ReplayEvidenceDispositionKind
+    source_run_id: str
+    source_replay_path: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", ReplayEvidenceDispositionKind(self.kind))
+        for field_name in ("source_run_id", "source_replay_path"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"replay evidence reuse requires {field_name}")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "source_run_id": self.source_run_id,
+            "source_replay_path": self.source_replay_path,
+        }
+
+
+@runtime_checkable
+class CandidateReplayEvidenceReuseBackend(Protocol):
+    """Backend that supplies immutable replay evidence without executing replay."""
+
+    def replay_evidence_reuse_disposition(
+        self,
+    ) -> ReplayEvidenceReuseDisposition:
+        """Describe the source evidence and its provenance."""
+
+    async def reuse_replay_evidence(
+        self,
+        *,
+        candidate: CandidateVariant,
+        dataset: SelfEvolveDataset,
+    ) -> CandidateReplayResult:
+        """Return stored evidence without starting a replay execution."""
 
 
 def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResult:

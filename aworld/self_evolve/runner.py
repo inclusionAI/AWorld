@@ -110,7 +110,13 @@ from aworld.self_evolve.concurrency import (
     SelfEvolveConcurrencyPolicy,
     SelfEvolveExecutionTelemetry,
 )
-from aworld.self_evolve.optimizers.base import CandidateOptimizer, OptimizerRequest, OptimizerResult
+from aworld.self_evolve.optimizers.base import (
+    CandidateOptimizer,
+    CandidateSourceDisposition,
+    CandidateSourceKind,
+    OptimizerRequest,
+    OptimizerResult,
+)
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.provenance import (
@@ -124,10 +130,13 @@ from aworld.self_evolve.provenance import (
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayBackend,
+    CandidateReplayEvidenceReuseBackend,
     CandidateReplayRequest,
     CandidateReplayResult,
     NormalizedReplayMembers,
     ReplayVariantResult,
+    ReplayEvidenceDispositionKind,
+    ReplayEvidenceReuseDisposition,
     build_paired_replay_dataset,
     build_replay_request,
     candidate_replay_is_comparable,
@@ -926,6 +935,10 @@ class _FixedCandidateOptimizer:
     async def propose(self, request: OptimizerRequest) -> OptimizerResult:
         return OptimizerResult(
             candidates=(self.candidate,),
+            source_disposition=CandidateSourceDisposition(
+                kind=CandidateSourceKind.STORED_EVIDENCE_RERUN,
+                source_run_id=self.source_run_id,
+            ),
             diagnostics={
                 "source": "stored_self_evolve_run",
                 "source_run_id": self.source_run_id,
@@ -937,10 +950,28 @@ class _FixedCandidateOptimizer:
 @dataclass(frozen=True)
 class _StoredCandidateReplayBackend:
     replay_result: CandidateReplayResult
+    source_run_id: str
     source_replay_path: str
 
     def proves_zero_budget_usage(self, stage: BudgetStage) -> bool:
         return stage is BudgetStage.PAIRED_REPLAY
+
+    def replay_evidence_reuse_disposition(
+        self,
+    ) -> ReplayEvidenceReuseDisposition:
+        return ReplayEvidenceReuseDisposition(
+            kind=ReplayEvidenceDispositionKind.STORED_SOURCE_REUSE,
+            source_run_id=self.source_run_id,
+            source_replay_path=self.source_replay_path,
+        )
+
+    async def reuse_replay_evidence(
+        self,
+        *,
+        candidate: CandidateVariant,
+        dataset: SelfEvolveDataset,
+    ) -> CandidateReplayResult:
+        return self._validated_result(candidate)
 
     async def replay_candidate(
         self,
@@ -948,6 +979,12 @@ class _StoredCandidateReplayBackend:
         *,
         candidate: CandidateVariant,
         dataset: SelfEvolveDataset,
+    ) -> CandidateReplayResult:
+        return self._validated_result(candidate)
+
+    def _validated_result(
+        self,
+        candidate: CandidateVariant,
     ) -> CandidateReplayResult:
         if candidate.candidate_id != self.replay_result.request.candidate_id:
             raise ValueError(
@@ -1849,6 +1886,8 @@ class SelfEvolveRunner:
         selected_candidate: CandidateVariant | None = None
         validation_feedback: tuple[EvaluationSummary, ...] = ()
         all_candidates: list[CandidateVariant] = []
+        candidate_source_dispositions: dict[str, CandidateSourceDisposition] = {}
+        fresh_evaluation_required = False
         optimizer_diagnostics: list[dict[str, object]] = []
         optimizer_lineage_paths: list[str] = []
         optimizer_lineage_paths_by_candidate: dict[str, str] = {}
@@ -1895,6 +1934,8 @@ class SelfEvolveRunner:
             current_run_id=run_id,
             candidate_ids=(rejected_candidate_ids | accepted_candidate_ids),
         )
+        current_run_candidate_id_by_package: dict[str, str] = {}
+        current_run_package_fingerprint_by_candidate_id: dict[str, str] = {}
         attempt_key_by_candidate_id: dict[str, CandidateAttemptKey] = {}
         rejected_semantic_lesson_fingerprints = (
             _load_prior_rejected_semantic_lesson_fingerprints(
@@ -2068,18 +2109,36 @@ class SelfEvolveRunner:
                 wall_seconds=generation_wall,
                 actual_source=generation_source,
             )
-            filtered_known_duplicates = _known_duplicate_candidate_count(
-                optimizer_result.candidates,
-                rejected_candidate_ids=rejected_candidate_ids,
-                accepted_candidate_ids=accepted_candidate_ids,
+            source_disposition = optimizer_result.source_disposition
+            bypass_historical_deduplication = (
+                source_disposition.bypass_historical_deduplication
+            )
+            fresh_evaluation_required = (
+                fresh_evaluation_required
+                or source_disposition.requires_fresh_evaluation
+            )
+            filtered_known_duplicates = (
+                0
+                if bypass_historical_deduplication
+                else _known_duplicate_candidate_count(
+                    optimizer_result.candidates,
+                    rejected_candidate_ids=rejected_candidate_ids,
+                    accepted_candidate_ids=accepted_candidate_ids,
+                )
             )
             current_lineage_fingerprints = _lineage_semantic_lesson_fingerprints(
                 optimizer_result.lineage
             )
-            filtered_semantic_lesson_duplicates = _semantic_lesson_duplicate_count(
-                optimizer_result.candidates,
-                lineage_fingerprints=current_lineage_fingerprints,
-                rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
+            filtered_semantic_lesson_duplicates = (
+                0
+                if bypass_historical_deduplication
+                else _semantic_lesson_duplicate_count(
+                    optimizer_result.candidates,
+                    lineage_fingerprints=current_lineage_fingerprints,
+                    rejected_semantic_lesson_fingerprints=(
+                        rejected_semantic_lesson_fingerprints
+                    ),
+                )
             )
             candidate_protocol_overflow_count = max(
                 0,
@@ -2179,24 +2238,40 @@ class SelfEvolveRunner:
                 package_fingerprint = candidate_package_fingerprint(
                     generated_candidate
                 )
-                canonical_id = canonical_candidate_id_by_package.get(
-                    package_fingerprint
+                canonical_id = (
+                    current_run_candidate_id_by_package.get(package_fingerprint)
+                    if bypass_historical_deduplication
+                    else canonical_candidate_id_by_package.get(package_fingerprint)
                 )
                 prior_candidate_duplicate = (
-                    generated_candidate.candidate_id in rejected_candidate_ids
-                    or generated_candidate.candidate_id in accepted_candidate_ids
+                    not bypass_historical_deduplication
+                    and (
+                        generated_candidate.candidate_id in rejected_candidate_ids
+                        or generated_candidate.candidate_id in accepted_candidate_ids
+                    )
                 )
-                semantic_lesson_duplicate = _is_semantic_lesson_duplicate(
-                    generated_candidate.candidate_id,
-                    lineage_fingerprints=current_lineage_fingerprints,
-                    rejected_semantic_lesson_fingerprints=(
-                        rejected_semantic_lesson_fingerprints
-                    ),
+                semantic_lesson_duplicate = (
+                    not bypass_historical_deduplication
+                    and _is_semantic_lesson_duplicate(
+                        generated_candidate.candidate_id,
+                        lineage_fingerprints=current_lineage_fingerprints,
+                        rejected_semantic_lesson_fingerprints=(
+                            rejected_semantic_lesson_fingerprints
+                        ),
+                    )
                 )
                 candidate_id_collision = (
                     generated_candidate.candidate_id
-                    in package_fingerprint_by_candidate_id
-                    and package_fingerprint_by_candidate_id[
+                    in (
+                        current_run_package_fingerprint_by_candidate_id
+                        if bypass_historical_deduplication
+                        else package_fingerprint_by_candidate_id
+                    )
+                    and (
+                        current_run_package_fingerprint_by_candidate_id
+                        if bypass_historical_deduplication
+                        else package_fingerprint_by_candidate_id
+                    )[
                         generated_candidate.candidate_id
                     ]
                     != package_fingerprint
@@ -2287,6 +2362,12 @@ class SelfEvolveRunner:
                 package_fingerprint_by_candidate_id[
                     generated_candidate.candidate_id
                 ] = package_fingerprint
+                current_run_candidate_id_by_package[package_fingerprint] = (
+                    generated_candidate.candidate_id
+                )
+                current_run_package_fingerprint_by_candidate_id[
+                    generated_candidate.candidate_id
+                ] = package_fingerprint
                 attempt_tracker.emit(key, CandidateAttemptStage.UNIQUE)
                 attempt_key_by_candidate_id[
                     generated_candidate.candidate_id
@@ -2294,6 +2375,9 @@ class SelfEvolveRunner:
                 unique_generated.append(generated_candidate)
                 unique_candidate_ids.add(generated_candidate.candidate_id)
                 all_candidates.append(generated_candidate)
+                candidate_source_dispositions[
+                    generated_candidate.candidate_id
+                ] = source_disposition
                 target.preserve_proposal(
                     self.store,
                     run_id,
@@ -2331,12 +2415,17 @@ class SelfEvolveRunner:
                 tuple(
                     candidate
                     for candidate in unique_generated
-                    if candidate.candidate_id not in rejected_candidate_ids
-                    and candidate.candidate_id not in accepted_candidate_ids
-                    and not _is_semantic_lesson_duplicate(
-                        candidate.candidate_id,
-                        lineage_fingerprints=current_lineage_fingerprints,
-                        rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
+                    if bypass_historical_deduplication
+                    or (
+                        candidate.candidate_id not in rejected_candidate_ids
+                        and candidate.candidate_id not in accepted_candidate_ids
+                        and not _is_semantic_lesson_duplicate(
+                            candidate.candidate_id,
+                            lineage_fingerprints=current_lineage_fingerprints,
+                            rejected_semantic_lesson_fingerprints=(
+                                rejected_semantic_lesson_fingerprints
+                            ),
+                        )
                     )
                 ),
                 optimizer_diagnostics=optimizer_result.diagnostics,
@@ -2701,6 +2790,10 @@ class SelfEvolveRunner:
                 self.replay_enabled
                 and target.identity.target_type == "skill"
                 and self.candidate_replay_backend is not None
+                and not isinstance(
+                    self.candidate_replay_backend,
+                    CandidateReplayEvidenceReuseBackend,
+                )
             ):
                 replay_adaptation, replay_adaptation_gate = (
                     self._prepare_replay_adaptation(
@@ -2751,6 +2844,10 @@ class SelfEvolveRunner:
                     precomputed_gate_results=local_gate_results_by_candidate.get(
                         iteration_candidate.candidate_id,
                         (),
+                    ),
+                    source_disposition=candidate_source_dispositions.get(
+                        iteration_candidate.candidate_id,
+                        CandidateSourceDisposition(),
                     ),
                 )
                 evaluated_attempt_key = attempt_key_by_candidate_id.get(
@@ -2827,13 +2924,17 @@ class SelfEvolveRunner:
         budget_context.release_all(reason_code="run_terminal_cleanup")
         selected_state = _select_iteration_state(iteration_states)
         if selected_state is not None:
-            selected_candidate = selected_state["candidate"]  # type: ignore[assignment]
             baseline_summary = selected_state["baseline_summary"]  # type: ignore[assignment]
             candidate_summary = selected_state["candidate_summary"]  # type: ignore[assignment]
             held_out_summary = selected_state["held_out_summary"]  # type: ignore[assignment]
             replay_result = selected_state["replay_result"]  # type: ignore[assignment]
             replay_dataset = selected_state["replay_dataset"]  # type: ignore[assignment]
             gate_results = list(selected_state["gate_results"])  # type: ignore[arg-type]
+            if (
+                not fresh_evaluation_required
+                or selected_state.get("status") == "accepted"
+            ):
+                selected_candidate = selected_state["candidate"]  # type: ignore[assignment]
         else:
             gate_results.append(
                 GateResult(
@@ -2862,8 +2963,16 @@ class SelfEvolveRunner:
         post_apply: dict[str, object] | None = None
         final_status = SelfEvolveRunStatus.SUCCEEDED
         if selected_candidate is None:
-            final_status = _status_without_selected_candidate(
-                optimizer_diagnostics
+            failed_gates = [gate for gate in gate_results if not gate.passed]
+            final_status = (
+                SelfEvolveRunStatus.FAILED
+                if fresh_evaluation_required
+                and _infrastructure_prevented_comparable_evaluation(
+                    failed_gates,
+                    baseline_summary=baseline_summary,
+                    candidate_summary=candidate_summary,
+                )
+                else _status_without_selected_candidate(optimizer_diagnostics)
             )
         elif apply_policy == "auto_verified":
             failed_gates = [gate for gate in gate_results if not gate.passed]
@@ -2940,6 +3049,13 @@ class SelfEvolveRunner:
             },
             "budget": budget_context.to_dict(),
         }
+        if candidate_source_dispositions:
+            report["candidate_source_dispositions"] = {
+                candidate_id: disposition.to_dict()
+                for candidate_id, disposition in sorted(
+                    candidate_source_dispositions.items()
+                )
+            }
         if self.deprecated_config_mappings:
             report["deprecated_config_mappings"] = (
                 dict(self.deprecated_config_mappings)
@@ -3001,6 +3117,29 @@ class SelfEvolveRunner:
             replay_capability_report = _replay_capability_report(replay_result)
             if replay_capability_report is not None:
                 report["replay_capability"] = replay_capability_report
+        replay_evidence_reuse_gate = next(
+            (
+                gate
+                for gate in gate_results
+                if gate.gate_name == "candidate_replay_evidence_reuse"
+            ),
+            None,
+        )
+        if (
+            replay_evidence_reuse_gate is not None
+            and isinstance(replay_evidence_reuse_gate.details, Mapping)
+        ):
+            report["replay_evidence_reuse"] = {
+                key: replay_evidence_reuse_gate.details.get(key)
+                for key in (
+                    "disposition",
+                    "provenance_path",
+                    "source_request_run_id",
+                    "source_request_candidate_id",
+                    "replay_case_count",
+                    "normalized_member_count",
+                )
+            }
         evaluator_report_paths = _evaluator_report_paths(
             baseline_summary,
             candidate_summary,
@@ -4003,6 +4142,7 @@ class SelfEvolveRunner:
         attempt_tracker: _CandidateAttemptTracker | None = None,
         budget_context: _RunBudgetContext | None = None,
         precomputed_gate_results: tuple[GateResult, ...] = (),
+        source_disposition: CandidateSourceDisposition = CandidateSourceDisposition(),
     ) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
@@ -4010,6 +4150,7 @@ class SelfEvolveRunner:
         replay_result: CandidateReplayResult | None = None
         replay_dataset: SelfEvolveDataset | None = None
         gate_results: list[GateResult] = []
+        fresh_evaluation_completed = False
 
         if precomputed_gate_results:
             gate_results.extend(precomputed_gate_results)
@@ -4038,7 +4179,10 @@ class SelfEvolveRunner:
                     attempt_key,
                     CandidateAttemptStage.LOCAL_GATES,
                 )
-        if not self.skip_duplicate_rejected_candidate_gate:
+        if (
+            not self.skip_duplicate_rejected_candidate_gate
+            and not source_disposition.bypass_historical_deduplication
+        ):
             duplicate_accepted_gate = _duplicate_accepted_candidate_gate(
                 candidate,
                 accepted_candidate_ids=accepted_candidate_ids,
@@ -4107,39 +4251,6 @@ class SelfEvolveRunner:
             )
             return state, report_item, feedback
 
-        replay_backend_proven_zero = _backend_proves_zero_budget_usage(
-            self.candidate_replay_backend,
-            BudgetStage.PAIRED_REPLAY,
-        )
-        per_attempt_budget_gate = BudgetGate().evaluate(
-            estimate_replay_cost(
-                dataset=_replayable_user_task_dataset(dataset),
-                candidate_count=1,
-                judge_repetitions=self.judge_repetitions,
-                baseline_repetitions=self.baseline_replay_repetitions,
-                candidate_repetitions=self.candidate_replay_repetitions,
-                replay_candidate_limit=self.replay_candidate_limit,
-                max_run_tokens=self.per_attempt_replay_token_limit,
-                estimated_tokens_per_replay=(
-                    None
-                    if replay_backend_proven_zero
-                    else self.replay_tokens_per_unit
-                ),
-                backend_proven_zero=replay_backend_proven_zero,
-            )
-        )
-        per_attempt_budget_gate = replace(
-            per_attempt_budget_gate,
-            details={
-                **dict(per_attempt_budget_gate.details or {}),
-                "budget_semantics": "per_attempt_replay_ceiling",
-                "baseline_reuse_accounting": (
-                    "conservative_independent_attempt_includes_baseline"
-                ),
-                "run_ledger_is_authoritative_for_baseline_reuse": True,
-            },
-        )
-        gate_results.append(per_attempt_budget_gate)
         replay_case_count = sum(
             1
             for case in dataset.cases
@@ -4151,7 +4262,55 @@ class SelfEvolveRunner:
             and self.candidate_replay_backend is not None
             and replay_case_count > 0
         )
-        if replay_planned and not per_attempt_budget_gate.passed:
+        replay_evidence_reuse_backend = (
+            self.candidate_replay_backend
+            if replay_planned
+            and isinstance(
+                self.candidate_replay_backend,
+                CandidateReplayEvidenceReuseBackend,
+            )
+            else None
+        )
+        per_attempt_budget_gate: GateResult | None = None
+        if replay_evidence_reuse_backend is None:
+            replay_backend_proven_zero = _backend_proves_zero_budget_usage(
+                self.candidate_replay_backend,
+                BudgetStage.PAIRED_REPLAY,
+            )
+            per_attempt_budget_gate = BudgetGate().evaluate(
+                estimate_replay_cost(
+                    dataset=_replayable_user_task_dataset(dataset),
+                    candidate_count=1,
+                    judge_repetitions=self.judge_repetitions,
+                    baseline_repetitions=self.baseline_replay_repetitions,
+                    candidate_repetitions=self.candidate_replay_repetitions,
+                    replay_candidate_limit=self.replay_candidate_limit,
+                    max_run_tokens=self.per_attempt_replay_token_limit,
+                    estimated_tokens_per_replay=(
+                        None
+                        if replay_backend_proven_zero
+                        else self.replay_tokens_per_unit
+                    ),
+                    backend_proven_zero=replay_backend_proven_zero,
+                )
+            )
+            per_attempt_budget_gate = replace(
+                per_attempt_budget_gate,
+                details={
+                    **dict(per_attempt_budget_gate.details or {}),
+                    "budget_semantics": "per_attempt_replay_ceiling",
+                    "baseline_reuse_accounting": (
+                        "conservative_independent_attempt_includes_baseline"
+                    ),
+                    "run_ledger_is_authoritative_for_baseline_reuse": True,
+                },
+            )
+            gate_results.append(per_attempt_budget_gate)
+        if (
+            replay_planned
+            and per_attempt_budget_gate is not None
+            and not per_attempt_budget_gate.passed
+        ):
             if attempt_tracker is not None and attempt_key is not None:
                 attempt_tracker.emit(
                     attempt_key,
@@ -4166,7 +4325,11 @@ class SelfEvolveRunner:
                 gate_results=gate_results,
             )
         replay_budget: BudgetDecision | None = None
-        if replay_planned and budget_context is not None:
+        if (
+            replay_planned
+            and replay_evidence_reuse_backend is None
+            and budget_context is not None
+        ):
             replay_units = (
                 replay_case_count * self.candidate_replay_repetitions
                 + (
@@ -4206,12 +4369,16 @@ class SelfEvolveRunner:
                     candidate_count=candidate_count,
                     gate_results=gate_results,
                 )
-        capability_gates = self._validate_candidate_capabilities(
-            run_id=run_id,
-            target=target,
-            dataset=dataset,
-            candidate=candidate,
-            requirements=capability_requirements,
+        capability_gates = (
+            []
+            if replay_evidence_reuse_backend is not None
+            else self._validate_candidate_capabilities(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                candidate=candidate,
+                requirements=capability_requirements,
+            )
         )
         gate_results.extend(capability_gates)
         capability_blocked = any(not gate.passed for gate in capability_gates)
@@ -4249,6 +4416,12 @@ class SelfEvolveRunner:
                         else None
                     ),
                 )
+            elif stage == "replay_evidence_reused":
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
+                    case_count=replay_case_count,
+                )
             elif stage == "replay_completed":
                 attempt_tracker.emit(
                     attempt_key,
@@ -4269,14 +4442,15 @@ class SelfEvolveRunner:
             try:
                 replay_result, replay_dataset, replay_gate = (
                     await self._replay_selected_candidate(
-                    run_id=run_id,
-                    target=target,
-                    dataset=dataset,
-                    selected_candidate=candidate,
-                    apply_policy=apply_policy,
-                    baseline_replay_dir=baseline_replay_dir,
-                    lifecycle_callback=replay_lifecycle,
-                )
+                        run_id=run_id,
+                        target=target,
+                        dataset=dataset,
+                        selected_candidate=candidate,
+                        apply_policy=apply_policy,
+                        baseline_replay_dir=baseline_replay_dir,
+                        lifecycle_callback=replay_lifecycle,
+                        source_disposition=source_disposition,
+                    )
                 )
             except Exception as exc:
                 replay_result = None
@@ -4450,6 +4624,7 @@ class SelfEvolveRunner:
                         ),
                         execution_telemetry=self.execution_telemetry,
                     )
+                    fresh_evaluation_completed = True
                     if replay_result is not None:
                         baseline_summary = _summary_with_replay_evidence_metrics(
                             baseline_summary,
@@ -4582,15 +4757,54 @@ class SelfEvolveRunner:
                             tokens=judge_tokens,
                             actual_source=judge_source,
                         )
-        elif apply_policy == "auto_verified":
+        elif (
+            apply_policy == "auto_verified"
+            or source_disposition.requires_fresh_evaluation
+        ):
             gate_results.append(
                 GateResult(
-                    gate_name="auto_verified_evaluation",
+                    gate_name=(
+                        "evaluator_rerun_evaluation"
+                        if source_disposition.requires_fresh_evaluation
+                        else "auto_verified_evaluation"
+                    ),
                     passed=False,
-                    reason="auto_verified apply policy requires evaluation backend",
+                    reason=(
+                        "stored-evidence evaluator rerun requires evaluation backend"
+                        if source_disposition.requires_fresh_evaluation
+                        else "auto_verified apply policy requires evaluation backend"
+                    ),
                     details={
                         "failure_class": "infrastructure",
                         "code": "evaluation_backend_missing",
+                    },
+                )
+            )
+
+        if source_disposition.requires_fresh_evaluation:
+            gate_results.append(
+                GateResult(
+                    gate_name="fresh_evaluator_rerun",
+                    passed=(
+                        fresh_evaluation_completed
+                        and baseline_summary is not None
+                        and candidate_summary is not None
+                    ),
+                    reason=(
+                        "fresh baseline and candidate evaluation completed"
+                        if fresh_evaluation_completed
+                        else "fresh baseline and candidate evaluation did not complete"
+                    ),
+                    details={
+                        "source_disposition": source_disposition.to_dict(),
+                        "failure_class": (
+                            None if fresh_evaluation_completed else "infrastructure"
+                        ),
+                        "code": (
+                            None
+                            if fresh_evaluation_completed
+                            else "fresh_evaluation_not_completed"
+                        ),
                     },
                 )
             )
@@ -4621,7 +4835,16 @@ class SelfEvolveRunner:
         status = (
             "accepted"
             if (
-                (apply_policy != "auto_verified" and not proposal_blocked)
+                (
+                    source_disposition.requires_fresh_evaluation
+                    and fresh_evaluation_completed
+                    and not failed_gates
+                )
+                or (
+                    not source_disposition.requires_fresh_evaluation
+                    and apply_policy != "auto_verified"
+                    and not proposal_blocked
+                )
                 or (apply_policy == "auto_verified" and not failed_gates)
             )
             else "rejected"
@@ -5013,6 +5236,7 @@ class SelfEvolveRunner:
         progress_stage: str = "candidate_replay",
         timeout_seconds: int | None = None,
         lifecycle_callback: Callable[[str, Mapping[str, object]], None] | None = None,
+        source_disposition: CandidateSourceDisposition = CandidateSourceDisposition(),
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
@@ -5026,6 +5250,127 @@ class SelfEvolveRunner:
                     gate_name="candidate_replay",
                     passed=False,
                     reason="auto_verified skill apply requires candidate replay backend",
+                ),
+            )
+        if isinstance(
+            self.candidate_replay_backend,
+            CandidateReplayEvidenceReuseBackend,
+        ):
+            disposition = (
+                self.candidate_replay_backend.replay_evidence_reuse_disposition()
+            )
+            replay_result = (
+                await self.candidate_replay_backend.reuse_replay_evidence(
+                    candidate=selected_candidate,
+                    dataset=dataset,
+                )
+            )
+            normalized = normalize_replay_members(
+                dataset=dataset,
+                replay_result=replay_result,
+            )
+            current_dataset_fingerprint = replay_dataset_fingerprint(dataset)
+            source_provenance_matches = bool(
+                source_disposition.kind
+                is CandidateSourceKind.STORED_EVIDENCE_RERUN
+                and source_disposition.source_run_id == disposition.source_run_id
+                and replay_result.request.run_id == disposition.source_run_id
+            )
+            dataset_fingerprint_matches = (
+                replay_result.request.dataset_fingerprint
+                == current_dataset_fingerprint
+            )
+            comparable = (
+                source_provenance_matches
+                and dataset_fingerprint_matches
+                and candidate_replay_is_comparable(
+                    dataset=dataset,
+                    replay_result=replay_result,
+                    require_adapted=True,
+                    normalized=normalized,
+                )
+            )
+            replay_case_count = sum(
+                1 for case in dataset.cases if _is_replayable_user_task_case(case)
+            )
+            reuse_report = {
+                "schema_version": "aworld.self_evolve.replay_evidence_reuse.v1",
+                "disposition": disposition.to_dict(),
+                "run_id": run_id,
+                "candidate_id": selected_candidate.candidate_id,
+                "source_request_run_id": replay_result.request.run_id,
+                "source_request_candidate_id": replay_result.request.candidate_id,
+                "source_dataset_fingerprint": (
+                    replay_result.request.dataset_fingerprint
+                ),
+                "current_dataset_fingerprint": current_dataset_fingerprint,
+                "source_provenance_matches": source_provenance_matches,
+                "dataset_fingerprint_matches": dataset_fingerprint_matches,
+                "replay_case_count": replay_case_count,
+                "normalized_member_count": len(normalized.members),
+                "comparable": comparable,
+            }
+            reuse_path = self.store.write_replay_evidence_reuse(
+                run_id,
+                selected_candidate.candidate_id,
+                reuse_report,
+            )
+            if lifecycle_callback is not None:
+                lifecycle_callback(
+                    "replay_evidence_reused",
+                    {
+                        "case_count": replay_case_count,
+                        "disposition": disposition.to_dict(),
+                        "provenance_path": str(reuse_path),
+                        "comparable": comparable,
+                    },
+                )
+            reuse_details = {
+                "disposition": disposition.to_dict(),
+                "provenance_path": str(reuse_path),
+                "source_request_run_id": replay_result.request.run_id,
+                "source_request_candidate_id": replay_result.request.candidate_id,
+                "replay_case_count": replay_case_count,
+                "normalized_member_count": len(normalized.members),
+                "source_provenance_matches": source_provenance_matches,
+                "dataset_fingerprint_matches": dataset_fingerprint_matches,
+                **_replay_gate_details(
+                    replay_result,
+                    dataset=dataset,
+                    normalized=normalized,
+                ),
+            }
+            if not comparable:
+                return (
+                    replay_result,
+                    None,
+                    GateResult(
+                        gate_name="candidate_replay_evidence_reuse",
+                        passed=False,
+                        reason=(
+                            "stored replay evidence is not comparable for the "
+                            "current trajectory set"
+                        ),
+                        details=reuse_details,
+                    ),
+                )
+            replay_dataset = build_paired_replay_dataset(
+                dataset=dataset,
+                replay_result=replay_result,
+                candidate=selected_candidate,
+                normalized=normalized,
+            )
+            return (
+                replay_result,
+                replay_dataset,
+                GateResult(
+                    gate_name="candidate_replay_evidence_reuse",
+                    passed=True,
+                    reason=(
+                        "stored source replay evidence was reused without replay "
+                        "execution"
+                    ),
+                    details=reuse_details,
                 ),
             )
         if target.identity.path is None:
@@ -6462,6 +6807,7 @@ def _rerun_evaluator_from_stored_run(
         replay_enabled=True,
         candidate_replay_backend=_StoredCandidateReplayBackend(
             replay_result=replay_result,
+            source_run_id=source_run_id,
             source_replay_path=str(replay_path),
         ),
         replay_timeout_seconds=replay_timeout_seconds,
