@@ -952,18 +952,6 @@ class RunBudgetLedger:
             BudgetUsage,
         ):
             raise TypeError("cold-start budget estimate must be BudgetUsage")
-        if backend_proven_zero:
-            return StageBudgetEstimate(
-                stage=stage,
-                item_id=item_id,
-                tokens=None,
-                cost_usd=None,
-                wall_seconds=None,
-                source=BudgetEstimateSource.BACKEND_PROVEN_ZERO,
-                confidence=BudgetEstimateConfidence.PROVEN,
-                backend_proven_zero=True,
-                units=count,
-            )
         statistics_value = self.estimate_statistics(stage)
         if statistics_value is not None:
             return StageBudgetEstimate.from_per_unit(
@@ -978,7 +966,30 @@ class RunBudgetLedger:
                     else BudgetEstimateConfidence.MEDIUM
                 ),
             )
+        if backend_proven_zero:
+            return StageBudgetEstimate(
+                stage=stage,
+                item_id=item_id,
+                tokens=None,
+                cost_usd=None,
+                wall_seconds=None,
+                source=BudgetEstimateSource.BACKEND_PROVEN_ZERO,
+                confidence=BudgetEstimateConfidence.PROVEN,
+                backend_proven_zero=True,
+                units=count,
+            )
         if cold_start_per_unit is not None:
+            if cold_start_per_unit == BudgetUsage():
+                return StageBudgetEstimate(
+                    stage=stage,
+                    item_id=item_id,
+                    tokens=None,
+                    cost_usd=None,
+                    wall_seconds=None,
+                    source=BudgetEstimateSource.UNKNOWN,
+                    confidence=BudgetEstimateConfidence.UNKNOWN,
+                    units=count,
+                )
             return StageBudgetEstimate.from_per_unit(
                 stage=stage,
                 item_id=item_id,
@@ -1150,11 +1161,18 @@ class RunBudgetLedger:
         # silently interpreting missing estimates as free work.
         if tokens is None or cost is None or wall is None:
             return None
-        return BudgetUsage(
+        usage = BudgetUsage(
             tokens=tokens or 0,
             cost_usd=cost or Decimal("0"),
             wall_seconds=wall or Decimal("0"),
         )
+        if (
+            usage == BudgetUsage()
+            and estimate.source is BudgetEstimateSource.CONFIGURED_COLD_START
+            and not estimate.backend_proven_zero
+        ):
+            return None
+        return usage
 
 
 def _sum_usage(values: Iterable[BudgetUsage]) -> BudgetUsage:

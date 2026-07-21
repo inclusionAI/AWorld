@@ -114,6 +114,32 @@ def test_ledger_unknown_estimate_fails_closed_unless_backend_proves_zero() -> No
     unbounded = RunBudgetLedger(BudgetCeilings(None, None, None))
     assert unbounded.reserve(unknown).reason_code is BudgetDecisionReason.UNKNOWN_ESTIMATE
 
+    configured_zero = ledger.estimate_next(
+        stage=BudgetStage.JUDGE,
+        item_id="judge-configured-zero",
+        cold_start_per_unit=BudgetUsage(),
+    )
+    assert configured_zero.source is BudgetEstimateSource.UNKNOWN
+    assert configured_zero.confidence is BudgetEstimateConfidence.UNKNOWN
+    assert configured_zero.resolved_usage() is None
+    assert (
+        ledger.reserve(configured_zero).reason_code
+        is BudgetDecisionReason.UNKNOWN_ESTIMATE
+    )
+    direct_configured_zero = StageBudgetEstimate(
+        stage=BudgetStage.JUDGE,
+        item_id="judge-direct-configured-zero",
+        tokens=0,
+        cost_usd=Decimal("0"),
+        wall_seconds=Decimal("0"),
+        source=BudgetEstimateSource.CONFIGURED_COLD_START,
+        confidence=BudgetEstimateConfidence.LOW,
+    )
+    assert (
+        ledger.reserve(direct_configured_zero).reason_code
+        is BudgetDecisionReason.UNKNOWN_ESTIMATE
+    )
+
     proven_zero = ledger.estimate_next(
         stage=BudgetStage.JUDGE,
         item_id="judge-local",
@@ -122,6 +148,44 @@ def test_ledger_unknown_estimate_fails_closed_unless_backend_proves_zero() -> No
     allowed = ledger.reserve(proven_zero)
     assert allowed.allowed is True
     assert proven_zero.source is BudgetEstimateSource.BACKEND_PROVEN_ZERO
+
+
+def test_observed_usage_overrides_backend_zero_proof_for_future_batches() -> None:
+    ledger = _ledger()
+    initial = ledger.reserve(
+        ledger.estimate_next(
+            stage=BudgetStage.JUDGE,
+            item_id="judge-first-batch",
+            units=3,
+            backend_proven_zero=True,
+        )
+    )
+    assert initial.allowed is True
+    ledger.debit_actual(
+        initial.reservation_id or "",
+        BudgetUsage(
+            tokens=90,
+            cost_usd=Decimal("3"),
+            wall_seconds=Decimal("6"),
+        ),
+    )
+
+    next_estimate = ledger.estimate_next(
+        stage=BudgetStage.JUDGE,
+        item_id="judge-next-batch",
+        units=2,
+        backend_proven_zero=True,
+    )
+
+    assert next_estimate.source is BudgetEstimateSource.OBSERVED_ROBUST
+    assert next_estimate.confidence is BudgetEstimateConfidence.MEDIUM
+    assert next_estimate.backend_proven_zero is False
+    assert next_estimate.units == 2
+    assert next_estimate.resolved_usage() == BudgetUsage(
+        tokens=60,
+        cost_usd=Decimal("2"),
+        wall_seconds=Decimal("4"),
+    )
 
 
 def test_ledger_denial_is_deterministic_and_does_not_mutate_state() -> None:
