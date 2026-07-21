@@ -11,9 +11,20 @@ _MAX_SUMMARY_KEYS = 8
 _MAX_STRING_FIELD_TOKENS = 256
 _MAX_STRING_FIELD_CHARS = 4096
 _MAX_MULTILINE_STRING_FIELD_CHARS = 1200
-_PRESERVE_SEMANTIC_STRING_FIELDS = {"directive", "instruction", "request", "query", "goal", "task"}
+_PRESERVE_SEMANTIC_STRING_FIELDS = {
+    "code",
+    "command",
+    "directive",
+    "goal",
+    "instruction",
+    "query",
+    "request",
+    "script",
+    "task",
+}
 _SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD = 1024
 _SEMANTIC_STRING_FIELD_CHAR_THRESHOLD = 8192
+REPLAY_COMPACTED_ARGUMENT_FAILURE = "replay_compacted_argument_unavailable"
 
 
 def _canonical_json(value: Any) -> str:

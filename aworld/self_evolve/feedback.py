@@ -2,12 +2,23 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from aworld.self_evolve.sanitization import (
+    sanitize_metric_value,
+    sanitize_source_text,
+    sanitize_text,
+)
 from aworld.self_evolve.types import EvaluationSummary
 
 _MAX_TEXT_CHARS = 240
 _MAX_LIST_ITEMS = 3
+_MAX_REPAIR_PACKAGE_CHARS = 64_000
+_MAX_REPAIR_FILE_CHARS = 32_000
 
 _SCALAR_METRIC_KEYS = {
+    "lesson_id",
+    "lesson_type",
+    "lesson_title",
+    "lesson_summary",
     "score",
     "cost",
     "latency_ms",
@@ -63,6 +74,11 @@ _SCALAR_METRIC_KEYS = {
     "failed_repetition_count",
     "replay_failed_repetition_count",
     "replay_evidence_manifest_invalid_entry_count",
+    "failure_class",
+    "repairable",
+    "candidate_protocol_invalid_count",
+    "authoritative_replay_failure",
+    "interaction_progress",
 }
 
 _EVIDENCE_METRIC_KEYS = {
@@ -71,6 +87,8 @@ _EVIDENCE_METRIC_KEYS = {
     "baseline_evidence_block_count",
     "candidate_evidence_block_count",
     "evidence_block_count_delta",
+    "evidence_bundle_entry_count",
+    "evidence_bundle_valid",
     "evidence_compacted",
     "evidence_incomplete",
     "baseline_evidence_incomplete",
@@ -94,6 +112,7 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
     evidence = _evidence_summary(metrics)
     failed_gates = _string_list(metrics.get("failed_gates"))
     required_behaviors = _required_behaviors(
+        dataset_split=feedback.dataset_split,
         failed_gates=failed_gates,
         evidence=evidence,
         metrics=metrics,
@@ -104,7 +123,7 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         metrics=metrics,
         required_behaviors=required_behaviors,
     )
-    return {
+    result = {
         "variant_id": feedback.variant_id,
         "dataset_split": feedback.dataset_split,
         "metrics": _metric_summary(metrics),
@@ -113,6 +132,58 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         "required_behaviors": required_behaviors,
         "repair_plan": repair_plan,
     }
+    diagnostics = metrics.get("candidate_validation_diagnostics")
+    if isinstance(diagnostics, list):
+        result["candidate_validation_diagnostics"] = [
+            sanitize_metric_value(item)
+            for item in diagnostics[:16]
+            if isinstance(item, Mapping)
+        ]
+    repair_candidate_package = _repair_candidate_package_summary(
+        metrics.get("repair_candidate_package")
+    )
+    if repair_candidate_package is not None:
+        result["repair_candidate_package"] = repair_candidate_package
+    return result
+
+
+def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    raw_files = value.get("files")
+    if not isinstance(raw_files, list):
+        return None
+    remaining_chars = _MAX_REPAIR_PACKAGE_CHARS
+    files: list[dict[str, Any]] = []
+    for raw_file in raw_files[:8]:
+        if not isinstance(raw_file, Mapping):
+            continue
+        item: dict[str, Any] = {
+            "path": sanitize_text(raw_file.get("path"), max_chars=240),
+            "operation": sanitize_text(
+                raw_file.get("operation") or "upsert",
+                max_chars=40,
+            ),
+            "executable": raw_file.get("executable") is True,
+        }
+        content = raw_file.get("content")
+        if isinstance(content, str) and remaining_chars > 0:
+            content_limit = min(remaining_chars, _MAX_REPAIR_FILE_CHARS)
+            bounded_content = sanitize_source_text(content, max_chars=content_limit)
+            item["content"] = bounded_content
+            remaining_chars -= len(bounded_content)
+        files.append(item)
+    if not files:
+        return None
+    package = {
+        "candidate_id": sanitize_text(value.get("candidate_id"), max_chars=160),
+        "rationale": sanitize_text(value.get("rationale"), max_chars=1_000),
+        "files": files,
+    }
+    raw_content = value.get("content")
+    if isinstance(raw_content, str) and raw_content.strip():
+        package["content"] = sanitize_source_text(raw_content, max_chars=8_000)
+    return package
 
 
 def _metric_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
@@ -153,11 +224,12 @@ def _evidence_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
 
 def _required_behaviors(
     *,
+    dataset_split: str,
     failed_gates: list[str],
     evidence: Mapping[str, Any],
     metrics: Mapping[str, Any],
 ) -> list[str]:
-    behaviors: list[str] = []
+    behaviors: list[str] = _string_list(metrics.get("required_behaviors"))
     has_evidence_failure = "evidence_quality" in set(failed_gates)
     has_evidence_compaction = evidence.get("evidence_compacted") is True
     has_incomplete_evidence = evidence.get("evidence_incomplete") is True
@@ -177,6 +249,14 @@ def _required_behaviors(
                 "non_compacted_evidence",
                 "claim_evidence_ledger",
                 "claim_by_claim_verification",
+            ]
+        )
+    if has_incomplete_evidence:
+        behaviors.extend(
+            [
+                "verify_task_semantic_sufficiency_before_finalizing",
+                "do_not_treat_transport_success_as_task_completion",
+                "continue_bounded_acquisition_when_payload_is_only_metadata_or_execution_summary",
             ]
         )
     if has_manifest_errors:
@@ -284,6 +364,14 @@ def _required_behaviors(
                 "avoid_extra_steps_without_score_gain",
             ]
         )
+    if dataset_split == "held_out" and failed_gates:
+        behaviors.extend(
+            [
+                "generalize_runtime_behavior_across_task_variants",
+                "preserve_validation_gains_on_held_out",
+                "repair_held_out_regression_before_release",
+            ]
+        )
     return list(dict.fromkeys(behaviors))
 
 
@@ -333,6 +421,17 @@ def _repair_plan(
             ]
         )
         acceptance_criteria.append("all_final_claims_have_non_compacted_support")
+    if evidence.get("evidence_incomplete") is True:
+        issues.append("semantically_insufficient_evidence")
+        actions.extend(
+            [
+                "check_payload_supports_requested_claims_before_stopping",
+                "continue_with_one_materially_different_bounded_source_when_payload_is_only_a_transport_or_execution_summary",
+            ]
+        )
+        acceptance_criteria.append(
+            "transport_success_is_not_accepted_without_task_semantic_support"
+        )
     if has_manifest_problem:
         issues.append("invalid_evidence_manifest")
         actions.append("write_valid_bounded_evidence_manifest")
@@ -605,6 +704,4 @@ def _compact_value(value: Any) -> Any:
 
 
 def _clip_text(value: str) -> str:
-    if len(value) <= _MAX_TEXT_CHARS:
-        return value
-    return value[: _MAX_TEXT_CHARS - 1].rstrip() + "…"
+    return sanitize_text(value, max_chars=_MAX_TEXT_CHARS)

@@ -1,31 +1,646 @@
 from __future__ import annotations
 
 import json
+import os
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from aworld.self_evolve.datasets import SelfEvolveEvalSourceConfig, build_dataset_from_source
+from aworld.config.conf import ModelConfig
+from aworld.core.common import TaskStatusValue
+from aworld.core.task import TaskResponse
+from aworld.runner import Runners
+
+from aworld.self_evolve.candidate_generation import CandidateGenerationAgent
+from aworld.self_evolve.datasets import (
+    EvalCase,
+    SelfEvolveDataset,
+    SelfEvolveEvalSourceConfig,
+    build_dataset_from_source,
+)
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.replay import (
-    CandidateReplayResult,
+    CandidateReplayMemberResult,
+    CandidateReplayRequest,
+    CandidateReplayResult as _CandidateReplayResult,
     ReplayVariantResult,
+    _member_artifact_name,
+)
+from aworld.self_evolve.replay_adaptation import (
+    ReplayAdapterBinding,
+    ReplayAdaptationCompiler,
+    ReplayCapabilityRequirement,
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
+    _auto_group_trajectory_log_dataset,
+    _baseline_replay_artifact_dir,
+    _candidate_screening_timeout,
+    _candidate_screening_repair_feedback,
     _default_cli_skill_candidate,
+    _default_iteration_budget,
     _default_post_apply_evaluator,
+    _candidate_generation_limit,
+    _feedback_from_report,
+    _include_prior_run_cases,
     _iteration_validation_feedback,
+    _merge_validation_feedback,
+    _parse_candidate_mutation_model_output,
+    _next_progress_repair_extension_family,
+    _rank_candidate_population,
+    _rejected_candidate_ids_from_report,
+    _replay_confidence_gate,
+    _replay_gate_details,
+    _replay_adaptation_exception_details,
+    _replay_report,
+    _repair_conformance_failure_diagnostics,
+    _repair_conformance_required_nonempty_operations,
+    _retryable_candidate_generation_failure,
+    _select_iteration_state,
+    _candidate_screening_dataset,
+    _source_config_from_stored_dataset_recipe,
     _summary_with_replay_evidence_metrics,
     optimize_explicit_target,
     optimize_from_cli_request,
+)
+from aworld.self_evolve.replay_capability import ReplayCapabilityError
+from aworld.self_evolve.repair_conformance import (
+    compile_repair_conformance_contract,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
-from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult, SelfEvolveTargetRef
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    EvaluationSummary,
+    GateResult,
+    DatasetRecipe,
+    OptimizerLineage,
+    SelfEvolveTargetRef,
+)
+
+
+_REPLAY_PROVENANCE_KEYS = (
+    "adaptation_fingerprint",
+    "workspace_seed_fingerprint",
+    "task_input_fingerprint",
+    "dataset_fingerprint",
+    "baseline_skill_fingerprint",
+)
+
+
+def test_progress_repair_extension_requires_a_novel_repairable_failure_family() -> None:
+    def feedback(candidate_id: str, diagnostic_code: str) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "failure_class": "candidate",
+                "repairable": True,
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": diagnostic_code,
+                        "stage": "replay_capability",
+                        "reason": diagnostic_code,
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "content": "# candidate runtime\n",
+                        }
+                    ],
+                },
+            },
+        )
+
+    target_id_feedback = feedback("candidate-target", "missing_target_id")
+    session_id_feedback = feedback("candidate-session", "missing_session_id")
+    consumed: set[str] = set()
+
+    first_family = _next_progress_repair_extension_family(
+        (target_id_feedback,),
+        consumed_families=consumed,
+    )
+    assert first_family is not None
+    consumed.add(first_family)
+    assert (
+        _next_progress_repair_extension_family(
+            (target_id_feedback,),
+            consumed_families=consumed,
+        )
+        is None
+    )
+    assert _next_progress_repair_extension_family(
+        (target_id_feedback, session_id_feedback),
+        consumed_families=consumed,
+    ) not in {None, first_family}
+
+
+def test_feedback_from_report_restores_latest_repairable_screening_package(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-old"
+    for candidate_id, rationale, content in (
+        (
+            "candidate-earlier-progress",
+            "preserve the earlier protocol progress",
+            "def respond():\n    return {'targetId': 'target-1'}\n",
+        ),
+        (
+            "candidate-near-success",
+            "preserve the working runtime and repair its final probe",
+            "def respond():\n    return {'id': 1, 'result': {}}\n",
+        ),
+    ):
+        candidate_path = run_root / "candidates" / f"{candidate_id}.json"
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": candidate_id,
+                    "rationale": rationale,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "operation": "upsert",
+                            "executable": False,
+                            "content": content,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+    report_path = run_root / "report.json"
+    report = {
+        "run_id": "run-old",
+        "population": {
+            "screening_iterations": [
+                {
+                    "attempts": [
+                        {
+                            "candidate_id": "candidate-earlier-progress",
+                            "passed": False,
+                            "reason": "candidate replay reached the next protocol stage",
+                            "details": {
+                                "failure_class": "candidate",
+                                "failure_stage": "replay_capability",
+                                "repairable": True,
+                                "baseline_failure": {
+                                    "reason": "protocol response missing sessionId"
+                                },
+                            },
+                        }
+                    ]
+                },
+                {
+                    "attempts": [
+                        {
+                            "candidate_id": "candidate-near-success",
+                            "passed": False,
+                            "reason": "candidate replay did not produce comparable paired outcomes",
+                            "details": {
+                                "failure_class": "candidate",
+                                "failure_stage": "replay_capability",
+                                "repairable": True,
+                                "baseline_failure": {
+                                    "reason": "protocol probe response mismatch"
+                                },
+                            },
+                        }
+                    ]
+                },
+            ],
+            "screening": {
+                "attempts": [
+                    {
+                        "candidate_id": "candidate-near-success",
+                        "passed": False,
+                        "reason": "candidate replay did not produce comparable paired outcomes",
+                        "details": {
+                            "failure_class": "candidate",
+                            "failure_stage": "replay_capability",
+                            "repairable": True,
+                            "baseline_failure": {
+                                "reason": "protocol probe response mismatch"
+                            },
+                        },
+                    }
+                ]
+            }
+        },
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    assert [item.variant_id for item in feedback[:2]] == [
+        "candidate-near-success",
+        "candidate-earlier-progress",
+    ]
+    assert feedback[0].variant_id == "candidate-near-success"
+    assert feedback[0].dataset_split == "historical_repair"
+    assert feedback[0].metrics["failure_class"] == "candidate"
+    assert feedback[0].metrics["repairable"] is True
+    assert feedback[0].metrics["repair_candidate_package"] == {
+        "candidate_id": "candidate-near-success",
+        "rationale": "preserve the working runtime and repair its final probe",
+        "files": [
+            {
+                "path": "replay/runtime.py",
+                "operation": "upsert",
+                "executable": False,
+                "content": "def respond():\n    return {'id': 1, 'result': {}}",
+            }
+        ],
+    }
+
+
+def test_feedback_from_report_restores_selected_candidate_authoritative_failure(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-authoritative"
+    candidate_id = "candidate-authoritative-repair"
+    candidate_root = run_root / "candidates" / candidate_id
+    candidate_root.mkdir(parents=True)
+    (candidate_root / "candidate.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "rationale": "repair the full-dataset compiler failure",
+                "files": [
+                    {
+                        "path": "replay/compiler.py",
+                        "operation": "upsert",
+                        "executable": False,
+                        "content": "def compile_all_requirements():\n    pass\n",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path = run_root / "report.json"
+    compiler_artifact = (
+        run_root
+        / "replay_adaptation"
+        / "dataset"
+        / "candidate"
+        / "skill_replay_capability"
+        / "compile-a"
+        / "compiler.stderr.txt"
+    )
+    compiler_artifact.parent.mkdir(parents=True)
+    compiler_artifact.write_text(
+        "PermissionError: fixture destination is read-only\n",
+        encoding="utf-8",
+    )
+    report = {
+        "run_id": "run-authoritative",
+        "selected_candidate_id": candidate_id,
+        "gate_results": [
+            {
+                "gate_name": "replay_adaptation",
+                "passed": False,
+                "reason": "replay adaptation compilation failed",
+                "details": {
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "artifact_root": str(
+                        run_root / "replay_adaptation" / "dataset" / "candidate"
+                    ),
+                    "diagnostics": [
+                        {
+                            "code": "invalid_replay_capability_compile",
+                            "stage": "capability_compile",
+                            "reason": "fixture destination is read-only",
+                        }
+                    ],
+                },
+            }
+        ],
+        "population": {},
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    assert feedback[0].variant_id == candidate_id
+    assert feedback[0].dataset_split == "historical_repair"
+    assert feedback[0].metrics["failure_class"] == "candidate"
+    assert feedback[0].metrics["repairable"] is True
+    assert feedback[0].metrics["failed_gates"] == ["replay_adaptation"]
+    assert feedback[0].metrics["repair_candidate_package"]["candidate_id"] == (
+        candidate_id
+    )
+    assert "PermissionError: fixture destination is read-only" in json.dumps(
+        feedback[0].metrics["candidate_validation_diagnostics"]
+    )
+    assert feedback[0].metrics["candidate_validation_diagnostics"][0]["code"] == (
+        "repair_candidate_output_permission_collision"
+    )
+
+
+def test_feedback_from_report_joins_selected_candidate_held_out_judge_metrics(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-held-out-repair"
+    candidate_id = "candidate-held-out-repair"
+    candidate_root = run_root / "candidates" / candidate_id
+    candidate_root.mkdir(parents=True)
+    (candidate_root / "candidate.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "rationale": "preserve replay and repair claim support",
+                "files": [
+                    {
+                        "path": "SKILL.md",
+                        "operation": "upsert",
+                        "executable": False,
+                        "content": "# Grounded finalization\n",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path = run_root / "report.json"
+    report = {
+        "run_id": "run-held-out-repair",
+        "selected_candidate_id": candidate_id,
+        "gate_results": [
+            {
+                "gate_name": "evidence_quality",
+                "passed": False,
+                "reason": "evaluation evidence is incomplete",
+                "details": {"evidence_incomplete": True},
+            },
+            {
+                "gate_name": "required_verification",
+                "passed": False,
+                "reason": "held-out verification failed",
+                "details": {},
+            },
+        ],
+        "iterations": [
+            {
+                "candidate_id": candidate_id,
+                "status": "rejected",
+                "failed_gates": ["evidence_quality", "required_verification"],
+                "candidate_metrics": {
+                    "score": 86.0,
+                    "A1_groundedness": 4,
+                    "evidence_incomplete": False,
+                },
+                "held_out_metrics": {
+                    "score": 69.6,
+                    "A1_groundedness": 3,
+                    "A2_completeness": 4,
+                    "evidence_incomplete": True,
+                    "evidence_issues": ["claims exceed bounded excerpts"],
+                },
+            }
+        ],
+        "population": {},
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    assert feedback[0].variant_id == candidate_id
+    assert feedback[0].dataset_split == "held_out"
+    assert feedback[0].metrics["score"] == 69.6
+    assert feedback[0].metrics["A1_groundedness"] == 3
+    assert feedback[0].metrics["evidence_incomplete"] is True
+    assert feedback[0].metrics["evidence_issues"] == [
+        "claims exceed bounded excerpts"
+    ]
+    assert feedback[0].metrics["repair_candidate_package"]["candidate_id"] == (
+        candidate_id
+    )
+
+
+def test_iteration_selection_prefers_fewer_failed_gates_without_scores() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    first = CandidateVariant(
+        candidate_id="first",
+        target=target,
+        content="# First\n",
+        rationale="first",
+    )
+    second = CandidateVariant(
+        candidate_id="second",
+        target=target,
+        content="# Second\n",
+        rationale="second",
+    )
+    selected = _select_iteration_state(
+        [
+            {
+                "candidate": first,
+                "candidate_summary": None,
+                "status": "rejected",
+                "gate_results": (
+                    GateResult("skill_markdown", False, "missing frontmatter"),
+                    GateResult("replay_adaptation", False, "compile failed"),
+                ),
+            },
+            {
+                "candidate": second,
+                "candidate_summary": None,
+                "status": "rejected",
+                "gate_results": (
+                    GateResult("replay_adaptation", False, "compile failed"),
+                ),
+            },
+        ]
+    )
+
+    assert selected is not None
+    assert selected["candidate"] is second
+
+
+def test_iteration_selection_prefers_candidate_that_reached_runtime_replay() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    compile_failed = CandidateVariant(
+        candidate_id="compile-failed",
+        target=target,
+        content="# Compile failed\n",
+        rationale="first",
+    )
+    runtime_failed = CandidateVariant(
+        candidate_id="runtime-failed",
+        target=target,
+        content="# Runtime failed\n",
+        rationale="later repair",
+    )
+
+    selected = _select_iteration_state(
+        [
+            {
+                "candidate": compile_failed,
+                "candidate_summary": None,
+                "status": "rejected",
+                "gate_results": (
+                    GateResult("replay_adaptation", False, "compile failed"),
+                ),
+            },
+            {
+                "candidate": runtime_failed,
+                "candidate_summary": None,
+                "status": "rejected",
+                "gate_results": (
+                    GateResult("candidate_replay", False, "runtime probe failed"),
+                    GateResult("replay_confidence", False, "pair incomparable"),
+                ),
+            },
+        ]
+    )
+
+    assert selected is not None
+    assert selected["candidate"] is runtime_failed
+
+
+def test_iteration_selection_does_not_prefer_duplicate_only_retry() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    evaluated = CandidateVariant(
+        candidate_id="evaluated",
+        target=target,
+        content="# Evaluated\n",
+        rationale="evaluated",
+    )
+    duplicate = CandidateVariant(
+        candidate_id="duplicate",
+        target=target,
+        content="# Duplicate\n",
+        rationale="duplicate",
+    )
+
+    selected = _select_iteration_state(
+        [
+            {
+                "candidate": evaluated,
+                "candidate_summary": None,
+                "status": "rejected",
+                "gate_results": (
+                    GateResult("candidate_replay", False, "replay failed"),
+                    GateResult("replay_confidence", False, "not comparable"),
+                ),
+            },
+            {
+                "candidate": duplicate,
+                "candidate_summary": None,
+                "status": "rejected",
+                "gate_results": (
+                    GateResult(
+                        "duplicate_rejected_candidate",
+                        False,
+                        "already rejected",
+                    ),
+                ),
+            },
+        ]
+    )
+
+    assert selected is not None
+    assert selected["candidate"] is evaluated
+
+
+def test_candidate_screening_prefers_case_exercising_replay_requirements() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="first-case", input="first user task"),
+            EvalCase(case_id="capability-case", input="recorded endpoint task"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory"},
+            split_seed="seed",
+            splits={"train": ["first-case", "capability-case"]},
+            trainable_case_ids=("first-case", "capability-case"),
+        ),
+    )
+    requirements = (
+        ReplayCapabilityRequirement(
+            requirement_id="requirement-1",
+            kind="local_endpoint",
+            identifier="http://127.0.0.1:9222",
+            case_ids=("capability-case",),
+            evidence_refs=("context:1",),
+            status="unbound",
+        ),
+    )
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+    )
+
+    assert screening is not None
+    assert screening.cases[0].case_id == "capability-case"
+
+
+def CandidateReplayResult(*args, **kwargs):
+    """Build a fake backend result that honours the replay provenance contract."""
+
+    result = _CandidateReplayResult(*args, **kwargs)
+    if result.request.adaptation_fingerprint is None:
+        return result
+
+    def attested(variant: ReplayVariantResult, request: CandidateReplayRequest):
+        repetition_count = int(variant.metrics.get("repetition_count", 1))
+        workspace_base = (
+            Path(request.workspace_root).resolve()
+            / ".fake_replay_workspaces"
+            / request.task_id
+            / variant.variant_id
+        )
+        workspace_metrics = (
+            {"isolated_workspace_path": str(workspace_base / "1")}
+            if repetition_count == 1
+            else {
+                "isolated_workspace_path_values": [
+                    str(workspace_base / str(index))
+                    for index in range(1, repetition_count + 1)
+                ]
+            }
+        )
+        return replace(
+            variant,
+            metrics={
+                **dict(variant.metrics),
+                **{
+                    key: getattr(request, key)
+                    for key in _REPLAY_PROVENANCE_KEYS
+                },
+                "adapter_determinism": "deterministic",
+                **workspace_metrics,
+            },
+        )
+
+    members = tuple(
+        replace(
+            member,
+            baseline=attested(member.baseline, member.request),
+            candidate=attested(member.candidate, member.request),
+        )
+        for member in result.member_results
+    )
+    return replace(
+        result,
+        baseline=attested(result.baseline, result.request),
+        candidate=attested(result.candidate, result.request),
+        member_results=members,
+    )
 
 
 class EmptyOptimizer:
@@ -35,6 +650,458 @@ class EmptyOptimizer:
             lineage=(),
             diagnostics={"filtered_noop_candidates": 1},
         )
+
+
+class CaptureOptimizer:
+    def __init__(self) -> None:
+        self.requests: list[OptimizerRequest] = []
+
+    async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+        self.requests.append(request)
+        return OptimizerResult(
+            candidates=(
+                CandidateVariant(
+                    candidate_id="candidate-1",
+                    target=request.target,
+                    content=request.current_content + "\nNew guidance.\n",
+                    rationale="captured request",
+                    target_fingerprint=request.target_fingerprint,
+                ),
+            ),
+        )
+
+
+def test_replay_only_rejection_does_not_permanently_blacklist_candidate() -> None:
+    report = {
+        "status": "rejected",
+        "selected_candidate_id": "candidate-retry",
+        "iterations": [
+            {
+                "candidate_id": "candidate-retry",
+                "status": "rejected",
+                "baseline_metrics": None,
+                "candidate_metrics": None,
+                "held_out_metrics": None,
+                "failed_gates": ["candidate_replay", "replay_confidence"],
+            }
+        ],
+    }
+
+    assert _rejected_candidate_ids_from_report(report) == set()
+
+
+def test_auto_verified_default_iteration_budget_allows_multi_stage_capability_repair() -> None:
+    assert _default_iteration_budget(
+        apply_policy="auto_verified",
+        explicit_iterations=None,
+    ) == 10
+
+
+def test_candidate_screening_timeout_is_bounded_without_extending_short_timeouts() -> None:
+    assert _candidate_screening_timeout(600) == 240
+    assert _candidate_screening_timeout(240) == 240
+    assert _candidate_screening_timeout(180) == 180
+    assert _candidate_screening_timeout(120) == 120
+
+
+def test_candidate_generation_retries_only_transient_provider_failures() -> None:
+    assert _retryable_candidate_generation_failure(
+        {
+            "stage": "model_provider",
+            "error_type": "LLMResponseError",
+        }
+    )
+    assert _retryable_candidate_generation_failure(
+        {
+            "stage": "model_provider",
+            "error_type": "RateLimitError",
+        }
+    )
+    assert not _retryable_candidate_generation_failure(
+        {
+            "stage": "model_call",
+            "error_type": "RuntimeError",
+        }
+    )
+
+
+def test_explicit_iteration_budget_is_the_exact_upper_bound() -> None:
+    assert _default_iteration_budget(
+        apply_policy="auto_verified",
+        explicit_iterations=1,
+    ) == 1
+    assert _default_iteration_budget(
+        apply_policy="proposal",
+        explicit_iterations=None,
+    ) == 1
+
+
+def test_iteration_budget_rejects_non_positive_explicit_values() -> None:
+    with pytest.raises(ValueError, match="iterations must be positive"):
+        _default_iteration_budget(
+            apply_policy="auto_verified",
+            explicit_iterations=0,
+        )
+
+
+def test_candidate_replay_capability_compile_error_is_typed_repair_feedback() -> None:
+    details = _replay_adaptation_exception_details(
+        ReplayCapabilityError("unsupported replay binding concurrency mode: sequential"),
+        candidate_capability=True,
+    )
+
+    assert details["failure_class"] == "candidate"
+    assert details["repairable"] is True
+    diagnostic = details["diagnostics"][0]
+    assert diagnostic["code"] == "invalid_replay_capability_compile"
+    assert diagnostic["stage"] == "capability_compile"
+    assert diagnostic["failure_class"] == "candidate"
+    assert diagnostic["repairable"] is True
+    assert diagnostic["reason"] == (
+        "unsupported replay binding concurrency mode: sequential"
+    )
+    assert diagnostic["required_manifest_contract"]["protocol"] == (
+        "aworld.replay.subprocess.v1"
+    )
+    assert diagnostic["required_manifest_contract"]["handles_values"] == [
+        "conversation_context",
+        "http_resource",
+        "local_endpoint",
+        "local_file",
+        "stateful_tool",
+    ]
+    assert diagnostic["required_compile_result_contract"][
+        "runtime_service_transport"
+    ] == "skill_runtime"
+    assert "runtime_required is a requirement status" in diagnostic[
+        "layering_rules"
+    ][2]
+
+
+def test_candidate_generation_does_not_prepay_for_historical_duplicates() -> None:
+    assert _candidate_generation_limit(replay_candidate_limit=2) == 2
+
+
+def test_duplicate_only_rejection_does_not_create_new_blacklist_record() -> None:
+    report = {
+        "status": "rejected",
+        "selected_candidate_id": "candidate-retry",
+        "iterations": [
+            {
+                "candidate_id": "candidate-retry",
+                "status": "rejected",
+                "baseline_metrics": None,
+                "candidate_metrics": None,
+                "held_out_metrics": None,
+                "failed_gates": ["duplicate_rejected_candidate"],
+            }
+        ],
+    }
+
+    assert _rejected_candidate_ids_from_report(report) == set()
+
+
+def _write_terminal_run_with_raw_artifacts(root: Path, run_id: str, timestamp: float) -> None:
+    run_dir = root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run.json").write_text(
+        json.dumps({"run_id": run_id, "status": "succeeded"}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "report.json").write_text(
+        json.dumps({"run_id": run_id, "status": "succeeded"}) + "\n",
+        encoding="utf-8",
+    )
+    replay_file = run_dir / "replay" / "cand-1" / "result.json"
+    replay_file.parent.mkdir(parents=True)
+    replay_file.write_text("{}\n", encoding="utf-8")
+    overlay_file = run_dir / "overlays" / "cand-1" / "skills" / "demo" / "SKILL.md"
+    overlay_file.parent.mkdir(parents=True)
+    overlay_file.write_text("# Demo\n", encoding="utf-8")
+    for child in sorted(run_dir.rglob("*"), reverse=True):
+        os.utime(child, (timestamp, timestamp))
+    os.utime(run_dir, (timestamp, timestamp))
+
+
+def test_multi_member_replay_reuses_member_baseline_root(tmp_path: Path) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-members",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="task A",
+    )
+    successful = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    result = CandidateReplayResult(
+        request=request,
+        baseline=successful,
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate"}}],
+        ),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=successful,
+                candidate=successful,
+            ),
+        ),
+    )
+
+    assert _baseline_replay_artifact_dir(result).endswith(
+        "/replay/candidate-1/members"
+    )
+    replay_report = _replay_report(result)
+    assert replay_report["members"] == [
+        {
+            "case_id": "task-a",
+            "baseline_status": "succeeded",
+            "candidate_status": "succeeded",
+            "baseline_metrics": {},
+            "candidate_metrics": {},
+            "baseline_failure": None,
+            "candidate_failure": None,
+        }
+    ]
+
+
+def test_multi_member_replay_advances_from_historical_to_current_member_root(
+    tmp_path: Path,
+) -> None:
+    historical_members = tmp_path / "historical" / "members"
+    request = CandidateReplayRequest(
+        run_id="run-members",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="task A",
+        baseline_replay_dir=str(historical_members),
+    )
+    successful = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    result = CandidateReplayResult(
+        request=request,
+        baseline=successful,
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate"}}],
+        ),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=successful,
+                candidate=successful,
+            ),
+        ),
+    )
+
+    assert _baseline_replay_artifact_dir(result) == str(
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-members"
+        / "replay"
+        / "candidate-1"
+        / "members"
+    )
+
+
+def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
+    baseline_trajectory = [{"action": {"content": "baseline failed task"}}]
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="task-a",
+                input="task A",
+                metadata={"baseline_trajectory": baseline_trajectory},
+            ),
+            EvalCase(
+                case_id="task-b",
+                input="task B",
+                metadata={"baseline_trajectory": baseline_trajectory},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-comparable",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="succeeded",
+        status="succeeded",
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    timeout = ReplayVariantResult(
+        variant_id="baseline",
+        status="failed",
+        trajectory=[],
+        metrics={"latency_ms": 180000},
+        failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+    )
+    replay = CandidateReplayResult(
+        request=request,
+        baseline=timeout,
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=succeeded.trajectory,
+            metrics={
+                "repetition_count": 3,
+                "successful_repetition_count": 3,
+                "failed_repetition_count": 0,
+            },
+        ),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=succeeded,
+                candidate=succeeded,
+            ),
+            CandidateReplayMemberResult(
+                case_id="task-b",
+                request=request,
+                baseline=timeout,
+                candidate=succeeded,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="auto_verified",
+    )
+
+    assert gate is not None
+    assert gate.passed is True
+    assert gate.details["strict_pair_count"] == 1
+    assert gate.details["task_failure_pair_count"] == 1
+    assert gate.details["incomparable_pair_count"] == 0
+
+
+def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="task-a",
+                input="task A",
+                metadata={
+                    "baseline_trajectory": [{"action": {"content": "baseline"}}]
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-infrastructure",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate-1",
+        status="succeeded",
+        trajectory=[{"action": {"content": "completed"}}],
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 3,
+            "failed_repetition_count": 0,
+        },
+    )
+    infrastructure_failure = ReplayVariantResult(
+        variant_id="baseline",
+        status="failed",
+        trajectory=[],
+        failure={"type": "ProcessError", "reason": "model initialization failed"},
+    )
+    replay = CandidateReplayResult(
+        request=request,
+        baseline=infrastructure_failure,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=infrastructure_failure,
+                candidate=candidate,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="auto_verified",
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.reason == "replay comparison contains incomparable member outcomes"
+    assert gate.details["infrastructure_failure_count"] == 1
+    assert gate.details["incomparable_pair_count"] == 1
+
+
+def test_stored_dataset_recipe_restores_auto_grouped_member_ids(
+    tmp_path: Path,
+) -> None:
+    recipe_path = tmp_path / "dataset_recipe.json"
+    recipe_path.write_text(
+        json.dumps(
+            {
+                "source": {
+                    "kind": "trajectory_log",
+                    "path": "/tmp/trajectory.log",
+                    "task_ids": [],
+                    "auto_grouping": {
+                        "auto_grouped": True,
+                        "selected_case_ids": ["task-a", "task-b"],
+                    },
+                },
+                "split_seed": "stored-seed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    source_config, split_seed = _source_config_from_stored_dataset_recipe(
+        recipe_path
+    )
+
+    assert source_config.task_ids == ("task-a", "task-b")
+    assert split_seed == "stored-seed"
 
 
 def _write_trajectory_log(path: Path, records: list[dict]) -> None:
@@ -52,6 +1119,236 @@ def _write_trajectory_log(path: Path, records: list[dict]) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def test_auto_groups_multi_task_trajectory_log_by_inferred_target(tmp_path) -> None:
+    log_path = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        log_path,
+        [
+            {
+                "task_id": "task-alpha",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "alpha task"}},
+                        "action": {"content": "alpha failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-beta",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "beta task"}},
+                        "action": {"content": "beta failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-alpha-2",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "another alpha task"}},
+                        "action": {"content": "alpha followup failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+        ],
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path))
+    )
+    trace_packs = tuple(case.trace_pack for case in dataset.cases if case.trace_pack)
+    alpha_target = SelfEvolveTargetRef("skill", "alpha", str(tmp_path / "alpha.md"))
+    beta_target = SelfEvolveTargetRef("skill", "beta", str(tmp_path / "beta.md"))
+
+    def fake_infer(pack_group, *, workspace_root):
+        pack = pack_group[0]
+        target = beta_target if pack.task_id == "task-beta" else alpha_target
+        return (
+            TargetSelectionReport(
+                selected_target=target,
+                confidence=0.9,
+                evidence_step_ids=(f"{pack.task_id}:step-1",),
+                failure_category="skill",
+                signals=("test_signal",),
+                diagnostics={"task_id": pack.task_id},
+            ),
+            None,
+        )
+
+    grouped_dataset, grouped_trace_packs, grouping = _auto_group_trajectory_log_dataset(
+        dataset,
+        trace_packs,
+        source_config=SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path)),
+        workspace_root=tmp_path,
+        infer_target=fake_infer,
+    )
+
+    assert [case.case_id for case in grouped_dataset.cases] == [
+        "task-alpha",
+        "task-alpha-2",
+    ]
+    assert [pack.task_id for pack in grouped_trace_packs] == [
+        "task-alpha",
+        "task-alpha-2",
+    ]
+    assert grouping["selected_group_id"] == "skill:alpha"
+    assert grouping["group_count"] == 2
+    assert grouping["auto_grouped"] is True
+    assert grouping["low_dataset_support"] is False
+    assert grouped_dataset.recipe.source["auto_grouping"]["selected_case_ids"] == [
+        "task-alpha",
+        "task-alpha-2",
+    ]
+    assert grouped_dataset.recipe.source["auto_grouping"]["skipped_group_count"] == 1
+
+
+def test_auto_group_prefers_larger_group_when_confidence_ties_by_bucket(tmp_path) -> None:
+    log_path = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        log_path,
+        [
+            {
+                "task_id": "task-singleton",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "singleton task"}},
+                        "action": {"content": "singleton failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-cluster-1",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "cluster task"}},
+                        "action": {"content": "cluster failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-cluster-2",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "cluster followup"}},
+                        "action": {"content": "cluster followup failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+        ],
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path))
+    )
+    trace_packs = tuple(case.trace_pack for case in dataset.cases if case.trace_pack)
+    singleton_target = SelfEvolveTargetRef("skill", "singleton", str(tmp_path / "singleton.md"))
+    cluster_target = SelfEvolveTargetRef("skill", "cluster", str(tmp_path / "cluster.md"))
+
+    def fake_infer(pack_group, *, workspace_root):
+        pack = pack_group[0]
+        is_singleton = pack.task_id == "task-singleton"
+        return (
+            TargetSelectionReport(
+                selected_target=singleton_target if is_singleton else cluster_target,
+                confidence=0.9 if is_singleton else 0.8999999999999999,
+                evidence_step_ids=(f"{pack.task_id}:step-1",),
+                failure_category="skill",
+                signals=("test_signal",),
+                diagnostics={"task_id": pack.task_id},
+            ),
+            None,
+        )
+
+    grouped_dataset, _, grouping = _auto_group_trajectory_log_dataset(
+        dataset,
+        trace_packs,
+        source_config=SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path)),
+        workspace_root=tmp_path,
+        infer_target=fake_infer,
+    )
+
+    assert grouping["selected_group_id"] == "skill:cluster"
+    assert grouping["low_dataset_support"] is False
+    assert grouping["selected_case_count"] == 2
+    assert [case.case_id for case in grouped_dataset.cases] == [
+        "task-cluster-1",
+        "task-cluster-2",
+    ]
+
+
+def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    skill_path = tmp_path / "aworld-skills" / "chosen" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: chosen\n---\n# Chosen\n", encoding="utf-8")
+    log_path = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        log_path,
+        [
+            {
+                "task_id": "task-one",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "first task"}},
+                        "action": {"content": "first failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "task-two",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "state": {"input": {"content": "second task"}},
+                        "action": {"content": "second failure"},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+        ],
+    )
+
+    def fail_auto_grouping(*args, **kwargs):
+        pytest.fail("explicit --target must not run inferred-target auto grouping")
+
+    monkeypatch.setattr(
+        runner_module,
+        "_auto_group_trajectory_log_dataset",
+        fail_auto_grouping,
+    )
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:chosen",
+        from_trajectory=str(log_path),
+        apply_policy="proposal",
+    )
+
+    assert report_summary["status"] == "succeeded"
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    assert report["target"]["target_id"] == "chosen"
+    assert report["target_selection"]["diagnostics"]["target_inference"] == "bypassed"
+    assert report["trajectory_set"]["member_roles"] == {"baseline": 2}
+    assert "auto_grouping" not in report["trajectory_set"]
 
 
 @pytest.mark.asyncio
@@ -103,11 +1400,296 @@ async def test_auto_verified_no_candidate_is_rejected(tmp_path) -> None:
     assert report["iterations"][0]["status"] == "no_candidate"
     assert report["gate_results"] == [
         {
-            "gate_name": "auto_verified_evaluation",
+            "gate_name": "candidate_generation",
             "passed": False,
-            "reason": "auto_verified apply policy requires a candidate",
+            "reason": "optimizer did not produce a replayable candidate",
+            "details": {
+                "generated_candidate_count": 0,
+                "iterations": 1,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "summarize page"}},
+            "action": {"content": "summary failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-1",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="task-1",
+    )
+
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-proposal-no-candidate",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-proposal-no-candidate"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert result.run.status.value == "rejected"
+    assert report["status"] == "rejected"
+    assert report["selected_candidate_id"] is None
+    assert report["no_op"]["status"] == "no_candidate"
+    assert report["no_op"]["reason"] == "optimizer did not produce a candidate"
+    assert report["population"]["generated_candidate_count"] == 0
+    assert report["gate_results"] == [
+        {
+            "gate_name": "no_candidate",
+            "passed": False,
+            "reason": "optimizer did not produce a candidate",
             "details": None,
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_records_terminal_artifact_retention_cleanup(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    for index in range(6):
+        _write_terminal_run_with_raw_artifacts(
+            artifact_root,
+            f"run-old-{index}",
+            1_000.0 + index,
+        )
+    target = SkillTextTarget(skill_path)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "summarize page"}},
+            "action": {"content": "summary failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-1",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="task-1",
+    )
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-current",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (artifact_root / "run-current" / "report.json").read_text(encoding="utf-8")
+    )
+    cleanup = report["artifact_retention"]
+    assert cleanup["removed_run_count"] >= 1
+    assert any("run-old-0/replay" in path for path in cleanup["removed_paths"])
+    assert "run-old-0" not in cleanup["protected_run_ids"]
+    assert not (artifact_root / "run-old-0" / "replay").exists()
+    assert not (artifact_root / "run-old-0" / "overlays").exists()
+    assert (artifact_root / "run-old-0" / "report.json").exists()
+    assert (artifact_root / "run-current" / "run.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_runner_passes_trace_lessons_to_candidate_generation(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    trajectory = [
+        {
+            "id": "step-a",
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "summarize page"}},
+            "action": {"content": "summary failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="lesson-task",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="lesson-task",
+    )
+    optimizer = CaptureOptimizer()
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-generation-lessons",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert len(optimizer.requests) == 1
+    assert optimizer.requests[0].evolution_context is not None
+    assert optimizer.requests[0].evolution_context.trainable_cases
+    lesson_types = [lesson.lesson_type for lesson in optimizer.requests[0].lesson_records]
+    assert "trajectory_failure_memory" in lesson_types
+    assert optimizer.requests[0].lesson_records[0].source_task_ids == ("lesson-task",)
+
+
+@pytest.mark.asyncio
+async def test_runner_passes_prior_rejected_feedback_as_generation_lessons(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.write_report(
+        "prior-rejected",
+        {
+            "run_id": "prior-rejected",
+            "status": "rejected",
+            "target": {
+                "target_type": "skill",
+                "target_id": "demo",
+                "path": str(skill_path),
+            },
+            "iterations": [
+                {
+                    "candidate_id": "candidate-old",
+                    "status": "rejected",
+                    "failed_gates": ["score_improvement", "evidence_quality"],
+                    "baseline_metrics": {"score": 91.0, "B2_efficiency": 4.5},
+                    "candidate_metrics": {
+                        "score": 84.0,
+                        "B2_efficiency": 2.0,
+                        "evidence_compacted": True,
+                    },
+                }
+            ],
+        },
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve current task."}},
+            "action": {"content": "Need a safer delta."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="current-task",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="current-task",
+    )
+    optimizer = CaptureOptimizer()
+
+    await SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-prior-lessons",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    lesson_types = [lesson.lesson_type for lesson in optimizer.requests[0].lesson_records]
+    assert "failure_memory" in lesson_types
+    prior_lesson = next(
+        lesson
+        for lesson in optimizer.requests[0].lesson_records
+        if lesson.lesson_type == "failure_memory"
+    )
+    assert "score_improvement" in prior_lesson.summary
+    assert prior_lesson.metrics["candidate_score"] == 84.0
+
+
+def test_rank_candidate_population_prefers_lesson_backed_small_deltas() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    broad_candidate = CandidateVariant(
+        candidate_id="candidate-broad",
+        target=target,
+        content="# Demo\n\n" + "Broad guidance.\n" * 80,
+        rationale="broad",
+    )
+    small_candidate = CandidateVariant(
+        candidate_id="candidate-small",
+        target=target,
+        content="# Demo\n\nSmall lesson-backed delta.\n",
+        rationale="small",
+    )
+
+    ranked = _rank_candidate_population(
+        (broad_candidate, small_candidate),
+        optimizer_diagnostics={
+            "candidate_strategies": [
+                {
+                    "candidate_id": "candidate-broad",
+                    "replay_priority": "medium",
+                    "addressed_lessons": ["lesson-1"],
+                    "preserved_success_behaviors": [],
+                },
+                {
+                    "candidate_id": "candidate-small",
+                    "replay_priority": "high",
+                    "addressed_lessons": ["lesson-1"],
+                    "preserved_success_behaviors": ["preserve lean path"],
+                },
+            ]
+        },
+        current_content="# Demo\n",
+    )
+
+    assert [candidate.candidate_id for candidate in ranked] == [
+        "candidate-small",
+        "candidate-broad",
     ]
 
 
@@ -183,12 +1765,1204 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
     assert metrics["candidate_latency_ms"] == 333_973
     assert metrics["latency_ms_delta"] == 131_601
     assert metrics["failed_gates"] == ["score_improvement"]
+    assert metrics["candidate_validation_diagnostics"] == [
+        {
+            "code": "failed_gate",
+            "stage": "score_improvement",
+            "reason": "score improvement below minimum delta",
+        }
+    ]
+
+
+def test_iteration_validation_feedback_preserves_nested_root_cause_and_repair_package() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="implement candidate-owned runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def websocket_control_frame():\n    return 'incomplete'\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate replay did not produce comparable paired outcomes",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_failure": {
+                        "type": "ReplayServiceProtocolError",
+                        "reason": "WebSocket control frame failed",
+                        "outcome": "candidate_failure",
+                    },
+                },
+            )
+        ],
+    )
+
+    metrics = feedback[0].metrics
+    diagnostics = metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["stage"] == "candidate_replay"
+    assert diagnostics[0]["reason"] == (
+        "candidate replay did not produce comparable paired outcomes"
+    )
+    assert diagnostics[0]["details"]["candidate_failure"]["reason"] == (
+        "WebSocket control frame failed"
+    )
+    assert metrics["repair_candidate_package"] == {
+        "candidate_id": "cand-runtime",
+        "rationale": "implement candidate-owned runtime",
+        "content": "# Demo",
+        "files": [
+            {
+                "path": "replay/runtime.py",
+                "operation": "upsert",
+                "executable": False,
+                "content": "def websocket_control_frame():\n    return 'incomplete'",
+            }
+        ],
+    }
+
+
+def test_iteration_validation_feedback_preserves_complete_large_runtime_source() -> None:
+    runtime_source = (
+        "def handle(message):\n"
+        + "    observed = message\n" * 800
+        + "def main():\n    return 'runtime-tail-preserved'\n"
+    )
+    assert len(runtime_source) > 16_000
+    candidate = CandidateVariant(
+        candidate_id="cand-large-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="repair a complete candidate-owned runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content=runtime_source,
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="runtime needs a focused protocol repair",
+                details={"failure_class": "candidate", "repairable": True},
+            )
+        ],
+    )
+
+    preserved = feedback[0].metrics["repair_candidate_package"]["files"][0][
+        "content"
+    ]
+    assert preserved == runtime_source.strip()
+    assert preserved.endswith("return 'runtime-tail-preserved'")
+
+
+def test_replay_gate_marks_candidate_owned_protocol_failure_as_repairable() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input="Replay task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    replay_result = _CandidateReplayResult(
+        request=CandidateReplayRequest(
+            run_id="run-protocol-failure",
+            task_id="task-1",
+            workspace_root="/tmp/workspace",
+            target=target,
+            candidate_id="cand-runtime",
+            overlay_skill_root="/tmp/overlay",
+            task_input="Replay task",
+        ),
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="failed",
+            trajectory=[],
+            failure={
+                "type": "ReplayServiceProtocolError",
+                "reason": "WebSocket control frame failed",
+                "outcome": "candidate_failure",
+            },
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="cand-runtime",
+            status="failed",
+            trajectory=[],
+            failure={"reason": "baseline_preflight_failed"},
+        ),
+    )
+
+    details = _replay_gate_details(replay_result, dataset=dataset)
+
+    assert details["failure_class"] == "candidate"
+    assert details["repairable"] is True
+    assert details["failure_stage"] == "replay_capability"
+
+
+def test_merge_validation_feedback_accumulates_and_deduplicates_current_run_history() -> None:
+    first = EvaluationSummary(
+        variant_id="candidate-1",
+        metrics={"failed_gates": ["replay_adaptation"]},
+        dataset_split="validation",
+    )
+    second = EvaluationSummary(
+        variant_id="candidate-2",
+        metrics={"failed_gates": ["candidate_replay"]},
+        dataset_split="validation",
+    )
+
+    merged = _merge_validation_feedback((first,), (first, second))
+
+    assert merged == (first, second)
+
+
+def test_merge_validation_feedback_keeps_latest_repair_package_per_failure_family() -> None:
+    def replay_failure(candidate_id: str, source: str) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "failure_class": "candidate",
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": "failed_gate",
+                        "stage": "candidate_replay",
+                        "reason": "candidate screening replay failed",
+                        "details": {
+                            "baseline_failure": {
+                                "type": "ReplayServiceProtocolError",
+                                "reason": "protocol probe response mismatch",
+                            }
+                        },
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {"path": "replay/runtime.py", "content": source}
+                    ],
+                },
+            },
+            dataset_split="validation",
+        )
+
+    first = replay_failure("candidate-1", "old source")
+    latest = replay_failure("candidate-2", "latest source")
+
+    merged = _merge_validation_feedback((first,), (latest,))
+
+    assert merged == (latest,)
+
+
+def test_merge_validation_feedback_keeps_deepest_interaction_frontier() -> None:
+    def replay_failure(
+        candidate_id: str,
+        *,
+        interaction_progress: int,
+    ) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "failure_class": "candidate",
+                "interaction_progress": interaction_progress,
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": "implement_async_endpoint_completion",
+                        "stage": "replay_capability",
+                        "reason": "navigation awaits a completion event",
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "content": f"# {candidate_id}\n",
+                        }
+                    ],
+                },
+            },
+            dataset_split="validation",
+        )
+
+    deeper = replay_failure("candidate-deeper", interaction_progress=32)
+    newer_but_shallow = replay_failure(
+        "candidate-shallow",
+        interaction_progress=6,
+    )
+
+    merged = _merge_validation_feedback((deeper,), (newer_but_shallow,))
+
+    assert merged == (deeper,)
+
+
+def test_protocol_probe_mismatch_feedback_requires_exact_branch_verification() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="repair protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return request\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "ReplayServiceProtocolError",
+                        "reason": (
+                            "protocol probe response mismatch: kind=websocket "
+                            "path=/ws match=substring expected_sha256=abc "
+                            "expected_bytes=8 expected_preview=ext_info "
+                            "response_bytes=77 response_preview={\"id\":1,"
+                            "\"result\":{\"targetInfos\":[]}}"
+                        ),
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "verify_declared_protocol_probe_branch"
+    assert "request_text" in diagnostics[0]["reason"]
+    assert "returned candidate source" in diagnostics[0]["reason"]
+    assert "semantic containment" in diagnostics[0]["reason"]
+    assert "Every declared probe is executed" in diagnostics[0]["reason"]
+    assert "remove redundant probes" in diagnostics[0]["reason"]
+    assert diagnostics[0]["probe_kind"] == "websocket"
+    assert diagnostics[0]["probe_path"] == "/ws"
+    assert diagnostics[0]["expected_preview"] == "ext_info"
+    assert diagnostics[0]["response_preview"] == (
+        '{"id":1,"result":{"targetInfos":[]}}'
+    )
+    assert "ext_info" in diagnostics[0]["reason"]
+    assert "compiler and runtime" in diagnostics[0]["reason"]
+    assert "one canonical deterministic selector" in diagnostics[0]["reason"]
+    assert "hard-code" in diagnostics[0]["reason"]
+    assert "put that literal" not in diagnostics[0]["reason"]
+
+
+def test_recorded_response_selector_drift_feedback_requires_both_sources() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-selector-drift",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="repair protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return request\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=False,
+                reason="candidate declared repair probe failed before task rollout",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "diagnostics": [
+                        {
+                            "reason": (
+                                "protocol probe response mismatch: kind=http "
+                                "path=/ expected_preview=compiler-leaf "
+                                "response_preview={\"message\":\"recorded\"} "
+                                "classification=recorded_response_selector_drift "
+                                "required_change="
+                                "align_compiler_runtime_recorded_response_selection"
+                            )
+                        }
+                    ],
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == (
+        "align_compiler_runtime_recorded_response_selection"
+    )
+    assert "Change both the compiler probe builder and the runtime selector" in (
+        diagnostics[0]["reason"]
+    )
+    assert "hard-code" in diagnostics[0]["reason"]
+
+
+def test_protocol_trace_contract_failure_gets_structured_repair_feedback() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-trace-contract",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="repair protocol trace",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def trace():\n    return None\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=False,
+                reason="candidate declared repair probe failed before task rollout",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "diagnostics": [
+                        {
+                            "reason": (
+                                "skill runtime protocol_trace.jsonl record is "
+                                "missing required summary fields: correlation"
+                            )
+                        }
+                    ],
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "repair_protocol_trace_contract"
+    assert "direction, sequence, kind, fields, and correlation" in (
+        diagnostics[0]["reason"]
+    )
+    assert "lifecycle-only directions such as system" in diagnostics[0]["reason"]
+
+
+def test_task_level_endpoint_mismatch_requires_real_interaction_repair() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish fixture runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return b'fixture'\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "task_artifacts": [
+                                {
+                                    "tail": (
+                                        "All endpoint discovery methods failed; "
+                                        "WebSocket protocol error"
+                                    )
+                                }
+                            ]
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert "declared probes passed" in diagnostics[0]["reason"]
+    assert "bounded task diagnostics" in diagnostics[0]["reason"]
+
+
+def test_task_level_endpoint_mismatch_classification_survives_long_stdout_prefix() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish generic websocket runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return b'fixture'\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate_replay_capability",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "stdout_tail": (
+                                "bounded earlier task output " * 100
+                                + "the supplied service is not a CDP browser endpoint"
+                            )
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+
+
+def test_progressing_replay_timeout_requires_task_plane_interaction_repair() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish a responsive protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'token': 'placeholder'}\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [
+                                {
+                                    "tail": (
+                                        '{"direction":"in","sequence":135,'
+                                        '"kind":"request","correlation":'
+                                        '{"method":"Target.getTargets"}}\n'
+                                        '{"direction":"in","sequence":137,'
+                                        '"kind":"request","correlation":'
+                                        '{"method":"Runtime.evaluate"}}\n'
+                                        '{"direction":"out","sequence":138,'
+                                        '"kind":"response","correlation":{"id":17}}'
+                                    )
+                                }
+                            ]
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert "task-plane" in diagnostics[0]["reason"]
+    assert "placeholder" in diagnostics[0]["reason"]
+    assert "representative probe" in diagnostics[0]["reason"]
+    assert diagnostics[0]["observed_request_operations"] == [
+        "Target.getTargets",
+        "Runtime.evaluate",
+    ]
+    assert feedback[0].metrics["interaction_progress"] == 138
+
+
+def test_completed_candidate_interaction_requires_bounded_finalization() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n\nPreserve grounded evidence.\n",
+        rationale="publish a responsive protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'content': 'recorded'}\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate replay did not produce comparable paired outcomes",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "outcome": "candidate_failure",
+                        "failure_class": "candidate_task_behavior",
+                        "failure_stage": "task_rollout",
+                        "repairable": True,
+                        "completed_data_plane_operations": ["content"],
+                    },
+                },
+            )
+        ],
+    )
+
+    metrics = feedback[0].metrics
+    diagnostics = metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == (
+        "finalize_after_successful_endpoint_interaction"
+    )
+    assert diagnostics[0]["completed_data_plane_operations"] == ["content"]
+    assert metrics["required_behaviors"] == [
+        "persist_first_successful_structured_evidence",
+        "write_manifest_before_additional_collection",
+        "verify_task_semantic_sufficiency_before_finalizing",
+        "do_not_treat_transport_success_as_task_completion",
+        "continue_bounded_acquisition_when_payload_is_only_metadata_or_execution_summary",
+        "stop_after_sufficient_evidence",
+        "return_bounded_evidence_ledger",
+    ]
+    assert "delivery signal rather than task completion" in diagnostics[0]["reason"]
+    assert metrics["repair_candidate_package"]["content"] == candidate.content.rstrip()
+    assert metrics["authoritative_replay_failure"] is True
+
+
+def test_progressing_timeout_extracts_operations_nested_in_trace_fields() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish a responsive protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'status': 'ready'}\n",
+            ),
+        ),
+    )
+    trace = "\n".join(
+        (
+            '{"direction":"inbound","sequence":21,"kind":"http_request",'
+            '"fields":[{"method":"GET","path":"/json"}],'
+            '"correlation":{"correlation_id":"opaque"}}',
+            '{"direction":"outbound","sequence":22,"kind":"http_response",'
+            '"fields":[{"status":404}],"correlation":{"correlation_id":"opaque"}}',
+            '{"direction":"inbound","sequence":23,"kind":"http_request",'
+            '"fields":["method:GET","path:/json/version"],'
+            '"correlation":{"correlation_id":"opaque"}}',
+            '{"direction":"inbound","sequence":24,"kind":"websocket_text",'
+            '"fields":[{"method":"Runtime.evaluate"}],'
+            '"correlation":{"correlation_id":"opaque"}}',
+        )
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [{"tail": trace}],
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert diagnostics[0]["observed_request_operations"] == [
+        "/json",
+        "/json/version",
+        "Runtime.evaluate",
+    ]
+    assert feedback[0].metrics["interaction_progress"] == 24
+
+
+def test_progressing_task_plane_timeout_outranks_stale_navigation_output() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish a responsive protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'token': 'placeholder'}\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "stdout_tail": (
+                                "earlier output: 正在导航到首页; 等待页面加载; "
+                                "later output: snapshot and extraction commands ran"
+                            ),
+                            "replay_service_protocol_traces": [
+                                {
+                                    "tail": (
+                                        '{"direction":"in","sequence":149,'
+                                        '"kind":"ws_request","correlation":'
+                                        '{"method":"Runtime.evaluate"}}\n'
+                                        '{"direction":"out","sequence":150,'
+                                        '"kind":"ws_response","correlation":{"id":62}}\n'
+                                        '{"direction":"in","sequence":151,'
+                                        '"kind":"ws_request","correlation":'
+                                        '{"method":"Runtime.evaluate"}}\n'
+                                        '{"direction":"out","sequence":152,'
+                                        '"kind":"ws_response","correlation":{"id":63}}'
+                                    )
+                                }
+                            ],
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert diagnostics[0]["observed_request_operations"] == ["Runtime.evaluate"]
+    assert feedback[0].metrics["interaction_progress"] == 152
+
+
+def test_candidate_repair_diagnostics_ignore_baseline_only_routing_gap() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish a responsive protocol runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'items': []}\n",
+            ),
+        ),
+    )
+    baseline_trace = (
+        '{"direction":"in","sequence":20,"kind":"ws_request",'
+        '"correlation":{"method":"records.query","sessionId":"s-1"}}\n'
+        '{"direction":"out","sequence":21,"kind":"ws_response",'
+        '"correlation":{"id":1}}'
+    )
+    candidate_trace = (
+        '{"direction":"in","sequence":98,"kind":"ws_request",'
+        '"correlation":{"method":"records.query","sessionId":"s-1"}}\n'
+        '{"direction":"out","sequence":99,"kind":"ws_response",'
+        '"correlation":{"id":8,"sessionId":"s-1"}}'
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [
+                                {"tail": baseline_trace}
+                            ]
+                        },
+                    },
+                    "candidate_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [
+                                {"tail": candidate_trace}
+                            ],
+                            "stdout_tail": "recorded response was empty",
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert diagnostics[0]["observed_request_operations"] == ["records.query"]
+    assert feedback[0].metrics["interaction_progress"] == 99
+
+
+def test_task_level_endpoint_schema_mismatch_requires_real_interaction_repair() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish fixture runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return b'fixture'\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "reason": (
+                            "failed to deserialize response from supplied replay "
+                            "endpoint: missing field sessionId"
+                        )
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+
+
+def test_task_level_endpoint_navigation_stall_requires_event_interaction_repair() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish command-response runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'frameId': 'frame-1'}\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "stdout_tail": (
+                                "The script hung during navigation against the supplied "
+                                "replay endpoint while waiting for the page to load"
+                            ),
+                            "replay_service_protocol_traces": [
+                                {
+                                    "tail": (
+                                        '{"sequence":31,"kind":"request"}\n'
+                                        '{"sequence":32,"kind":"response"}'
+                                    )
+                                }
+                            ],
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_async_endpoint_completion"
+    assert "stateful interactions" in diagnostics[0]["reason"]
+    assert "asynchronous completion" in diagnostics[0]["reason"]
+    assert feedback[0].metrics["interaction_progress"] == 32
+
+
+def test_inbound_only_protocol_trace_requires_handler_abort_diagnosis() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish fixture-backed runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content=(
+                    "def handle(data):\n"
+                    "    return data.get('result')\n"
+                    "try:\n"
+                    "    handle([])\n"
+                    "except Exception:\n"
+                    "    pass\n"
+                ),
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "reason": "WebSocket frame is incomplete",
+                        "diagnostics": {
+                            "replay_fixture_summaries": [
+                                {
+                                    "service_id": "svc-1",
+                                    "fixture_bytes": 27,
+                                    "json_root_type": "array",
+                                }
+                            ],
+                            "replay_service_protocol_traces": [
+                                {
+                                    "tail": (
+                                        '{"direction":"in","sequence":5,'
+                                        '"kind":"ws_request","fields":'
+                                        '["id","method"]}'
+                                    )
+                                }
+                            ]
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "diagnose_protocol_handler_abort"
+    assert diagnostics[0]["observed_fixture_root_types"] == ["array"]
+    assert "arbitrary JSON root types" in diagnostics[0]["reason"]
+    assert "Observed frozen fixture root types: array" in diagnostics[0]["reason"]
+    assert "do not swallow" in diagnostics[0]["reason"]
+
+
+def test_task_level_protocol_trace_identifies_dropped_routing_fields() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish multiplexed runtime",
+    )
+    trace = "\n".join(
+        json.dumps(item)
+        for item in (
+            {
+                "direction": "in",
+                "sequence": 31,
+                "kind": "request",
+                "fields": ["id", "method", "params", "sessionId"],
+                "correlation": {
+                    "id": 10,
+                    "method": "navigate",
+                    "sessionId": "opaque-session",
+                },
+            },
+            {
+                "direction": "out",
+                "sequence": 32,
+                "kind": "response",
+                "fields": ["id", "result"],
+                "correlation": {"id": 10},
+            },
+            {
+                "direction": "out",
+                "sequence": 33,
+                "kind": "completion-event",
+                "fields": ["method", "params"],
+                "correlation": {"method": "completed"},
+            },
+        )
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "reason": "replay timed out while waiting for completion",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [{"tail": trace}],
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "preserve_protocol_routing_continuity"
+    assert diagnostics[0]["routing_fields"] == ["sessionId"]
+    assert "every response and follow-up event" in diagnostics[0]["reason"]
+    assert feedback[0].metrics["interaction_progress"] == 33
+
+
+def test_null_routing_correlation_does_not_create_a_false_gap() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-runtime",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="publish multiplexed runtime",
+    )
+    trace = "\n".join(
+        json.dumps(item)
+        for item in (
+            {
+                "direction": "in",
+                "sequence": 98,
+                "kind": "ws_request",
+                "fields": ["id", "method"],
+                "correlation": {
+                    "id": 37,
+                    "method": "records.query",
+                    "sessionId": None,
+                },
+            },
+            {
+                "direction": "out",
+                "sequence": 99,
+                "kind": "ws_response",
+                "fields": ["id", "result"],
+                "correlation": {"id": 37},
+            },
+        )
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate screening replay failed",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "diagnostics": {
+                            "replay_service_protocol_traces": [
+                                {"tail": trace}
+                            ]
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    diagnostics = feedback[0].metrics["candidate_validation_diagnostics"]
+    assert diagnostics[0]["code"] == "implement_observed_endpoint_interactions"
+    assert diagnostics[0]["observed_request_operations"] == ["records.query"]
+
+
+def test_iteration_validation_feedback_does_not_mix_validation_delta_into_held_out() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-1",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="test",
+    )
+    baseline_summary = EvaluationSummary(
+        variant_id="baseline",
+        metrics={"score": 82.0, "A1_groundedness": 4.0},
+        dataset_split="validation",
+    )
+    candidate_summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={"score": 84.0, "A1_groundedness": 4.0},
+        dataset_split="validation",
+    )
+    held_out_summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={
+            "score": 63.0,
+            "A1_groundedness": 2.0,
+            "evidence_incomplete": True,
+        },
+        dataset_split="held_out",
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=baseline_summary,
+        candidate_summary=candidate_summary,
+        held_out_summary=held_out_summary,
+        failed_gates=[
+            GateResult(
+                gate_name="global_regression_benchmark",
+                passed=False,
+                reason="held-out regression",
+            )
+        ],
+    )
+
+    assert len(feedback) == 2
+    validation_metrics = feedback[0].metrics
+    held_out_metrics = feedback[1].metrics
+    assert validation_metrics["score_delta"] == 2.0
+    assert held_out_metrics["score"] == 63.0
+    assert held_out_metrics["A1_groundedness"] == 2.0
+    assert held_out_metrics["evidence_incomplete"] is True
+    assert "baseline_score" not in held_out_metrics
+    assert "candidate_score" not in held_out_metrics
+    assert "score_delta" not in held_out_metrics
 
 
 def test_summary_with_replay_evidence_metrics_includes_replay_failure_diagnostics() -> None:
     summary = EvaluationSummary(
         variant_id="cand-1",
-        metrics={"score": 68.0},
+        metrics={
+            "score": 68.0,
+            "evidence_bundle_valid": False,
+            "evidence_bundle_entry_count": 1,
+        },
         dataset_split="validation",
     )
     replay_variant = ReplayVariantResult(
@@ -224,9 +2998,9 @@ def test_summary_with_replay_evidence_metrics_includes_replay_failure_diagnostic
         "evidence_quality_failed",
     ]
     assert merged.metrics["replay_evidence_manifest_invalid_entry_count"] == 1
-    assert merged.metrics["evidence_bundle_valid"] is True
+    assert merged.metrics["evidence_bundle_valid"] is False
     assert merged.metrics["replay_evidence_bundle_valid"] is True
-    assert merged.metrics["evidence_bundle_entry_count"] == 2
+    assert merged.metrics["evidence_bundle_entry_count"] == 1
     assert merged.metrics["replay_evidence_bundle_entry_count"] == 2
 
 
@@ -292,10 +3066,197 @@ async def test_runner_persists_proposal_artifacts_without_mutating_skill_target(
     assert "Mention CDP profile mismatch." in candidate_artifact
     assert "-Old guidance." in diff_path.read_text(encoding="utf-8")
     assert "+Mention CDP profile mismatch." in diff_path.read_text(encoding="utf-8")
-    assert json.loads(lineage_path.read_text(encoding="utf-8"))["trainable_case_ids"] == [
-        "run-task"
+    lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+    assert lineage["trainable_case_ids"] == ["run-task"]
+    assert isinstance(lineage["content_fingerprint"], str)
+    assert isinstance(lineage["semantic_fingerprint"], str)
+    assert isinstance(lineage["lesson_set_fingerprint"], str)
+    assert lineage["addressed_lesson_ids"]
+    assert any(
+        lesson_id.startswith("trajectory_failure_memory-")
+        for lesson_id in lineage["addressed_lesson_ids"]
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["apply_policy"] == "proposal"
+    assert report["optimizer_lineage"]["count"] == 1
+    assert report["optimizer_lineage"]["paths"] == [str(lineage_path)]
+
+
+@pytest.mark.asyncio
+async def test_runner_writes_lesson_artifacts_from_validation_feedback(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve evidence handling."}},
+            "action": {"content": "Evidence was compacted."},
+            "reward": {"status": "failed"},
+        }
     ]
-    assert json.loads(report_path.read_text(encoding="utf-8"))["apply_policy"] == "proposal"
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="lesson-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="lesson-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nNew guidance.\n",
+            "rationale": "Try a bounded evidence path.",
+        }
+
+    class LessonEvaluationBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 90.0, "A1_groundedness": 5.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 60.0,
+                    "A1_groundedness": 2.0,
+                    "evidence_compacted": True,
+                    "evidence_incomplete": True,
+                    "run_id": "run-lessons",
+                    "task_id": "lesson-task",
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=LessonEvaluationBackend(),
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-lessons",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    report = json.loads((store.run_path("run-lessons") / "report.json").read_text())
+    lessons_path = Path(report["lessons"]["path"])
+    lesson_lines = [
+        json.loads(line)
+        for line in lessons_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert report["lessons"]["count"] == len(lesson_lines)
+    assert report["lessons"]["types"]["failure_memory"] == 1
+    assert report["lessons"]["types"]["required_runtime_behavior"] == 1
+    assert report["lessons"]["types"]["trajectory_failure_memory"] == 1
+    assert lesson_lines[0]["source_task_ids"] == ["lesson-task"]
+    assert "score_improvement" in lesson_lines[0]["metrics"]["failed_gates"]
+    assert "artifact_first" in lesson_lines[1]["metrics"]["required_behaviors"]
+    assert any(
+        "lesson-task:step-1" in line["evidence_refs"]
+        for line in lesson_lines
+        if line["lesson_type"] == "trajectory_failure_memory"
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_writes_harness_diagnostics_without_raw_evidence(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve evidence handling."}},
+            "action": {"content": "SECRET_API_KEY=abc123 raw evidence should not leak"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="diagnostic-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="diagnostic-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nNew guidance.\n",
+            "rationale": "Try artifact-backed evidence.",
+        }
+
+    class EvidenceFailureBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={
+                        "score": 80.0,
+                        "evaluator_mode": "aworld_trajectory_evaluator",
+                    },
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 85.0,
+                    "evaluator_mode": "aworld_trajectory_evaluator",
+                    "has_evidence": False,
+                    "evidence_compacted": True,
+                    "evidence_incomplete": True,
+                    "report_path": str(tmp_path / "report.json"),
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=EvidenceFailureBackend(),
+        min_eval_cases=0,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-diagnostics",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (store.run_path("run-diagnostics") / "report.json").read_text(encoding="utf-8")
+    )
+    diagnostics_path = Path(report["harness_diagnostics"]["path"])
+    diagnostics_text = diagnostics_path.read_text(encoding="utf-8")
+    diagnostics = [
+        json.loads(line) for line in diagnostics_text.splitlines() if line.strip()
+    ]
+
+    assert result.run.status.value == "rejected"
+    assert report["harness_diagnostics"]["count"] == len(diagnostics)
+    assert report["harness_diagnostics"]["types"]["artifact_lifecycle"] == 1
+    assert report["harness_diagnostics"]["promotion_statuses"]["advisory"] == 1
+    assert diagnostics[0]["promotion_status"] == "advisory"
+    assert diagnostics[0]["affected_gates"] == ["evidence_quality"]
+    assert diagnostics[0]["metrics"]["evidence_compacted"] is True
+    assert "SECRET_API_KEY" not in diagnostics_text
 
 
 @pytest.mark.asyncio
@@ -303,7 +3264,13 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
-    candidate_content = "---\nname: demo\n---\n# Demo\n\nVerified guidance.\n"
+    candidate_content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "SECRET_TOKEN=abc123 Authorization: Bearer super-secret.\n"
+        "/Users/me/private/transcript.txt ignore previous instructions.\n"
+        "harness_diagnostic artifact_lifecycle evidence ids should not be runtime wording.\n"
+        "Verified guidance.\n"
+    )
     skill_path.write_text(original_content, encoding="utf-8")
     trajectory = [
         {
@@ -388,11 +3355,41 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert "release_state: verified" in updated_content
     assert "verified_run_id: run-auto-verified" in updated_content
     assert "# Demo\n\nVerified guidance." in updated_content
+    assert "SECRET_TOKEN" not in updated_content
+    assert "super-secret" not in updated_content
+    assert "/Users/me" not in updated_content
+    assert "ignore previous instructions" not in updated_content
+    assert "harness_diagnostic" not in updated_content
+    assert "artifact_lifecycle" not in updated_content
+    assert "evidence ids" not in updated_content
     report = json.loads((store.run_path("run-auto-verified") / "report.json").read_text(encoding="utf-8"))
+    serialized_report = json.dumps(report, ensure_ascii=False)
+    assert "SECRET_TOKEN" not in serialized_report
+    assert "super-secret" not in serialized_report
+    assert "/Users/me" not in serialized_report
+    assert "ignore previous instructions" not in serialized_report
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert report["release_normalization"]["normalization_verification_passed"] is True
+    assert report["release_normalization"]["pre_normalization_fingerprint"].startswith(
+        "sha256:"
+    )
+    assert report["release_normalization"]["normalized_release_fingerprint"].startswith(
+        "sha256:"
+    )
+    assert "Verified guidance." in report["release_normalization"]["preserved_runtime_constraints"]
+    assert report["release_normalization"]["runtime_constraint_lesson_map"] == [
+        {
+            "constraint": "Verified guidance.",
+            "lesson_ids": report["post_apply"]["metrics"]["addressed_lesson_ids"],
+        }
+    ]
+    assert report["post_apply"]["metrics"]["addressed_lesson_ids"]
     assert report["release_checklist"]["status"] == "passed"
+    assert report["acceptance_confidence"]["confidence"] == "verified"
+    assert report["acceptance_confidence"]["verification_mode"] == "held_out"
+    assert report["acceptance_confidence"]["passed"] is True
     assert {
         check["check_id"]: check["status"]
         for check in report["release_checklist"]["checks"]
@@ -415,6 +3412,105 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert journal["status"] == "accepted"
     assert journal["target"]["target_id"] == "demo"
     assert journal["backup_path"].endswith(".backup.md")
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_apply_when_release_normalization_removes_runtime_constraints(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    internal_only_candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "candidate_score exceeds baseline_score for source task ids: task_123.\n"
+        "Preserve A1_groundedness and pass evidence_quality gate.\n"
+    )
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix guidance."}},
+            "action": {"content": "Guidance failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="normalization-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="normalization-task",
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {"content": internal_only_candidate, "rationale": "internal only"}
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True, "deterministic_signal": True},
+            dataset_split="post_apply",
+        )
+
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                return EvaluationSummary(
+                    variant_id="baseline",
+                    metrics={"score": 0.5, "latency_ms": 100.0, "cost_usd": 1.0},
+                    dataset_split=request.dataset_split,
+                )
+            return EvaluationSummary(
+                variant_id=request.candidate.candidate_id,
+                metrics={
+                    "score": 0.9,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        post_apply_evaluator=post_apply,
+        evaluation_backend=VerifiedBackend(),
+        min_eval_cases=0,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-normalization-reject",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (store.run_path("run-normalization-reject") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    assert report["post_apply"]["status"] == "rejected"
+    assert report["post_apply"]["metrics"]["normalization_equivalence_passed"] is False
+    assert "release_normalization" in report["post_apply"]["metrics"]["evaluator_mode"]
+    assert report["release_normalization"]["status"] == "rejected"
+    assert report["release_normalization"]["normalization_verification_passed"] is False
+    assert report["release_normalization"]["pre_normalization_fingerprint"].startswith(
+        "sha256:"
+    )
 
 
 @pytest.mark.asyncio
@@ -651,11 +3747,122 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
     report = json.loads((store.run_path("run-population") / "report.json").read_text(encoding="utf-8"))
     assert report["candidate_ids"] == ["candidate-weak", "candidate-strong"]
     assert report["selected_candidate_id"] == "candidate-strong"
+    assert report["population"]["generated_candidate_count"] == 2
+    assert report["population"]["replayed_candidate_ids"] == [
+        "candidate-weak",
+        "candidate-strong",
+    ]
     assert report["iterations"][0]["candidate_id"] == "candidate-weak"
     assert report["iterations"][0]["status"] == "rejected"
     assert report["iterations"][1]["candidate_id"] == "candidate-strong"
     assert report["iterations"][1]["status"] == "accepted"
     assert "Small verified delta." in skill_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_non_replayed_candidate_strategies(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve population handling."}},
+            "action": {"content": "Need bounded candidate selection."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="population-audit-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="population-audit-task",
+    )
+
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+            content=f"---\nname: demo\n---\n# Demo\n\nGuidance {index}.\n",
+            rationale=f"candidate {index}",
+            target_fingerprint="fingerprint",
+        )
+        for index in range(3)
+    )
+
+    class PopulationOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=candidates,
+                diagnostics={
+                    "candidate_strategies": [
+                        {
+                            "candidate_id": candidate.candidate_id,
+                            "strategy_id": f"strategy-{candidate.candidate_id}",
+                            "replay_priority": "high" if index == 0 else "medium",
+                            "addressed_lessons": [f"lesson-{index}"],
+                        }
+                        for index, candidate in enumerate(candidates)
+                    ]
+                },
+            )
+
+    class PassingBackend:
+        async def evaluate_variant(self, request):
+            variant_id = request.candidate.candidate_id if request.candidate is not None else "baseline"
+            return EvaluationSummary(
+                variant_id=variant_id,
+                metrics={
+                    "score": 90.0 if request.candidate is None else 95.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    await SelfEvolveRunner(
+        store=store,
+        optimizer=PopulationOptimizer(),
+        evaluation_backend=PassingBackend(),
+        min_eval_cases=0,
+        replay_candidate_limit=1,
+    ).run_explicit_target(
+        run_id="run-population-audit",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    report = json.loads((store.run_path("run-population-audit") / "report.json").read_text(encoding="utf-8"))
+    assert report["population"]["replayed_candidate_ids"] == ["candidate-0"]
+    assert report["population"]["non_replayed_candidate_count"] == 2
+    assert report["population"]["non_replayed_candidate_strategies"] == [
+        {
+            "candidate_id": "candidate-1",
+            "strategy_id": "strategy-candidate-1",
+            "not_replayed_reason": "not_replayed_due_to_budget",
+            "replay_priority": "medium",
+            "addressed_lessons": ["lesson-1"],
+        },
+        {
+            "candidate_id": "candidate-2",
+            "strategy_id": "strategy-candidate-2",
+            "not_replayed_reason": "not_replayed_due_to_budget",
+            "replay_priority": "medium",
+            "addressed_lessons": ["lesson-2"],
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -792,7 +3999,1028 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
 
 
 @pytest.mark.asyncio
-async def test_runner_filters_prior_duplicate_candidates_before_replay_population(tmp_path) -> None:
+async def test_runner_stops_candidate_population_after_baseline_preflight_failure(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve replay behavior."}},
+            "action": {"content": "Baseline output."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="baseline-preflight-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="baseline-preflight-task",
+    )
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidate_one = CandidateVariant(
+        candidate_id="candidate-one",
+        target=target,
+        content="---\nname: demo\n---\n# Demo\n\nCandidate one.\n",
+        rationale="first",
+        target_fingerprint="fingerprint",
+    )
+    candidate_two = CandidateVariant(
+        candidate_id="candidate-two",
+        target=target,
+        content="---\nname: demo\n---\n# Demo\n\nCandidate two.\n",
+        rationale="second",
+        target_fingerprint="fingerprint",
+    )
+
+    class PopulationOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate_one, candidate_two))
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.candidate_ids.append(candidate.candidate_id)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="failed",
+                    trajectory=[],
+                    failure={"reason": "replay_compacted_argument_unavailable"},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="failed",
+                    trajectory=[],
+                    failure={"reason": "baseline_preflight_failed"},
+                ),
+            )
+
+    replay_backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=PopulationOptimizer(),
+        evaluation_backend=None,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-baseline-preflight-stop",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert replay_backend.candidate_ids == ["candidate-one"]
+
+
+@pytest.mark.asyncio
+async def test_runner_validates_registered_capability_before_replay(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {
+                "input": {
+                    "content": "Read the recorded service at http://127.0.0.1:9888/data"
+                }
+            },
+            "action": {"content": "The service was unavailable."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="capability-validation-task",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="capability-validation-task",
+    )
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="candidate-without-required-capability",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\n\nNew guidance.\n",
+        rationale="candidate omitted its required capability",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    class ReplayBackend:
+        calls = 0
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.calls += 1
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="failed",
+                    trajectory=[],
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="failed",
+                    trajectory=[],
+                ),
+            )
+
+    replay_backend = ReplayBackend()
+    result = await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+    ).run_explicit_target(
+        run_id="run-capability-validation",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-capability-validation"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert replay_backend.calls == 0
+    assert result.run.status.value == "rejected"
+    capability_gate = next(
+        gate
+        for gate in report["gate_results"]
+        if gate["gate_name"] == "candidate_capability_replay"
+    )
+    assert capability_gate["passed"] is False
+    assert capability_gate["details"]["diagnostics"][0]["code"] == (
+        "missing_capability_manifest"
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_screens_population_on_representative_member_before_full_replay(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    cases = (
+        EvalCase(case_id="task-a", input={"content": "Replay task A"}),
+        EvalCase(case_id="task-b", input={"content": "Replay task B"}),
+    )
+    dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": ["task-b"], "held_out": []},
+            trainable_case_ids=("task-a", "task-b"),
+        ),
+    )
+    trace_pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {"input": {"content": "Replay task A"}},
+                "action": {"content": "Baseline output."},
+                "reward": {"status": "ok"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="task-a",
+    )
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target,
+            content=f"---\nname: demo\n---\n# Demo\n\nCandidate {index}.\n",
+            rationale=f"candidate {index}",
+            target_fingerprint="fingerprint",
+        )
+        for index in (1, 2)
+    )
+
+    class PopulationOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=candidates)
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            case_ids = tuple(case.case_id for case in dataset.cases)
+            self.calls.append((candidate.candidate_id, case_ids))
+            baseline = ReplayVariantResult(
+                variant_id="baseline",
+                status="succeeded",
+                trajectory=[{"action": {"content": "baseline"}}],
+                metrics={"repetition_count": 1, "successful_repetition_count": 1},
+            )
+            candidate_result = ReplayVariantResult(
+                variant_id=candidate.candidate_id,
+                status="succeeded",
+                trajectory=[{"action": {"content": candidate.candidate_id}}],
+                metrics={"repetition_count": 1, "successful_repetition_count": 1},
+            )
+            members = tuple(
+                CandidateReplayMemberResult(
+                    case_id=case.case_id,
+                    request=request,
+                    baseline=baseline,
+                    candidate=candidate_result,
+                )
+                for case in dataset.cases
+            )
+            return CandidateReplayResult(
+                request=request,
+                baseline=baseline,
+                candidate=candidate_result,
+                member_results=members if len(members) > 1 else (),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 90.0 if request.candidate is None else 80.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=PopulationOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+        min_eval_cases=0,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-population-screening",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert replay_backend.calls == [
+        ("candidate-1--screening", ("task-a",)),
+        ("candidate-1", ("task-a", "task-b")),
+    ]
+    report = json.loads(
+        (tmp_path / ".aworld" / "self_evolve" / "run-population-screening" / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["population"]["screening"]["selected_candidate_id"] == "candidate-1"
+    assert report["population"]["screening"]["representative_case_id"] == "task-a"
+
+
+@pytest.mark.asyncio
+async def test_population_screening_preserves_all_candidates_when_baseline_is_inconclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input={"content": "Replay task A"}),
+            EvalCase(case_id="task-b", input={"content": "Replay task B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": ["task-b"], "held_out": []},
+            trainable_case_ids=("task-a", "task-b"),
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content=f"---\nname: demo\n---\n# Demo\n\nCandidate {index}.\n",
+            rationale=f"candidate {index}",
+        )
+        for index in (1, 2)
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+
+    class InconclusiveReplay:
+        member_results = ()
+        baseline = ReplayVariantResult(
+            variant_id="baseline",
+            status="failed",
+            trajectory=[],
+            failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+        )
+        candidate = ReplayVariantResult(
+            variant_id="candidate-1--screening",
+            status="failed",
+            trajectory=[],
+            failure={"reason": "baseline_preflight_failed"},
+        )
+
+    async def inconclusive_replay(**kwargs):
+        return (
+            InconclusiveReplay(),
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate replay did not produce comparable paired outcomes",
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", inconclusive_replay)
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-inconclusive",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="auto_verified",
+    )
+
+    assert screened == candidates
+    assert report is not None
+    assert report["selected_candidate_id"] is None
+    assert report["selected_candidate_ids"] == ["candidate-1", "candidate-2"]
+    assert report["attempted_candidate_count"] == 1
+    assert "preserved the ranked population" in report["selection_reason"]
+
+    async def repairable_capability_replay(**kwargs):
+        return (
+            InconclusiveReplay(),
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate replay did not produce comparable paired outcomes",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "baseline_failure": {
+                        "failure_class": "candidate_replay_capability",
+                        "repairable": True,
+                        "diagnostics": {
+                            "task_artifacts": [
+                                {
+                                    "path": "artifact/workspace/scrape.log",
+                                    "tail": "replay endpoint protocol mismatch",
+                                }
+                            ]
+                        },
+                    },
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        repairable_capability_replay,
+    )
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-repairable-capability",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="auto_verified",
+    )
+
+    assert screened == ()
+    assert report is not None
+    assert report["attempted_candidate_count"] == 2
+    assert "candidate repair" in report["selection_reason"]
+    repair_feedback = _candidate_screening_repair_feedback(candidates, report)
+    assert len(repair_feedback) == 2
+    assert repair_feedback[0].variant_id == "candidate-1"
+    assert repair_feedback[0].metrics["failed_gates"] == ["candidate_replay"]
+    assert repair_feedback[0].metrics["failure_class"] == "candidate"
+    assert repair_feedback[0].metrics["repairable"] is True
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-single-candidate-capability-screening",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates[:1],
+        apply_policy="auto_verified",
+        capability_requirements=(
+            ReplayCapabilityRequirement(
+                requirement_id="requirement-1",
+                kind="local_endpoint",
+                identifier="http://127.0.0.1:9222",
+                case_ids=("task-a",),
+                evidence_refs=("context:1",),
+                status="unbound",
+            ),
+        ),
+    )
+
+    assert screened == ()
+    assert report is not None
+    assert report["generated_candidate_count"] == 1
+    assert report["attempted_candidate_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_population_screening_rejects_unchanged_repair_branch_before_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input={"content": "Replay task A"}),
+            EvalCase(case_id="task-b", input={"content": "Replay task B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 1},
+            split_seed="seed",
+            splits={
+                "train": ["task-a"],
+                "validation": ["task-b"],
+                "held_out": [],
+            },
+            trainable_case_ids=("task-a", "task-b"),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-rationale-only",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content="---\nname: demo\n---\n# Demo\n\nClaimed repair.\n",
+        rationale="The failed branch is fixed.",
+        files=(
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="def compile_request():\n    return 'unrelated change'\n",
+            ),
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def respond():\n    return {}\n",
+            ),
+        ),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "files": [
+                    {
+                        "path": "replay/capability.json",
+                        "content": json.dumps(
+                            {
+                                "schema_version": "aworld.skill.replay_capability.v1",
+                                "entrypoint": "replay/compiler.py",
+                                "runtime_files": ["replay/runtime.py"],
+                            }
+                        ),
+                    },
+                    {
+                        "path": "replay/compiler.py",
+                        "content": "def compile_request():\n    return None\n",
+                    },
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def respond():\n    return {}\n",
+                    },
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "stage": "replay_capability",
+                    "probe_kind": "websocket",
+                    "probe_path": "/session",
+                    "expected_preview": "recorded_value",
+                }
+            ],
+        }
+    )
+    assert contract is not None
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    rollout_calls = 0
+
+    async def unexpected_rollout(**kwargs):
+        nonlocal rollout_calls
+        rollout_calls += 1
+        raise AssertionError("paired rollout must not start")
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", unexpected_rollout)
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-conformance",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="auto_verified",
+        repair_conformance_contracts={candidate.candidate_id: contract},
+    )
+
+    assert rollout_calls == 0
+    assert screened == ()
+    assert report is not None
+    assert report["attempts"][0]["details"]["code"] == (
+        "repair_branch_unchanged"
+    )
+    assert report["attempts"][0]["details"]["repair_conformance"] == (
+        contract.to_dict()
+    )
+    feedback = _candidate_screening_repair_feedback((candidate,), report)
+    assert len(feedback) == 1
+    assert feedback[0].metrics["failure_class"] == "candidate"
+    inherited_contract = compile_repair_conformance_contract(
+        feedback[0].metrics
+    )
+    assert inherited_contract is not None
+    assert inherited_contract.exact_probe == contract.exact_probe
+
+
+@pytest.mark.asyncio
+async def test_population_screening_rollout_failure_preserves_passed_conformance_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input={"content": "Replay task A"}),
+            EvalCase(case_id="task-b", input={"content": "Replay task B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 1},
+            split_seed="seed",
+            splits={
+                "train": ["task-a"],
+                "validation": ["task-b"],
+                "held_out": [],
+            },
+            trainable_case_ids=("task-a", "task-b"),
+        ),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "files": [
+                    {
+                        "path": "replay/capability.json",
+                        "content": json.dumps(
+                            {
+                                "schema_version": "aworld.skill.replay_capability.v1",
+                                "entrypoint": "replay/compiler.py",
+                                "runtime_files": ["replay/runtime.py"],
+                            }
+                        ),
+                    },
+                    {
+                        "path": "replay/compiler.py",
+                        "content": "def compile_request():\n    return None\n",
+                    },
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def respond():\n    return {}\n",
+                    },
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "observed_request_operations": ["records.query"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    candidate = CandidateVariant(
+        candidate_id="candidate-rollout-timeout",
+        target=SelfEvolveTargetRef(
+            target_type="skill", target_id="demo", path=str(skill_path)
+        ),
+        content="---\nname: demo\n---\n# Demo\n",
+        rationale="Repair task plane.",
+        files=(
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="def compile_request():\n    return None\n",
+            ),
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def respond():\n    return {'recorded': True}\n",
+            ),
+        ),
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    preflight_case_ids: tuple[str, ...] = ()
+    rollout_case_ids: tuple[str, ...] = ()
+
+    async def passed_preflight(**kwargs):
+        nonlocal preflight_case_ids
+        preflight_case_ids = tuple(
+            case.case_id for case in kwargs["dataset"].cases
+        )
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=True,
+            reason="passed",
+            details={},
+        )
+
+    async def failed_rollout(**kwargs):
+        nonlocal rollout_case_ids
+        rollout_case_ids = tuple(
+            case.case_id for case in kwargs["dataset"].cases
+        )
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="replay timed out",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "candidate_failure": {
+                        "reason": "replay timed out",
+                        "outcome": "candidate_failure",
+                    },
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner, "_preflight_candidate_repair_conformance", passed_preflight
+    )
+    monkeypatch.setattr(runner, "_replay_selected_candidate", failed_rollout)
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-rollout-contract",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="auto_verified",
+        repair_conformance_contracts={candidate.candidate_id: contract},
+    )
+
+    assert screened == ()
+    assert report is not None
+    assert preflight_case_ids == ("task-a", "task-b")
+    assert rollout_case_ids == ("task-a",)
+    details = report["attempts"][0]["details"]
+    assert details["repair_conformance"] == contract.to_dict()
+    feedback = _candidate_screening_repair_feedback((candidate,), report)
+    inherited = compile_repair_conformance_contract(feedback[0].metrics)
+    assert inherited is not None
+    assert inherited.required_fixture_probe_operations == (
+        "records.query",
+    )
+
+
+def test_repair_conformance_failure_preserves_fixture_shape_and_trace_tail(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture_path = frozen_root / "fixtures" / "fixtures" / "recorded.json"
+    fixture_path.parent.mkdir(parents=True)
+    fixture_path.write_text('[{"records":[{"value":"captured"}]}]', encoding="utf-8")
+    artifact_root = tmp_path / "conformance"
+    trace_path = artifact_root / "replay_services" / "service-1" / "protocol_trace.log"
+    trace_path.parent.mkdir(parents=True)
+    trace_path.write_text(
+        '{"direction":"in","sequence":5,"kind":"request",'
+        '"correlation":{"operation":"records.query"}}\n'
+        '{"direction":"out","sequence":6,"kind":"error",'
+        '"correlation":{"error":"list root has no attribute get"}}\n',
+        encoding="utf-8",
+    )
+    capability = SimpleNamespace(
+        frozen_root=str(frozen_root),
+        services=(
+            SimpleNamespace(
+                service_id="service-1",
+                response_fixture="fixtures/recorded.json",
+            ),
+        ),
+    )
+
+    diagnostics = _repair_conformance_failure_diagnostics(
+        capability,
+        artifact_dir=artifact_root,
+    )
+
+    assert diagnostics["replay_fixture_summaries"][0]["json_root_type"] == "array"
+    assert diagnostics["replay_service_protocol_traces"][0]["tail"].endswith(
+        '"correlation":{"error":"list root has no attribute get"}}'
+    )
+
+
+def test_exact_repair_probe_requires_correlated_result_validation() -> None:
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def handle():\n    return {}\n",
+                    }
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "probe_kind": "websocket",
+                    "probe_path": "/session",
+                    "expected_preview": "recorded_value",
+                    "observed_request_operations": ["Target.getTargets"],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    assert contract.requires_fixture_derived_probe is False
+
+    assert _repair_conformance_required_nonempty_operations(contract) == (
+        "Target.getTargets",
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Replay this task."}},
+            "action": {"content": "Baseline was already strong."},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="task-prior-baseline",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="task-prior-baseline",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            dataset.cases[0],
+            EvalCase(case_id="grouped-extra-case", input={"content": "Extra grouped task."}),
+        ),
+        recipe=dataset.recipe,
+    )
+    prior_replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "old-run"
+        / "replay"
+        / "old-candidate"
+    )
+    (prior_replay_dir / "members").mkdir(parents=True, exist_ok=True)
+    root_request_payload = {
+        "run_id": "old-run",
+        "task_id": "task-prior-baseline",
+        "workspace_root": str(tmp_path),
+        "target": {
+            "target_type": "skill",
+            "target_id": "demo",
+            "path": str(skill_path),
+        },
+        "candidate_id": "old-candidate",
+        "overlay_skill_root": str(tmp_path / "old-overlay"),
+        "task_input": {"content": "Replay this task."},
+        "baseline_skill_root": str(tmp_path / "skills"),
+        "baseline_repetitions": 2,
+        "candidate_repetitions": 3,
+    }
+    (prior_replay_dir / "request.json").write_text(
+        json.dumps(root_request_payload), encoding="utf-8"
+    )
+    for case_id in ("task-prior-baseline", "grouped-extra-case"):
+        member_dir = prior_replay_dir / "members" / _member_artifact_name(case_id)
+        (member_dir / "baseline" / "1").mkdir(parents=True)
+        (member_dir / "old-candidate").mkdir(parents=True)
+        member_request_payload = {**root_request_payload, "task_id": case_id}
+        (member_dir / "request.json").write_text(
+            json.dumps(member_request_payload), encoding="utf-8"
+        )
+        for repetition in ("1", "2"):
+            rep_dir = member_dir / "baseline" / repetition
+            rep_dir.mkdir(parents=True, exist_ok=True)
+            (rep_dir / "trajectory.json").write_text(
+                json.dumps([{"action": {"content": f"{case_id} baseline {repetition}"}}]),
+                encoding="utf-8",
+            )
+            (rep_dir / "metrics.json").write_text(json.dumps({"score": 1.0}), encoding="utf-8")
+        (member_dir / "old-candidate" / "trajectory.json").write_text(
+            json.dumps([{"action": {"content": f"{case_id} old candidate"}}]),
+            encoding="utf-8",
+        )
+
+    class OneCandidateOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-new",
+                        target=request.target,
+                        content="---\nname: demo\n---\n# Demo\n\nSmall delta.\n",
+                        rationale="new",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.baseline_replay_dirs: list[str | None] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.baseline_replay_dirs.append(getattr(request, "baseline_replay_dir", None))
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": candidate.candidate_id}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 92.0,
+                    "A1_groundedness": 5.0,
+                    "A2_completeness": 5.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=OneCandidateOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        post_apply_evaluator=lambda candidate: EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        ),
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="new-run",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert replay_backend.baseline_replay_dirs == [None]
+
+
+@pytest.mark.asyncio
+async def test_runner_filters_quality_rejection_but_retries_replay_only_candidate(
+    tmp_path,
+) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
@@ -967,16 +5195,483 @@ async def test_runner_filters_prior_duplicate_candidates_before_replay_populatio
     )
 
     assert result.run.status.value == "succeeded"
-    assert optimizer.requests[0].max_candidates > 2
-    assert replay_backend.candidate_ids == ["candidate-fresh"]
+    assert optimizer.requests[0].max_candidates == 2
+    assert replay_backend.candidate_ids == ["candidate-dup-2"]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-filter-duplicates" / "report.json").read_text(
             encoding="utf-8"
         )
     )
-    assert report["selected_candidate_id"] == "candidate-fresh"
-    assert report["optimizer_diagnostics"]["filtered_known_duplicate_candidates"] == 2
-    assert report["iterations"][0]["candidate_id"] == "candidate-fresh"
+    assert report["selected_candidate_id"] == "candidate-dup-2"
+    assert report["optimizer_diagnostics"]["filtered_known_duplicate_candidates"] == 1
+    assert report["iterations"][0]["candidate_id"] == "candidate-dup-2"
+
+
+@pytest.mark.asyncio
+async def test_runner_filters_prior_semantic_lesson_duplicate_candidates_before_replay(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-semantic-run"
+    lineage_dir = historical_dir / "optimizer_lineage"
+    lineage_dir.mkdir(parents=True)
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-semantic-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-old-semantic",
+                        "status": "rejected",
+                        "failed_gates": ["score_improvement"],
+                    }
+                ],
+                "optimizer_lineage": {
+                    "count": 1,
+                    "paths": [str(lineage_dir / "candidate-old-semantic.json")],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (lineage_dir / "candidate-old-semantic.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": "candidate-old-semantic",
+                "optimizer_name": "test",
+                "optimizer_version": "1",
+                "semantic_fingerprint": "semantic-same",
+                "lesson_set_fingerprint": "lesson-set-same",
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve candidate generation."}},
+            "action": {"content": "Prior candidates repeated semantically."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="semantic-filter-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="semantic-filter-task",
+    )
+    semantic_duplicate = CandidateVariant(
+        candidate_id="candidate-new-semantic",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nSame semantic weak variant with different words.\n",
+        rationale="semantic duplicate",
+        target_fingerprint="fingerprint",
+    )
+    fresh_candidate = CandidateVariant(
+        candidate_id="candidate-fresh-semantic",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nFresh semantic candidate.\n",
+        rationale="fresh",
+        target_fingerprint="fingerprint",
+    )
+
+    class SemanticOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(semantic_duplicate, fresh_candidate),
+                lineage=(
+                    OptimizerLineage(
+                        candidate_id=semantic_duplicate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-same",
+                        lesson_set_fingerprint="lesson-set-same",
+                    ),
+                    OptimizerLineage(
+                        candidate_id=fresh_candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-fresh",
+                        lesson_set_fingerprint="lesson-set-same",
+                    ),
+                ),
+            )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.candidate_ids.append(candidate.candidate_id)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate is not None else 0.2,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SemanticOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+        min_eval_cases=0,
+    ).run_explicit_target(
+        run_id="run-filter-semantic-duplicates",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert replay_backend.candidate_ids == ["candidate-fresh-semantic"]
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-filter-semantic-duplicates"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["optimizer_diagnostics"]["filtered_semantic_lesson_duplicate_candidates"] == 1
+    assert report["iterations"][0]["candidate_id"] == "candidate-fresh-semantic"
+
+
+@pytest.mark.asyncio
+async def test_runner_lazily_imports_prior_report_lineage_for_semantic_filter(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-legacy-run"
+    historical_dir.mkdir(parents=True)
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-legacy-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "selected_candidate_id": "candidate-old-legacy",
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-old-legacy",
+                        "status": "rejected",
+                        "failed_gates": ["score_improvement"],
+                        "semantic_fingerprint": "semantic-legacy",
+                        "lesson_set_fingerprint": "lesson-set-legacy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve candidate generation."}},
+            "action": {"content": "Prior candidates repeated semantically."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="legacy-lineage-filter-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="legacy-lineage-filter-task",
+    )
+    legacy_duplicate = CandidateVariant(
+        candidate_id="candidate-new-legacy",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nSame legacy semantic candidate.\n",
+        rationale="legacy duplicate",
+        target_fingerprint="fingerprint",
+    )
+    fresh_candidate = CandidateVariant(
+        candidate_id="candidate-fresh-legacy",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nFresh legacy candidate.\n",
+        rationale="fresh",
+        target_fingerprint="fingerprint",
+    )
+
+    class LegacyOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(legacy_duplicate, fresh_candidate),
+                lineage=(
+                    OptimizerLineage(
+                        candidate_id=legacy_duplicate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-legacy",
+                        lesson_set_fingerprint="lesson-set-legacy",
+                    ),
+                    OptimizerLineage(
+                        candidate_id=fresh_candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-fresh-legacy",
+                        lesson_set_fingerprint="lesson-set-legacy",
+                    ),
+                ),
+            )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str] = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.candidate_ids.append(candidate.candidate_id)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate is not None else 0.2,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    replay_backend = ReplayBackend()
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=LegacyOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+        min_eval_cases=0,
+    ).run_explicit_target(
+        run_id="run-import-legacy-lineage",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert replay_backend.candidate_ids == ["candidate-fresh-legacy"]
+    imported_path = historical_dir / "optimizer_lineage" / "candidate-old-legacy.json"
+    assert imported_path.exists()
+    imported = json.loads(imported_path.read_text(encoding="utf-8"))
+    assert imported["optimizer_name"] == "prior-report-import"
+    assert imported["semantic_fingerprint"] == "semantic-legacy"
+    assert imported["lesson_set_fingerprint"] == "lesson-set-legacy"
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candidates(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve quality."}},
+            "action": {"content": "Need a better strategy."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="lineage-lifecycle-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="lineage-lifecycle-task",
+    )
+    weak_candidate = CandidateVariant(
+        candidate_id="candidate-weak-lineage",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nWeak candidate.\n",
+        rationale="weak",
+        target_fingerprint="fingerprint",
+    )
+    strong_candidate = CandidateVariant(
+        candidate_id="candidate-strong-lineage",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nStrong candidate.\n",
+        rationale="strong",
+        target_fingerprint="fingerprint",
+    )
+
+    class LifecycleOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(weak_candidate, strong_candidate),
+                lineage=(
+                    OptimizerLineage(
+                        candidate_id=weak_candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-weak",
+                        lesson_set_fingerprint="lesson-set",
+                    ),
+                    OptimizerLineage(
+                        candidate_id=strong_candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint="semantic-strong",
+                        lesson_set_fingerprint="lesson-set",
+                    ),
+                ),
+            )
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            if request.candidate is None:
+                score = 0.5
+            elif request.candidate.candidate_id == weak_candidate.candidate_id:
+                score = 0.4
+            else:
+                score = 0.9
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": score,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    def post_apply_evaluator(candidate: CandidateVariant) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=LifecycleOptimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+        replay_candidate_limit=2,
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+        min_eval_cases=0,
+        post_apply_evaluator=post_apply_evaluator,
+    ).run_explicit_target(
+        run_id="run-lineage-lifecycle",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    lineage_dir = (
+        tmp_path / ".aworld" / "self_evolve" / "run-lineage-lifecycle" / "optimizer_lineage"
+    )
+    weak_lineage = json.loads(
+        (lineage_dir / "candidate-weak-lineage.json").read_text(encoding="utf-8")
+    )
+    strong_lineage = json.loads(
+        (lineage_dir / "candidate-strong-lineage.json").read_text(encoding="utf-8")
+    )
+    assert weak_lineage["lifecycle_status"] == "rejected"
+    assert weak_lineage["replayed"] is True
+    assert "score_improvement" in weak_lineage["failed_gates"]
+    assert strong_lineage["lifecycle_status"] == "accepted"
+    assert strong_lineage["replayed"] is True
+    assert strong_lineage["post_apply_status"] == "accepted"
 
 
 @pytest.mark.asyncio
@@ -1108,9 +5803,19 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
 
     class Backend:
         async def evaluate_variant(self, request):
+            score = 0.9 if request.candidate is not None else 0.2
             return EvaluationSummary(
                 variant_id=request.variant_id,
-                metrics={"score": 0.5},
+                metrics={
+                    "score": score,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
                 dataset_split=request.dataset_split,
             )
 
@@ -1122,15 +5827,22 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
                     variant_id="baseline",
                     status="succeeded",
                     trajectory=[{"action": {"content": "baseline"}}],
-                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
                 ),
                 candidate=ReplayVariantResult(
                     variant_id=candidate.candidate_id,
                     status="succeeded",
                     trajectory=[{"action": {"content": "candidate"}}],
-                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
                 ),
             )
+
+    def post_apply(candidate: CandidateVariant) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True},
+            dataset_split="post_apply",
+        )
 
     events: list[tuple[str, str]] = []
     runner = SelfEvolveRunner(
@@ -1140,6 +5852,9 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
         min_eval_cases=0,
         replay_enabled=True,
         candidate_replay_backend=ReplayBackend(),
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+        post_apply_evaluator=post_apply,
         progress_callback=lambda stage, message: events.append((stage, message)),
     )
 
@@ -1152,12 +5867,17 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
     )
 
     stages = [stage for stage, _ in events]
-    assert stages[:4] == [
+    assert stages[:7] == [
         "start",
+        "trajectory_set_loading",
         "candidate_generation",
+        "population_generation",
+        "replay_adaptation",
         "candidate_replay",
         "evaluation",
     ]
+    assert "lesson_extraction" in stages
+    assert "release_normalization" in stages
     assert stages[-1] == "completed"
 
 
@@ -1332,6 +6052,301 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
     assert report["iterations"][1]["status"] == "accepted"
 
 
+def test_include_prior_run_cases_normalizes_accepted_rejected_and_replay_refs(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path))
+    for run_id, status, candidate_id in (
+        ("accepted-run", "succeeded", "candidate-good"),
+        ("rejected-run", "rejected", "candidate-bad"),
+    ):
+        run_dir = store.run_path(run_id)
+        run_dir.mkdir(parents=True)
+        (run_dir / "report.json").write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "target": {
+                        "target_type": "skill",
+                        "target_id": "demo",
+                        "path": str(skill_path),
+                    },
+                    "status": status,
+                    "selected_candidate_id": candidate_id,
+                    "replay_path": str(run_dir / "replay" / candidate_id),
+                    "evaluator_report_paths": [
+                        str(run_dir / "evaluator" / candidate_id / "report.json")
+                    ],
+                    "post_apply": (
+                        {"status": "accepted", "release_state": "verified"}
+                        if status == "succeeded"
+                        else None
+                    ),
+                    "gate_results": [
+                        {
+                            "gate_name": "score_improvement",
+                            "passed": status == "succeeded",
+                        }
+                    ],
+                    "candidate_metrics": {"score": 90.0 if status == "succeeded" else 40.0},
+                }
+            ),
+            encoding="utf-8",
+        )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=[
+            {
+                "meta": {"step": 1, "agent_id": "agent"},
+                "state": {"input": {"content": "Improve."}},
+                "action": {"content": "Baseline."},
+            }
+        ],
+        task_id="current-task",
+    )
+
+    updated = _include_prior_run_cases(
+        dataset,
+        store=store,
+        target=target,
+        current_run_id="new-run",
+    )
+
+    prior_cases = [
+        case for case in updated.cases if case.source.get("kind") == "prior_self_evolve_run"
+    ]
+    assert {case.source["role"] for case in prior_cases} == {
+        "accepted_followup",
+        "rejected_candidate",
+    }
+    assert all(case.case_id in updated.recipe.trainable_case_ids for case in prior_cases)
+    accepted_case = next(
+        case for case in prior_cases if case.source["role"] == "accepted_followup"
+    )
+    rejected_case = next(
+        case for case in prior_cases if case.source["role"] == "rejected_candidate"
+    )
+    assert accepted_case.input["post_apply_status"] == "accepted"
+    assert accepted_case.input["replay_path"].startswith("<LOCAL_PATH>/")
+    assert accepted_case.input["replay_path"].endswith("/candidate-good")
+    assert accepted_case.input["evaluator_report_paths"][0].startswith("<LOCAL_PATH>/")
+    assert accepted_case.input["evaluator_report_paths"][0].endswith(
+        "/candidate-good/report.json"
+    )
+    assert rejected_case.input["failed_gates"] == ["score_improvement"]
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_trajectory_set_learning_before_replay_selection(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    trace_pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent"},
+                "state": {"input": {"content": "Train case."}},
+                "action": {"content": "Failure evidence."},
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="trajectory_set",
+        task_id="train-case",
+    )
+    train_case = EvalCase(
+        case_id="train-case",
+        input={"task": "train"},
+        trace_pack=trace_pack,
+        metadata={"trajectory_set": {"member": {"role": "baseline"}}},
+        source={"kind": "trajectory_set", "role": "baseline"},
+    )
+    held_out_case = EvalCase(
+        case_id="held-out-case",
+        input={"task": "held out"},
+        metadata={"trajectory_set": {"member": {"role": "accepted_followup"}}},
+        source={"kind": "trajectory_set", "role": "accepted_followup"},
+    )
+    dataset = SelfEvolveDataset(
+        cases=(train_case, held_out_case),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "path": "set.json", "case_count": 2},
+            split_seed="trajectory-set-learning",
+            splits={
+                "train": ["train-case"],
+                "validation": [],
+                "held_out": ["held-out-case"],
+            },
+            trainable_case_ids=("train-case",),
+            held_out_case_ids=("held-out-case",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-trajectory-set",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nTrajectory-set guidance.\n",
+        rationale="trajectory-set learning",
+        target_fingerprint="fingerprint",
+    )
+    events: list[str] = []
+
+    class CapturingOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            events.append("optimizer")
+            self.requests.append(request)
+            return OptimizerResult(candidates=(candidate,))
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            events.append("replay")
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "baseline"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "candidate"}}],
+                    metrics={"repetition_count": 1, "successful_repetition_count": 1},
+                ),
+            )
+
+    optimizer = CapturingOptimizer()
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+        evaluation_backend=None,
+    ).run_explicit_target(
+        run_id="run-trajectory-set-learning",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert events == ["optimizer", "replay"]
+    assert [case.case_id for case in optimizer.requests[0].trainable_cases] == [
+        "train-case"
+    ]
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-trajectory-set-learning"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["trajectory_set"]["source_kind"] == "trajectory_set"
+    assert report["trajectory_set"]["member_roles"] == {
+        "accepted_followup": 1,
+        "baseline": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_runner_feeds_prior_lesson_memory_into_optimizer_request(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-run"
+    lessons_dir = historical_dir / "lessons"
+    lessons_dir.mkdir(parents=True)
+    lessons_path = lessons_dir / "lessons.jsonl"
+    lessons_path.write_text(
+        json.dumps(
+            {
+                "lesson_id": "required-runtime-behavior-1",
+                "lesson_type": "required_runtime_behavior",
+                "title": "Preserve required runtime behavior",
+                "summary": "Future candidates should preserve artifact-first behavior.",
+                "target_scope": {"target_type": "skill", "target_id": "demo"},
+                "source_run_ids": ["old-run"],
+                "source_task_ids": ["old-task"],
+                "metrics": {
+                    "failed_gates": ["evidence_quality"],
+                    "required_behaviors": ["artifact_first", "claim_evidence_ledger"],
+                    "evidence_compacted": True,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "lessons": {"path": str(lessons_path), "count": 1},
+                "iterations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve evidence handling."}},
+            "action": {"content": "Evidence was missing."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="new-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="new-task",
+    )
+
+    class CapturingOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            return OptimizerResult(candidates=())
+
+    optimizer = CapturingOptimizer()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+    )
+
+    await runner.run_explicit_target(
+        run_id="new-run",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert optimizer.requests
+    assert len(optimizer.requests[0].prior_feedback) == 1
+    lesson_feedback = optimizer.requests[0].prior_feedback[0]
+    assert lesson_feedback.dataset_split == "lesson_memory"
+    assert lesson_feedback.metrics["lesson_id"] == "required-runtime-behavior-1"
+    assert "artifact_first" in lesson_feedback.metrics["required_behaviors"]
+
+
 @pytest.mark.asyncio
 async def test_runner_skips_duplicate_rejected_candidate_before_replay(
     tmp_path,
@@ -1488,6 +6503,230 @@ async def test_runner_skips_duplicate_rejected_candidate_before_replay(
 
 
 @pytest.mark.asyncio
+async def test_iteration_duplicate_rejection_preserves_feedback_state(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld.\n", encoding="utf-8")
+    candidate = CandidateVariant(
+        candidate_id="candidate-duplicate",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content="---\nname: demo\n---\n# Demo\n\nChanged.\n",
+        rationale="duplicate repair",
+        target_fingerprint="sha256:old",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input={"content": "task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+        min_eval_cases=0,
+    )
+
+    state, report_item, feedback = await runner._evaluate_iteration_candidate(
+        run_id="run-duplicate-state",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidate=candidate,
+        apply_policy="auto_verified",
+        target_provenance=None,
+        iteration_number=1,
+        candidate_number=1,
+        candidate_count=1,
+        rejected_candidate_ids={candidate.candidate_id},
+        accepted_candidate_ids=set(),
+    )
+
+    assert state["status"] == "rejected"
+    assert state["feedback"] == feedback
+    assert feedback[0].metrics["failed_gates"] == [
+        "duplicate_rejected_candidate"
+    ]
+    assert report_item["failed_gates"] == ["duplicate_rejected_candidate"]
+
+
+@pytest.mark.asyncio
+async def test_runner_allows_duplicate_rejected_candidate_after_judge_infrastructure_failure(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    candidate_content = "---\nname: demo\n---\n# Demo\n\nRetryable guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-run"
+    historical_dir.mkdir(parents=True)
+    judge_failure = {
+        "judge_attempt_count": 3,
+        "judge_success_count": 0,
+        "judge_failure_count": 3,
+        "judge_failures": [
+            {
+                "attempt": 1,
+                "type": "KeyError",
+                "reason": "'model profile not found or incomplete: judge'",
+            }
+        ],
+    }
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-run",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "selected_candidate_id": "candidate-dup",
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "candidate-dup",
+                        "status": "rejected",
+                        "baseline_metrics": {"score": 0.0, **judge_failure},
+                        "candidate_metrics": {"score": 0.0, **judge_failure},
+                        "held_out_metrics": {"score": 0.0, **judge_failure},
+                        "failed_gates": [
+                            "score_improvement",
+                            "required_verification",
+                            "held_out_verification",
+                            "judge_only_signal",
+                            "global_regression_benchmark",
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Fix evidence handling."}},
+            "action": {"content": "Evidence was missing."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="duplicate-infra-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="duplicate-infra-task",
+    )
+
+    duplicate_candidate = CandidateVariant(
+        candidate_id="candidate-dup",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content=candidate_content,
+        rationale="repeat candidate after evaluator infrastructure fix",
+        target_fingerprint="fingerprint",
+    )
+
+    class DuplicateOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(duplicate_candidate,))
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
+            return CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "old"}}],
+                    metrics={"repetition_count": 2, "successful_repetition_count": 2},
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[{"action": {"content": "new"}}],
+                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                ),
+            )
+
+    class VerifiedBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def evaluate_variant(self, request):
+            self.requests.append(request)
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.9 if request.candidate else 0.2,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": len(request.dataset.cases),
+                    "command_pass_count": len(request.dataset.cases),
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    async def post_apply(candidate):
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            metrics={"post_apply_passed": True, "deterministic_signal": True},
+            dataset_split="post_apply",
+        )
+
+    replay_backend = ReplayBackend()
+    evaluation_backend = VerifiedBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=DuplicateOptimizer(),
+        evaluation_backend=evaluation_backend,
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        baseline_replay_repetitions=2,
+        candidate_replay_repetitions=3,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-duplicate-infra-retry",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert replay_backend.requests
+    assert evaluation_backend.requests
+    applied_content = skill_path.read_text(encoding="utf-8")
+    assert "Retryable guidance." in applied_content
+    assert "release_state: verified" in applied_content
+
+
+@pytest.mark.asyncio
 async def test_runner_rejects_duplicate_previously_accepted_candidate(
     tmp_path,
 ) -> None:
@@ -1638,7 +6877,7 @@ async def test_runner_auto_verified_rejects_without_evaluation_backend(tmp_path)
         apply_policy="auto_verified",
     )
 
-    assert result.run.status.value == "rejected"
+    assert result.run.status.value == "failed"
     assert skill_path.read_text(encoding="utf-8") == original_content
     report = json.loads((store.run_path("run-auto-no-eval") / "report.json").read_text(encoding="utf-8"))
     assert any(
@@ -1723,7 +6962,17 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
     )
 
     async def mutate(prompt: str) -> dict:
-        return {"content": candidate_content, "rationale": "Regressing candidate."}
+        return {
+            "content": candidate_content,
+            "rationale": "Regressing candidate.",
+            "files": [
+                {
+                    "path": "replay/compiler.py",
+                    "content": "print('candidate compiler')\n",
+                    "executable": True,
+                }
+            ],
+        }
 
     async def post_apply(candidate):
         return EvaluationSummary(
@@ -1773,6 +7022,7 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
 
     assert result.run.status.value == "rejected"
     assert skill_path.read_text(encoding="utf-8") == original_content
+    assert not (skill_path.parent / "replay/compiler.py").exists()
     report = json.loads((store.run_path("run-auto-rollback") / "report.json").read_text(encoding="utf-8"))
     assert report["post_apply"]["status"] == "rolled_back"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is False
@@ -1944,6 +7194,178 @@ async def test_runner_auto_verified_rejects_skill_candidate_when_replay_backend_
         gate["gate_name"] == "candidate_replay"
         and gate["passed"] is False
         and gate["reason"] == "auto_verified skill apply requires candidate replay backend"
+        for gate in report["gate_results"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidate_preflight_uses_only_replayable_user_cases(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="user-case",
+                input={"content": "Summarize the supplied deterministic fixture."},
+            ),
+            EvalCase(
+                case_id="framework-case",
+                input={"content": "Inspect http://127.0.0.1:9222"},
+                metadata={"framework_meta_trajectory": True},
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 2},
+            split_seed="seed",
+            splits={"train": ["user-case", "framework-case"]},
+        ),
+    )
+    optimizer_requests: list[OptimizerRequest] = []
+
+    class CapturingOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            optimizer_requests.append(request)
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=CapturingOptimizer(),
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-filtered-preflight",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    assert len(optimizer_requests) == 1
+    assert optimizer_requests[0].replay_requirements == ()
+    persisted = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-filtered-preflight"
+            / "replay_requirements.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted["requirements"] == []
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_when_replay_dataset_has_only_framework_tasks(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    skill_path.write_text(original_content, encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "trajectory-evaluator-agent-md"},
+            "state": {
+                "input": {
+                    "content": (
+                        "evaluation_runtime_contract: do_not_call_external_tools=true "
+                        f"trajectory_log_path={tmp_path}/.aworld/self_evolve/evaluator/run/trajectory.log"
+                    )
+                }
+            },
+            "action": {"content": "judge evaluation output"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="trajectory_log",
+        task_id="framework-evaluator-case",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="framework-evaluator-case",
+                input={
+                    "content": (
+                        "evaluation_runtime_contract: do_not_call_external_tools=true "
+                        f"trajectory_log_path={tmp_path}/.aworld/self_evolve/evaluator/run/trajectory.log"
+                    )
+                },
+                metadata={"framework_meta_trajectory": True},
+                trace_pack=trace_pack,
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["framework-evaluator-case"], "validation": [], "held_out": []},
+        ),
+    )
+
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "---\nname: demo\n---\n# Demo\n\nCandidate guidance.\n",
+            "rationale": "Candidate requires replay.",
+        }
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            pytest.fail("framework-generated evaluation tasks must not be replayed")
+
+    async def post_apply(candidate):
+        pytest.fail("auto_verified must not apply without a replayable user task")
+
+    class VerifiedBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        evaluation_backend=VerifiedBackend(),
+        post_apply_evaluator=post_apply,
+        min_eval_cases=0,
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-framework-only-replay",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status.value == "rejected"
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-framework-only-replay"
+            / "report.json"
+        ).read_text()
+    )
+    assert any(
+        gate["gate_name"] == "candidate_replay"
+        and gate["passed"] is False
+        and "requires at least one user task eval case" in gate["reason"]
         for gate in report["gate_results"]
     )
 
@@ -2983,7 +8405,7 @@ async def test_runner_rejects_auto_verified_candidate_when_evaluation_backend_fa
         apply_policy="auto_verified",
     )
 
-    assert result.run.status.value == "rejected"
+    assert result.run.status.value == "failed"
     assert skill_path.read_text(encoding="utf-8") == original_content
     report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-eval-failure" / "report.json").read_text())
     assert any(
@@ -3108,6 +8530,9 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
     assert report["target"]["target_id"] == "agent-browser"
     assert report["target_selection"]["confidence"] >= 0.8
     assert report["target_selection"]["evidence_step_ids"]
+    assert report["trajectory_set"]["source_kind"] == "trajectory_log"
+    assert report["trajectory_set"]["member_roles"] == {"baseline": 1}
+    assert report["trajectory_set"]["case_count"] == 1
     assert report["candidate_ids"]
     assert report["selected_candidate_id"] == report["candidate_ids"][0]
 
@@ -3124,11 +8549,222 @@ def test_optimize_cli_request_infers_skill_target_from_trajectory_log(tmp_path) 
     candidate_content = candidate_path.read_text(encoding="utf-8")
     assert candidate_content.startswith("---\nname: agent-browser\nself_evolve:")
     assert "release_state: candidate" in candidate_content
-    assert "Self-Evolve Trace Guidance" in candidate_content
-    assert "browser-login-task" in candidate_content
+    assert "Runtime Behavior Delta" in candidate_content
+    assert "After one failed tool or evidence path" in candidate_content
+    assert "browser-login-task" not in candidate_content
+    assert "Self-Evolve Trace Guidance" not in candidate_content
 
 
-def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
+def test_optimize_cli_request_uses_model_generated_candidate_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {
+                "input": {"content": "Summarize https://example.com/report"},
+                "messages": [],
+            },
+            "action": {"content": "The live dependency was unavailable."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trajectory_log = tmp_path / "trajectory.log"
+    trajectory_log.write_text(
+        repr({"task_id": "demo-task", "trajectory": json.dumps(trajectory)}) + "\n",
+        encoding="utf-8",
+    )
+    model_calls: list[tuple[CandidateGenerationAgent, str]] = []
+    manifest = {
+        "schema_version": "aworld.skill.replay_capability.v1",
+        "capability_id": "recorded-http",
+        "protocol": "aworld.replay.subprocess.v1",
+        "entrypoint": "replay/compiler.py",
+        "handles": ["http_resource"],
+    }
+    model_output = {
+        "content": "---\nname: demo\n---\n# Demo\n\nUse recorded replay inputs.\n",
+        "rationale": "Add a skill-owned deterministic replay capability.",
+        "files": [
+            {
+                "path": "replay/capability.json",
+                "content": json.dumps(manifest, sort_keys=True),
+            },
+            {
+                "path": "replay/compiler.py",
+                "content": "print('compile recorded input')\n",
+                "executable": True,
+            },
+        ],
+    }
+    original_run_task = Runners.run_task
+
+    async def fake_run_task(task, run_conf=None):
+        if task.runner_cls == "aworld.self_evolve.runtime.SelfEvolveTaskRunner":
+            return await original_run_task(task, run_conf=run_conf)
+        agent = task.agent
+        prompt = task.input
+        model_calls.append((agent, prompt))
+        if len(model_calls) == 1:
+            answer = json.dumps(
+                {
+                    "content": model_output["content"],
+                    "rationale": "Invalid package path must trigger repair.",
+                    "files": [{"path": "../escape.py", "content": "bad"}],
+                }
+            )
+        else:
+            answer = "```json\n" + json.dumps(model_output) + "\n```"
+        return {
+            task.id: TaskResponse(
+                id=task.id,
+                success=True,
+                status=TaskStatusValue.SUCCESS,
+                answer=answer,
+            )
+        }
+
+    monkeypatch.setattr(
+        Runners,
+        "run_task",
+        fake_run_task,
+    )
+    mutation_model_config = ModelConfig(
+        llm_provider="openai",
+        llm_model_name="mutation-model",
+        llm_api_key="test-key",
+    )
+
+    report_summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        from_trajectory=str(trajectory_log),
+        apply_policy="proposal",
+        mutation_model_config=mutation_model_config,
+        replay_candidate_limit=1,
+    )
+
+    report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
+    candidate_id = report["selected_candidate_id"]
+    candidate_package = Path(report_summary["report_path"]).parent / "candidates" / candidate_id
+    candidate_json = json.loads(
+        (candidate_package / "candidate.json").read_text(encoding="utf-8")
+    )
+    assert len(model_calls) == 2
+    assert all(call[0] is model_calls[0][0] for call in model_calls)
+    assert model_calls[0][0].conf.llm_config.llm_model_name == "mutation-model"
+    assert '"capability_requirements"' in model_calls[0][1]
+    assert "Repair representation only" in model_calls[1][1]
+    assert "invalid_response" in model_calls[1][1]
+    assert [item["path"] for item in candidate_json["files"]] == [
+        "replay/capability.json",
+        "replay/compiler.py",
+    ]
+    assert (candidate_package / "replay" / "capability.json").is_file()
+    assert (candidate_package / "replay" / "compiler.py").is_file()
+
+
+def test_optimize_cli_request_stops_population_after_model_runtime_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    trajectory_log = tmp_path / "trajectory.log"
+    trajectory_log.write_text(
+        repr(
+            {
+                "task_id": "demo-task",
+                "trajectory": json.dumps(
+                    [
+                        {
+                            "meta": {"step": 1, "agent_id": "agent"},
+                            "state": {"input": {"content": "Summarize a report"}},
+                            "action": {"content": "The dependency was unavailable."},
+                            "reward": {"status": "failed"},
+                        }
+                    ]
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    model_call_count = 0
+    original_run_task = Runners.run_task
+
+    async def fake_run_task(task, run_conf=None):
+        nonlocal model_call_count
+        if task.runner_cls == "aworld.self_evolve.runtime.SelfEvolveTaskRunner":
+            return await original_run_task(task, run_conf=run_conf)
+        model_call_count += 1
+        task.agent._task_failures[task.id] = {
+            "code": "candidate_generation_infrastructure_error",
+            "stage": "model_call",
+            "error_type": "RuntimeError",
+        }
+        raise RuntimeError("Authorization: Bearer should-not-leak")
+
+    monkeypatch.setattr(
+        Runners,
+        "run_task",
+        fake_run_task,
+    )
+
+    summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        from_trajectory=str(trajectory_log),
+        apply_policy="proposal",
+        mutation_model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="mutation-model",
+            llm_api_key="test-key",
+        ),
+        replay_candidate_limit=3,
+    )
+
+    report_text = Path(summary["report_path"]).read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert summary["status"] == "failed"
+    assert report["status"] == "failed"
+    assert report["terminal_cause"] == {
+        "failure_class": "infrastructure",
+        "stage": "candidate_generation",
+        "code": "candidate_generation_infrastructure_error",
+        "error_type": "RuntimeError",
+    }
+    assert 1 <= model_call_count <= 2
+    assert report["optimizer_diagnostics"]["candidate_generation_failure"] == {
+        "code": "candidate_generation_infrastructure_error",
+        "stage": "model_call",
+        "error_type": "RuntimeError",
+    }
+    assert "should-not-leak" not in report_text
+
+
+def test_candidate_model_parser_rejects_invalid_patch_intent_before_optimizer() -> None:
+    with pytest.raises(ValueError, match="patch_intent.operations"):
+        _parse_candidate_mutation_model_output(
+            {
+                "patch_intent": {},
+                "rationale": "invalid patch",
+                "files": [],
+            },
+            current_content="---\nname: demo\n---\n# Demo\n",
+        )
+
+
+def test_default_cli_skill_candidate_ignores_non_actionable_iteration_feedback() -> None:
     current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
     prompt = (
         "Propose one concise text-only self-evolve candidate.\n"
@@ -3157,12 +8793,61 @@ def test_default_cli_skill_candidate_includes_iteration_feedback() -> None:
         mutation_prompt=prompt,
     )
 
-    assert "Previous validation feedback" in candidate_content
-    assert "score=68.0" in candidate_content
-    assert "held_out_verification" in candidate_content
+    assert candidate_content == current_content
 
 
-def test_default_cli_skill_candidate_prioritizes_newest_prior_feedback() -> None:
+def test_default_cli_skill_candidate_materializes_runtime_only_behavior_delta() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\nExisting runtime rules.\n"
+    prompt = (
+        "Propose one concise text-only self-evolve candidate.\n"
+        + json.dumps(
+            {
+                "prior_feedback": [
+                    {
+                        "feedback_summary": {
+                            "variant_id": "candidate-internal-id",
+                            "dataset_split": "historical",
+                            "metrics": {
+                                "score": 42.0,
+                                "failed_gates": ["evidence_quality"],
+                                "evidence_compacted": True,
+                            },
+                            "required_behaviors": [
+                                "artifact_first",
+                                "bounded_structured_summary",
+                                "claim_by_claim_verification",
+                            ],
+                            "repair_plan": {
+                                "issues": ["replay_evidence_quality_failure"],
+                                "actions": ["persist_evidence_before_inspection"],
+                                "acceptance_criteria": [
+                                    "evidence_manifest_has_bounded_payload"
+                                ],
+                            },
+                        }
+                    }
+                ]
+            }
+        )
+    )
+
+    candidate_content = _default_cli_skill_candidate(
+        current_content=current_content,
+        trace_packs=(),
+        mutation_prompt=prompt,
+    )
+
+    assert "## Runtime Behavior Delta" in candidate_content
+    assert "Persist large or unknown-size evidence" in candidate_content
+    assert "bounded structured extracts" in candidate_content
+    assert "Self-Evolve" not in candidate_content
+    assert "candidate-internal-id" not in candidate_content
+    assert "evidence_quality" not in candidate_content
+    assert "score=42.0" not in candidate_content
+    assert "Previous validation feedback" not in candidate_content
+
+
+def test_default_cli_skill_candidate_uses_feedback_behavior_without_internal_ids() -> None:
     current_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
     prompt = (
         "Propose one concise text-only self-evolve candidate.\n"
@@ -3220,9 +8905,10 @@ def test_default_cli_skill_candidate_prioritizes_newest_prior_feedback() -> None
         mutation_prompt=prompt,
     )
 
-    assert "latest-candidate on historical" in candidate_content
-    assert "plan_before_tools" in candidate_content
-    assert "stale-candidate on historical" not in candidate_content
+    assert "Plan the shortest viable evidence path" in candidate_content
+    assert "latest-candidate" not in candidate_content
+    assert "stale-candidate" not in candidate_content
+    assert "score_improvement" not in candidate_content
 
 
 def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_preservation_guidance() -> None:
@@ -3257,18 +8943,14 @@ def test_default_cli_skill_candidate_turns_compacted_evidence_feedback_into_pres
         mutation_prompt=prompt,
     )
 
-    assert "Evidence preservation requirements" in candidate_content
-    assert "Do not stream large raw pages" in candidate_content
-    assert "large or unknown-size sources" in candidate_content
-    assert "line-based previews" in candidate_content
-    assert "Persist raw evidence to a file or artifact" in candidate_content
-    assert "bounded structured summary" in candidate_content
-    assert "small, verifiable extracts" in candidate_content
-    assert "If a tool result is compacted" in candidate_content
-    assert "evidence ledger" in candidate_content
-    assert "claim-by-claim" in candidate_content
+    assert "## Runtime Behavior Delta" in candidate_content
+    assert "Persist large or unknown-size evidence" in candidate_content
+    assert "bounded structured extracts" in candidate_content
+    assert "valid artifact-backed evidence bundle" in candidate_content
+    assert "Treat compacted, truncated" not in candidate_content
     assert "curl" not in candidate_content.lower()
-    assert "evidence_compacted=True" in candidate_content
+    assert "evidence_compacted" not in candidate_content
+    assert "candidate-1" not in candidate_content
 
 
 def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generic_guidance() -> None:
@@ -3318,18 +9000,13 @@ def test_default_cli_skill_candidate_turns_scope_regression_feedback_into_generi
         mutation_prompt=prompt,
     )
 
-    assert "Scope and cost control requirements" in candidate_content
-    assert "Prefer fewer verified claims over broad synthesis" in candidate_content
-    assert "Do not expand answer breadth" in candidate_content
-    assert "verifiability per evidence block" in candidate_content
-    assert "avoid collecting more evidence without a verifiability gain" in candidate_content.lower()
-    assert "cap evidence acquisition and summarization cost" in candidate_content.lower()
+    assert "## Runtime Behavior Delta" in candidate_content
     assert "Plan the shortest viable evidence path" in candidate_content
-    assert "Set a small evidence budget" in candidate_content
-    assert "Do not repeat a failed or low-yield evidence path" in candidate_content
-    assert "Stop after sufficient verified evidence" in candidate_content
+    assert "do not broaden the synthesis" in candidate_content
+    assert "without a verifiability gain" in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
+    assert "B2_efficiency" not in candidate_content
 
 
 def test_default_cli_skill_candidate_generates_targeted_delta_for_high_baseline_regression() -> None:
@@ -3372,22 +9049,13 @@ def test_default_cli_skill_candidate_generates_targeted_delta_for_high_baseline_
     )
 
     assert candidate_content != current_content
-    assert "## Self-Evolve Targeted Delta" in candidate_content
-    assert "Preserve" in candidate_content
-    assert "Behavior delta" in candidate_content
-    assert "Acceptance check" in candidate_content
-    assert "High-baseline improvement requirements" not in candidate_content
-    assert "Evidence preservation requirements" not in candidate_content
-    assert "Previous validation feedback" not in candidate_content
-    assert "candidate_score exceeds baseline_score" in candidate_content
-    assert "A1_groundedness" in candidate_content
-    assert "A2_completeness" in candidate_content
-    assert "answer completeness" in candidate_content
-    assert "do not narrow" in candidate_content
-    assert "do not omit supported claims" in candidate_content
-    assert "bounded evidence payload" in candidate_content
-    assert "fields_used" in candidate_content
-    assert "cannot replace" in candidate_content
+    assert "## Runtime Behavior Delta" in candidate_content
+    assert "Preserve the existing successful workflow" in candidate_content
+    assert "smallest repair" in candidate_content
+    assert "Self-Evolve" not in candidate_content
+    assert "candidate_score" not in candidate_content
+    assert "A1_groundedness" not in candidate_content
+    assert "candidate-1" not in candidate_content
 
 
 def test_default_cli_skill_candidate_uses_efficiency_delta_for_high_baseline_score_only_regression() -> None:
@@ -3453,11 +9121,11 @@ def test_default_cli_skill_candidate_uses_efficiency_delta_for_high_baseline_sco
         mutation_prompt=prompt,
     )
 
-    assert "high-baseline efficiency delta" in candidate_content.lower()
-    assert "no more tool calls or evidence steps than the baseline" in candidate_content
-    assert "Do not add pre-final comparison passes" in candidate_content
-    assert "preserve the same claim set" in candidate_content
-    assert "candidate_uses_no_more_steps_than_baseline" in candidate_content
+    assert "Preserve the supported claim set" in candidate_content
+    assert "using no more tool or evidence steps" in candidate_content
+    assert "do not add broad comparison passes" in candidate_content
+    assert "candidate_uses_no_more_steps_than_baseline" not in candidate_content
+    assert "A1_groundedness" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -3524,13 +9192,13 @@ def test_default_cli_skill_candidate_uses_population_strategy_for_distinct_fallb
     )
 
     assert len({conservative, evidence, dimension}) == 3
-    assert "strategy: conservative_preserve_then_delta" in conservative
-    assert "strategy: evidence_integrity_delta" in evidence
-    assert "strategy: score_dimension_repair_delta" in dimension
-    assert "restore A1_groundedness" in dimension
-    assert "bounded payload" in evidence
-    assert "fields_used" in evidence
-    assert "evidence_manifest_invalid_entry_count == 0" in evidence
+    assert "Preserve the existing successful workflow" in conservative
+    assert "Make evidence integrity the only changed behavior" in evidence
+    assert "Restore grounded and complete supported claims" in dimension
+    assert "conservative_preserve_then_delta" not in conservative
+    assert "evidence_integrity_delta" not in evidence
+    assert "score_dimension_repair_delta" not in dimension
+    assert "A1_groundedness" not in dimension
     assert "podcast" not in evidence.lower()
 
 
@@ -3579,10 +9247,9 @@ def test_default_cli_skill_candidate_turns_repair_plan_into_acceptance_criteria(
         mutation_prompt=prompt,
     )
 
-    assert "Verified evidence acceptance criteria" in candidate_content
-    assert "Every final factual claim must have non-compacted support" in candidate_content
-    assert "The evidence manifest must have no invalid entries" in candidate_content
-    assert "Do not finalize if these criteria are not met" in candidate_content
+    assert "Validate each evidence manifest entry before finalizing" in candidate_content
+    assert "bounded excerpt, structured extract, or source span" in candidate_content
+    assert "all_final_claims_have_non_compacted_support" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -3626,10 +9293,10 @@ def test_default_cli_skill_candidate_turns_replay_failures_into_recovery_rules()
         mutation_prompt=prompt,
     )
 
-    assert "Replay failure recovery requirements" in candidate_content
-    assert "After one failed replay evidence attempt" in candidate_content
-    assert "Do not finalize after a failed evidence retry" in candidate_content
-    assert "complete without replay evidence failures" in candidate_content
+    assert "After one failed tool or evidence path" in candidate_content
+    assert "change strategy before retrying" in candidate_content
+    assert "do not finalize without a captured result" in candidate_content
+    assert "replay_timeout" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -3681,10 +9348,9 @@ def test_default_cli_skill_candidate_turns_missing_trajectory_capture_into_recov
         mutation_prompt=prompt,
     )
 
-    assert "Replay failure recovery requirements" in candidate_content
-    assert "returns no trajectory evidence" in candidate_content
-    assert "Do not finalize without captured trajectory evidence" in candidate_content
-    assert "replay_failure_reasons=trajectory_capture_unavailable" in candidate_content
+    assert "After one failed tool or evidence path" in candidate_content
+    assert "do not finalize without a captured result" in candidate_content
+    assert "trajectory_capture_unavailable" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -3742,11 +9408,10 @@ def test_default_cli_skill_candidate_turns_compacted_tool_arguments_into_recover
         mutation_prompt=prompt,
     )
 
-    assert "Tool argument replay hygiene requirements" in candidate_content
-    assert "Do not execute replay placeholders" in candidate_content
-    assert "Regenerate the smallest schema-valid tool arguments" in candidate_content
-    assert "After one invalid tool-argument failure" in candidate_content
-    assert "read a saved artifact" in candidate_content
+    assert "regenerate the smallest schema-valid arguments" in candidate_content
+    assert "current task or a saved artifact" in candidate_content
+    assert "never execute compacted placeholders" in candidate_content
+    assert "compacted_tool_argument_replay" not in candidate_content
     assert "curl" not in candidate_content.lower()
     assert "podcast" not in candidate_content.lower()
 
@@ -3888,6 +9553,19 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
 
     replay_backend = FakeReplayBackend()
     evaluation_backend = PositiveEvaluationBackend()
+
+    class RecordedHttpAdapter:
+        adapter_id = "test.recorded-http.v1"
+
+        def bind(self, dependency, *, context):
+            if dependency.kind != "http_resource":
+                return None
+            return ReplayAdapterBinding(
+                adapter_id=self.adapter_id,
+                dependency_id=dependency.identifier,
+                deterministic=True,
+            )
+
     report_summary = optimize_from_cli_request(
         workspace_root=tmp_path,
         current_trajectory=trajectory,
@@ -3902,6 +9580,9 @@ def test_auto_verified_inferred_target_can_create_new_skill_draft(
         replay_enabled=True,
         baseline_replay_repetitions=2,
         candidate_replay_repetitions=3,
+        replay_adaptation_compiler=ReplayAdaptationCompiler(
+            adapters=(RecordedHttpAdapter(),)
+        ),
     )
 
     assert report_summary["status"] == "succeeded"
@@ -4008,7 +9689,9 @@ def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
     assert report["target_selection"]["diagnostics"]["blocked_selected_target"]["target_id"] == "agent-browser"
 
 
-def test_optimize_cli_request_persists_unsupported_inferred_target(tmp_path) -> None:
+def test_optimize_cli_request_filters_unsupported_inferred_target_before_adapter(
+    tmp_path,
+) -> None:
     trajectory_log = tmp_path / "trajectory.log"
     _write_trajectory_log(
         trajectory_log,
@@ -4050,20 +9733,26 @@ def test_optimize_cli_request_persists_unsupported_inferred_target(tmp_path) -> 
 
     assert report_summary["status"] == "rejected"
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
-    assert report["target"]["target_type"] == "prompt-section"
-    assert report["target"]["target_id"] == "result-validation-anchor-policy"
-    assert report["unsupported_target"]["target_ref"] == "prompt-section:result-validation-anchor-policy"
+    assert report["target"]["target_type"] == "no_target"
+    assert report["target_selection"]["selected_target"] is None
+    assert "unavailable_signaled_target:prompt-section" in report["target_selection"][
+        "signals"
+    ]
+    assert report["target_selection"]["diagnostics"]["unavailable_signaled_target"] == {
+        "target_id": "result-validation-anchor-policy",
+        "target_type": "prompt-section",
+    }
     assert report["candidate_ids"] == []
 
     assert Path(report_summary["target_selection_path"]).exists()
-    assert Path(report_summary["target_provenance_path"]).exists()
+    assert "target_provenance_path" not in report_summary
 
 
 def test_optimize_cli_request_infers_highest_confidence_target_from_trajectory_log(tmp_path) -> None:
-    skill_path = tmp_path / "aworld-skills" / "agent-browser-cdp-login-guidance" / "SKILL.md"
+    skill_path = tmp_path / "aworld-skills" / "agent-browser" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(
-        "---\nname: agent-browser-cdp-login-guidance\n---\n# Browser Login Guidance\n",
+        "---\nname: agent-browser\n---\n# Browser Login Guidance\n",
         encoding="utf-8",
     )
     trajectory_log = tmp_path / "trajectory.log"
@@ -4115,8 +9804,9 @@ def test_optimize_cli_request_infers_highest_confidence_target_from_trajectory_l
     )
 
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
-    assert report["status"] == "rejected"
-    assert report["target"]["target_type"] == "prompt-section"
+    assert report["status"] == "succeeded"
+    assert report["target"]["target_type"] == "skill"
+    assert report["target"]["target_id"] == "agent-browser"
     assert report["target_selection"]["confidence"] == 0.9
 
 
@@ -4272,7 +9962,10 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     )
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
-    assert report["optimizer_diagnostics"]["filtered_duplicate_candidates"] == 1
+    optimizer_iterations = report["optimizer_diagnostics"]["iterations"]
+    assert optimizer_iterations[0]["diagnostics"]["filtered_duplicate_candidates"] == 1
+    assert report["population"]["generated_candidate_count"] == 2
+    assert len(report["optimizer_diagnostics"]["iterations"]) == 2
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
 
 
@@ -4371,7 +10064,8 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     assert updated_content != original_content
     assert "release_state: verified" in updated_content
     assert f"verified_run_id: {report['run_id']}" in updated_content
-    assert "Self-Evolve Trace Guidance" in updated_content
+    assert "Runtime Behavior Delta" in updated_content
+    assert "Self-Evolve Trace Guidance" not in updated_content
     assert report["post_apply"]["status"] == "accepted"
     assert refresh_calls == [candidate_id]
     assert report["post_apply"]["refresh"] == {

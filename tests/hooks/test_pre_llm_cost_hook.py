@@ -49,6 +49,7 @@ async def test_pre_llm_cost_hook_resolves_current_agent_for_llm_sender(monkeypat
     context = SimpleNamespace(
         session_id="sess-1",
         agent_info=SimpleNamespace(current_agent_id="real_agent"),
+        execution_scope="cli_interactive",
     )
     message = Message(
         category="agent_hook",
@@ -89,3 +90,33 @@ async def test_pre_llm_cost_hook_skips_llm_sender_without_current_agent(monkeypa
     assert result is message
     assert looked_up == []
     assert "Agent llm_model not found" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_pre_llm_cost_hook_skips_self_evolve_before_cli_lookups(monkeypatch):
+    from aworld_cli.executors import pre_llm_cost_hook
+    from aworld_cli.executors.pre_llm_cost_hook import PreLlmCostHook
+
+    def unexpected_agent_lookup(name):
+        raise AssertionError(f"unexpected CLI agent lookup: {name}")
+
+    monkeypatch.setattr(
+        pre_llm_cost_hook.AgentFactory,
+        "agent_instance",
+        unexpected_agent_lookup,
+    )
+    message = Message(
+        category="agent_hook",
+        payload={"event": "before_llm_call"},
+        sender="self-evolve-candidate-generator",
+        headers={},
+    )
+    context = SimpleNamespace(
+        session_id="self-evolve-session",
+        execution_scope="self_evolve",
+        context_info={"execution_scope": "self_evolve"},
+    )
+
+    result = await PreLlmCostHook().exec(message, context=context)
+
+    assert result is message

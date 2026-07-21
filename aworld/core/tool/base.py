@@ -3,6 +3,7 @@
 
 import abc
 import inspect
+import os
 import time
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union, Callable
@@ -83,6 +84,34 @@ def ensure_action_results(
             action_result_kwargs["error"] = error
         observation.action_result.append(ActionResult(**action_result_kwargs))
     return observation
+
+
+def _enforce_runtime_tool_call_budget(
+    tool_name: str,
+    action: List["ActionModel"],
+    message: Message,
+) -> None:
+    """Apply an opt-in process-local tool-call budget to one task context."""
+    raw_limit = os.environ.get("AWORLD_TOOL_CALL_LIMIT")
+    if not raw_limit:
+        return
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        logger.warning(f"Ignoring invalid AWORLD_TOOL_CALL_LIMIT={raw_limit!r}")
+        return
+    if limit <= 0:
+        return
+
+    owner = getattr(message, "context", None) or message
+    current = int(getattr(owner, "_aworld_runtime_tool_call_count", 0) or 0)
+    requested = len(action or ())
+    if current + requested > limit:
+        raise ToolExecutionDenied(
+            tool_name,
+            f"runtime tool-call budget exhausted ({current}/{limit})",
+        )
+    setattr(owner, "_aworld_runtime_tool_call_count", current + requested)
 
 
 def _iter_hook_headers(hook_events: List[Message]):
@@ -502,6 +531,8 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
             _apply_hook_headers_to_message(message, pre_hook_events)
 
+            _enforce_runtime_tool_call_budget(self.name(), action, message)
+
             self.pre_step(action, **kwargs)
             res = self.do_step(action, message=message, **kwargs)
 
@@ -785,6 +816,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             )
 
             _apply_hook_headers_to_message(message, pre_hook_events)
+
+            _enforce_runtime_tool_call_budget(self.name(), action, message)
 
             await self.pre_step(action, message=message,**kwargs)
             res = await self.do_step(action, message=message, **kwargs)

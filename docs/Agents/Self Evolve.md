@@ -2,7 +2,7 @@
 
 Self-evolve is a framework-owned capability for improving agent-facing harness artifacts from observed task trajectories. Phase 1 is intentionally narrow: it proposes and verifies changes to harness text and configuration surfaces, especially skills. It does not mutate AWorld framework code, runtime code, CLI code, dependency manifests, secrets, or repository product logic.
 
-The capability is disabled by default. Agents opt in through `AgentConfig.self_evolve_config`, and `aworld-cli optimize` provides an explicit manual/debug entrypoint for release operators and developers.
+The capability is disabled by default. Agents opt in through `AgentConfig.self_evolve_config`, `aworld-cli --evolve` can enable it for the current CLI runtime session, and `aworld-cli optimize` provides an explicit manual/debug entrypoint for release operators and developers.
 
 ## What It Optimizes
 
@@ -31,6 +31,43 @@ Self-evolve follows a proposal-first pipeline:
 
 This keeps the self-evolve loop outside the task response path. Post-run scheduling is best effort: a failed enqueue is logged and does not change the completed `TaskResponse`.
 
+### Three-Trajectory Replay Model
+
+A trajectory dataset is historical evidence, not an executable copy of its source
+machine. Self-evolve uses three distinct trajectories:
+
+1. The source trajectory supplies candidate-generation evidence and the semantic
+   task anchor.
+2. The replay baseline runs the current skill in a newly adapted environment.
+3. The replay candidate runs the proposed skill from the same adapted initial state.
+
+Only the paired replay baseline/candidate comparison is used to attribute an
+improvement to the skill change. The historical trajectory is not substituted for a
+missing replay baseline.
+
+Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace paths
+to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment
+snapshot, fingerprints both, and classifies external dependencies. Explicit bounded
+local files may be copied into the seed. Live HTTP resources, local endpoints,
+continuation context, stateful browser/tool names observed in the source trace,
+authenticated profiles, and other stateful
+dependencies require a registered deterministic adapter; the compiler never invents
+a successful mock for an unknown dependency.
+
+Every baseline, candidate, and repetition receives a fresh copy of the same verified
+seed as its working directory. Writes from one rollout therefore cannot change the
+initial state of another rollout. A pair is comparable only when its adaptation,
+workspace-seed, task-input, dataset, and baseline-skill provenance agree. Cached
+baselines are reused only when target identity and all relevant fingerprints still
+match and the stored successful repetition count is exactly the requested count;
+older replay artifacts without provenance remain readable but are not reused and cannot
+resume an evaluator path that authorizes verified apply.
+
+Unresolved adaptation produces a failed `replay_adaptation` gate before a rollout is
+started. Proposal mode still preserves the generated candidate and diagnostics.
+`auto_verified` rejects the candidate because deterministic paired evidence is
+missing.
+
 ## Configuration
 
 `SelfEvolveConfig.mode` controls whether the runner schedules self-evolve work:
@@ -58,6 +95,56 @@ Modes:
 
 Self-evolve is separate from older learning switches. `meta_learning_config` stores and extracts learning knowledge, `ContextRuleConfig.optimization_config` controls context compression/optimization behavior, and `train.evolve` is a training asset. `SelfEvolveConfig` is the opt-in for this framework proposal and verification loop.
 
+## Runtime CLI Opt-In
+
+Use `--evolve` when running the main CLI agent and you want completed tasks to enqueue background self-evolve work:
+
+```bash
+aworld-cli --evolve
+aworld-cli --evolve=online --judge-agent ~/Documents/agent.md --judge-model-profile judge
+aworld-cli run --task "summarize this page" --evolve=shadow
+```
+
+`--evolve` is equivalent to `--evolve=shadow`: the current runtime session writes proposal artifacts only. `--evolve=online` injects `SelfEvolveConfig(mode="online", apply_policy="auto_verified")` into the selected local agent, so background jobs may apply allowlisted targets only after verified replay, evaluator gates, and post-apply runtime-loader checks pass.
+
+Use `--judge-agent`, `--judge-agent-name`, or `--judge-backend-ref` with `--evolve` to configure the evaluator used by background jobs. These selectors map to `SelfEvolveConfig.judge_config` and follow the same mutually exclusive semantics as `aworld-cli optimize`.
+
+Use `--judge-model-profile <name>` when the judge should run on a different named model profile from the main CLI agent. For markdown judges, `agent.md` may also declare the profile in front matter:
+
+```markdown
+---
+name: trajectory-evaluator
+model_profile: judge
+---
+```
+
+The profile is resolved by the CLI model profile loader and does not change the main task agent's `.env` model settings. An explicit `--judge-model-profile` value takes precedence over the markdown front matter. For `--judge-agent-name`, the profile is applied to local named judge agents whose runtime config is accessible; remote or opaque executors keep their own model configuration.
+
+Example CLI config shape:
+
+```json
+{
+  "models": {
+    "judge": {
+      "PROVIDER": "anthropic",
+      "MODEL": "claude-sonnet",
+      "BASE_URL": "<provider-api-base-url>",
+      "api_key_env": "JUDGE_API_KEY",
+      "TEMPERATURE": 0.1
+    }
+  }
+}
+```
+
+The profile loader also accepts lower-case and AWorld-native aliases:
+`provider`/`llm_provider`, `model`/`llm_model_name`, `base_url`/`llm_base_url`,
+and `api_key`/`key`/`token` for literal secrets or
+`api_key_env`/`key_env`/`token_env` for environment-variable names.
+Use `api_key_env` instead of `api_key` when you prefer keeping secrets in `.env`
+or process environment variables.
+
+The flag does not implement a separate optimization path. It configures the runtime agent; post-run enqueue, draining, replay, candidate generation, gates, and apply remain owned by the framework self-evolve scheduler and runner. Remote agents are not mutated by the local CLI flag.
+
 ## CLI Examples
 
 Run a proposal-only explicit skill optimization:
@@ -77,6 +164,15 @@ aworld-cli optimize \
   --from-trajectory ./trajectory.log \
   --apply proposal
 ```
+
+`--from-trajectory` is the default manual entrypoint even when the log contains
+multiple task trajectories. The framework parses the log, infers target/task
+families, and uses an internally selected coherent group for candidate
+generation, replay, and evaluation. Use `--from-trajectory-set` only when a
+caller needs explicit control over baseline trajectory collections.
+User-authored set files may contain `baseline` and `operator_added` members
+only. Framework-owned accepted, rejected, and replay members come from
+self-evolve run history, not from user-authored set files.
 
 Run verified apply for an allowlisted skill target:
 
@@ -169,6 +265,46 @@ result = asyncio.run(
 )
 ```
 
+Stateful dependencies can be made replayable through an explicit SDK adapter:
+
+```python
+from aworld.self_evolve import (
+    ReplayAdapterBinding,
+    ReplayAdaptationCompiler,
+)
+
+
+class RecordedServiceAdapter:
+    adapter_id = "example.recorded-service.v1"
+
+    def __init__(self, fixture: Path) -> None:
+        self.fixture = fixture.resolve()
+
+    def bind(self, dependency, *, context):
+        if dependency.kind != "http_resource" or not self.fixture.is_file():
+            return None
+        return ReplayAdapterBinding(
+            adapter_id=self.adapter_id,
+            dependency_id=dependency.identifier,
+            deterministic=True,
+            environment={"AWORLD_REPLAY_SERVICE_FIXTURE": str(self.fixture)},
+            fixture_paths=(str(self.fixture),),
+        )
+
+
+runner = SelfEvolveRunner(
+    store=FilesystemSelfEvolveStore(Path.cwd()),
+    optimizer=TraceReflectiveLLMMutator(mutate_text=mutate_text),
+    replay_adaptation_compiler=ReplayAdaptationCompiler(
+        adapters=(RecordedServiceAdapter(Path("fixtures/service.json")),)
+    ),
+)
+```
+
+An adapter is an assertion about a real deterministic fixture or simulator. Marking a
+live service deterministic without supplying equivalent replay behavior invalidates
+the comparison contract.
+
 Proposal runs persist candidates and reports but do not write the target file. Use `apply_policy="auto_verified"` only when an evaluation backend, replay evidence, and post-apply runtime-loader verification are available.
 
 ## Run Artifacts
@@ -180,11 +316,42 @@ Each run writes durable artifacts under `.aworld/self_evolve/<run_id>/`:
 - `dataset_recipe.json`: source config, split seed, trainable cases, held-out cases, and synthetic generation policy.
 - `target_selection.json`: credit-assignment decision, confidence, and target inference signals.
 - `target_provenance.json`: provenance for the selected target when available.
-- `candidates/<candidate_id>.md`: candidate content. Skill candidates are marked with `self_evolve.release_state: candidate`.
+- `candidates/<candidate_id>.md`: runtime-only candidate content. Skill candidates are marked with `self_evolve.release_state: candidate`; task ids, evidence ids, gate names, scores, and prior feedback remain in lineage and lesson artifacts.
 - `candidates/<candidate_id>.diff`: unified diff against the current target, when the target adapter supports diffs.
-- `optimizer_lineage/<candidate_id>.json`: optimizer name/version, parents, trainable cases, and rationale.
+- `optimizer_lineage/<candidate_id>.json`: optimizer name/version, parents, trainable cases, content fingerprint, semantic fingerprint, lesson-set fingerprint, addressed lesson ids, and rationale.
+- `lessons/lessons.jsonl`: normalized failure memories, success memories, and required runtime behavior records extracted from evaluation feedback.
+- `diagnostics/harness_diagnostics.jsonl`: advisory framework diagnostics for replay, evidence, evaluator, memory, permission-boundary, and artifact-lifecycle issues. These records are intentionally separate from runtime skill instructions.
 - `judges/<backend_id>.json`: judge prompt/result metadata.
 - `apply/<candidate_id>.backup.md` and `apply/<candidate_id>.journal.json`: rollback material for verified apply.
+- `release_normalization` in `report.json`: pre-normalization fingerprint, normalized release fingerprint, preserved runtime constraints, removed internal line count, and normalization verification status.
+- `replay_adaptation/<dataset_fingerprint>/bundle.json`: adapted per-case inputs, dependency status, adapter ids, readiness, and provenance fingerprints.
+- `replay_adaptation/<dataset_fingerprint>/workspace_seed/`: filtered immutable replay seed verified before every rollout copy.
+- `replay_adaptation/<dataset_fingerprint>/workspace_manifest.json`: relative paths, modes, sizes, and SHA-256 digests for seed files.
+- `replay_adaptation/<dataset_fingerprint>/environment_snapshot.json`: bounded non-secret runtime, locale, platform, and observed tool metadata used in the adaptation fingerprint.
+
+Artifact retention runs both when a self-evolve run starts and when it reaches a
+terminal report. The two newest runs, lineage-referenced runs, interrupted apply
+runs, and runs with a live process lease keep their complete artifacts. Older
+eligible runs discard raw replay, replay-adaptation, repair-conformance, evaluator,
+overlay, and temporary-workspace data. Candidate JSON records remain durable so
+`--from-run` and audit tooling can reconstruct a candidate; only redundant Markdown,
+diff, and expanded package copies for unselected candidates are pruned. A non-terminal
+run without a live lease becomes eligible only after the stale-run retention window.
+
+Trajectory-set runs may also include framework-owned trajectory-set and population artifacts:
+
+- `trajectory_set/set.json`: validated copy or normalized representation of the trajectory-set input.
+- `trajectory_set/members/<member_id>.json`: bounded member metadata and source references.
+- `population/candidates.jsonl`: generated candidate strategy records, including non-replayed candidates when replay budget is exhausted.
+- `population/patches/<candidate_id>.json`: patch intent metadata before materialization.
+
+Multi-member replay stores a versioned manifest under `replay/<candidate_id>/members/manifest.json`. Each member directory contains only that member's baseline/candidate repetitions and uses the member's own task input. Validation and held-out evaluators consume their assigned member splits; replay repetitions measure stability and do not count as additional independent held-out members.
+
+Each repetition directory also contains a `workspace/` copied from the adaptation
+seed. These workspaces are execution sandboxes and may contain rollout mutations;
+the compiler seed remains the canonical initial state.
+
+When `--include-prior-runs` is enabled, the framework imports same-target prior run reports as advisory trainable cases. These cases carry bounded status, failed gates, metric summaries, candidate ids, and report paths; they do not copy raw trajectories into optimizer prompts and they do not create new replay evidence.
 
 The CLI summary prints the most important paths, for example:
 
@@ -228,6 +395,10 @@ When apply is allowed, the runner:
 
 Generated draft skills are hidden from runtime discovery until verified. Runtime skill registries filter out `draft`, `candidate`, `rejected`, and `disabled` self-evolve release states.
 
+Candidate overlays and accepted production skills should contain only runtime-executable behavior rules. Candidate-only context such as trajectory ids, evaluator scores, gate names, raw harness diagnostic labels, and evidence ids belongs in run artifacts, not in candidate bodies or `aworld-skills/.../SKILL.md`.
+
+Domain-specific learned skills, such as a grounding or media-comprehension skill produced by a run, are target artifacts. They are examples of what self-evolve can improve, not framework-owned self-evolve logic.
+
 ## Operating Guidance
 
 - Prefer `proposal` for exploration, weak evidence, new target types, or human review.
@@ -236,6 +407,8 @@ Generated draft skills are hidden from runtime discovery until verified. Runtime
 - Do not expose held-out cases to candidate optimizers.
 - Do not copy replay overlay instructions or framework control flow into target skills.
 - Treat a missing gate, missing replay artifact, or missing post-apply runtime-loader signal as not verified.
+- Treat `runtime_required`, `unresolved`, and `context_incomplete` replay dependencies as non-deterministic until a typed adapter supplies equivalent fixtures.
+- Never repair replay by copying credentials, browser profiles, cookies, or private host state into the seed.
 - For long-lived runtimes, check `post_apply.activation` and `post_apply.refresh` before claiming future tasks will observe the applied skill without restart.
 
 ## Troubleshooting
@@ -245,6 +418,7 @@ Generated draft skills are hidden from runtime discovery until verified. Runtime
 - `auto_verified skill apply requires candidate replay backend`: verified apply requires replay evidence for skill candidates.
 - Judge timeout after replay completed: rerun `aworld-cli optimize --from-run <run_id> --rerun-evaluator`.
 - Missing replay repetitions or replay timeout: rerun full optimize with a higher `--replay-timeout`; evaluator-only resume cannot create new replay evidence.
+- `replay_adaptation requires unavailable context or dependencies`: inspect the gate details and `replay_adaptation/.../bundle.json`; provide a bounded fixture/adapter or keep the result proposal-only.
 - Post-apply status is `rolled_back`: inspect `report.json` and `apply/<candidate_id>.journal.json` for the failed metric, activation error, or runtime-loader mismatch.
 
 See [Optimize](../AWorld%20CLI/Commands/Optimize.md) for the command reference. A small toy dataset is available in the repository at `examples/aworld_quick_start/self_evolve/`.

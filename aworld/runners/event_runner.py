@@ -4,6 +4,7 @@ import asyncio
 import copy
 import inspect
 import json
+import os
 import time
 import traceback
 from collections.abc import Mapping
@@ -838,7 +839,12 @@ class TaskEventRunner(TaskRunner):
                        "trajectory": json.dumps(to_serializable(self._task_response.trajectory), ensure_ascii=False),
                        "token_id_trajectory": token_id_traj,
                        "llm_calls": json.dumps(copy.deepcopy(self.context.context_info.get("llm_calls", [])), ensure_ascii=False)}
-                trajectory_logger.info(f"{res}")
+                if os.getenv("AWORLD_TRAJECTORY_LOG_DISABLED", "").lower() not in (
+                    "1",
+                    "true",
+                    "yes",
+                ):
+                    trajectory_logger.info(f"{res}")
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 

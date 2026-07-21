@@ -54,6 +54,12 @@ constraints or overlays. Do not copy those framework controls into the target
 skill unless the final applied guidance is independently useful for the target
 task itself.
 
+Before overlay replay, materialize target skill candidates as runtime-only
+behavior deltas. Keep task ids, evidence ids, evaluator metrics, gate names,
+historical feedback, and lineage details in self-evolve artifacts rather than
+the candidate instruction body. If no lesson supports an actionable runtime
+delta, preserve the target and report a no-op candidate.
+
 ## Workflow
 
 1. Clarify the requested outcome: diagnostics, proposal-only improvement, or
@@ -74,6 +80,32 @@ task itself.
 7. Report the run id, target, evidence source, candidate id, metric deltas,
    gate status, replay path, evaluator report path, report path, and apply
    status.
+
+## Trajectory-Set Learning
+
+Use trajectory-set inputs when the goal is sustained improvement instead of a
+single trace reflection. Prefer a small related set that includes the original
+baseline trajectory, candidate replay results, accepted-skill follow-up
+trajectories, and rejected candidate runs for the same target.
+
+The framework owns trajectory-set validation, prior-run inclusion, lesson
+extraction, candidate population ranking, replay selection, and lineage
+memory. This skill should only describe the operating flow:
+
+- Use `--from-trajectory-set <set.json>` when the user has a curated set.
+- Use `--include-prior-runs` when same-target self-evolve history should be
+  used as advisory learning memory.
+- Treat lessons, harness diagnostics, lineage, and population records as
+  framework artifacts under `.aworld/self_evolve/<run_id>/`.
+- Do not copy raw trajectories, judge rubrics, internal gate names, task ids,
+  or replay-only controls into a target skill.
+- If prior runs show repeated rejected variants, expect the framework to avoid
+  exact, semantic, and lesson-set duplicates before expensive replay.
+
+Candidate generation should preserve successful lean behavior paths and only
+add lesson-backed behavior deltas. When no safe lesson-backed delta exists,
+the correct outcome is no-op or rejection, not a longer or more specific
+target skill.
 
 ## Target Tiers
 
@@ -144,6 +176,11 @@ logic. Respect `replay_candidate_limit`, `baseline_replay_repetitions`,
 in config or reports. A fixed historical baseline plus a single candidate rerun
 is limited-confidence unless framework policy explicitly accepts it.
 
+During optimize runs, progress messages may report trajectory-set loading,
+candidate population generation, replay, evaluation, lesson extraction, and
+release normalization. These are framework stages. Do not infer success from a
+progress stage alone; use the final report gates and post-apply status.
+
 ## SDK Example
 
 Use the SDK path when a real `CandidateOptimizer` is supplied by the caller:
@@ -204,3 +241,10 @@ Return a compact summary with:
 - `evaluator_report_paths`
 - `report_path`
 - `apply_status`
+
+For verified skills, the released `SKILL.md` should contain only runtime
+behavior guidance. Internal self-evolve context belongs in report artifacts:
+`lessons`, `harness_diagnostics`, `optimizer_lineage`, `population`, and
+`release_normalization`. If release normalization removes gate-critical runtime
+constraints, the framework must reject or roll back rather than publishing an
+untested normalized skill.

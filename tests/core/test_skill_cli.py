@@ -25,6 +25,7 @@ from aworld_cli.executors.continuous import ContinuousExecutor
 from aworld_cli.models import AgentInfo
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
+from aworld_cli.runtime.cli import _apply_runtime_skill_paths_to_swarm
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
 from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
 from aworld.plugins.discovery import discover_plugins
@@ -48,6 +49,27 @@ def _get_builtin_goal_plugin_root() -> Path:
         / "builtin_plugins"
         / "goal_session"
     )
+
+
+def test_explicit_runtime_skill_paths_reach_task_time_resolver() -> None:
+    conf = SimpleNamespace(
+        ext={
+            "skill_resolver_inputs": {
+                "compatibility_sources": ["/existing/skills"],
+            }
+        }
+    )
+    swarm = SimpleNamespace(_communicate_agent=SimpleNamespace(conf=conf))
+
+    _apply_runtime_skill_paths_to_swarm(
+        swarm,
+        ("/candidate/skills", "/existing/skills"),
+    )
+
+    assert conf.ext["skill_resolver_inputs"]["compatibility_sources"] == [
+        "/existing/skills",
+        "/candidate/skills",
+    ]
 
 
 def test_skill_install_and_list_cli(
@@ -420,6 +442,53 @@ def test_main_accepts_repeated_skill_flag() -> None:
     assert parsed.skill == ["browser-use", "code-review"]
 
 
+def test_main_accepts_evolve_modes() -> None:
+    parser = main_module.build_parser()
+
+    assert parser.parse_args(["--evolve"]).evolve == "shadow"
+    assert parser.parse_args(["--evolve=online"]).evolve == "online"
+    assert parser.parse_args(["--evolve", "off"]).evolve == "off"
+    parsed = parser.parse_args(
+        [
+            "--evolve=online",
+            "--judge-agent",
+            "agent.md",
+            "--judge-model-profile",
+            "judge",
+        ]
+    )
+    assert parsed.evolve == "online"
+    assert parsed.judge_agent == "agent.md"
+    assert parsed.judge_model_profile == "judge"
+
+
+def test_cli_evolve_mode_maps_to_self_evolve_config() -> None:
+    shadow = main_module._self_evolve_config_from_cli_mode("shadow")
+    online = main_module._self_evolve_config_from_cli_mode("online")
+    off = main_module._self_evolve_config_from_cli_mode("off")
+
+    assert shadow.mode == "shadow"
+    assert shadow.apply_policy == "proposal"
+    assert online.mode == "online"
+    assert online.apply_policy == "auto_verified"
+    assert off.mode == "off"
+    assert off.apply_policy == "proposal"
+
+
+def test_cli_evolve_mode_maps_judge_agent_to_config() -> None:
+    config = main_module._self_evolve_config_from_cli_mode(
+        "online",
+        judge_agent="agent.md",
+        judge_model_profile="judge",
+    )
+
+    assert config.mode == "online"
+    assert config.apply_policy == "auto_verified"
+    assert config.judge_config.mode == "agent_md"
+    assert config.judge_config.agent_path == "agent.md"
+    assert config.judge_config.model_profile == "judge"
+
+
 def test_skill_command_is_registered_via_plugin_registry() -> None:
     registry = TopLevelCommandRegistry()
 
@@ -478,6 +547,54 @@ async def test_run_direct_mode_passes_requested_skill_names(
     )
 
     assert captured["requested_skill_names"] == ["browser-use", "code-review"]
+
+
+@pytest.mark.asyncio
+async def test_run_direct_mode_passes_self_evolve_config_to_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+            captured["self_evolve_config"] = kwargs.get("self_evolve_config")
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return SimpleNamespace(console=None)
+
+        def _restore_executor_session(self, executor, current_agent_name=None):
+            return None
+
+    class DummyContinuousExecutor:
+        def __init__(self, agent_executor, console=None) -> None:
+            pass
+
+        async def run_continuous(self, **kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr(
+        "aworld.core.scheduler.get_scheduler",
+        lambda: SimpleNamespace(),
+    )
+
+    await main_module._run_direct_mode(
+        prompt="use browser",
+        agent_name="Aworld",
+        self_evolve_config=main_module._self_evolve_config_from_cli_mode("online"),
+    )
+
+    config = captured["self_evolve_config"]
+    assert config.mode == "online"
+    assert config.apply_policy == "auto_verified"
 
 
 @pytest.mark.asyncio
@@ -643,7 +760,7 @@ def test_run_top_level_command_emits_machine_readable_trajectory(
         remote_backend=None,
         agent_dir=None,
         agent_file=None,
-        skill_path=None,
+        skill_path=["/tmp/candidate-skills"],
         env_file=".env",
         emit_trajectory=True,
     )
@@ -654,6 +771,65 @@ def test_run_top_level_command_emits_machine_readable_trajectory(
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload["trajectory"][0]["action"]["content"] == "Replay completed."
     assert payload["trajectory"][0]["state"]["input"]["content"] == "Replay this task"
+
+
+def test_run_top_level_command_dispatches_global_evolve_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    async def fake_run_direct_mode(**kwargs):
+        captured.update(kwargs)
+        return {"results": []}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(main_module, "_resolve_agent_dirs", lambda agent_dirs: [])
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+
+    args = SimpleNamespace(
+        task="Replay this task",
+        agent="Aworld",
+        skill=None,
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=["/tmp/candidate-skills"],
+        env_file=".env",
+        emit_trajectory=False,
+    )
+    context = SimpleNamespace(
+        argv=[
+            "aworld-cli",
+            "--evolve=online",
+            "--judge-agent",
+            "agent.md",
+            "--judge-model-profile",
+            "judge",
+            "run",
+            "--task",
+            "Replay this task",
+        ]
+    )
+
+    assert RunTopLevelCommand().run(args, context) == 0
+
+    config = captured["self_evolve_config"]
+    assert config.mode == "online"
+    assert config.apply_policy == "auto_verified"
+    assert config.judge_config.mode == "agent_md"
+    assert config.judge_config.agent_path == "agent.md"
+    assert config.judge_config.model_profile == "judge"
+    assert captured["skill_paths"] == ["/tmp/candidate-skills"]
 
 
 def test_run_top_level_command_prefers_task_response_trajectory(

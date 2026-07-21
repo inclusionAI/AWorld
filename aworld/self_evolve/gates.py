@@ -7,7 +7,56 @@ from typing import Any
 
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
+from aworld.self_evolve.candidate_package import (
+    candidate_files_total_bytes,
+    validate_candidate_files,
+)
+
+
+class ReplayAdaptationGate:
+    def evaluate(self, bundle: ReplayAdaptationBundle) -> GateResult:
+        readiness_values = {case.readiness for case in bundle.cases}
+        readiness = "ready"
+        if not bundle.ready:
+            readiness = next(
+                (
+                    value
+                    for value in (
+                        "context_incomplete",
+                        "unresolved",
+                        "runtime_required",
+                    )
+                    if value in readiness_values
+                ),
+                "unresolved",
+            )
+        unavailable_dependencies = [
+            dependency
+            for case in bundle.cases
+            for dependency in case.dependencies
+            if not dependency.deterministic
+            or dependency.status
+            in {"context_incomplete", "unresolved", "runtime_required"}
+        ]
+        return GateResult(
+            gate_name="replay_adaptation",
+            passed=bundle.ready and not unavailable_dependencies,
+            reason=(
+                "replay adaptation is deterministic and ready"
+                if bundle.ready and not unavailable_dependencies
+                else "replay adaptation requires unavailable context or dependencies"
+            ),
+            details={
+                "readiness": readiness,
+                "case_count": len(bundle.cases),
+                "unresolved_dependency_count": len(unavailable_dependencies),
+                "adaptation_fingerprint": bundle.adaptation_fingerprint,
+                "workspace_seed_fingerprint": bundle.workspace_seed_fingerprint,
+                "environment_fingerprint": bundle.environment_fingerprint,
+            },
+        )
 
 
 class ScoreImprovementGate:
@@ -108,7 +157,7 @@ class CostLatencyRegressionGate:
 
 class NoopCandidateGate:
     def evaluate(self, *, current_content: str, candidate: CandidateVariant) -> GateResult:
-        changed = candidate.content != current_content
+        changed = candidate.content != current_content or bool(candidate.files)
         return GateResult(
             gate_name="noop_candidate",
             passed=changed,
@@ -187,7 +236,8 @@ class TokenLimitGate:
         self.max_chars = max_chars
 
     def evaluate(self, candidate: CandidateVariant) -> GateResult:
-        passed = len(candidate.content) <= self.max_chars
+        actual_chars = len(candidate.content) + candidate_files_total_bytes(candidate.files)
+        passed = actual_chars <= self.max_chars
         return GateResult(
             gate_name="token_limit",
             passed=passed,
@@ -196,7 +246,25 @@ class TokenLimitGate:
                 if passed
                 else "candidate content exceeds token budget"
             ),
-            details={"max_chars": self.max_chars, "actual_chars": len(candidate.content)},
+            details={"max_chars": self.max_chars, "actual_chars": actual_chars},
+        )
+
+
+class CandidatePackageGate:
+    def evaluate(self, candidate: CandidateVariant) -> GateResult:
+        try:
+            files = validate_candidate_files(candidate.files)
+        except ValueError as exc:
+            return GateResult(
+                gate_name="candidate_package",
+                passed=False,
+                reason=str(exc),
+            )
+        return GateResult(
+            gate_name="candidate_package",
+            passed=True,
+            reason="candidate package file deltas are valid",
+            details={"file_count": len(files)},
         )
 
 
@@ -385,18 +453,25 @@ class EvidenceQualityGate:
                 reason="verified apply requires replay tool evidence",
                 details=details,
             )
-        if canonical_bundle_evidence and evidence_manifest_invalid_entry_count == 0:
-            return GateResult(
-                gate_name="evidence_quality",
-                passed=True,
-                reason="evaluation evidence is present via canonical evidence bundle",
-                details=details,
-            )
         if artifact_first_evidence and evidence_manifest_invalid_entry_count > 0:
             return GateResult(
                 gate_name="evidence_quality",
                 passed=False,
                 reason="artifact-first evidence is not fully verifiable",
+                details=details,
+            )
+        if incomplete:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="evaluation evidence is compacted or incomplete",
+                details=details,
+            )
+        if canonical_bundle_evidence:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=True,
+                reason="evaluation evidence is present via canonical evidence bundle",
                 details=details,
             )
         if artifact_first_evidence:
@@ -406,7 +481,7 @@ class EvidenceQualityGate:
                 reason="evaluation evidence is present via artifact-first manifest",
                 details=details,
             )
-        if compacted or incomplete:
+        if compacted:
             return GateResult(
                 gate_name="evidence_quality",
                 passed=False,
@@ -515,11 +590,24 @@ class HeldOutVerificationGate:
             and decision.baseline_replay_count >= 2
             and decision.candidate_replay_count >= 3
         )
-        passed = held_out_passed or single_case_replay_passed
+        trajectory_set_validation_passed = (
+            decision.confidence == "verified"
+            and decision.verification_mode == "trajectory_set_validation"
+            and decision.verification_split == "trajectory_set_validation"
+            and decision.held_out_case_count > 0
+            and decision.deterministic_signal_present
+        )
+        passed = (
+            held_out_passed
+            or single_case_replay_passed
+            or trajectory_set_validation_passed
+        )
         if held_out_passed:
             reason = "candidate is verified on sufficient held-out cases"
         elif single_case_replay_passed:
             reason = "candidate is verified by stable single-case replay"
+        elif trajectory_set_validation_passed:
+            reason = "candidate is verified by trajectory-set validation"
         else:
             reason = "candidate is not verified on sufficient held-out cases"
         return GateResult(

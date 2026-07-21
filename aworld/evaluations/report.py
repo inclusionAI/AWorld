@@ -17,6 +17,7 @@ class CaseEvaluationReport(dict):
         metrics: dict[str, Any],
         judge: dict[str, Any],
         judge_backend: dict[str, Any] | None = None,
+        judge_diagnostics: list[dict[str, Any]] | None = None,
         state_summary: dict[str, Any] | None = None,
         artifacts: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -33,6 +34,8 @@ class CaseEvaluationReport(dict):
         }
         if artifacts:
             payload["artifacts"] = artifacts
+        if judge_diagnostics:
+            payload["judge_diagnostics"] = judge_diagnostics
         if metadata:
             payload["metadata"] = metadata
         if metric_details:
@@ -199,6 +202,10 @@ def get_evaluator_report_schema() -> dict[str, object]:
                             "properties": {"backend_id": {"type": "string"}},
                             "required": ["backend_id"],
                             "additionalProperties": False,
+                        },
+                        "judge_diagnostics": {
+                            "type": "array",
+                            "items": {"type": "object"},
                         },
                         "state_summary": {"type": "object"},
                     },

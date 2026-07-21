@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Protocol
+from typing import TYPE_CHECKING, Mapping, Protocol
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -11,6 +12,10 @@ from aworld.self_evolve.types import (
     OptimizerLineage,
     SelfEvolveTargetRef,
 )
+
+if TYPE_CHECKING:
+    from aworld.self_evolve.evolution_context import EvolutionContext
+    from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 
 
 @dataclass(frozen=True)
@@ -21,8 +26,12 @@ class OptimizerRequest:
     trace_packs: tuple[TracePack, ...]
     validation_feedback: tuple[EvaluationSummary, ...] = ()
     prior_feedback: tuple[EvaluationSummary, ...] = ()
+    lesson_records: tuple[LessonRecord, ...] = ()
     trainable_cases: tuple[EvalCase, ...] = ()
     max_candidates: int = 1
+    replay_requirements: tuple[ReplayCapabilityRequirement, ...] = ()
+    target_package_inventory: tuple[str, ...] = ()
+    evolution_context: EvolutionContext | None = None
 
     @classmethod
     def from_dataset(
@@ -34,8 +43,11 @@ class OptimizerRequest:
         trace_packs: tuple[TracePack, ...],
         validation_feedback: tuple[EvaluationSummary, ...],
         prior_feedback: tuple[EvaluationSummary, ...] = (),
+        lesson_records: tuple[LessonRecord, ...] = (),
         dataset: SelfEvolveDataset,
         max_candidates: int = 1,
+        replay_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
+        target_package_inventory: tuple[str, ...] = (),
     ) -> "OptimizerRequest":
         trainable_ids = set(dataset.recipe.trainable_case_ids)
         return cls(
@@ -45,10 +57,13 @@ class OptimizerRequest:
             trace_packs=trace_packs,
             validation_feedback=validation_feedback,
             prior_feedback=prior_feedback,
+            lesson_records=lesson_records,
             trainable_cases=tuple(
                 case for case in dataset.cases if case.case_id in trainable_ids
             ),
             max_candidates=max_candidates,
+            replay_requirements=tuple(replay_requirements),
+            target_package_inventory=tuple(target_package_inventory),
         )
 
 

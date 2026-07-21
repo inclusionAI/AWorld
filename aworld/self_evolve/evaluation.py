@@ -1,18 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import hashlib
 import inspect
 import json
-import subprocess
-import time
+import os
 import statistics
+import subprocess
+import sys
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from aworld.config.conf import EvaluationConfig
+from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.task import Task
 from aworld.logs.util import logger
+from aworld.runners.batch import (
+    DeterministicTaskBatchExecutor,
+    TaskBatchItem,
+    TaskResourceClaim,
+)
 from aworld.runners.evaluate_runner import EvaluateRunner
+from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary
 
@@ -61,6 +74,8 @@ class EvaluationBackend(Protocol):
 class CommandVerificationBackend:
     """Evaluate objective verification commands attached to eval cases."""
 
+    task_local_runtime = True
+
     def __init__(
         self,
         *,
@@ -74,7 +89,7 @@ class CommandVerificationBackend:
         started_at = time.monotonic()
         case_results: list[Mapping[str, Any]] = []
 
-        for case in request.dataset.cases:
+        for case in _evaluation_cases_for_split(request):
             command = case.verification_command
             if not command:
                 continue
@@ -143,13 +158,15 @@ class EvaluateRunnerBackend:
 class TrajectoryQualityBackend:
     """Score basic trajectory quality from trace packs without running a model."""
 
+    task_local_runtime = True
+
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         case_count = 0
         failed_step_count = 0
         completed_case_count = 0
         total_step_count = 0
 
-        for case in request.dataset.cases:
+        for case in _evaluation_cases_for_split(request):
             if case.trace_pack is None:
                 continue
             case_count += 1
@@ -189,10 +206,19 @@ class TrajectoryQualityBackend:
 class SkillCandidateOverlayBackend:
     """Evaluate a skill candidate overlay against the current trajectory evidence."""
 
+    task_local_runtime = True
+
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         candidate = request.candidate
         candidate_changed = bool(
-            candidate is not None and "Self-Evolve Trace Guidance" in candidate.content
+            candidate is not None
+            and any(
+                heading in candidate.content
+                for heading in (
+                    "## Runtime Behavior Delta",
+                    "## Self-Evolve Trace Guidance",
+                )
+            )
         )
         score = 0.8 if candidate_changed else 0.5
         return EvaluationSummary(
@@ -221,6 +247,7 @@ class AWorldTrajectoryEvaluatorBackend:
         judge_agent: str | None = None,
         judge_agent_name: str | None = None,
         judge_backend_ref: str | None = None,
+        judge_model_profile: str | None = None,
         agent: str | None = None,
         run_evaluator_source: Callable[..., Any] | None = None,
         judge_repetitions: int = 1,
@@ -237,6 +264,7 @@ class AWorldTrajectoryEvaluatorBackend:
         self.judge_agent = judge_agent
         self.judge_agent_name = judge_agent_name
         self.judge_backend_ref = judge_backend_ref
+        self.judge_model_profile = judge_model_profile
         self.agent = agent
         self.run_evaluator_source = run_evaluator_source
         if judge_repetitions <= 0:
@@ -248,6 +276,22 @@ class AWorldTrajectoryEvaluatorBackend:
         self.judge_repetitions = judge_repetitions
         self.judge_failure_retries = judge_failure_retries
         self.judge_timeout_seconds = judge_timeout_seconds
+
+    @property
+    def task_local_runtime(self) -> bool:
+        return self.run_evaluator_source is None
+
+    async def evaluate_variant_in_task(
+        self,
+        request: EvaluationRequest,
+    ) -> EvaluationSummary:
+        if not self.task_local_runtime:
+            return await self.evaluate_variant(request)
+        token = _ISOLATED_EVALUATOR_TASK.set(True)
+        try:
+            return await self.evaluate_variant(request)
+        finally:
+            _ISOLATED_EVALUATOR_TASK.reset(token)
 
     async def evaluate_variant(self, request: EvaluationRequest) -> EvaluationSummary:
         if not request.dataset.cases:
@@ -267,36 +311,62 @@ class AWorldTrajectoryEvaluatorBackend:
         )
         eval_dir.mkdir(parents=True, exist_ok=True)
         log_path = eval_dir / "trajectory.log"
-        records = [
-            _aworld_trajectory_record(case, request=request)
-            for case in request.dataset.cases
-        ]
+        records = _aworld_trajectory_records_for_request(request)
+        evaluation_cases = _evaluation_cases_for_split(request)
+        original_case_count = len(evaluation_cases)
+        effective_case_count = len(records)
+        deduplicated_case_count = max(0, original_case_count - effective_case_count)
         log_path.write_text(
             "\n".join(repr(record) for record in records) + "\n",
             encoding="utf-8",
         )
+        if not records:
+            metrics = _failed_aworld_evaluator_metrics(
+                failures=[],
+                case_count=0,
+                input_path=log_path,
+                judge_repetitions=self.judge_repetitions,
+            )
+            metrics.update(
+                {
+                    "evaluation_case_count": 0,
+                    "original_case_count": 0,
+                    "effective_case_count": 0,
+                    "deduplicated_case_count": 0,
+                    "evaluation_skip_reason": "dataset split has no evaluation cases",
+                }
+            )
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics=metrics,
+            )
         report_path = eval_dir / "report.json"
         runner = self.run_evaluator_source or _load_run_evaluator_source_cli()
-        task_id = request.dataset.cases[0].case_id if len(request.dataset.cases) == 1 else None
+        task_id = evaluation_cases[0].case_id if len(evaluation_cases) == 1 else None
         runner_kwargs = {
             "input": str(log_path),
             "kind": "trajectory",
             "judge_agent": self.judge_agent,
             "judge_agent_name": self.judge_agent_name,
             "judge_backend_ref": self.judge_backend_ref,
+            "judge_model_profile": self.judge_model_profile,
             "out_dir": str(eval_dir / "extracted"),
             "output": str(report_path),
             "task_id": task_id,
             "agent": self.agent,
             "judge_timeout_seconds": self.judge_timeout_seconds,
         }
+        runtime_log_path = eval_dir / "logs"
         reports: list[Mapping[str, Any]] = []
         failures: list[Mapping[str, Any]] = []
         max_attempts = self.judge_repetitions + self.judge_failure_retries
+        fallback_model_profile: str | None = None
         logger.info(
             "self_evolve.evaluator.start "
             f"variant_id={request.variant_id} split={request.dataset_split} "
-            f"cases={len(request.dataset.cases)} repetitions={self.judge_repetitions} "
+            f"cases={original_case_count} effective_cases={effective_case_count} "
+            f"repetitions={self.judge_repetitions} "
             f"max_attempts={max_attempts} namespace={request.artifact_namespace or '-'}"
         )
         for attempt_index in range(1, max_attempts + 1):
@@ -309,18 +379,29 @@ class AWorldTrajectoryEvaluatorBackend:
                 report = await self._run_evaluator_source_with_timeout(
                     runner,
                     runner_kwargs=runner_kwargs,
+                    log_path=runtime_log_path,
                 )
-            except asyncio.TimeoutError:
-                failures.append(
-                    {
-                        "attempt": attempt_index,
-                        "type": "TimeoutError",
-                        "reason": (
-                            "AWorld trajectory judge timed out after "
-                            f"{self.judge_timeout_seconds:g}s"
-                        ),
-                    }
-                )
+            except asyncio.TimeoutError as exc:
+                timeout_reason = str(exc).strip()
+                if not timeout_reason:
+                    timeout_reason = (
+                        "AWorld trajectory judge timed out after "
+                        f"{self.judge_timeout_seconds:g}s"
+                        if self.judge_timeout_seconds is not None
+                        else "AWorld trajectory judge timed out"
+                    )
+                failure: dict[str, Any] = {
+                    "attempt": attempt_index,
+                    "type": "TimeoutError",
+                    "reason": timeout_reason,
+                }
+                diagnostics = _judge_diagnostics_from_exception(exc)
+                if diagnostics:
+                    failure["diagnostics"] = diagnostics
+                    timeout_phase = diagnostics[-1].get("phase")
+                    if isinstance(timeout_phase, str) and timeout_phase:
+                        failure["timeout_phase"] = timeout_phase
+                failures.append(failure)
                 logger.info(
                     "self_evolve.evaluator.attempt.end "
                     f"variant_id={request.variant_id} split={request.dataset_split} "
@@ -328,6 +409,13 @@ class AWorldTrajectoryEvaluatorBackend:
                 )
                 continue
             except Exception as exc:
+                if (
+                    fallback_model_profile is None
+                    and runner_kwargs.get("judge_model_profile")
+                    and _is_missing_model_profile_error(exc)
+                ):
+                    fallback_model_profile = str(runner_kwargs["judge_model_profile"])
+                    runner_kwargs["judge_model_profile"] = None
                 failures.append(
                     {
                         "attempt": attempt_index,
@@ -368,8 +456,14 @@ class AWorldTrajectoryEvaluatorBackend:
         if reports:
             metrics = _aggregate_aworld_evaluator_metrics(
                 reports,
-                case_count=len(request.dataset.cases),
+                case_count=effective_case_count,
                 input_path=log_path,
+            )
+            metrics.update(
+                _aworld_evaluator_case_count_metrics(
+                    original_case_count=original_case_count,
+                    effective_case_count=effective_case_count,
+                )
             )
             metrics["judge_attempt_count"] = len(reports) + len(failures)
             metrics["judge_success_count"] = len(reports)
@@ -377,13 +471,23 @@ class AWorldTrajectoryEvaluatorBackend:
             metrics["judge_repetitions"] = self.judge_repetitions
             if failures:
                 metrics["judge_failures"] = failures
+            if fallback_model_profile is not None:
+                metrics["judge_model_profile_fallback"] = fallback_model_profile
         else:
             metrics = _failed_aworld_evaluator_metrics(
                 failures=failures,
-                case_count=len(request.dataset.cases),
+                case_count=effective_case_count,
                 input_path=log_path,
                 judge_repetitions=self.judge_repetitions,
             )
+            metrics.update(
+                _aworld_evaluator_case_count_metrics(
+                    original_case_count=original_case_count,
+                    effective_case_count=effective_case_count,
+                )
+            )
+            if fallback_model_profile is not None:
+                metrics["judge_model_profile_fallback"] = fallback_model_profile
         logger.info(
             "self_evolve.evaluator.end "
             f"variant_id={request.variant_id} split={request.dataset_split} "
@@ -401,8 +505,13 @@ class AWorldTrajectoryEvaluatorBackend:
         runner: Callable[..., Any],
         *,
         runner_kwargs: Mapping[str, Any],
+        log_path: Path,
     ) -> Mapping[str, Any]:
-        call = self._run_evaluator_source(runner, runner_kwargs=runner_kwargs)
+        call = self._run_evaluator_source(
+            runner,
+            runner_kwargs=runner_kwargs,
+            log_path=log_path,
+        )
         if self.judge_timeout_seconds is None or self.run_evaluator_source is None:
             return await call
         return await asyncio.wait_for(call, timeout=self.judge_timeout_seconds)
@@ -412,16 +521,132 @@ class AWorldTrajectoryEvaluatorBackend:
         runner: Callable[..., Any],
         *,
         runner_kwargs: Mapping[str, Any],
+        log_path: Path,
     ) -> Mapping[str, Any]:
-        if self.run_evaluator_source is None:
-            report = await asyncio.to_thread(runner, **runner_kwargs)
-        else:
-            report = runner(**runner_kwargs)
-            if inspect.isawaitable(report):
-                report = await report
+        if self.run_evaluator_source is None and _ISOLATED_EVALUATOR_TASK.get():
+            report = await asyncio.to_thread(
+                _run_evaluator_cli_subprocess,
+                runner_kwargs=runner_kwargs,
+                log_path=log_path,
+                workspace_root=self.workspace_root,
+            )
+            if not isinstance(report, Mapping):  # pragma: no cover - helper validates
+                raise ValueError("AWorld trajectory evaluator report must be a mapping")
+            return report
+        with _self_evolve_runtime_log_env(log_path):
+            if self.run_evaluator_source is None:
+                report = await asyncio.to_thread(runner, **runner_kwargs)
+            else:
+                report = runner(**runner_kwargs)
+                if inspect.isawaitable(report):
+                    report = await report
         if not isinstance(report, Mapping):
             raise ValueError("AWorld trajectory evaluator report must be a mapping")
         return report
+
+
+_ISOLATED_EVALUATOR_TASK: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "aworld_self_evolve_isolated_evaluator_task",
+    default=False,
+)
+
+
+def _run_evaluator_cli_subprocess(
+    *,
+    runner_kwargs: Mapping[str, Any],
+    log_path: Path,
+    workspace_root: Path,
+) -> Mapping[str, Any]:
+    command = [sys.executable, "-m", "aworld_cli.main", "evaluator"]
+    option_names = {
+        "input": "--input",
+        "kind": "--kind",
+        "judge_agent": "--judge-agent",
+        "judge_agent_name": "--judge-agent-name",
+        "judge_backend_ref": "--judge-backend-ref",
+        "judge_model_profile": "--judge-model-profile",
+        "out_dir": "--out-dir",
+        "output": "--output",
+        "task_id": "--task-id",
+        "agent": "--agent",
+        "judge_timeout_seconds": "--judge-timeout",
+    }
+    for key, option in option_names.items():
+        value = runner_kwargs.get(key)
+        if value is not None:
+            command.extend([option, str(value)])
+    output = runner_kwargs.get("output")
+    if not isinstance(output, str) or not output:
+        raise ValueError("isolated evaluator subprocess requires output path")
+    environment = os.environ.copy()
+    environment["AWORLD_LOG_PATH"] = str(log_path)
+    environment["AWORLD_TRAJECTORY_LOG_DISABLED"] = "1"
+    timeout = runner_kwargs.get("judge_timeout_seconds")
+    process_timeout = (
+        float(timeout) + 30.0
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+        else None
+    )
+    completed = subprocess.run(
+        command,
+        cwd=workspace_root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=process_timeout,
+    )
+    report_path = Path(output)
+    if report_path.is_file():
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("isolated evaluator report is invalid") from exc
+        if isinstance(report, Mapping):
+            return report
+    process_diagnostics = []
+    for label, value in (("stderr", completed.stderr), ("stdout", completed.stdout)):
+        bounded = _bounded_text(str(value or "").strip())
+        if bounded:
+            process_diagnostics.append(f"{label}={bounded}")
+    diagnostic_suffix = (
+        "; " + "; ".join(process_diagnostics)
+        if process_diagnostics
+        else ""
+    )
+    raise RuntimeError(
+        "isolated evaluator subprocess did not produce a report "
+        f"(exit={completed.returncode}){diagnostic_suffix}"
+    )
+
+
+@contextmanager
+def _self_evolve_runtime_log_env(log_path: Path):
+    previous_log_path = os.environ.get("AWORLD_LOG_PATH")
+    previous_disabled = os.environ.get("AWORLD_TRAJECTORY_LOG_DISABLED")
+    os.environ["AWORLD_LOG_PATH"] = str(log_path)
+    os.environ["AWORLD_TRAJECTORY_LOG_DISABLED"] = "1"
+    try:
+        yield
+    finally:
+        if previous_log_path is None:
+            os.environ.pop("AWORLD_LOG_PATH", None)
+        else:
+            os.environ["AWORLD_LOG_PATH"] = previous_log_path
+        if previous_disabled is None:
+            os.environ.pop("AWORLD_TRAJECTORY_LOG_DISABLED", None)
+        else:
+            os.environ["AWORLD_TRAJECTORY_LOG_DISABLED"] = previous_disabled
+
+
+def _is_missing_model_profile_error(exc: Exception) -> bool:
+    return "model profile not found or incomplete" in str(exc)
+
+
+def _judge_diagnostics_from_exception(exc: BaseException) -> list[dict[str, Any]]:
+    diagnostics = getattr(exc, "judge_diagnostics", None)
+    if not isinstance(diagnostics, (list, tuple)):
+        return []
+    return [dict(item) for item in diagnostics if isinstance(item, Mapping)]
 
 
 async def evaluate_baseline_and_candidate(
@@ -433,8 +658,11 @@ async def evaluate_baseline_and_candidate(
     dataset_split: str = "validation",
     baseline_variant_id: str = "baseline",
     artifact_namespace: str | None = None,
+    task_batch_executor: DeterministicTaskBatchExecutor | None = None,
+    max_concurrency: int = 1,
+    execution_telemetry: SelfEvolveExecutionTelemetry | None = None,
 ) -> tuple[EvaluationSummary, EvaluationSummary]:
-    baseline_summary = await backend.evaluate_variant(
+    requests = (
         EvaluationRequest(
             variant_id=baseline_variant_id,
             candidate=None,
@@ -442,9 +670,7 @@ async def evaluate_baseline_and_candidate(
             eval_config=eval_config,
             dataset_split=dataset_split,
             artifact_namespace=artifact_namespace,
-        )
-    )
-    candidate_summary = await backend.evaluate_variant(
+        ),
         EvaluationRequest(
             variant_id=candidate.candidate_id,
             candidate=candidate,
@@ -452,9 +678,137 @@ async def evaluate_baseline_and_candidate(
             eval_config=eval_config,
             dataset_split=dataset_split,
             artifact_namespace=artifact_namespace,
+        ),
+    )
+    summaries = await _execute_evaluation_requests(
+        backend,
+        requests=requests,
+        task_batch_executor=task_batch_executor,
+        max_concurrency=max_concurrency,
+        artifact_namespace=artifact_namespace,
+        dataset_split=dataset_split,
+        execution_telemetry=execution_telemetry,
+    )
+    return summaries[0], summaries[1]
+
+
+async def evaluate_variant_task(
+    backend: EvaluationBackend,
+    *,
+    request: EvaluationRequest,
+    task_batch_executor: DeterministicTaskBatchExecutor | None = None,
+    execution_telemetry: SelfEvolveExecutionTelemetry | None = None,
+) -> EvaluationSummary:
+    summaries = await _execute_evaluation_requests(
+        backend,
+        requests=(request,),
+        task_batch_executor=task_batch_executor,
+        max_concurrency=1,
+        artifact_namespace=request.artifact_namespace,
+        dataset_split=request.dataset_split,
+        execution_telemetry=execution_telemetry,
+    )
+    return summaries[0]
+
+
+async def _execute_evaluation_requests(
+    backend: EvaluationBackend,
+    *,
+    requests: tuple[EvaluationRequest, ...],
+    task_batch_executor: DeterministicTaskBatchExecutor | None,
+    max_concurrency: int,
+    artifact_namespace: str | None,
+    dataset_split: str,
+    execution_telemetry: SelfEvolveExecutionTelemetry | None,
+) -> tuple[EvaluationSummary, ...]:
+    executor = task_batch_executor or DeterministicTaskBatchExecutor()
+    task_local_runtime = getattr(backend, "task_local_runtime", False) is True
+    resource_claims = (
+        ()
+        if task_local_runtime
+        else (
+            TaskResourceClaim(
+                key=f"self-evolve-evaluation-backend:{id(backend)}",
+                exclusive=True,
+            ),
         )
     )
-    return baseline_summary, candidate_summary
+    items: list[TaskBatchItem] = []
+    for index, request in enumerate(requests):
+        task_id = (
+            "self-evolve-evaluation-"
+            f"{_safe_path_component(artifact_namespace or 'run')}-"
+            f"{_safe_path_component(request.variant_id)}-"
+            f"{_safe_path_component(dataset_split)}"
+        )
+        items.append(
+            TaskBatchItem(
+                index=index,
+                task=Task(
+                    id=task_id,
+                    session_id=task_id,
+                    input=EvaluationTaskInput(backend=backend, request=request),
+                    context=LocalIsolatedApplicationContext.create(
+                        task_id=task_id,
+                        session_id=task_id,
+                        task_content="isolated self-evolve evaluation request",
+                    ),
+                    runner_cls=(
+                        "aworld.self_evolve.runtime.SelfEvolveEvaluationTaskRunner"
+                    ),
+                ),
+                resource_claims=resource_claims,
+            )
+        )
+    results = await executor.run(
+        items,
+        max_concurrency=max_concurrency,
+        failure_policy="collect_all",
+    )
+    if execution_telemetry is not None:
+        execution_telemetry.record(
+            "evaluation",
+            executor.last_run_observability,
+        )
+    summaries: list[EvaluationSummary] = []
+    for result in results:
+        if (
+            result.status != "succeeded"
+            or result.response is None
+            or not isinstance(result.response.answer, EvaluationSummary)
+        ):
+            if result.error_type == "ValueError":
+                raise ValueError(
+                    f"required evaluation Task failed at index {result.index}"
+                )
+            if result.error_type in {"TimeoutError", "TimeoutExpired"}:
+                raise TimeoutError(
+                    f"required evaluation Task timed out at index {result.index}"
+                )
+            raise RuntimeError(
+                "required evaluation Task failed "
+                f"at index {result.index} ({result.error_type or 'TaskFailed'})"
+            )
+        summaries.append(result.response.answer)
+    return tuple(summaries)
+
+
+@dataclass(frozen=True)
+class EvaluationTaskInput:
+    backend: EvaluationBackend
+    request: EvaluationRequest
+
+    async def execute(self) -> EvaluationSummary:
+        task_method = getattr(self.backend, "evaluate_variant_in_task", None)
+        if callable(task_method):
+            result = task_method(self.request)
+        else:
+            result = self.backend.evaluate_variant(self.request)
+        if inspect.isawaitable(result):
+            result = await result
+        if not isinstance(result, EvaluationSummary):
+            raise TypeError("evaluation backend must return EvaluationSummary")
+        return result
 
 
 def estimate_replay_cost(
@@ -537,7 +891,14 @@ def determine_candidate_confidence(
     held_out_summary: EvaluationSummary | None,
     min_eval_cases: int,
 ) -> CandidateConfidenceDecision:
-    held_out_case_count = len(dataset.recipe.held_out_case_ids)
+    independent_held_out_count = dataset.recipe.source.get("held_out_member_count")
+    held_out_case_count = (
+        int(independent_held_out_count)
+        if isinstance(independent_held_out_count, int)
+        and not isinstance(independent_held_out_count, bool)
+        and independent_held_out_count >= 0
+        else len(dataset.recipe.held_out_case_ids)
+    )
     baseline_replay_count, candidate_replay_count = _single_case_replay_counts(dataset)
     deterministic_signal_present = _has_deterministic_signal(
         validation_summary,
@@ -562,6 +923,24 @@ def determine_candidate_confidence(
             deterministic_signal_present=True,
             held_out_case_count=held_out_case_count,
             verification_mode="single_case_replay",
+            baseline_replay_count=baseline_replay_count,
+            candidate_replay_count=candidate_replay_count,
+        )
+
+    if (
+        held_out_summary is not None
+        and held_out_case_count > 0
+        and deterministic_signal_present
+        and _has_trajectory_set_validation_source(dataset)
+    ):
+        return CandidateConfidenceDecision(
+            confidence="verified",
+            reason="trajectory-set validation is sufficient",
+            selection_split=selection_split,
+            verification_split="trajectory_set_validation",
+            deterministic_signal_present=True,
+            held_out_case_count=held_out_case_count,
+            verification_mode="trajectory_set_validation",
             baseline_replay_count=baseline_replay_count,
             candidate_replay_count=candidate_replay_count,
         )
@@ -664,6 +1043,19 @@ def _successful_replay_count(payload: Any) -> int:
     return min(successful_count, repetition_count)
 
 
+def _has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
+    source = dataset.recipe.source
+    if source.get("kind") == "trajectory_set":
+        return True
+    auto_grouping = source.get("auto_grouping")
+    if not isinstance(auto_grouping, Mapping):
+        return False
+    if auto_grouping.get("auto_grouped") is not True:
+        return False
+    selected_count = auto_grouping.get("selected_case_count")
+    return isinstance(selected_count, int) and selected_count > 1
+
+
 def _int_metric(metrics: Mapping[str, Any], key: str) -> int | None:
     value = metrics.get(key)
     if isinstance(value, bool):
@@ -695,6 +1087,48 @@ def _load_run_evaluator_source_cli() -> Callable[..., Any]:
     return run_evaluator_source_cli
 
 
+def _aworld_trajectory_records_for_request(
+    request: EvaluationRequest,
+) -> list[Mapping[str, Any]]:
+    records: list[Mapping[str, Any]] = []
+    seen_replay_fingerprints: set[str] = set()
+    for case in _evaluation_cases_for_split(request):
+        record = _aworld_trajectory_record(case, request=request)
+        if _case_uses_replay_variant(case):
+            fingerprint = _aworld_trajectory_record_fingerprint(record)
+            if fingerprint in seen_replay_fingerprints:
+                continue
+            seen_replay_fingerprints.add(fingerprint)
+        records.append(record)
+    return records
+
+
+def _evaluation_cases_for_split(request: EvaluationRequest) -> tuple[Any, ...]:
+    cases = request.dataset.cases
+    split = request.dataset_split
+    if split in {"", "all", "post_apply", "single_case_replay"}:
+        return cases
+
+    recipe = request.dataset.recipe
+    if split == "validation":
+        selected_ids = tuple(recipe.splits.get("validation", ()))
+        if not selected_ids:
+            selected_ids = recipe.trainable_case_ids or tuple(
+                recipe.splits.get("train", ())
+            )
+        if not selected_ids:
+            return cases
+    elif split == "held_out":
+        selected_ids = recipe.held_out_case_ids or tuple(
+            recipe.splits.get("held_out", ())
+        )
+    else:
+        selected_ids = tuple(recipe.splits.get(split, ()))
+
+    selected = set(selected_ids)
+    return tuple(case for case in cases if case.case_id in selected)
+
+
 def _aworld_trajectory_record(
     case: Any,
     *,
@@ -710,6 +1144,28 @@ def _aworld_trajectory_record(
     if evidence_bundle_path:
         record["evidence_bundle_path"] = evidence_bundle_path
     return record
+
+
+def _case_uses_replay_variant(case: Any) -> bool:
+    metadata = case.metadata if isinstance(case.metadata, Mapping) else {}
+    return any(
+        key in metadata
+        for key in (
+            "variant_trajectories",
+            "baseline_trajectory",
+            "candidate_trajectory",
+            "replay",
+        )
+    )
+
+
+def _aworld_trajectory_record_fingerprint(record: Mapping[str, Any]) -> str:
+    payload = {
+        "trajectory": record.get("trajectory"),
+        "evidence_bundle_path": record.get("evidence_bundle_path"),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _evidence_bundle_path_for_variant(case: Any, *, request: EvaluationRequest) -> str | None:
@@ -812,6 +1268,7 @@ def _aworld_evaluator_metrics(
                 if isinstance(aggregate, Mapping) and isinstance(aggregate.get("mean"), (int, float)):
                     metrics[str(metric_name)] = float(aggregate["mean"])
     metrics.update(_aworld_evidence_quality_metrics(report))
+    metrics.update(_aworld_judge_diagnostic_metrics(report))
 
     gate = report.get("gate")
     gate_status = gate.get("status") if isinstance(gate, Mapping) else None
@@ -838,6 +1295,18 @@ def _aworld_evaluator_metrics(
     return metrics
 
 
+def _aworld_evaluator_case_count_metrics(
+    *,
+    original_case_count: int,
+    effective_case_count: int,
+) -> dict[str, int]:
+    return {
+        "original_case_count": original_case_count,
+        "effective_case_count": effective_case_count,
+        "deduplicated_case_count": max(0, original_case_count - effective_case_count),
+    }
+
+
 def _aggregate_aworld_evaluator_metrics(
     reports: list[Mapping[str, Any]],
     *,
@@ -858,9 +1327,18 @@ def _aggregate_aworld_evaluator_metrics(
         "input_path": str(input_path),
     }
     keys = {key for metrics in per_run for key in metrics}
+    combined_judge_diagnostics: list[dict[str, Any]] = []
     for key in sorted(keys):
         values = [metrics[key] for metrics in per_run if key in metrics]
         if not values:
+            continue
+        if key == "judge_call_diagnostics":
+            for value in values:
+                if not isinstance(value, list):
+                    continue
+                combined_judge_diagnostics.extend(
+                    dict(item) for item in value if isinstance(item, Mapping)
+                )
             continue
         if key in {"evidence_compacted", "evidence_incomplete"}:
             aggregated[key] = any(_truthy_metric(value) for value in values)
@@ -897,6 +1375,9 @@ def _aggregate_aworld_evaluator_metrics(
         if all(value == values[0] for value in values):
             aggregated[key] = values[0]
 
+    if combined_judge_diagnostics:
+        aggregated.update(_summarize_judge_diagnostics(combined_judge_diagnostics))
+
     gate_passed = bool(aggregated.get("evaluator_gate_passed"))
     aggregated["global_regression_passed"] = gate_passed
     aggregated["deterministic_signal"] = gate_passed
@@ -905,6 +1386,64 @@ def _aggregate_aworld_evaluator_metrics(
     aggregated["command_failure_count"] = 0 if gate_passed else case_count
     aggregated["command_pass_rate"] = 1.0 if gate_passed else 0.0
     return aggregated
+
+
+def _aworld_judge_diagnostic_metrics(report: Mapping[str, Any]) -> dict[str, Any]:
+    diagnostics: list[dict[str, Any]] = []
+    results = report.get("results")
+    if isinstance(results, list):
+        for result in results:
+            if not isinstance(result, Mapping):
+                continue
+            case_diagnostics = result.get("judge_diagnostics")
+            if not isinstance(case_diagnostics, list):
+                continue
+            diagnostics.extend(
+                dict(item) for item in case_diagnostics if isinstance(item, Mapping)
+            )
+    return _summarize_judge_diagnostics(diagnostics)
+
+
+def _summarize_judge_diagnostics(
+    diagnostics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not diagnostics:
+        return {}
+
+    def _number(item: Mapping[str, Any], key: str) -> float:
+        value = item.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return 0.0
+
+    latencies = [_number(item, "latency_ms") for item in diagnostics]
+    return {
+        "judge_call_diagnostics": [dict(item) for item in diagnostics],
+        "judge_call_count": len(diagnostics),
+        "judge_artifact_read_round_count": sum(
+            1 for item in diagnostics if str(item.get("phase", "")).startswith("artifact_read_round_")
+        ),
+        "judge_artifact_request_count": int(
+            sum(_number(item, "artifact_request_count") for item in diagnostics)
+        ),
+        "judge_artifact_read_count": int(
+            sum(_number(item, "artifact_read_count") for item in diagnostics)
+        ),
+        "judge_artifact_read_chars": int(
+            sum(_number(item, "artifact_read_chars") for item in diagnostics)
+        ),
+        "judge_prompt_chars_total": int(
+            sum(_number(item, "prompt_chars") for item in diagnostics)
+        ),
+        "judge_estimated_input_tokens_total": int(
+            sum(_number(item, "estimated_input_tokens") for item in diagnostics)
+        ),
+        "judge_model_latency_ms_total": sum(latencies),
+        "judge_model_latency_ms_max": max(latencies, default=0.0),
+        "judge_timeout_count": sum(
+            1 for item in diagnostics if item.get("status") == "timed_out"
+        ),
+    }
 
 
 def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any]:

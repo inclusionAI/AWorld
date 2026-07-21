@@ -48,6 +48,63 @@ def test_default_target_inventory_contains_phase1_target_types_with_provenance(t
     assert inventory.find("skill", "demo-skill") is not None
 
 
+def test_target_inventory_can_be_scoped_to_executable_target_types(tmp_path) -> None:
+    _write_skill(tmp_path, "demo-skill", description="Handles demo tasks.")
+    inventory = build_default_target_inventory(workspace_root=tmp_path)
+
+    scoped = inventory.only_target_types({"skill"})
+
+    assert {entry.target.target_type for entry in scoped.entries} == {"skill"}
+    assert scoped.find("skill", "demo-skill") is not None
+    assert scoped.find("prompt-section", "result-validation-anchor-policy") is None
+    assert scoped.draft_skill_root == inventory.draft_skill_root
+
+
+def test_credit_assigner_falls_back_when_signaled_target_is_not_executable(tmp_path) -> None:
+    _write_skill(
+        tmp_path,
+        "web-navigator",
+        description="Use for web navigation through remote browser sessions.",
+    )
+    inventory = build_default_target_inventory(workspace_root=tmp_path).only_target_types(
+        {"skill"}
+    )
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {
+                    "input": {
+                        "content": "Use web-navigator and validate source anchors."
+                    }
+                },
+                "action": {
+                    "content": (
+                        "web-navigator returned a result validation mismatch because "
+                        "the required anchors are missing."
+                    ),
+                    "tool_calls": [],
+                    "is_agent_finished": True,
+                },
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="generic-capability-fallback",
+    )
+    assigner = TrajectoryCreditAssigner(inventory=inventory)
+
+    report = assigner.assign(pack)
+
+    assert report.selected_target is not None
+    assert report.selected_target.target_type == "skill"
+    assert report.selected_target.target_id == "web-navigator"
+    assert "unavailable_signaled_target:prompt-section" in report.signals
+    assert report.diagnostics["unavailable_signaled_target"]["target_type"] == (
+        "prompt-section"
+    )
+
+
 def test_credit_assigner_selects_skill_prompt_tool_config_and_artifact_targets(tmp_path) -> None:
     _write_skill(
         tmp_path,
@@ -235,6 +292,59 @@ def test_credit_assigner_selects_installed_skill_by_generic_trajectory_evidence(
     assert report.selected_target.target_id == "web-navigator"
     assert report.failure_category == "skill"
     assert "skill_alias_match:web-navigator" in report.signals
+
+
+def test_credit_assigner_does_not_select_skill_from_description_tokens_only(
+    tmp_path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "video_script_writting",
+        description=(
+            "Standard operating procedure for AI video production using diffusion "
+            "and script templates."
+        ),
+    )
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {
+                    "input": {
+                        "content": (
+                            "Collect AI tweets from X via CDP, then write a daily "
+                            "digest. The feed may include posts about diffusion models."
+                        )
+                    },
+                    "messages": [],
+                },
+                "action": {
+                    "content": "I will create a scraper script for the X feed.",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "mcp",
+                                "arguments": "{\"command\":\"python scrape_x.py\"}",
+                            }
+                        }
+                    ],
+                    "is_agent_finished": False,
+                },
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="x-digest-task",
+    )
+    assigner = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    )
+
+    report = assigner.assign(pack)
+
+    assert report.selected_target is None
+    assert report.failure_category == "no_target"
+    assert "skill_alias_match:video_script_writting" not in report.signals
 
 
 def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> None:

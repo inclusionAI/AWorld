@@ -29,6 +29,10 @@ class SuiteJudgeScorer(Scorer):
             **payload,
             "_judge_backend": execution.backend_id,
         }
+        if execution.diagnostics:
+            metadata["_judge_diagnostics"] = [
+                dict(item) for item in execution.diagnostics
+            ]
         metric_result: MetricResult = {
             "value": float(payload["score"]),
             "metadata": metadata,

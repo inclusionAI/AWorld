@@ -234,6 +234,77 @@ from .top_level_commands import register_builtin_top_level_commands
 from . import commands
 
 
+def _judge_config_from_cli_selectors(
+    *,
+    judge_agent: str | None = None,
+    judge_agent_name: str | None = None,
+    judge_backend_ref: str | None = None,
+    judge_model_profile: str | None = None,
+):
+    selector_count = sum(
+        bool(value) for value in (judge_agent, judge_agent_name, judge_backend_ref)
+    )
+    if selector_count > 1:
+        raise ValueError("use only one of --judge-agent, --judge-agent-name, or --judge-backend-ref")
+    if selector_count == 0:
+        return None
+
+    from aworld.config.conf import SelfEvolveJudgeConfig
+
+    if judge_agent:
+        return SelfEvolveJudgeConfig(
+            mode="agent_md",
+            agent_path=judge_agent,
+            model_profile=judge_model_profile,
+        )
+    if judge_agent_name:
+        return SelfEvolveJudgeConfig(
+            mode="custom_agent",
+            agent_id=judge_agent_name,
+            model_profile=judge_model_profile,
+        )
+    return SelfEvolveJudgeConfig(
+        mode="backend_ref",
+        backend_ref=judge_backend_ref,
+        model_profile=judge_model_profile,
+    )
+
+
+def _self_evolve_config_from_cli_mode(
+    mode: str | None,
+    *,
+    judge_agent: str | None = None,
+    judge_agent_name: str | None = None,
+    judge_backend_ref: str | None = None,
+    judge_model_profile: str | None = None,
+):
+    if mode is None:
+        return None
+    normalized = mode.strip().lower()
+    judge_config = _judge_config_from_cli_selectors(
+        judge_agent=judge_agent,
+        judge_agent_name=judge_agent_name,
+        judge_backend_ref=judge_backend_ref,
+        judge_model_profile=judge_model_profile,
+    )
+    if normalized in {"off", "offline"}:
+        from aworld.config.conf import SelfEvolveConfig
+
+        kwargs = {"judge_config": judge_config} if judge_config is not None else {}
+        return SelfEvolveConfig(mode="off", apply_policy="proposal", **kwargs)
+    if normalized == "shadow":
+        from aworld.config.conf import SelfEvolveConfig
+
+        kwargs = {"judge_config": judge_config} if judge_config is not None else {}
+        return SelfEvolveConfig(mode="shadow", apply_policy="proposal", **kwargs)
+    if normalized == "online":
+        from aworld.config.conf import SelfEvolveConfig
+
+        kwargs = {"judge_config": judge_config} if judge_config is not None else {}
+        return SelfEvolveConfig(mode="online", apply_policy="auto_verified", **kwargs)
+    raise ValueError("--evolve must be one of: off, shadow, online")
+
+
 async def load_all_agents(
     remote_backends: Optional[list[str]] = None,
     local_dirs: Optional[list[str]] = None,
@@ -608,6 +679,22 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--agent-dir", type=str, action="append", help="包含 agents 的目录（可指定多次）。未指定时默认使用 LOCAL_AGENTS_DIR 或 AWORLD_DEFAULT_AGENT_DIR（默认 ./agents）。" if zh else "Directory containing agents (can be specified multiple times). Default: LOCAL_AGENTS_DIR or AWORLD_DEFAULT_AGENT_DIR (./agents) when not set.")
     parser.add_argument("--agent-file", type=str, action="append", help="单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。" if zh else "Individual agent file path (Python .py or Markdown .md, can be specified multiple times).")
     parser.add_argument("--skill-path", type=str, action="append", help="技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。" if zh else "Skill source path (local directory or GitHub URL, can be specified multiple times). Overrides SKILLS_PATH environment variable.")
+    parser.add_argument(
+        "--evolve",
+        nargs="?",
+        const="shadow",
+        choices=("off", "offline", "shadow", "online"),
+        default=None,
+        help=(
+            "为当前 CLI 会话启用后台 self-evolve；--evolve 等同 shadow，--evolve=online 允许 auto_verified apply。"
+            if zh
+            else "Enable background self-evolve for this CLI session; --evolve means shadow, --evolve=online allows auto_verified apply."
+        ),
+    )
+    parser.add_argument("--judge-agent", type=str, help="self-evolve judge agent markdown path used with --evolve." if zh else "Self-evolve judge agent markdown path used with --evolve.")
+    parser.add_argument("--judge-agent-name", type=str, help="self-evolve judge agent name used with --evolve." if zh else "Self-evolve judge agent name used with --evolve.")
+    parser.add_argument("--judge-backend-ref", type=str, help="self-evolve judge backend reference used with --evolve." if zh else "Self-evolve judge backend reference used with --evolve.")
+    parser.add_argument("--judge-model-profile", type=str, help="model profile for the self-evolve judge used with --evolve." if zh else "Model profile for the self-evolve judge used with --evolve.")
     parser.add_argument("--config", action="store_true", help="启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。" if zh else "Launch interactive global configuration editor (model provider, API key, etc.) and exit.")
     return parser
 
@@ -681,6 +768,10 @@ _GLOBAL_OPTIONS_WITH_VALUES = {
     "--agent-dir",
     "--agent-file",
     "--skill-path",
+    "--judge-agent",
+    "--judge-agent-name",
+    "--judge-backend-ref",
+    "--judge-model-profile",
     "--http-host",
     "--http-port",
     "--mcp-name",
@@ -821,7 +912,14 @@ def main():
         requested_skill_names=args.skill,
         remote_backends=args.remote_backend,
         local_dirs=args.agent_dir,
-        agent_files=args.agent_file
+        agent_files=args.agent_file,
+        self_evolve_config=_self_evolve_config_from_cli_mode(
+            args.evolve,
+            judge_agent=args.judge_agent,
+            judge_agent_name=args.judge_agent_name,
+            judge_backend_ref=args.judge_backend_ref,
+            judge_model_profile=args.judge_model_profile,
+        ),
     ))
 
 
@@ -837,6 +935,7 @@ async def _run_interactive_mode(
     require_same_resume_agent: bool = True,
     resume_cwd: str | None = None,
     fail_on_missing_agent: bool = False,
+    self_evolve_config=None,
 ):
     """
     Run interactive mode using CliRuntime directly.
@@ -866,6 +965,7 @@ async def _run_interactive_mode(
         require_same_resume_agent=require_same_resume_agent,
         resume_cwd=resume_cwd,
         fail_on_missing_agent=fail_on_missing_agent,
+        self_evolve_config=self_evolve_config,
     )
     runtime.cli._pending_skill_overrides = list(requested_skill_names or [])
     try:
@@ -985,6 +1085,7 @@ async def _run_direct_mode(
     prompt: str,
     agent_name: str,
     requested_skill_names: Optional[list[str]] = None,
+    skill_paths: Optional[list[str]] = None,
     max_runs: Optional[int] = None,
     max_cost: Optional[float] = None,
     max_duration: Optional[str] = None,
@@ -1004,6 +1105,7 @@ async def _run_direct_mode(
     show_start_banner: bool = True,
     show_iteration_header: bool = True,
     echo_prompt_as_turn: bool = False,
+    self_evolve_config=None,
 ) -> None:
     """
     Run agent in direct mode (non-interactive).
@@ -1044,6 +1146,8 @@ async def _run_direct_mode(
         require_same_resume_agent=require_same_resume_agent,
         resume_cwd=resume_cwd,
         fail_on_missing_agent=fail_on_missing_agent,
+        self_evolve_config=self_evolve_config,
+        skill_paths=skill_paths,
     )
     all_agents = await runtime._load_agents()
 

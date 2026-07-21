@@ -781,6 +781,38 @@ class TestOptimizeCommand:
         assert "Selected candidate: cand-1" in result
 
     @pytest.mark.asyncio
+    async def test_optimize_forwards_trajectory_set(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        set_path = tmp_path / "trajectory-set.json"
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "rejected", "report_path": str(tmp_path / "report.json")}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    f"--from-trajectory-set {set_path} "
+                    "--include-prior-runs --apply proposal"
+                ),
+            )
+        )
+
+        assert calls["workspace_root"] == str(tmp_path)
+        assert calls["from_trajectory_set"] == str(set_path)
+        assert calls["include_prior_runs"] is True
+        assert calls["from_trajectory"] is None
+        assert calls["infer_target"] is True
+        assert "Status: rejected" in result
+
+    @pytest.mark.asyncio
     async def test_optimize_passes_runtime_skill_registry_refresher(self, monkeypatch, tmp_path):
         cmd = CommandRegistry.get("optimize")
         calls = {}
