@@ -23,6 +23,7 @@ from aworld.self_evolve.datasets import (
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.failure_events import (
+    FailureEventSource,
     FailureOwner,
     FailureScope,
     FailureStage,
@@ -75,6 +76,7 @@ from aworld.self_evolve.runner import (
     _explicit_target_selection_report,
     _source_config_from_stored_dataset_recipe,
     _summary_with_replay_evidence_metrics,
+    _shared_replay_failure_blocks_population,
     _infer_target_from_trace_packs,
     optimize_explicit_target,
     optimize_from_cli_request,
@@ -4477,7 +4479,11 @@ async def test_runner_persists_non_replayed_candidate_strategies(tmp_path) -> No
 
 
 @pytest.mark.asyncio
-async def test_runner_reuses_successful_baseline_replay_across_candidate_population(tmp_path) -> None:
+@pytest.mark.parametrize("explicit_empty_members", (False, True))
+async def test_runner_reuses_successful_baseline_replay_across_candidate_population(
+    tmp_path,
+    explicit_empty_members: bool,
+) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
@@ -4538,6 +4544,7 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
                     trajectory=[{"action": {"content": candidate.candidate_id}}],
                     metrics={"repetition_count": 3, "successful_repetition_count": 3},
                 ),
+                member_results=() if explicit_empty_members else None,
             )
 
     class EvaluationBackend:
@@ -4602,11 +4609,14 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         / "candidate-one"
         / "baseline"
     )
-    assert result.run.status.value == "succeeded"
-    assert replay_backend.baseline_replay_dirs == [
-        None,
-        str(expected_baseline_dir),
-    ]
+    assert result.run.status.value == (
+        "rejected" if explicit_empty_members else "succeeded"
+    )
+    assert replay_backend.baseline_replay_dirs == (
+        [None, None]
+        if explicit_empty_members
+        else [None, str(expected_baseline_dir)]
+    )
 
 
 @pytest.mark.asyncio
@@ -4970,6 +4980,165 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     )
     assert report["population"]["screening"]["selected_candidate_id"] == "candidate-1"
     assert report["population"]["screening"]["representative_case_id"] == "task-a"
+
+
+@pytest.mark.asyncio
+async def test_population_screening_does_not_offer_explicit_empty_members_for_reuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="task-a", input="A"),
+            EvalCase(case_id="task-b", input="B"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "screening_empty_members"},
+            split_seed="seed",
+            splits={"train": ["task-a", "task-b"], "validation": [], "held_out": []},
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content=f"---\nname: demo\n---\n# Demo\n\nCandidate {index}.\n",
+            rationale="screen",
+        )
+        for index in (1, 2)
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request):
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    offered_baseline_dirs: list[str | None] = []
+
+    async def empty_member_replay(**kwargs):
+        offered_baseline_dirs.append(kwargs["baseline_replay_dir"])
+        screening_candidate = kwargs["selected_candidate"]
+        screening_dataset = kwargs["dataset"]
+        request = CandidateReplayRequest(
+            run_id="run-screening-empty",
+            task_id=screening_dataset.cases[0].case_id,
+            workspace_root=str(tmp_path),
+            target=target_ref,
+            candidate_id=screening_candidate.candidate_id,
+            overlay_skill_root=str(tmp_path / "overlay"),
+            task_input=screening_dataset.cases[0].input,
+        )
+        succeeded = ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "baseline"}}],
+        )
+        replay_result = _CandidateReplayResult(
+            request=request,
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=screening_candidate.candidate_id),
+            member_results=(),
+        )
+        return (
+            replay_result,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="invalid explicit member result",
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", empty_member_replay)
+
+    await runner._screen_candidate_population(
+        run_id="run-screening-empty",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="auto_verified",
+    )
+
+    assert offered_baseline_dirs == [None, None]
+
+
+def test_explicit_empty_members_have_no_baseline_artifact_path(tmp_path: Path) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-empty-path",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="A",
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id="candidate"),
+        member_results=(),
+    )
+
+    with pytest.raises(ValueError, match="empty explicit replay members"):
+        _baseline_replay_artifact_dir(replay_result)
+
+
+def test_population_stop_defensively_requires_native_shared_run_event(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-source-defense",
+        task_id="task-a",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="A",
+    )
+    event = ReplayFailureEvent(
+        code="shared_runtime_failed",
+        owner=FailureOwner.INFRASTRUCTURE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.SHARED_RUN,
+        repairable=False,
+    )
+    object.__setattr__(event, "source", FailureEventSource.LEGACY_INFERRED)
+    failed = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=event,
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=failed,
+        candidate=ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[],
+            blocked_by=(event,),
+        ),
+    )
+
+    assert _shared_replay_failure_blocks_population(replay_result) is False
 
 
 @pytest.mark.asyncio

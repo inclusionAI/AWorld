@@ -230,9 +230,16 @@ member of a three-member dataset, that baseline member is `failed` with
 `owner: candidate`, `stage: capability_preflight`, and `scope: candidate`; all three
 candidate variants and the remaining baseline variants are `blocked` by the same
 event. The next candidate in the population is still evaluated. Only an explicit
-`shared_run` event owned by infrastructure or the framework stops the population.
+native `shared_run` event owned by infrastructure or the framework stops the population.
 Legacy status and failure files remain readable, but unknown legacy failures are not
 promoted to run-wide infrastructure failures.
+
+Member manifests fail closed when members are missing, duplicated, unexpected, empty,
+or carry a request that changes root-level run, candidate, target, overlay, agent, or
+provenance fields. Only task identity/input, task-input fingerprint, member baseline
+path, and the deterministic repetition distribution may differ per member. Numeric
+repetition child directories are reconstructed when lifecycle v2 artifacts are loaded,
+so paired evaluation has the same repetition cardinality before and after persistence.
 
 Artifact GC runs at optimize startup and terminal completion. It preserves the two
 newest runs, lineage and apply recovery dependencies, and runs with a live process

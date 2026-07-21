@@ -917,7 +917,24 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
         workspace_seed_fingerprint=None,
         task_input_fingerprint=None,
     )
-    legacy_result = replace(result, request=legacy_request)
+    assert result.member_results is not None
+    legacy_result = replace(
+        result,
+        request=legacy_request,
+        member_results=tuple(
+            replace(
+                member,
+                request=replace(
+                    member.request,
+                    replay_adaptation=None,
+                    adaptation_fingerprint=None,
+                    workspace_seed_fingerprint=None,
+                    task_input_fingerprint=None,
+                ),
+            )
+            for member in result.member_results
+        ),
+    )
     assert candidate_replay_is_comparable(
         dataset=dataset,
         replay_result=legacy_result,
