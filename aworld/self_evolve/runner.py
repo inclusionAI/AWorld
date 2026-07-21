@@ -1930,6 +1930,7 @@ class SelfEvolveRunner:
                     "code": "repair_capability_compile_failed",
                     "repair_conformance": contract.to_dict(),
                     "failure_event": failure_event.to_dict(),
+                    "causal_failure_events": [failure_event.to_dict()],
                 },
             )
         capability = adaptation.replay_capability
@@ -6363,7 +6364,7 @@ def _repair_conformance_gate(
         **dict(result.details),
     }
     if not result.passed:
-        details["failure_event"] = ReplayFailureEvent(
+        failure_event = ReplayFailureEvent(
             code=result.code,
             owner=FailureOwner.CANDIDATE,
             stage=FailureStage.CAPABILITY_PREFLIGHT,
@@ -6376,7 +6377,14 @@ def _repair_conformance_gate(
                     contract.focus_candidate_id if contract is not None else None
                 ),
             },
-        ).to_dict()
+        )
+        details["failure_event"] = failure_event.to_dict()
+        # Conformance is an independent pre-replay gate, so its typed cause is
+        # not discoverable through aggregate_replay_failures().  Publish the
+        # same event through the causal channel consumed by feedback,
+        # diagnostics, and lesson extraction while retaining failure_event for
+        # lifecycle policy and artifact compatibility.
+        details["causal_failure_events"] = [failure_event.to_dict()]
     if contract is not None:
         details["repair_conformance"] = contract.to_dict()
     return GateResult(
@@ -6999,6 +7007,7 @@ def _typed_gate_feedback_metrics(
     failure_classes: set[str] = set()
     repairable_values: list[bool] = []
     causal_events: dict[str, Mapping[str, object]] = {}
+    candidate_causal_contexts: dict[str, Mapping[str, object]] = {}
     for gate in failed_gate_items:
         details = gate.details
         gate_diagnostic: dict[str, object] = {
@@ -7035,6 +7044,20 @@ def _typed_gate_feedback_metrics(
                 bounded_event = sanitize_metric_value(event, max_chars=240)
                 if isinstance(bounded_event, Mapping):
                     causal_events.setdefault(semantic_key, dict(bounded_event))
+                    repair_conformance = details.get("repair_conformance")
+                    if (
+                        event.get("owner") == "candidate"
+                        and isinstance(repair_conformance, Mapping)
+                    ):
+                        bounded_contract = sanitize_metric_value(
+                            repair_conformance,
+                            max_chars=400,
+                        )
+                        if isinstance(bounded_contract, Mapping):
+                            candidate_causal_contexts.setdefault(
+                                semantic_key,
+                                dict(bounded_contract),
+                            )
         raw_diagnostics = details.get("diagnostics")
         if isinstance(raw_diagnostics, list):
             diagnostics.extend(
@@ -7054,8 +7077,9 @@ def _typed_gate_feedback_metrics(
             result["repairable"] = all(
                 event.get("repairable") is True for event in candidate_events
             )
-            result["candidate_validation_diagnostics"] = [
-                {
+            candidate_diagnostics: list[dict[str, object]] = []
+            for event in candidate_events[:16]:
+                diagnostic = {
                     key: event.get(key)
                     for key in (
                         "semantic_key",
@@ -7072,8 +7096,21 @@ def _typed_gate_feedback_metrics(
                     )
                     if event.get(key) is not None
                 }
-                for event in candidate_events[:16]
-            ]
+                semantic_key = event.get("semantic_key")
+                if isinstance(semantic_key, str):
+                    repair_conformance = candidate_causal_contexts.get(
+                        semantic_key
+                    )
+                    if repair_conformance is not None:
+                        # The causal event remains payload-free and stable.  Its
+                        # bounded repair contract is separate execution context
+                        # needed to validate the next candidate rather than part
+                        # of semantic failure identity.
+                        diagnostic["repair_conformance"] = dict(
+                            repair_conformance
+                        )
+                candidate_diagnostics.append(diagnostic)
+            result["candidate_validation_diagnostics"] = candidate_diagnostics
         # Typed ownership is authoritative.  Do not add generic confidence or
         # free-form classification noise when a concrete causal event exists.
         return result
