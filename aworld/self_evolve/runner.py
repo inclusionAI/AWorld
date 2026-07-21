@@ -6439,12 +6439,17 @@ def _repair_conformance_gate(
     *,
     contract: RepairConformanceContract | None = None,
 ) -> GateResult:
+    public_result_details = _candidate_validation_report_for_persistence(
+        dict(result.details)
+    )
+    if not isinstance(public_result_details, Mapping):
+        public_result_details = {}
     details = {
         "failure_class": "candidate",
         "repairable": not result.passed,
         "stage": "repair_conformance",
         "code": result.code,
-        **dict(result.details),
+        **dict(public_result_details),
     }
     if not result.passed:
         raw_causal_events = details.get("causal_failure_events")
