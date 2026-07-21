@@ -65,6 +65,7 @@ from aworld.self_evolve.runner import (
     _retryable_candidate_generation_failure,
     _select_iteration_state,
     _candidate_screening_dataset,
+    _explicit_target_selection_report,
     _source_config_from_stored_dataset_recipe,
     _summary_with_replay_evidence_metrics,
     _infer_target_from_trace_packs,
@@ -72,7 +73,11 @@ from aworld.self_evolve.runner import (
     optimize_from_cli_request,
 )
 from aworld.self_evolve.replay_capability import ReplayCapabilityError
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.provenance import (
+    TargetProvenance,
+    TargetProvenanceResolution,
+    TargetSelectionOrigin,
+)
 from aworld.self_evolve.repair_conformance import (
     compile_repair_conformance_contract,
 )
@@ -93,6 +98,7 @@ from aworld.self_evolve.types import (
     DatasetRecipe,
     OptimizerLineage,
     SelfEvolveTargetRef,
+    to_json_dict,
 )
 
 
@@ -1617,6 +1623,217 @@ async def test_runner_does_not_treat_supplied_provenance_as_inventory_authority(
     assert persisted["target_provenance"]["reason"] == (
         "supplied provenance does not match authoritative resolution"
     )
+    assert not (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-supplied-provenance"
+        / "target_provenance.json"
+    ).exists()
+
+
+@pytest.mark.asyncio
+async def test_runner_treats_supplied_decision_as_consistency_claim_only(tmp_path) -> None:
+    skill_path = tmp_path / "aworld-skills" / "capability" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: capability\n---\n# Capability\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="member-1", input={"task": "exercise capability"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["member-1"], "validation": [], "held_out": []},
+        ),
+    )
+    report = TargetSelectionReport(
+        selected_target=target.identity,
+        confidence=1.0,
+        evidence_step_ids=(),
+        failure_category="explicit_target",
+        selection_origin=TargetSelectionOrigin.OPERATOR_EXPLICIT,
+    )
+    supplied_decision = TargetSelectionDecision(
+        report=report,
+        provenance_resolution=TargetProvenanceResolution(
+            status="unresolved",
+            provenance=None,
+            reason="caller asserted a different resolution",
+        ),
+        selection_origin=TargetSelectionOrigin.OPERATOR_EXPLICIT,
+    )
+
+    await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+        evaluation_backend=None,
+        max_iterations=0,
+        min_eval_cases=0,
+    ).run_explicit_target(
+        run_id="run-supplied-decision",
+        target=target,
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="auto_verified",
+        target_selection_decision=supplied_decision,
+    )
+
+    run_path = (
+        tmp_path / ".aworld" / "self_evolve" / "run-supplied-decision"
+    )
+    persisted = json.loads((run_path / "report.json").read_text(encoding="utf-8"))
+    assert persisted["target_provenance"] == {
+        "status": "unresolved",
+        "path": None,
+        "reason": "supplied target decision does not match authoritative resolution",
+    }
+    assert not (run_path / "target_provenance.json").exists()
+
+
+def test_explicit_target_selection_report_is_typed_without_trace_packs() -> None:
+    report = _explicit_target_selection_report(
+        SelfEvolveTargetRef("skill", "capability", "/workspace/capability/SKILL.md"),
+        (),
+    )
+
+    assert report.selected_target is not None
+    assert report.evidence_step_ids == ()
+    assert report.diagnostics == {"pack_ids": [], "target_inference": "bypassed"}
+    assert report.selection_origin is TargetSelectionOrigin.OPERATOR_EXPLICIT
+
+
+def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    skill_path = tmp_path / "aworld-skills" / "capability" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: capability\n---\n# Capability\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    dataset_path = tmp_path / "evaluation.jsonl"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "case_id": "member-1",
+                "input": {"task": "exercise the capability"},
+                "expected_output": "completed",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_default_cli_skill_candidate",
+        lambda **_: (
+            "---\nname: capability\n---\n# Capability\n\nImproved guidance.\n"
+        ),
+    )
+
+    class ReplayBackend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            result = CandidateReplayResult(
+                request=request,
+                baseline=ReplayVariantResult(
+                    variant_id="baseline",
+                    status="succeeded",
+                    trajectory=[
+                        {
+                            "state": {"input": request.task_input},
+                            "action": {"content": "old"},
+                        }
+                    ],
+                ),
+                candidate=ReplayVariantResult(
+                    variant_id=candidate.candidate_id,
+                    status="succeeded",
+                    trajectory=[
+                        {
+                            "state": {"input": request.task_input},
+                            "action": {"content": "improved"},
+                        }
+                    ],
+                ),
+            )
+            replay_root = (
+                Path(request.workspace_root)
+                / ".aworld"
+                / "self_evolve"
+                / request.run_id
+                / "replay"
+                / candidate.candidate_id
+            )
+            replay_root.mkdir(parents=True, exist_ok=True)
+            (replay_root / "request.json").write_text(
+                json.dumps(to_json_dict(request), sort_keys=True),
+                encoding="utf-8",
+            )
+            for directory_name, variant in (
+                ("baseline", result.baseline),
+                (candidate.candidate_id, result.candidate),
+            ):
+                variant_root = replay_root / directory_name
+                variant_root.mkdir(parents=True, exist_ok=True)
+                (variant_root / "trajectory.json").write_text(
+                    json.dumps(to_json_dict(variant.trajectory), sort_keys=True),
+                    encoding="utf-8",
+                )
+                (variant_root / "metrics.json").write_text(
+                    json.dumps(to_json_dict(variant.metrics), sort_keys=True),
+                    encoding="utf-8",
+                )
+            return result
+
+    initial = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:capability",
+        dataset=str(dataset_path),
+        apply_policy="proposal",
+        replay_enabled=True,
+        candidate_replay_backend=ReplayBackend(),
+        replay_candidate_limit=1,
+    )
+
+    source_selection_path = Path(initial["target_selection_path"])
+    source_selection = json.loads(source_selection_path.read_text(encoding="utf-8"))
+    assert source_selection["selection_origin"] == "operator_explicit"
+    assert source_selection["evidence_step_ids"] == []
+    assert initial["selected_candidate_id"] is not None
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            score = 0.2 if request.candidate is None else 0.8
+            return EvaluationSummary(
+                variant_id=(
+                    "baseline"
+                    if request.candidate is None
+                    else request.candidate.candidate_id
+                ),
+                metrics={"score": score, "latency_ms": 1.0, "cost_usd": 0.0},
+                dataset_split=request.dataset_split,
+            )
+
+    rerun = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        from_run=initial["run_id"],
+        rerun_evaluator=True,
+        apply_policy="proposal",
+        evaluation_backend=EvaluationBackend(),
+        min_eval_cases=0,
+    )
+
+    rerun_selection = json.loads(
+        Path(rerun["target_selection_path"]).read_text(encoding="utf-8")
+    )
+    rerun_report = json.loads(Path(rerun["report_path"]).read_text(encoding="utf-8"))
+    assert rerun_selection["selection_origin"] == "operator_explicit"
+    assert rerun_selection["evidence_step_ids"] == []
+    assert rerun_report["target_selection"]["selection_origin"] == "operator_explicit"
+    assert rerun_report["target_provenance"]["status"] == "resolved"
 
 
 def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(

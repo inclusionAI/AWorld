@@ -609,6 +609,34 @@ def test_trust_provenance_gate_fails_closed_for_unresolved_provenance() -> None:
     }
 
 
+def test_trust_provenance_gate_fails_closed_when_reason_marks_resolution_unresolved() -> None:
+    provenance = TargetProvenance(
+        target=SelfEvolveTargetRef("skill", "capability"),
+        source_kind="skill",
+        write_origin="repository",
+        trust_level="local",
+        protected=False,
+        reason="local capability",
+    )
+
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(
+        provenance,
+        unresolved_reason="authoritative resolution disagrees with supplied claim",
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details == {
+        "provenance_status": "unresolved",
+        "unresolved_reason": (
+            "authoritative resolution disagrees with supplied claim"
+        ),
+    }
+
+
 def test_trust_provenance_gate_requires_named_policy_for_generated_target() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="generated")
     provenance = TargetProvenance(

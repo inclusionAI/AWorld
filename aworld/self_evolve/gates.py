@@ -641,7 +641,7 @@ class TrustProvenanceGate:
         *,
         unresolved_reason: str | None = None,
     ) -> GateResult:
-        if provenance is None:
+        if provenance is None or unresolved_reason:
             return GateResult(
                 gate_name="trust_provenance",
                 passed=False,
