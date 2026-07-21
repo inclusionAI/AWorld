@@ -4552,7 +4552,7 @@ def test_stage_telemetry_delta_canonicalizes_wall_alias_per_new_batch() -> None:
     assert source == "telemetry_delta_tokens+wall_seconds"
 
 
-def test_zero_cold_start_is_not_proof_after_nonzero_actual_usage() -> None:
+def test_explicit_zero_proof_is_overridden_by_nonzero_actual_usage() -> None:
     context = _RunBudgetContext(
         ledger=RunBudgetLedger(
             BudgetCeilings(
@@ -4561,14 +4561,16 @@ def test_zero_cold_start_is_not_proof_after_nonzero_actual_usage() -> None:
                 wall_seconds=None,
             )
         ),
-        cold_start_by_stage={BudgetStage.PAIRED_REPLAY: BudgetUsage()},
+        cold_start_by_stage={BudgetStage.PAIRED_REPLAY: None},
     )
-    decision = context.reserve(
-        BudgetStage.PAIRED_REPLAY,
-        "first-replay",
+    estimate = context.ledger.estimate_next(
+        stage=BudgetStage.PAIRED_REPLAY,
+        item_id="first-replay",
+        backend_proven_zero=True,
     )
+    decision = context.ledger.reserve(estimate)
     assert decision.allowed is True
-    assert decision.estimate.backend_proven_zero is False
+    assert decision.estimate.backend_proven_zero is True
 
     context.debit(
         decision,
