@@ -124,6 +124,8 @@ from aworld.self_evolve.types import (
     GateResult,
     DatasetRecipe,
     OptimizerLineage,
+    SelfEvolveRun,
+    SelfEvolveRunStatus,
     SelfEvolveTargetRef,
     to_json_dict,
 )
@@ -2831,9 +2833,9 @@ def test_protocol_probe_mismatch_feedback_requires_exact_branch_verification() -
                         "reason": (
                             "protocol probe response mismatch: kind=websocket "
                             "path=/ws match=substring expected_sha256=abc "
-                            "expected_bytes=8 expected_preview=ext_info "
-                            "response_bytes=77 response_preview={\"id\":1,"
-                            "\"result\":{\"targetInfos\":[]}}"
+                            "expected_bytes=8 expected_shape=utf8_text "
+                            "response_bytes=77 response_payload_bytes=77 "
+                            "response_sha256=def response_shape=json_object"
                         ),
                     },
                 },
@@ -2850,11 +2852,10 @@ def test_protocol_probe_mismatch_feedback_requires_exact_branch_verification() -
     assert "remove redundant probes" in diagnostics[0]["reason"]
     assert diagnostics[0]["probe_kind"] == "websocket"
     assert diagnostics[0]["probe_path"] == "/ws"
-    assert diagnostics[0]["expected_preview"] == "ext_info"
-    assert diagnostics[0]["response_preview"] == (
-        '{"id":1,"result":{"targetInfos":[]}}'
-    )
-    assert "ext_info" in diagnostics[0]["reason"]
+    assert diagnostics[0]["expected_sha256"] == "abc"
+    assert diagnostics[0]["response_sha256"] == "def"
+    assert diagnostics[0]["expected_shape"] == "utf8_text"
+    assert diagnostics[0]["response_shape"] == "json_object"
     assert "compiler and runtime" in diagnostics[0]["reason"]
     assert "one canonical deterministic selector" in diagnostics[0]["reason"]
     assert "hard-code" in diagnostics[0]["reason"]
@@ -6051,6 +6052,133 @@ def test_repair_conformance_gate_never_exposes_private_assertion_values() -> Non
     assert gate.details["repair_conformance"] == contract.to_public_dict()
 
 
+def test_public_projection_recursively_seals_misplaced_private_contracts() -> None:
+    secret = "PRIVATE_RECURSIVE_CONTRACT_VALUE"
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"runtime.py": "sha256:base"},
+        required_branch_paths=("runtime.py",),
+        base_branch_fingerprints={},
+        exact_probe=ExactRepairProbe(
+            kind="http",
+            path="/query",
+            expected_response=secret,
+        ),
+    )
+    misplaced: object = contract
+    for index in range(12):
+        misplaced = {f"level_{index}": misplaced}
+    projected = _candidate_validation_report_for_persistence(
+        {
+            "typed_contract": {"nested": contract},
+            "over_depth_budget": misplaced,
+            "raw_contract_mapping": contract.to_dict(),
+        }
+    )
+    encoded = json.dumps(projected, sort_keys=True)
+    repeated = _candidate_validation_report_for_persistence(
+        {
+            "typed_contract": {"nested": contract},
+            "over_depth_budget": misplaced,
+            "raw_contract_mapping": contract.to_dict(),
+        }
+    )
+
+    assert secret not in encoded
+    assert projected == repeated
+    assert "expected_response_fingerprint" in encoded
+    assert "bounded_public_summary" in encoded
+    assert "fingerprint" in encoded
+
+
+def test_report_run_and_harness_persistence_boundaries_do_not_leak_contracts(
+    tmp_path: Path,
+) -> None:
+    secret = "PRIVATE_PERSISTENCE_BOUNDARY_VALUE"
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"runtime.py": "sha256:base"},
+        required_branch_paths=("runtime.py",),
+        base_branch_fingerprints={},
+        exact_probe=ExactRepairProbe(
+            kind="http",
+            path="/query",
+            expected_response=secret,
+        ),
+    )
+    legacy_reason = (
+        "protocol probe response mismatch: kind=http path=/query "
+        f"expected_preview={secret} response_bytes=10 "
+        f"response_preview={secret}"
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    report = {f"static_{index}": index for index in range(80)}
+    report.update(
+        {
+            "optimizer_diagnostics": {"nested": {"contract": contract}},
+            "gate_results": [
+                {
+                    "gate_name": "candidate_replay",
+                    "passed": False,
+                    "reason": legacy_reason,
+                    "details": {"contract": contract},
+                }
+            ],
+            "replay": {
+                "candidate": {
+                    "status": "failed",
+                    "failure": {"reason": legacy_reason},
+                    "metrics": {"raw_response": secret},
+                },
+                "members": [
+                    {
+                        "case_id": "case-1",
+                        "candidate_failure": {"reason": legacy_reason},
+                    }
+                ],
+            },
+        }
+    )
+    report_path = store.write_report("run-public-boundary", report)
+    store.create_run(
+        SelfEvolveRun(
+            run_id="run-public-boundary",
+            target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+            status=SelfEvolveRunStatus.REJECTED,
+            gate_results=(
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason=legacy_reason,
+                    details={"contract": contract},
+                ),
+            ),
+        )
+    )
+    diagnostics_path = store.write_harness_diagnostics(
+        "run-public-boundary",
+        ({"reason": legacy_reason, "contract": contract},),
+    )
+
+    persisted = "\n".join(
+        (
+            report_path.read_text(encoding="utf-8"),
+            store.run_path("run-public-boundary")
+            .joinpath("run.json")
+            .read_text(encoding="utf-8"),
+            diagnostics_path.read_text(encoding="utf-8"),
+        )
+    )
+    persisted_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert secret not in persisted
+    assert "expected_response_fingerprint" in persisted
+    assert all(f"static_{index}" in persisted_report for index in range(80))
+
+
 def test_population_report_separates_validation_stages_from_authoritative_replay() -> None:
     candidates = [
         CandidateVariant(
@@ -6455,6 +6583,14 @@ def test_exact_repair_probe_requires_correlated_result_validation() -> None:
         }
     )
     assert contract is not None
+    contract = replace(
+        contract,
+        exact_probe=ExactRepairProbe(
+            kind="websocket",
+            path="/session",
+            expected_response="recorded_value",
+        ),
+    )
     assert contract.requires_fixture_derived_probe is False
 
     assert _repair_conformance_required_nonempty_operations(contract) == (

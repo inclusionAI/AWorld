@@ -185,7 +185,7 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
 
 
 @pytest.mark.asyncio
-async def test_exact_repair_contract_uses_private_channel_without_prompt_or_diagnostic_leak() -> None:
+async def test_legacy_preview_does_not_recreate_private_contract_or_leak() -> None:
     secret = "PRIVATE_RAW_RECORDED_FIXTURE_VALUE"
     prompts: list[str] = []
 
@@ -243,8 +243,7 @@ async def test_exact_repair_contract_uses_private_channel_without_prompt_or_diag
     assert secret not in prompts[0]
     assert secret not in json.dumps(result.diagnostics, sort_keys=True)
     private_contract = result.private_context[candidate_id]
-    assert private_contract.exact_probe is not None
-    assert private_contract.exact_probe.expected_response == secret
+    assert private_contract.exact_probe is None
 
 
 @pytest.mark.asyncio

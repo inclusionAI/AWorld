@@ -349,66 +349,85 @@ def frozen_replay_fixture_shape_fingerprints(
         try:
             unresolved_path = root / relative_path
             if unresolved_path.is_symlink():
-                continue
+                raise ReplayCapabilityError(
+                    "frozen replay fixture cannot be a symlink"
+                )
             path = unresolved_path.resolve(strict=True)
             if (
                 not path.is_relative_to(root)
                 or not path.is_file()
                 or path.is_symlink()
             ):
-                continue
+                raise ReplayCapabilityError(
+                    "frozen replay fixture must be a local regular file"
+                )
             raw = path.read_bytes()
-        except OSError:
-            continue
-        if len(raw) > 2 * 1024 * 1024:
+        except OSError as exc:
+            raise ReplayCapabilityError(
+                "frozen replay fixture is unavailable for structural fingerprinting"
+            ) from exc
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
             descriptor: object = {
-                "kind": "oversized",
-                "size_bucket": len(raw).bit_length(),
+                "kind": "non_json",
+                "size_bucket": max(1, len(raw)).bit_length(),
+                "content_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
             }
+        except (MemoryError, RecursionError) as exc:
+            raise ReplayCapabilityError(
+                "fixture structure exceeds safe fingerprinting resources"
+            ) from exc
         else:
-            try:
-                value = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                descriptor = {
-                    "kind": "non_json",
-                    "size_bucket": max(1, len(raw)).bit_length(),
-                }
-            else:
-                descriptor = {
-                    "bounded_descriptor": _fixture_structure_descriptor(value),
-                    # The report remains bounded, but semantic grouping must
-                    # account for every structural node.  In particular, a
-                    # new 129th object field or array element cannot alias the
-                    # first 128 displayed nodes.
-                    "full_structure_sha256": _fixture_full_structure_digest(
-                        value
-                    ),
-                }
+            descriptor = {
+                "bounded_descriptor": (
+                    _fixture_structure_descriptor(value)
+                    if len(raw) <= 2 * 1024 * 1024
+                    else {
+                        "kind": "oversized_json",
+                        "size_bucket": len(raw).bit_length(),
+                    }
+                ),
+                # The report descriptor is bounded, but grouping accounts for
+                # every structural node regardless of file size or nesting.
+                "full_structure_sha256": _fixture_full_structure_digest(value),
+            }
         fingerprints[relative_path] = _json_fingerprint(descriptor)
     return fingerprints
 
 
 def _fixture_full_structure_digest(value: Any) -> str:
-    digest = hashlib.sha256()
+    """Hash the complete JSON shape with an iterative bounded-resource walk."""
 
-    def visit(item: Any, *, depth: int = 0, decoded_depth: int = 0) -> None:
-        if depth >= 64:
-            digest.update(b"depth-limit;")
-            return
+    digest = hashlib.sha256()
+    stack: list[tuple[str, Any, int]] = [("value", value, 0)]
+    visited_nodes = 0
+    max_nodes = 4_000_000
+    while stack:
+        action, item, decoded_depth = stack.pop()
+        visited_nodes += 1
+        if visited_nodes > max_nodes:
+            raise ReplayCapabilityError(
+                "fixture structure exceeds safe fingerprinting resources"
+            )
+        if action == "token":
+            digest.update(item)
+            continue
         if isinstance(item, Mapping):
             digest.update(b"object{")
-            for key, nested in sorted(item.items(), key=lambda pair: str(pair[0])):
-                key_digest = hashlib.sha256(str(key).encode("utf-8")).digest()
-                digest.update(key_digest)
-                visit(nested, depth=depth + 1, decoded_depth=decoded_depth)
-            digest.update(b"}")
-            return
+            stack.append(("token", b"}", decoded_depth))
+            items = sorted(item.items(), key=lambda pair: str(pair[0]))
+            for key, nested in reversed(items):
+                key_bytes = str(key).encode("utf-8")
+                stack.append(("value", nested, decoded_depth))
+                stack.append(("token", hashlib.sha256(key_bytes).digest(), decoded_depth))
+            continue
         if isinstance(item, list):
             digest.update(b"array[")
-            for nested in item:
-                visit(nested, depth=depth + 1, decoded_depth=decoded_depth)
-            digest.update(b"]")
-            return
+            stack.append(("token", b"]", decoded_depth))
+            for nested in reversed(item):
+                stack.append(("value", nested, decoded_depth))
+            continue
         if isinstance(item, str):
             stripped = item.strip()
             if (
@@ -423,14 +442,12 @@ def _fixture_full_structure_digest(value: Any) -> str:
                 else:
                     if isinstance(decoded, (Mapping, list)):
                         digest.update(b"encoded-json:")
-                        visit(
-                            decoded,
-                            depth=depth + 1,
-                            decoded_depth=decoded_depth + 1,
+                        stack.append(
+                            ("value", decoded, decoded_depth + 1)
                         )
-                        return
+                        continue
             digest.update(b"string;")
-            return
+            continue
         if isinstance(item, bool):
             digest.update(b"boolean;")
         elif item is None:
@@ -439,8 +456,6 @@ def _fixture_full_structure_digest(value: Any) -> str:
             digest.update(b"number;")
         else:
             digest.update(b"unknown;")
-
-    visit(value)
     return "sha256:" + digest.hexdigest()
 
 
@@ -2022,16 +2037,12 @@ def _parse_services(
                 ):
                     expected = probe.response_contains
                     expected_bytes = expected.encode("utf-8")
-                    expected_preview = sanitize_text(
-                        expected,
-                        max_chars=96,
-                    ).replace("\n", " ")
                     raise ReplayCapabilityError(
                         "protocol probe response_contains must be derived from the "
                         f"declared fixture: {service_id} "
                         f"kind={probe.kind} path={probe.path} "
-                        f"expected_preview={expected_preview} "
-                        f"expected_sha256={hashlib.sha256(expected_bytes).hexdigest()}"
+                        f"expected_sha256={hashlib.sha256(expected_bytes).hexdigest()} "
+                        f"expected_bytes={len(expected_bytes)} expected_shape=utf8_text"
                     )
         elif runtime_entrypoint_raw is not None:
             raise ReplayCapabilityError(

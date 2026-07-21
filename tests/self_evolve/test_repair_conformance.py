@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -83,6 +84,36 @@ def _service(*probes: ReplayProtocolProbe) -> ReplayServiceSpec:
         runtime_entrypoint="replay/runtime.py",
         readiness=ReplayReadinessProbe(kind="http", timeout_seconds=1, path="/ready"),
         protocol_probes=tuple(probes),
+    )
+
+
+def _private_exact_contract(
+    expected_response: str,
+    *,
+    observed_operations: tuple[str, ...] = (),
+) -> RepairConformanceContract:
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "stage": "replay_capability",
+                    "probe_kind": "websocket",
+                    "probe_path": "/session",
+                    "observed_request_operations": list(observed_operations),
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    return replace(
+        contract,
+        exact_probe=ExactRepairProbe(
+            kind="websocket",
+            path="/session",
+            expected_response=expected_response,
+        ),
     )
 
 
@@ -287,6 +318,57 @@ def test_probe_plan_deduplicates_repeated_cases_and_preserves_distinct_shapes() 
     )
 
 
+def test_probe_plan_preserves_long_case_identity_beyond_report_sample() -> None:
+    prefix = "case-" + ("shared-" * 40)
+    case_a = prefix + "member-a"
+    case_b = prefix + "member-b"
+    requirement = ReplayCapabilityRequirement(
+        requirement_id="requirement-long",
+        kind="local_endpoint",
+        identifier="endpoint-long",
+        case_ids=(case_a, case_b),
+        evidence_refs=("evidence-long",),
+        status="runtime_required",
+    )
+    service = ReplayServiceSpec(
+        service_id="service-long",
+        requirement_id="requirement-long",
+        transport="skill_runtime",
+        response_fixture="fixture.json",
+        runtime_entrypoint="replay/runtime.py",
+        protocol_probes=(
+            ReplayProtocolProbe(
+                kind="http",
+                path="/query",
+                timeout_seconds=1,
+                response_contains="private",
+            ),
+        ),
+    )
+    plan = build_repair_conformance_probe_plan(
+        capability_id="capability-long",
+        services=(service,),
+        requirements=(requirement,),
+        fixture_shape_fingerprints={"fixture.json": "sha256:fixture"},
+        contract=RepairConformanceContract(
+            focus_candidate_id="candidate",
+            failure_codes=("failure",),
+            interaction_progress=1,
+            base_file_fingerprints={"runtime.py": "sha256:base"},
+            required_branch_paths=("runtime.py",),
+            base_branch_fingerprints={},
+        ),
+        dataset_case_ids=(case_a, case_b),
+    )
+
+    assert plan.covered_case_ids == (case_a, case_b)
+    assert plan.groups[0].case_ids == (case_a, case_b)
+    report = plan.to_dict()
+    assert report["covered_case_id_count"] == 2
+    assert report["covered_case_ids_truncated"] is True
+    assert report["covered_case_ids_fingerprint"].startswith("sha256:")
+
+
 def test_completed_task_interaction_does_not_force_runtime_repair() -> None:
     focus = {
         "repair_candidate_package": _package(),
@@ -302,22 +384,7 @@ def test_completed_task_interaction_does_not_force_runtime_repair() -> None:
 
 
 def test_exact_probe_contract_rejects_rationale_only_or_unrelated_source_change() -> None:
-    focus = {
-        "repair_candidate_package": _package(),
-        "candidate_validation_diagnostics": [
-            {
-                "code": "verify_declared_protocol_probe_branch",
-                "stage": "replay_capability",
-                "probe_kind": "websocket",
-                "probe_path": "/session",
-                "expected_preview": "fixture_token",
-            }
-        ],
-    }
-
-    contract = compile_repair_conformance_contract(focus)
-
-    assert contract is not None
+    contract = _private_exact_contract("fixture_token")
     assert contract.focus_candidate_id == "candidate-failed"
     assert contract.required_branch_paths == ("replay/runtime.py",)
     assert contract.exact_probe is not None
@@ -336,6 +403,27 @@ def test_exact_probe_contract_rejects_rationale_only_or_unrelated_source_change(
         runtime_source="def respond():\n    return {'token': 'fixture_token'}\n"
     )
     assert evaluate_candidate_source_conformance(changed_runtime, contract).passed is True
+
+
+def test_legacy_expected_preview_cannot_recreate_private_execution_contract() -> None:
+    secret = "PRIVATE_LEGACY_EXPECTED_PREVIEW"
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "probe_kind": "websocket",
+                    "probe_path": "/session",
+                    "expected_preview": secret,
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.exact_probe is None
+    assert secret not in json.dumps(contract.to_public_dict(), sort_keys=True)
 
 
 def test_source_conformance_treats_omitted_runtime_delta_as_unchanged() -> None:
@@ -1433,21 +1521,7 @@ def test_source_conformance_rejects_unconditional_root_fallback_after_gateway() 
 
 
 def test_exact_probe_contract_requires_and_checks_the_declared_probe() -> None:
-    contract = compile_repair_conformance_contract(
-        {
-            "repair_candidate_package": _package(),
-            "candidate_validation_diagnostics": [
-                {
-                    "code": "verify_declared_protocol_probe_branch",
-                    "stage": "replay_capability",
-                    "probe_kind": "websocket",
-                    "probe_path": "/session",
-                    "expected_preview": "fixture_token",
-                }
-            ],
-        }
-    )
-    assert contract is not None
+    contract = _private_exact_contract("fixture_token")
 
     stale = _service(
         ReplayProtocolProbe(
@@ -1500,21 +1574,7 @@ def test_exact_probe_contract_requires_and_checks_the_declared_probe() -> None:
 
 
 def test_exact_probe_can_replace_stale_key_evidence_with_a_recorded_leaf() -> None:
-    contract = compile_repair_conformance_contract(
-        {
-            "repair_candidate_package": _package(),
-            "candidate_validation_diagnostics": [
-                {
-                    "code": "verify_declared_protocol_probe_branch",
-                    "stage": "replay_capability",
-                    "probe_kind": "websocket",
-                    "probe_path": "/session",
-                    "expected_preview": "ext_info",
-                }
-            ],
-        }
-    )
-    assert contract is not None
+    contract = _private_exact_contract("ext_info")
     repaired = _service(
         ReplayProtocolProbe(
             kind="websocket",
@@ -1539,23 +1599,7 @@ def test_exact_probe_can_replace_stale_key_evidence_with_a_recorded_leaf() -> No
 def test_exact_probe_can_replace_a_stale_recorded_preview_with_another_leaf() -> None:
     """A failed preview is evidence, not a value the next repair must echo."""
 
-    contract = compile_repair_conformance_contract(
-        {
-            "repair_candidate_package": _package(),
-            "candidate_validation_diagnostics": [
-                {
-                    "code": "verify_declared_protocol_probe_branch",
-                    "stage": "replay_capability",
-                    "probe_kind": "websocket",
-                    "probe_path": "/session",
-                    # This value happens to exist in the fixture, but it was
-                    # the stale value emitted by the failed implementation.
-                    "expected_preview": "stale-recorded-value",
-                }
-            ],
-        }
-    )
-    assert contract is not None
+    contract = _private_exact_contract("stale-recorded-value")
     repaired = _service(
         ReplayProtocolProbe(
             kind="websocket",
