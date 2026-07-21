@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import hashlib
 import json
+from dataclasses import replace
 
 from aworld.self_evolve.datasets import EvalCase
 from aworld.self_evolve.evolution_context import (
@@ -9,7 +10,15 @@ from aworld.self_evolve.evolution_context import (
     MAX_CONTEXT_TRACE_CHARS,
     compile_evolution_context,
 )
-from aworld.self_evolve.lessons import LessonRecord
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayFailureEvent,
+    ReplayFailureObservation,
+    aggregate_replay_failure_observations,
+)
+from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.sanitization import sanitize_source_text
@@ -101,6 +110,135 @@ def test_lesson_context_ranks_unique_repairable_cause_without_occurrence_bias() 
     assert sum(item["lesson_id"] == "causal-priority" for item in lesson_payloads) == 1
     assert lesson_payloads[0]["occurrence_count"] == 1
     assert lesson_payloads[0]["distinct_source_count"] == 2
+
+
+def test_private_v2_causal_aggregate_reaches_prompt_as_identity_digests_only() -> None:
+    private_capability = "PRIVATE_CAPABILITY_IDENTITY"
+    private_requirement = "PRIVATE_REQUIREMENT_IDENTITY"
+    private_contract = "PRIVATE_CONTRACT_FINGERPRINT"
+    aggregate = aggregate_replay_failure_observations(
+        tuple(
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    event_id=f"private-causal-event-{index}",
+                    code="capability_contract_rejected",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.CAPABILITY_PREFLIGHT,
+                    scope=FailureScope.CANDIDATE,
+                    repairable=True,
+                    capability_id=private_capability,
+                    requirement_id=private_requirement,
+                    contract_fingerprint=private_contract,
+                ),
+                case_id=f"private-case-{index}",
+                run_id=f"private-run-{index}",
+                task_id=f"private-task-{index}",
+                candidate_id=f"private-candidate-{index}",
+            )
+            for index in range(3)
+        )
+    )[0]
+    lessons = extract_lesson_records(
+        (
+            EvaluationSummary(
+                variant_id="private-candidate",
+                dataset_split="validation",
+                metrics={"causal_failure_events": [aggregate.to_dict()]},
+            ),
+        ),
+        target_scope={"target_type": "skill", "target_id": "demo"},
+    )
+
+    assert len(lessons) == 1
+    assert lessons[0].occurrence_count == 3
+    assert lessons[0].affected_case_count == 3
+    assert lessons[0].distinct_source_count == 3
+    causal_metrics = lessons[0].metrics
+    assert "capability_id" not in causal_metrics
+    assert "requirement_id" not in causal_metrics
+    assert "contract_fingerprint" not in causal_metrics
+    assert causal_metrics["capability_identity_digest"] == (
+        aggregate.capability_identity_digest
+    )
+    assert causal_metrics["requirement_identity_digest"] == (
+        aggregate.requirement_identity_digest
+    )
+    assert causal_metrics["contract_identity_digest"] == (
+        aggregate.contract_identity_digest
+    )
+
+    payload = compile_evolution_context(
+        replace(_request(), lesson_records=lessons)
+    ).to_prompt_payload(candidate_index=0)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    assert private_capability not in encoded
+    assert private_requirement not in encoded
+    assert private_contract not in encoded
+    assert aggregate.capability_identity_digest in encoded
+    assert aggregate.requirement_identity_digest in encoded
+    assert aggregate.contract_identity_digest in encoded
+
+
+def test_legacy_lesson_metrics_use_recursive_public_projection_in_prompt() -> None:
+    private_capability = "LEGACY_PRIVATE_CAPABILITY"
+    private_requirement = "LEGACY_PRIVATE_REQUIREMENT"
+    private_contract = "LEGACY_PRIVATE_CONTRACT"
+    private_response = "LEGACY_PRIVATE_EXPECTED_RESPONSE"
+    legacy_lesson = LessonRecord(
+        lesson_id="legacy-private-lesson",
+        lesson_type="causal_failure_memory",
+        title="Legacy causal lesson",
+        summary="Legacy external lesson with nested diagnostics.",
+        metrics={
+            "repairable": True,
+            "capability_id": private_capability,
+            "requirement_id": private_requirement,
+            "contract_fingerprint": private_contract,
+            "nested": [
+                {
+                    "repair_conformance": {
+                        "focus_candidate_id": "candidate-legacy",
+                        "contract_fingerprint": private_contract,
+                        "exact_probe": {
+                            "method": "POST",
+                            "expected_response": private_response,
+                        },
+                    }
+                }
+            ],
+        },
+    )
+
+    payload = compile_evolution_context(
+        replace(_request(), lesson_records=(legacy_lesson,))
+    ).to_prompt_payload(candidate_index=0)
+    lesson_metrics = payload["lesson_records"][0]["metrics"]
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    encoded_metrics = json.dumps(lesson_metrics, ensure_ascii=False, sort_keys=True)
+
+    assert private_capability not in encoded
+    assert private_requirement not in encoded
+    assert private_contract not in encoded
+    assert private_response not in encoded
+    assert '"capability_id":' not in encoded_metrics
+    assert '"requirement_id":' not in encoded_metrics
+    assert '"contract_fingerprint":' not in encoded_metrics
+    assert lesson_metrics["capability_identity_digest"] == hashlib.sha256(
+        private_capability.encode("utf-8")
+    ).hexdigest()
+    assert lesson_metrics["requirement_identity_digest"] == hashlib.sha256(
+        private_requirement.encode("utf-8")
+    ).hexdigest()
+    assert lesson_metrics["contract_identity_digest"] == hashlib.sha256(
+        private_contract.encode("utf-8")
+    ).hexdigest()
+    public_probe = lesson_metrics["nested"][0]["repair_conformance"]["exact_probe"]
+    assert "expected_response" not in public_probe
+    assert public_probe["expected_response_fingerprint"].startswith("sha256:")
+    assert public_probe["expected_response_shape"] == {
+        "kind": "text",
+        "bytes": len(private_response.encode("utf-8")),
+    }
 
 
 def test_compiler_deduplicates_feedback_and_selects_typed_strategies() -> None:
