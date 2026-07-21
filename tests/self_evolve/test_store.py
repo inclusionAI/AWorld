@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+from pathlib import Path
 
 import pytest
 
@@ -224,6 +225,140 @@ def test_store_rejects_invalid_attempt_transition_without_appending(tmp_path) ->
         store.append_candidate_attempt_event(invalid)
 
     assert store.read_candidate_attempt_events(key) == (generated,)
+
+
+@pytest.mark.parametrize("with_existing_event", (False, True))
+def test_attempt_append_never_exposes_a_partial_json_record(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_existing_event: bool,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    key = CandidateAttemptKey("run-atomic-attempt", 0, 0)
+    generated = CandidateAttemptEvent(
+        key=key,
+        sequence=0,
+        stage=CandidateAttemptStage.GENERATED,
+        candidate_id="candidate-1",
+    )
+    existing = (generated,) if with_existing_event else ()
+    if with_existing_event:
+        store.append_candidate_attempt_event(generated)
+        pending = CandidateAttemptEvent(
+            key=key,
+            sequence=1,
+            stage=CandidateAttemptStage.UNIQUE,
+            candidate_id="candidate-1",
+        )
+    else:
+        pending = generated
+
+    original_open = Path.open
+    original_error = OSError("simulated partial attempt write")
+
+    class _PartialWriter:
+        def __init__(self, stream) -> None:
+            self._stream = stream
+
+        def __enter__(self):
+            self._stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._stream.__exit__(*args)
+
+        def write(self, payload: bytes) -> int:
+            written = self._stream.write(payload[: max(1, len(payload) // 2)])
+            self._stream.flush()
+            os.fsync(self._stream.fileno())
+            raise original_error
+
+        def flush(self) -> None:
+            self._stream.flush()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+    def partial_temporary_open(path: Path, mode="r", *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        if mode == "xb" and path.name.endswith(".tmp"):
+            return _PartialWriter(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", partial_temporary_open)
+    with pytest.raises(OSError) as raised:
+        store.append_candidate_attempt_event(pending)
+
+    assert raised.value is original_error
+    assert store.read_candidate_attempt_events(key) == existing
+    attempt_dir = store.candidate_attempt_path(key).parent
+    assert tuple(attempt_dir.glob(".events.jsonl.*.tmp")) == ()
+
+
+@pytest.mark.parametrize("with_existing_event", (False, True))
+def test_attempt_append_completes_repeated_short_writes_before_replace(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_existing_event: bool,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    key = CandidateAttemptKey("run-short-write-attempt", 0, 0)
+    generated = CandidateAttemptEvent(
+        key=key,
+        sequence=0,
+        stage=CandidateAttemptStage.GENERATED,
+        candidate_id="candidate-1",
+    )
+    existing = (generated,) if with_existing_event else ()
+    if with_existing_event:
+        store.append_candidate_attempt_event(generated)
+        pending = CandidateAttemptEvent(
+            key=key,
+            sequence=1,
+            stage=CandidateAttemptStage.UNIQUE,
+            candidate_id="candidate-1",
+        )
+    else:
+        pending = generated
+
+    original_open = Path.open
+    write_calls = 0
+
+    class _ShortWriter:
+        def __init__(self, stream) -> None:
+            self._stream = stream
+
+        def __enter__(self):
+            self._stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._stream.__exit__(*args)
+
+        def write(self, payload) -> int:
+            nonlocal write_calls
+            write_calls += 1
+            return self._stream.write(payload[:7])
+
+        def flush(self) -> None:
+            self._stream.flush()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+    def short_temporary_open(path: Path, mode="r", *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        if mode == "xb" and path.name.endswith(".tmp"):
+            return _ShortWriter(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", short_temporary_open)
+    store.append_candidate_attempt_event(pending)
+
+    assert write_calls > 1
+    assert store.read_candidate_attempt_events(key) == (*existing, pending)
+    attempt_dir = store.candidate_attempt_path(key).parent
+    assert tuple(attempt_dir.glob(".events.jsonl.*.tmp")) == ()
 
 
 def test_store_rejects_candidate_attempt_path_key_mismatch(tmp_path) -> None:
