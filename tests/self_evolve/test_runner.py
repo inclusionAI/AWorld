@@ -77,6 +77,7 @@ from aworld.self_evolve.runner import (
     _replay_adaptation_exception_details,
     _replay_report,
     _repair_conformance_failure_diagnostics,
+    _repair_conformance_gate,
     _repair_conformance_required_nonempty_operations,
     _retryable_candidate_generation_failure,
     _select_iteration_state,
@@ -6007,6 +6008,47 @@ def test_persisted_conformance_report_hashes_payload_bearing_assertions() -> Non
     assert "private-recorded-value" not in encoded
     assert "expected_response_fingerprint" in encoded
     assert "declared_response_contains_fingerprint" in encoded
+
+
+def test_repair_conformance_gate_never_exposes_private_assertion_values() -> None:
+    secret = "PRIVATE_RAW_RECORDED_FIXTURE_VALUE"
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("exact_repair_probe_missing",),
+        interaction_progress=1,
+        base_file_fingerprints={"runtime.py": "sha256:base"},
+        required_branch_paths=("runtime.py",),
+        base_branch_fingerprints={"runtime.py": "sha256:branch"},
+        exact_probe=ExactRepairProbe(
+            kind="http",
+            path="/query",
+            expected_response=secret,
+        ),
+    )
+
+    gate = _repair_conformance_gate(
+        RepairConformanceResult(
+            passed=False,
+            code="exact_repair_probe_missing",
+            reason="probe missing",
+            details={
+                "expected_preview": secret,
+                "previous_expected_preview": secret,
+            },
+        ),
+        contract=contract,
+    )
+    encoded = json.dumps(gate.details, sort_keys=True)
+    feedback_encoded = json.dumps(
+        runner_module._typed_gate_feedback_metrics((gate,)),
+        sort_keys=True,
+    )
+
+    assert secret not in encoded
+    assert secret not in feedback_encoded
+    assert "expected_preview_fingerprint" in encoded
+    assert "previous_expected_preview_fingerprint" in encoded
+    assert gate.details["repair_conformance"] == contract.to_public_dict()
 
 
 def test_population_report_separates_validation_stages_from_authoritative_replay() -> None:
