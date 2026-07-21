@@ -99,6 +99,16 @@ _REPLAY_PROVENANCE_METRIC_KEYS = (
     "service_cleanup_status",
 )
 
+_PER_MEMBER_REPETITION_SEMANTICS = "per_member_v3"
+_MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS = "distributed_v2_migrated"
+_MEMBER_REPLAY_SCHEMA_V3 = "aworld.self_evolve.member_replay.v3"
+_LEGACY_MEMBER_REPLAY_SCHEMAS = {
+    "aworld.self_evolve.member_replay.v1",
+    "aworld.self_evolve.member_replay.v2",
+}
+_REPLAY_LIFECYCLE_SCHEMA_V3 = "aworld.self_evolve.replay_lifecycle.v3"
+_REPLAY_LIFECYCLE_SCHEMA_V2 = "aworld.self_evolve.replay_lifecycle.v2"
+
 
 @dataclass(frozen=True)
 class CandidateReplayRequest:
@@ -125,6 +135,7 @@ class CandidateReplayRequest:
     workspace_seed_fingerprint: str | None = None
     task_input_fingerprint: str | None = None
     verified_candidate_package_fingerprint: str | None = None
+    repetition_semantics: str = _PER_MEMBER_REPETITION_SEMANTICS
 
 
 @dataclass(frozen=True)
@@ -327,6 +338,30 @@ def normalize_replay_members(
     unexpected: list[str] = []
     mismatches: list[str] = []
     mismatch_fields: dict[str, tuple[str, ...]] = {}
+    root_request = getattr(replay_result, "request", None)
+    if isinstance(root_request, CandidateReplayRequest) and not (
+        _has_authoritative_per_member_repetitions(root_request)
+    ):
+        events.append(
+            _normalization_failure(
+                code="legacy_repetition_semantics_non_authoritative",
+                summary=(
+                    "legacy distributed replay was migrated for inspection but "
+                    "cannot authorize new replay or evaluation"
+                ),
+                diagnostics={
+                    "repetition_semantics": (
+                        root_request.repetition_semantics
+                    ),
+                    "baseline_repetitions_per_member": (
+                        root_request.baseline_repetitions
+                    ),
+                    "candidate_repetitions_per_member": (
+                        root_request.candidate_repetitions
+                    ),
+                },
+            )
+        )
     raw_members = replay_result.member_results
     if raw_members is None:
         if len(replayable_cases) == 1:
@@ -915,9 +950,26 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
     root = Path(replay_dir).expanduser()
     request_payload = _load_json_object(root / "request.json")
     request = _candidate_replay_request_from_mapping(request_payload)
+    lifecycle_is_per_member_v3 = _stored_lifecycles_use_per_member_v3(root)
     member_manifest_path = root / "members" / "manifest.json"
     if member_manifest_path.exists():
         member_manifest = _load_json_object(member_manifest_path)
+        member_schema = str(member_manifest.get("schema_version") or "")
+        migration_required = (
+            member_schema in _LEGACY_MEMBER_REPLAY_SCHEMAS
+            or lifecycle_is_per_member_v3 is False
+        )
+        if member_schema == _MEMBER_REPLAY_SCHEMA_V3:
+            if (
+                member_manifest.get("repetition_semantics")
+                != _PER_MEMBER_REPETITION_SEMANTICS
+                or not _has_authoritative_per_member_repetitions(request)
+            ):
+                raise ValueError(
+                    "stored v3 member replay is missing per-member repetition semantics"
+                )
+        elif member_schema not in _LEGACY_MEMBER_REPLAY_SCHEMAS:
+            raise ValueError("unsupported stored member replay schema")
         raw_members = member_manifest.get("members")
         if not isinstance(raw_members, list):
             raise ValueError("stored member replay manifest is missing members")
@@ -935,25 +987,75 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
             member_request = _candidate_replay_request_from_mapping(
                 _load_json_object(member_root / "request.json")
             )
+            if (
+                member_schema == _MEMBER_REPLAY_SCHEMA_V3
+                and not _has_authoritative_per_member_repetitions(member_request)
+            ):
+                raise ValueError(
+                    "stored v3 member request is missing per-member repetition semantics"
+                )
+            baseline_dir = (
+                Path(member_request.baseline_replay_dir)
+                if member_request.baseline_replay_dir
+                else member_root / "baseline"
+            )
+            candidate_dir = member_root / _safe_path(request.candidate_id)
+            member_lifecycle_states = (
+                _stored_lifecycles_use_per_member_v3(baseline_dir),
+                _stored_lifecycles_use_per_member_v3(candidate_dir),
+            )
+            if any(state is False for state in member_lifecycle_states):
+                migration_required = True
             member_results.append(
                 CandidateReplayMemberResult(
                     case_id=case_id,
                     request=member_request,
                     baseline=_load_variant_result_from_dir(
-                        (
-                            Path(member_request.baseline_replay_dir)
-                            if member_request.baseline_replay_dir
-                            else member_root / "baseline"
-                        ),
+                        baseline_dir,
                         base_variant_id="baseline",
                     ),
                     candidate=_load_variant_result_from_dir(
-                        member_root / _safe_path(request.candidate_id),
+                        candidate_dir,
                         base_variant_id=request.candidate_id,
                     ),
                 )
             )
         members = tuple(member_results)
+        if migration_required:
+            members = tuple(
+                replace(
+                    member,
+                    request=replace(
+                        member.request,
+                        repetition_semantics=(
+                            _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
+                        ),
+                    ),
+                )
+                for member in members
+            )
+            # v1/v2 root counts were divided over members, and any v2
+            # lifecycle remains non-authoritative even beside a newer
+            # manifest.  Member requests are the faithful per-member view;
+            # retain a migration marker so inspection cannot become reuse.
+            baseline_counts = {
+                member.request.baseline_repetitions for member in members
+            }
+            candidate_counts = {
+                member.request.candidate_repetitions for member in members
+            }
+            if len(baseline_counts) != 1 or len(candidate_counts) != 1:
+                raise ValueError(
+                    "stored distributed member replay has inconsistent repetition counts"
+                )
+            request = replace(
+                request,
+                baseline_repetitions=next(iter(baseline_counts)),
+                candidate_repetitions=next(iter(candidate_counts)),
+                repetition_semantics=(
+                    _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
+                ),
+            )
         baseline = _aggregate_member_variant_results(
             base_variant_id="baseline",
             members=members,
@@ -979,7 +1081,29 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
         root / _safe_path(request.candidate_id),
         base_variant_id=request.candidate_id,
     )
+    if lifecycle_is_per_member_v3 is False:
+        request = replace(
+            request,
+            repetition_semantics=_MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS,
+        )
     return CandidateReplayResult(request=request, baseline=baseline, candidate=candidate)
+
+
+def _stored_lifecycles_use_per_member_v3(root: Path) -> bool | None:
+    """Return v3 proof, explicit legacy evidence, or no lifecycle signal."""
+
+    lifecycle_paths = tuple(root.rglob("lifecycle.json"))
+    if not lifecycle_paths:
+        return None
+    for path in lifecycle_paths:
+        lifecycle = _load_json_object(path)
+        if (
+            lifecycle.get("schema_version") != _REPLAY_LIFECYCLE_SCHEMA_V3
+            or lifecycle.get("repetition_semantics")
+            != _PER_MEMBER_REPETITION_SEMANTICS
+        ):
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -1536,6 +1660,11 @@ class AWorldCliCandidateReplayBackend:
         candidate: CandidateVariant,
         dataset: SelfEvolveDataset,
     ) -> CandidateReplayResult:
+        if not _has_authoritative_per_member_repetitions(request):
+            raise ValueError(
+                "candidate replay execution requires explicit per-member "
+                "repetition semantics"
+            )
         replay_dir = (
             Path(request.workspace_root)
             / ".aworld"
@@ -1666,7 +1795,8 @@ class AWorldCliCandidateReplayBackend:
         _write_json(
             members_root / "manifest.json",
             {
-                "schema_version": "aworld.self_evolve.member_replay.v2",
+                "schema_version": _MEMBER_REPLAY_SCHEMA_V3,
+                "repetition_semantics": _PER_MEMBER_REPETITION_SEMANTICS,
                 "members": [
                     {
                         "case_id": member.case_id,
@@ -2210,6 +2340,11 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
     except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
         return False
     if stored.task_id != request.task_id:
+        return False
+    if not (
+        _has_authoritative_per_member_repetitions(request)
+        and _has_authoritative_per_member_repetitions(stored)
+    ):
         return False
     if (
         stored.target.target_type != request.target.target_type
@@ -5198,7 +5333,20 @@ def _legacy_member_replay_dir(root: Path, case_id: str) -> Path | None:
 def _distributed_member_repetitions(repetitions: int, *, member_count: int) -> int:
     if member_count <= 0:
         raise ValueError("member_count must be positive")
-    return max(1, (max(1, repetitions) + member_count - 1) // member_count)
+    if repetitions <= 0:
+        raise ValueError("replay repetitions must be positive")
+    # Repetitions are configured per normalized replay member.  Keep the
+    # historical helper name because runner-side baseline reuse imports it,
+    # but never divide an explicit repetition count by trajectory cardinality.
+    return repetitions
+
+
+def _has_authoritative_per_member_repetitions(
+    request: CandidateReplayRequest,
+) -> bool:
+    """Return whether a request can authorize new per-member replay work."""
+
+    return request.repetition_semantics == _PER_MEMBER_REPETITION_SEMANTICS
 
 
 def _infer_baseline_skill_root_from_target(target: SelfEvolveTargetRef) -> str | None:
@@ -5940,7 +6088,7 @@ def _persist_variant_lifecycle(
     artifact_dir: Path,
     result: ReplayVariantResult,
 ) -> None:
-    """Persist v2 lifecycle plus the legacy inspection files additively."""
+    """Persist typed lifecycle plus the legacy inspection files additively."""
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
     for source_path, filename in (
@@ -5970,7 +6118,8 @@ def _persist_variant_lifecycle(
     _write_json(
         artifact_dir / "lifecycle.json",
         {
-            "schema_version": "aworld.self_evolve.replay_lifecycle.v2",
+            "schema_version": _REPLAY_LIFECYCLE_SCHEMA_V3,
+            "repetition_semantics": _PER_MEMBER_REPETITION_SEMANTICS,
             "variant_id": result.variant_id,
             "status": result.status,
             "failure": result.failure.to_dict() if result.failure is not None else None,
@@ -6355,6 +6504,11 @@ def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> Candid
         max_cost_usd=_optional_float(payload.get("max_cost_usd")),
         baseline_repetitions=_positive_int(payload.get("baseline_repetitions"), default=1),
         candidate_repetitions=_positive_int(payload.get("candidate_repetitions"), default=1),
+        repetition_semantics=(
+            str(payload.get("repetition_semantics"))
+            if payload.get("repetition_semantics") is not None
+            else _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
+        ),
         dataset_fingerprint=(
             str(payload.get("dataset_fingerprint"))
             if payload.get("dataset_fingerprint") is not None
@@ -6768,8 +6922,20 @@ def _load_lifecycle_variant_result(
     base_variant_id: str,
 ) -> ReplayVariantResult:
     lifecycle = _load_json_object(variant_dir / "lifecycle.json")
-    if lifecycle.get("schema_version") != "aworld.self_evolve.replay_lifecycle.v2":
+    lifecycle_schema = lifecycle.get("schema_version")
+    if lifecycle_schema not in {
+        _REPLAY_LIFECYCLE_SCHEMA_V2,
+        _REPLAY_LIFECYCLE_SCHEMA_V3,
+    }:
         raise ValueError("unsupported stored replay lifecycle schema")
+    if (
+        lifecycle_schema == _REPLAY_LIFECYCLE_SCHEMA_V3
+        and lifecycle.get("repetition_semantics")
+        != _PER_MEMBER_REPETITION_SEMANTICS
+    ):
+        raise ValueError(
+            "stored v3 replay lifecycle is missing per-member repetition semantics"
+        )
     raw_failure = lifecycle.get("failure")
     failure = (
         ReplayFailureEvent.from_dict(raw_failure)

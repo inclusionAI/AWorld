@@ -43,6 +43,7 @@ from aworld.self_evolve.replay import (
     _aggregate_variant_results,
     _invalid_evidence_manifest_entry_reason,
     _evidence_manifest_metrics,
+    _has_authoritative_per_member_repetitions,
     _member_artifact_name,
     _member_baseline_replay_dir,
     _probe_advertised_websockets,
@@ -59,6 +60,7 @@ from aworld.self_evolve.replay import (
     replay_capability_fixture_leaf_values,
     replay_capability_fixture_response_leaf_values,
     _replay_service_failure_with_stderr,
+    _stored_baseline_matches_request,
     _replay_failure_outcome,
     _run_replay_cli,
     _validate_nonempty_correlated_json_response,
@@ -510,8 +512,8 @@ def test_structurally_invalid_members_are_never_comparable_without_adaptation(
         candidate=candidate,
         overlay_skill_root=tmp_path / "overlay",
         dataset=dataset,
-        baseline_repetitions=case_count,
-        candidate_repetitions=case_count,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
     )
     succeeded = ReplayVariantResult(
         variant_id="baseline",
@@ -617,8 +619,8 @@ def test_member_derived_request_fields_fail_closed_for_comparison_and_reuse(
         candidate=candidate,
         overlay_skill_root=tmp_path / "overlay",
         dataset=dataset,
-        baseline_repetitions=case_count,
-        candidate_repetitions=case_count,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
     )
     succeeded = ReplayVariantResult(
         variant_id="baseline",
@@ -772,7 +774,7 @@ def test_duplicate_member_occurrences_are_order_independent_and_never_selected(
     assert coverage["request_mismatch_count"] == 1
 
 
-def test_member_request_repetition_distribution_is_part_of_normalization_contract(
+def test_member_request_per_member_repetitions_are_part_of_normalization_contract(
     tmp_path: Path,
 ) -> None:
     dataset = SelfEvolveDataset(
@@ -810,8 +812,8 @@ def test_member_request_repetition_distribution_is_part_of_normalization_contrac
                 root_request,
                 task_id=case.case_id,
                 task_input=case.input,
-                baseline_repetitions=(99 if index == 0 else 2),
-                candidate_repetitions=3,
+                baseline_repetitions=(99 if index == 0 else 6),
+                candidate_repetitions=9,
             ),
             baseline=succeeded,
             candidate=replace(succeeded, variant_id=candidate.candidate_id),
@@ -839,7 +841,7 @@ def test_member_request_repetition_distribution_is_part_of_normalization_contrac
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case_count", (1, 3))
-async def test_replay_lifecycle_v2_round_trip_materializes_blocked_members(
+async def test_replay_lifecycle_v3_round_trip_materializes_blocked_members(
     tmp_path: Path,
     case_count: int,
 ) -> None:
@@ -905,7 +907,8 @@ async def test_replay_lifecycle_v2_round_trip_materializes_blocked_members(
         for member in loaded.member_results
     )
     manifest = json.loads((replay_dir / "members" / "manifest.json").read_text())
-    assert manifest["schema_version"] == "aworld.self_evolve.member_replay.v2"
+    assert manifest["schema_version"] == "aworld.self_evolve.member_replay.v3"
+    assert manifest["repetition_semantics"] == "per_member_v3"
     assert all(
         (
             replay_dir
@@ -916,11 +919,18 @@ async def test_replay_lifecycle_v2_round_trip_materializes_blocked_members(
         ).exists()
         for item in manifest["members"]
     )
+    assert all(
+        json.loads(path.read_text())["schema_version"]
+        == "aworld.self_evolve.replay_lifecycle.v3"
+        and json.loads(path.read_text())["repetition_semantics"]
+        == "per_member_v3"
+        for path in replay_dir.rglob("lifecycle.json")
+    )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case_count", (1, 3))
-async def test_lifecycle_v2_round_trip_restores_member_repetition_children(
+async def test_lifecycle_v3_round_trip_restores_member_repetition_children(
     tmp_path: Path,
     case_count: int,
 ) -> None:
@@ -957,8 +967,8 @@ async def test_lifecycle_v2_round_trip_restores_member_repetition_children(
         candidate=candidate,
         overlay_skill_root=tmp_path / "overlay",
         dataset=dataset,
-        baseline_repetitions=2 * case_count,
-        candidate_repetitions=3 * case_count,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
     )
     before = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
         request,
@@ -1000,6 +1010,177 @@ async def test_lifecycle_v2_round_trip_restores_member_repetition_children(
     assert [
         case.metadata["replay"]["replay_case_count"] for case in after_paired.cases
     ] == [3] * (3 * case_count)
+
+
+@pytest.mark.asyncio
+async def test_v2_distributed_artifact_migrates_to_non_authoritative_per_member_view(
+    tmp_path: Path,
+) -> None:
+    case_ids = ("legacy-a", "legacy-b", "legacy-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "legacy_distributed_repetitions"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="legacy-candidate",
+    )
+    adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "adaptation",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id="legacy-v2-distributed",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        replay_adaptation=adaptation,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    await backend.replay_candidate(request, candidate=candidate, dataset=dataset)
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+
+    root_payload = json.loads((replay_dir / "request.json").read_text())
+    root_payload.pop("repetition_semantics")
+    root_payload["baseline_repetitions"] = 6
+    root_payload["candidate_repetitions"] = 9
+    _write_json(replay_dir / "request.json", root_payload)
+    manifest_path = replay_dir / "members" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = "aworld.self_evolve.member_replay.v2"
+    manifest.pop("repetition_semantics")
+    _write_json(manifest_path, manifest)
+    for member_request_path in (replay_dir / "members").glob("*/request.json"):
+        member_payload = json.loads(member_request_path.read_text())
+        member_payload.pop("repetition_semantics")
+        _write_json(member_request_path, member_payload)
+    for lifecycle_path in replay_dir.rglob("lifecycle.json"):
+        lifecycle = json.loads(lifecycle_path.read_text())
+        lifecycle["schema_version"] = "aworld.self_evolve.replay_lifecycle.v2"
+        lifecycle.pop("repetition_semantics")
+        _write_json(lifecycle_path, lifecycle)
+
+    loaded = load_candidate_replay_result(replay_dir)
+    normalized = normalize_replay_members(dataset=dataset, replay_result=loaded)
+
+    assert loaded.request.baseline_repetitions == 2
+    assert loaded.request.candidate_repetitions == 3
+    assert loaded.request.repetition_semantics == "distributed_v2_migrated"
+    assert loaded.baseline.metrics["repetition_count"] == 6
+    assert loaded.candidate.metrics["repetition_count"] == 9
+    assert all(
+        member.request.baseline_repetitions == 2
+        and member.request.candidate_repetitions == 3
+        and member.request.repetition_semantics == "distributed_v2_migrated"
+        for member in loaded.member_results
+    )
+    assert len(normalized.members) == 3
+    assert not normalized.valid
+    assert normalized.failure_events[0].code == (
+        "legacy_repetition_semantics_non_authoritative"
+    )
+    assert not _replay_result_has_reusable_baseline(
+        dataset=dataset,
+        replay_result=loaded,
+    )
+    assert not _has_authoritative_per_member_repetitions(loaded.request)
+
+    first_member = loaded.member_results[0]
+    first_member_root = (
+        replay_dir / "members" / _member_artifact_name(first_member.case_id)
+    )
+    new_request = replace(
+        first_member.request,
+        baseline_replay_dir=str(first_member_root / "baseline"),
+        repetition_semantics="per_member_v3",
+    )
+    assert not _stored_baseline_matches_request(new_request)
+    with pytest.raises(ValueError, match="explicit per-member repetition semantics"):
+        await backend.replay_candidate(
+            loaded.request,
+            candidate=candidate,
+            dataset=dataset,
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_lifecycle_cannot_claim_v3_per_member_authority(
+    tmp_path: Path,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="legacy-lifecycle", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "legacy_lifecycle"},
+            split_seed="seed",
+            splits={"train": ["legacy-lifecycle"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id="legacy-lifecycle-v2",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+    )
+    await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+    for lifecycle_path in replay_dir.rglob("lifecycle.json"):
+        lifecycle = json.loads(lifecycle_path.read_text())
+        lifecycle["schema_version"] = "aworld.self_evolve.replay_lifecycle.v2"
+        lifecycle.pop("repetition_semantics")
+        _write_json(lifecycle_path, lifecycle)
+
+    loaded = load_candidate_replay_result(replay_dir)
+    normalized = normalize_replay_members(dataset=dataset, replay_result=loaded)
+
+    assert loaded.request.repetition_semantics == "distributed_v2_migrated"
+    assert not normalized.valid
+    assert normalized.failure_events[0].code == (
+        "legacy_repetition_semantics_non_authoritative"
+    )
 
 
 def test_all_blocked_repetition_aggregate_is_unexecuted_and_artifact_free(
@@ -3764,8 +3945,10 @@ async def test_multi_member_replay_executes_and_maps_each_member_independently(
 
 
 @pytest.mark.asyncio
-async def test_multi_member_replay_distributes_repetition_budget_across_members(
+@pytest.mark.parametrize("case_count", (1, 2, 3, 4))
+async def test_replay_repetitions_apply_to_every_normalized_member(
     tmp_path: Path,
+    case_count: int,
 ) -> None:
     calls: list[ReplayExecutionRequest] = []
 
@@ -3785,15 +3968,15 @@ async def test_multi_member_replay_distributes_repetition_budget_across_members(
     dataset = SelfEvolveDataset(
         cases=tuple(
             EvalCase(case_id=f"task-{index}", input=f"Replay task {index}")
-            for index in range(1, 5)
+            for index in range(1, case_count + 1)
         ),
         recipe=DatasetRecipe(
-            source={"kind": "test", "case_count": 4},
+            source={"kind": "test", "case_count": case_count},
             split_seed="seed",
             splits={
-                "train": ["task-1", "task-2"],
-                "validation": ["task-3"],
-                "held_out": ["task-4"],
+                "train": [f"task-{index}" for index in range(1, case_count + 1)],
+                "validation": [],
+                "held_out": [],
             },
         ),
     )
@@ -3815,21 +3998,23 @@ async def test_multi_member_replay_distributes_repetition_budget_across_members(
         dataset=dataset,
     )
 
-    assert [(call.task_id, call.variant_id) for call in calls] == [
-        ("task-1", "baseline"),
-        ("task-2", "baseline"),
-        ("task-3", "baseline"),
-        ("task-4", "baseline"),
-        ("task-1", "cand-1"),
-        ("task-2", "cand-1"),
-        ("task-3", "cand-1"),
-        ("task-4", "cand-1"),
+    expected_calls = [
+        (f"task-{member}", f"baseline-{repetition}")
+        for member in range(1, case_count + 1)
+        for repetition in range(1, 3)
+    ] + [
+        (f"task-{member}", f"cand-1-{repetition}")
+        for member in range(1, case_count + 1)
+        for repetition in range(1, 4)
     ]
-    assert result.baseline.metrics["repetition_count"] == 4
-    assert result.candidate.metrics["repetition_count"] == 4
+    assert [(call.task_id, call.variant_id) for call in calls] == expected_calls
+    assert result.baseline.metrics["repetition_count"] == case_count * 2
+    assert result.candidate.metrics["repetition_count"] == case_count * 3
     assert all(
-        member.baseline.metrics["repetition_count"] == 1
-        and member.candidate.metrics["repetition_count"] == 1
+        member.request.baseline_repetitions == 2
+        and member.request.candidate_repetitions == 3
+        and member.baseline.metrics["repetition_count"] == 2
+        and member.candidate.metrics["repetition_count"] == 3
         for member in result.member_results
     )
 
@@ -4149,14 +4334,14 @@ async def test_load_candidate_replay_result_restores_multi_member_mapping(
         "task-b",
     ]
     assert all(
-        len(member.baseline.repetition_results) == 0
-        and member.baseline.metrics["repetition_count"] == 1
-        and len(member.candidate.repetition_results) == 0
-        and member.candidate.metrics["repetition_count"] == 1
+        len(member.baseline.repetition_results) == 2
+        and member.baseline.metrics["repetition_count"] == 2
+        and len(member.candidate.repetition_results) == 2
+        and member.candidate.metrics["repetition_count"] == 2
         for member in loaded.member_results
     )
-    assert loaded.baseline.metrics["repetition_count"] == 2
-    assert loaded.candidate.metrics["repetition_count"] == 2
+    assert loaded.baseline.metrics["repetition_count"] == 4
+    assert loaded.candidate.metrics["repetition_count"] == 4
     paired = build_paired_replay_dataset(
         dataset=dataset,
         replay_result=loaded,
@@ -4211,6 +4396,8 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         overlay_skill_root=tmp_path / "overlay-1",
         dataset=dataset,
         replay_adaptation=replay_adaptation,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
     )
     backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
     await backend.replay_candidate(
@@ -4218,6 +4405,18 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         candidate=first_candidate,
         dataset=dataset,
     )
+    assert [(call.task_id, call.variant_id) for call in calls] == [
+        ("task-a", "baseline-1"),
+        ("task-a", "baseline-2"),
+        ("task-b", "baseline-1"),
+        ("task-b", "baseline-2"),
+        ("task-a", "cand-1-1"),
+        ("task-a", "cand-1-2"),
+        ("task-a", "cand-1-3"),
+        ("task-b", "cand-1-1"),
+        ("task-b", "cand-1-2"),
+        ("task-b", "cand-1-3"),
+    ]
     calls.clear()
     second_candidate = _candidate(
         "---\nname: demo\n---\n# Demo\nSecond.\n",
@@ -4241,6 +4440,8 @@ async def test_multi_member_replay_reuses_each_members_baseline(
         dataset=dataset,
         baseline_replay_dir=members_root,
         replay_adaptation=replay_adaptation,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
     )
 
     result = await backend.replay_candidate(
@@ -4251,10 +4452,16 @@ async def test_multi_member_replay_reuses_each_members_baseline(
 
     assert result.succeeded is True
     assert [(call.task_id, call.variant_id) for call in calls] == [
-        ("task-a", "cand-2"),
-        ("task-b", "cand-2"),
+        ("task-a", "cand-2-1"),
+        ("task-a", "cand-2-2"),
+        ("task-a", "cand-2-3"),
+        ("task-b", "cand-2-1"),
+        ("task-b", "cand-2-2"),
+        ("task-b", "cand-2-3"),
     ]
     assert all(member.baseline.succeeded for member in result.member_results)
+    assert result.baseline.metrics["repetition_count"] == 4
+    assert result.candidate.metrics["repetition_count"] == 6
     second_replay_dir = (
         tmp_path
         / ".aworld"
