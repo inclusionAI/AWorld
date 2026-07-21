@@ -18,6 +18,7 @@ from aworld.self_evolve.candidate_package import (
 )
 from aworld.self_evolve.replay_adaptation import ReplayPreflightReport
 from aworld.self_evolve.judge import JudgeRecord
+from aworld.self_evolve.sanitization import public_diagnostic_projection
 from aworld.self_evolve.credit_assignment import TargetSelectionReport
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -48,7 +49,27 @@ class FilesystemSelfEvolveStore:
     def create_run(self, run: SelfEvolveRun) -> Path:
         run_dir = self.run_path(run.run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
-        self._write_json(run_dir / "run.json", run)
+        run_payload = to_json_dict(run)
+        raw_gates = run_payload.get("gate_results")
+        if isinstance(raw_gates, list):
+            for gate in raw_gates:
+                if isinstance(gate, dict):
+                    if "reason" in gate:
+                        gate["reason"] = public_diagnostic_projection(
+                            gate.get("reason")
+                        )
+                    if "details" in gate:
+                        gate["details"] = public_diagnostic_projection(
+                            gate.get("details")
+                        )
+        raw_metrics = run_payload.get("metrics")
+        if isinstance(raw_metrics, list):
+            for metric in raw_metrics:
+                if isinstance(metric, dict) and "metrics" in metric:
+                    metric["metrics"] = public_diagnostic_projection(
+                        metric.get("metrics")
+                    )
+        self._write_json(run_dir / "run.json", run_payload)
         active_lease = run_dir / ".active.json"
         if run.status == SelfEvolveRunStatus.RUNNING:
             self._write_json(
@@ -100,7 +121,7 @@ class FilesystemSelfEvolveStore:
 
     def write_report(self, run_id: str, report: Mapping[str, Any]) -> Path:
         path = self.run_path(run_id) / "report.json"
-        self._write_json(path, report)
+        self._write_json(path, _public_report_payload(report))
         return path
 
     def write_dataset_recipe(self, run_id: str, recipe: DatasetRecipe) -> Path:
@@ -172,7 +193,11 @@ class FilesystemSelfEvolveStore:
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         path = diagnostics_dir / "harness_diagnostics.jsonl"
         lines = [
-            json.dumps(to_json_dict(diagnostic), ensure_ascii=False, sort_keys=True)
+            json.dumps(
+                public_diagnostic_projection(to_json_dict(diagnostic)),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
             for diagnostic in diagnostics
         ]
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
@@ -413,3 +438,75 @@ def _directory_fingerprint(root: Path) -> str:
         "utf-8"
     )
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+_DYNAMIC_REPORT_FIELDS = frozenset(
+    {
+        "acceptance_confidence",
+        "baseline_metrics",
+        "candidate_metrics",
+        "content_quality_diagnostics",
+        "gate_results",
+        "held_out_metrics",
+        "no_op",
+        "optimizer_diagnostics",
+        "population",
+        "release_checklist",
+        "stopping_condition",
+        "terminal_cause",
+    }
+)
+
+
+def _public_report_payload(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Project dynamic report fields without truncating the top-level schema."""
+
+    projected = dict(report)
+    for key in _DYNAMIC_REPORT_FIELDS:
+        if key in projected:
+            projected[key] = public_diagnostic_projection(projected[key])
+    raw_gates = report.get("gate_results")
+    if isinstance(raw_gates, list):
+        projected["gate_results"] = [
+            {
+                str(key): public_diagnostic_projection(value)
+                for key, value in gate.items()
+            }
+            if isinstance(gate, Mapping)
+            else public_diagnostic_projection(gate)
+            for gate in raw_gates
+        ]
+    for section_name in ("post_apply", "release_normalization"):
+        section = report.get(section_name)
+        if isinstance(section, Mapping):
+            projected[section_name] = {
+                str(key): (
+                    value
+                    if str(key).endswith(("_path", "_paths"))
+                    else public_diagnostic_projection(value)
+                )
+                for key, value in section.items()
+            }
+    replay = projected.get("replay")
+    if isinstance(replay, Mapping):
+        replay_payload = dict(replay)
+        for variant_key in ("baseline", "candidate"):
+            variant = replay_payload.get(variant_key)
+            if isinstance(variant, Mapping):
+                replay_payload[variant_key] = {
+                    str(key): public_diagnostic_projection(value)
+                    for key, value in variant.items()
+                }
+        members = replay_payload.get("members")
+        if isinstance(members, list):
+            replay_payload["members"] = [
+                {
+                    str(key): public_diagnostic_projection(value)
+                    for key, value in member.items()
+                }
+                if isinstance(member, Mapping)
+                else public_diagnostic_projection(member)
+                for member in members
+            ]
+        projected["replay"] = replay_payload
+    return projected

@@ -85,6 +85,58 @@ def test_frozen_fixture_shape_fingerprint_includes_structure_after_128th_node(
     assert "private" not in json.dumps(array_tail)
 
 
+def test_frozen_fixture_shape_fingerprint_covers_oversized_json_structure(
+    tmp_path: Path,
+) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "recorded.json"
+    capability = SimpleNamespace(
+        frozen_root=str(tmp_path),
+        services=(SimpleNamespace(response_fixture="recorded.json"),),
+    )
+    padding = "private-" + ("x" * (2 * 1024 * 1024))
+    fixture_path.write_text(
+        json.dumps({"padding": padding, "tail": []}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    array_tail = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(
+        json.dumps({"padding": padding, "tail": {}}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    object_tail = frozen_replay_fixture_shape_fingerprints(capability)
+
+    assert array_tail != object_tail
+    assert "private" not in json.dumps(array_tail)
+    assert "private" not in json.dumps(object_tail)
+
+
+def test_frozen_fixture_shape_fingerprint_covers_structure_beyond_depth_64(
+    tmp_path: Path,
+) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "recorded.json"
+    capability = SimpleNamespace(
+        frozen_root=str(tmp_path),
+        services=(SimpleNamespace(response_fixture="recorded.json"),),
+    )
+
+    def nested(leaf: object) -> object:
+        value = leaf
+        for _ in range(80):
+            value = {"next": value}
+        return value
+
+    fixture_path.write_text(json.dumps(nested([])), encoding="utf-8")
+    array_leaf = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(json.dumps(nested({})), encoding="utf-8")
+    object_leaf = frozen_replay_fixture_shape_fingerprints(capability)
+
+    assert array_leaf != object_leaf
+
+
 def _nested_recorded_fixture_value() -> str:
     return json.dumps(
         {
@@ -673,8 +725,9 @@ def test_skill_runtime_rejects_data_plane_expectation_not_in_fixture(
     message = str(error.value)
     assert "kind=websocket" in message
     assert "path=/events" in message
-    assert "expected_preview=invented response" in message
     assert "expected_sha256=" in message
+    assert "expected_bytes=17" in message
+    assert "invented response" not in message
 
 
 @pytest.mark.replay_sandbox

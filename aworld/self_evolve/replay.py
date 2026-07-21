@@ -4592,14 +4592,11 @@ def _validate_websocket_handshake_response(
         )
         != expected_accept
     ):
-        response_preview = sanitize_text(
-            response.decode("utf-8", errors="replace"),
-            max_chars=180,
-        ).replace("\n", " ")
         raise ReplayServiceProtocolError(
             "advertised WebSocket handshake failed: "
             f"response_bytes={len(response)} "
-            f"response_preview={response_preview}"
+            f"response_sha256={hashlib.sha256(response).hexdigest()} "
+            f"response_shape={_protocol_payload_shape(response)}"
         )
 
 
@@ -4836,22 +4833,14 @@ def _protocol_probe_response_mismatch(
     diagnostic_recorded_response_values: Sequence[str] = (),
 ) -> str:
     expected_bytes = expected.encode("utf-8")
-    preview_bytes = (
+    payload_bytes = (
         response.partition(b"\r\n\r\n")[2]
         if kind == "http" and b"\r\n\r\n" in response
         else response
     )
-    preview = sanitize_text(
-        preview_bytes.decode("utf-8", errors="replace"),
-        max_chars=240,
-    ).replace("\n", " ")
-    expected_preview = sanitize_text(
-        expected,
-        max_chars=120,
-    ).replace("\n", " ")
     selector_drift = _recorded_response_selector_drift(
         expected=expected,
-        response=preview_bytes,
+        response=payload_bytes,
         recorded_response_values=diagnostic_recorded_response_values,
     )
     classification = (
@@ -4867,11 +4856,42 @@ def _protocol_probe_response_mismatch(
         "match=substring "
         f"expected_sha256={hashlib.sha256(expected_bytes).hexdigest()} "
         f"expected_bytes={len(expected_bytes)} "
-        f"expected_preview={expected_preview} "
+        f"expected_shape={_protocol_payload_shape(expected_bytes)} "
         f"response_bytes={len(response)} "
-        f"response_preview={preview}"
+        f"response_payload_bytes={len(payload_bytes)} "
+        f"response_sha256={hashlib.sha256(payload_bytes).hexdigest()} "
+        f"response_shape={_protocol_payload_shape(payload_bytes)}"
         f"{classification}"
     )
+
+
+def _protocol_payload_shape(payload: bytes) -> str:
+    """Return a content-free, single-token protocol payload classification."""
+
+    if not payload:
+        return "empty"
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return "binary"
+    stripped = text.strip()
+    if not stripped:
+        return "utf8_whitespace"
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return "utf8_text"
+    if isinstance(decoded, Mapping):
+        return "json_object"
+    if isinstance(decoded, list):
+        return "json_array"
+    if isinstance(decoded, str):
+        return "json_string"
+    if isinstance(decoded, bool):
+        return "json_boolean"
+    if decoded is None:
+        return "json_null"
+    return "json_number"
 
 
 def _recorded_response_selector_drift(

@@ -252,6 +252,7 @@ class RepairConformanceProbeGroup:
     )
 
     def to_dict(self) -> dict[str, object]:
+        case_identity_report = _case_identity_report(self.case_ids)
         return {
             "fingerprint": self.fingerprint,
             "requirement_id": self.requirement_id,
@@ -260,7 +261,7 @@ class RepairConformanceProbeGroup:
             "probe_kind": self.probe_kind,
             "probe_path": self.probe_path,
             "operation": self.operation,
-            "case_ids": list(self.case_ids[:_MAX_CONFORMANCE_REPORT_CASES]),
+            **case_identity_report,
         }
 
 
@@ -341,12 +342,14 @@ class RepairConformanceProbePlan:
 
     def to_dict(self) -> dict[str, object]:
         reported_groups = self.groups[:_MAX_CONFORMANCE_REPORT_GROUPS]
+        covered_identity_report = _case_identity_report(
+            self.covered_case_ids,
+            field_prefix="covered_case",
+        )
         return {
             "total_case_count": self.total_case_count,
             "covered_case_count": len(self.covered_case_ids),
-            "covered_case_ids": list(
-                self.covered_case_ids[:_MAX_CONFORMANCE_REPORT_CASES]
-            ),
+            **covered_identity_report,
             "distinct_probe_group_count": len(self.groups),
             "reported_probe_group_count": len(reported_groups),
             "probe_groups_truncated": len(self.groups) > len(reported_groups),
@@ -381,12 +384,12 @@ def build_repair_conformance_probe_plan(
     all_case_ids: list[str] = [
         normalized
         for item in dataset_case_ids
-        for normalized in (sanitize_text(str(item), max_chars=160),)
+        for normalized in (_case_identity(item),)
         if normalized
     ]
     for requirement in requirements:
         for case_id in tuple(getattr(requirement, "case_ids", ()) or ()):
-            normalized_case_id = sanitize_text(str(case_id), max_chars=160)
+            normalized_case_id = _case_identity(case_id)
             if (
                 not authoritative_case_ids
                 and normalized_case_id
@@ -426,7 +429,7 @@ def build_repair_conformance_probe_plan(
         requirement = requirements_by_id.get(service.requirement_id)
         case_ids = tuple(
             dict.fromkeys(
-                sanitize_text(str(item), max_chars=160)
+                _case_identity(item)
                 for item in tuple(getattr(requirement, "case_ids", ()) or ())
                 if str(item).strip()
             )
@@ -550,6 +553,33 @@ def _conformance_sensitive_fingerprint(value: object) -> str:
         default=str,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _case_identity(value: object) -> str:
+    """Normalize whitespace without truncating semantic dataset identity."""
+
+    return str(value).strip()
+
+
+def _case_identity_report(
+    case_ids: Sequence[str],
+    *,
+    field_prefix: str = "case",
+) -> dict[str, object]:
+    sampled = tuple(case_ids[:_MAX_CONFORMANCE_REPORT_CASES])
+    return {
+        field_prefix + "_ids": [
+            sanitize_text(case_id, max_chars=160) for case_id in sampled
+        ],
+        field_prefix + "_id_count": len(case_ids),
+        field_prefix + "_ids_truncated": (
+            len(case_ids) > len(sampled)
+            or any(len(case_id) > 160 for case_id in sampled)
+        ),
+        field_prefix + "_ids_fingerprint": _conformance_sensitive_fingerprint(
+            list(case_ids)
+        ),
+    }
 
 
 def _repair_probe_operation(request_text: str | None) -> str | None:
@@ -2097,7 +2127,7 @@ def evaluate_compiled_probe_conformance(
                 details={
                     "probe_kind": exact.kind,
                     "probe_path": exact.path,
-                    "expected_preview": exact.expected_response,
+                    **_expected_response_public_fields(exact.expected_response),
                     "declared_probe_count": len(probes),
                 },
             )
@@ -2146,7 +2176,7 @@ def evaluate_compiled_probe_conformance(
                 details={
                     "probe_kind": exact.kind,
                     "probe_path": exact.path,
-                    "previous_expected_preview": exact.expected_response,
+                    **_expected_response_public_fields(exact.expected_response),
                     "matching_location_count": len(location_matching),
                     "required_reconstruction_algorithm": [
                         "parse the recorded fixture as JSON or JSONL",
@@ -2404,22 +2434,27 @@ def _inherited_repair_conformance_contract(
 def _exact_probe_constraint(
     diagnostics: Sequence[Mapping[str, object]],
 ) -> ExactRepairProbe | None:
-    for item in diagnostics:
-        if item.get("code") != "verify_declared_protocol_probe_branch":
-            continue
-        kind = item.get("probe_kind")
-        path = item.get("probe_path")
-        expected = item.get("expected_preview")
-        if not all(isinstance(value, str) and value for value in (kind, path, expected)):
-            continue
-        if expected == "unknown":
-            continue
-        return ExactRepairProbe(
-            kind=sanitize_text(kind, max_chars=40),
-            path=sanitize_text(path, max_chars=160),
-            expected_response=sanitize_text(expected, max_chars=160),
-        )
+    # Persisted and legacy diagnostics are a public channel.  Even if an older
+    # record contains an ``expected_preview``, copying it into an executable
+    # contract would turn a report back into a private payload transport.  New
+    # exact assertions arrive only through RepairConformanceContract instances
+    # on OptimizerResult.private_context.
+    del diagnostics
     return None
+
+
+def _expected_response_public_fields(expected: str) -> dict[str, object]:
+    encoded = expected.encode("utf-8")
+    return {
+        "expected_response_fingerprint": (
+            "sha256:" + hashlib.sha256(encoded).hexdigest()
+        ),
+        "expected_response_bytes": len(encoded),
+        "expected_response_shape": {
+            "kind": "text",
+            "size_bucket": max(1, len(encoded)).bit_length(),
+        },
+    }
 
 
 def _observed_operations(

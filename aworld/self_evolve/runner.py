@@ -159,6 +159,7 @@ from aworld.self_evolve.release_checks import (
     build_release_checklist,
 )
 from aworld.self_evolve.sanitization import (
+    public_diagnostic_projection,
     sanitize_metric_value,
     sanitize_path_ref,
     sanitize_source_text,
@@ -969,13 +970,15 @@ class SelfEvolveRunner:
                     "candidate_ids": [
                         candidate.candidate_id for candidate in optimizer_result.candidates
                     ],
-                    "diagnostics": {
-                        **dict(optimizer_result.diagnostics),
-                        "filtered_known_duplicate_candidates": filtered_known_duplicates,
-                        "filtered_semantic_lesson_duplicate_candidates": (
-                            filtered_semantic_lesson_duplicates
-                        ),
-                    },
+                    "diagnostics": public_diagnostic_projection(
+                        {
+                            **dict(optimizer_result.diagnostics),
+                            "filtered_known_duplicate_candidates": filtered_known_duplicates,
+                            "filtered_semantic_lesson_duplicate_candidates": (
+                                filtered_semantic_lesson_duplicates
+                            ),
+                        }
+                    ),
                 }
             )
             for candidate in optimizer_result.candidates:
@@ -1460,11 +1463,17 @@ class SelfEvolveRunner:
             if release_normalization is not None:
                 report["release_normalization"] = release_normalization
         if baseline_summary is not None:
-            report["baseline_metrics"] = dict(baseline_summary.metrics)
+            report["baseline_metrics"] = public_diagnostic_projection(
+                dict(baseline_summary.metrics)
+            )
         if candidate_summary is not None:
-            report["candidate_metrics"] = dict(candidate_summary.metrics)
+            report["candidate_metrics"] = public_diagnostic_projection(
+                dict(candidate_summary.metrics)
+            )
         if held_out_summary is not None:
-            report["held_out_metrics"] = dict(held_out_summary.metrics)
+            report["held_out_metrics"] = public_diagnostic_projection(
+                dict(held_out_summary.metrics)
+            )
         if replay_result is not None:
             report["replay"] = _replay_report(replay_result)
             report["replay_path"] = _replay_artifact_path(replay_result)
@@ -1483,8 +1492,8 @@ class SelfEvolveRunner:
                 {
                     "gate_name": gate_result.gate_name,
                     "passed": gate_result.passed,
-                    "reason": gate_result.reason,
-                    "details": gate_result.details,
+                    "reason": public_diagnostic_projection(gate_result.reason),
+                    "details": public_diagnostic_projection(gate_result.details),
                 }
                 for gate_result in gate_results
             ]
@@ -4469,21 +4478,23 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
         return {
             "variant_id": variant.variant_id,
             "status": variant.status,
-            "metrics": dict(variant.metrics),
+            "metrics": public_diagnostic_projection(dict(variant.metrics)),
             "stdout_path": variant.stdout_path,
             "stderr_path": variant.stderr_path,
             # Retained for readers of v1 reports.
-            "failure": (
+            "failure": public_diagnostic_projection(
                 variant.failure.compatibility_dict()
                 if isinstance(variant.failure, ReplayFailureEvent)
                 else variant.failure
             ),
-            "failure_event": (
+            "failure_event": public_diagnostic_projection(
                 variant.failure.to_dict()
                 if isinstance(variant.failure, ReplayFailureEvent)
                 else None
             ),
-            "blocked_by": [event.to_dict() for event in variant.blocked_by],
+            "blocked_by": public_diagnostic_projection(
+                [event.to_dict() for event in variant.blocked_by]
+            ),
         }
 
     report: dict[str, object] = {
@@ -4539,8 +4550,12 @@ def _replay_report(replay_result: CandidateReplayResult) -> dict[str, object]:
                 "case_id": member.case_id,
                 "baseline_status": member.baseline.status,
                 "candidate_status": member.candidate.status,
-                "baseline_metrics": dict(member.baseline.metrics),
-                "candidate_metrics": dict(member.candidate.metrics),
+                "baseline_metrics": public_diagnostic_projection(
+                    dict(member.baseline.metrics)
+                ),
+                "candidate_metrics": public_diagnostic_projection(
+                    dict(member.candidate.metrics)
+                ),
                 "baseline_failure": lifecycle(member.baseline)["failure"],
                 "candidate_failure": lifecycle(member.candidate)["failure"],
                 "baseline_lifecycle": lifecycle(member.baseline),
@@ -5394,7 +5409,7 @@ def _prior_run_metric_summary(value: Any) -> Mapping[str, Any]:
         if isinstance(value.get(key), bool) or isinstance(value.get(key), (int, float, str))
     }
     return {
-        key: sanitize_metric_value(item)
+        key: public_diagnostic_projection(item)
         for key, item in payload.items()
     }
 
@@ -6344,60 +6359,12 @@ def _combined_candidate_validation_report(
     return report
 
 
-_CONFORMANCE_SENSITIVE_REPORT_KEYS = frozenset(
-    {
-        "declared_response_contains",
-        "expected_preview",
-        "expected_response",
-        "previous_expected_preview",
-        "response_preview",
-    }
-)
-
-
 def _candidate_validation_report_for_persistence(
     value: object,
-    *,
-    depth: int = 0,
 ) -> object:
-    """Bound validation reports and replace payload-bearing assertions by hashes."""
+    """Use the shared recursive type-aware projection for persisted reports."""
 
-    if depth >= 8:
-        return sanitize_text(str(value), max_chars=160)
-    if isinstance(value, Mapping):
-        report: dict[str, object] = {}
-        for raw_key, item in list(value.items())[:64]:
-            key = sanitize_text(str(raw_key), max_chars=120)
-            if key in _CONFORMANCE_SENSITIVE_REPORT_KEYS:
-                encoded = json.dumps(
-                    item,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=str,
-                ).encode("utf-8")
-                report[key + "_fingerprint"] = (
-                    "sha256:" + hashlib.sha256(encoded).hexdigest()
-                )
-                continue
-            report[key] = _candidate_validation_report_for_persistence(
-                item,
-                depth=depth + 1,
-            )
-        return report
-    if isinstance(value, (list, tuple)):
-        return [
-            _candidate_validation_report_for_persistence(
-                item,
-                depth=depth + 1,
-            )
-            for item in list(value)[:100]
-        ]
-    if isinstance(value, str):
-        return sanitize_text(value, max_chars=1_000)
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return sanitize_text(str(value), max_chars=1_000)
+    return public_diagnostic_projection(value)
 
 
 def _conformance_gate_blocks_population(gate: GateResult) -> bool:
@@ -7116,7 +7083,7 @@ def _typed_gate_feedback_metrics(
         classification_fragments.append(
             _diagnostic_classification_text(classification_view)
         )
-        bounded_details = sanitize_metric_value(details, max_chars=400)
+        bounded_details = public_diagnostic_projection(details, max_chars=400)
         if isinstance(bounded_details, Mapping):
             gate_diagnostic["details"] = dict(bounded_details)
         diagnostics.append(gate_diagnostic)
@@ -7149,7 +7116,7 @@ def _typed_gate_feedback_metrics(
                     typed_event.owner is FailureOwner.CANDIDATE
                     and isinstance(repair_conformance, Mapping)
                 ):
-                    bounded_contract = sanitize_metric_value(
+                    bounded_contract = public_diagnostic_projection(
                         repair_conformance,
                         max_chars=400,
                     )
@@ -7339,9 +7306,6 @@ def _typed_gate_feedback_metrics(
             },
         )
     elif "protocol probe response mismatch" in diagnostic_text:
-        expected_preview = str(
-            protocol_probe_mismatch.get("expected_preview") or "unknown"
-        )
         diagnostics.insert(
             0,
             {
@@ -7357,11 +7321,10 @@ def _typed_gate_feedback_metrics(
                     "Execute the declared request_text against the exact handler branch "
                     "in the returned candidate source and verify semantic containment: "
                     "its decoded response must contain response_contains while preserving "
-                    "the protocol envelope. Compare the bounded expected_preview with the "
-                    "response_preview; response length does not need to equal expected length. "
-                    f"For this failure the exact bounded expected_preview is "
-                    f"{expected_preview!r}; use it only as bounded diagnostic evidence, "
-                    "not as a value to hard-code. A differing fixture-derived value in the "
+                    "the protocol envelope. Use the content-free expected/response "
+                    "fingerprints, byte counts, and shapes to locate the failing branch; "
+                    "response length does not need to equal expected length. Never reconstruct "
+                    "or hard-code payload values from diagnostics. A differing fixture-derived value in the "
                     "runtime response indicates that compiler and runtime selected different "
                     "leaves. Use one canonical deterministic selector in compiler and runtime "
                     "with identical JSON/JSONL parsing, recursive traversal, filtering, ordering, "
@@ -7584,7 +7547,7 @@ def _diagnostic_completed_data_plane_operations(value: Any) -> tuple[str, ...]:
 
 
 def _diagnostic_protocol_probe_mismatch(value: Any) -> dict[str, str]:
-    """Parse bounded expected/actual probe evidence from candidate diagnostics."""
+    """Parse only typed, content-free probe evidence from diagnostics."""
 
     messages: list[str] = []
 
@@ -7605,35 +7568,27 @@ def _diagnostic_protocol_probe_mismatch(value: Any) -> dict[str, str]:
 
     collect(value)
     for message in reversed(messages[-16:]):
-        kind_match = re.search(r"\bkind=([^\s]+)", message)
-        path_match = re.search(r"\bpath=([^\s]+)", message)
-        expected_match = re.search(
-            r"\bexpected_preview=(.*?)\s+response_bytes=\d+",
-            message,
-            flags=re.DOTALL,
-        )
-        response_match = re.search(
-            r"\bresponse_preview=(.*)$",
-            message,
-            flags=re.DOTALL,
-        )
         parsed: dict[str, str] = {}
-        if kind_match:
-            parsed["probe_kind"] = sanitize_text(
-                kind_match.group(1), max_chars=40
-            )
-        if path_match:
-            parsed["probe_path"] = sanitize_text(
-                path_match.group(1), max_chars=160
-            )
-        if expected_match:
-            parsed["expected_preview"] = sanitize_text(
-                expected_match.group(1).strip(), max_chars=160
-            )
-        if response_match:
-            parsed["response_preview"] = sanitize_text(
-                response_match.group(1).strip(), max_chars=400
-            )
+        fields = {
+            match.group(1): match.group(2)
+            for match in re.finditer(r"\b([a-z0-9_]+)=([^\s]+)", message)
+        }
+        if "kind" in fields:
+            parsed["probe_kind"] = sanitize_text(fields["kind"], max_chars=40)
+        if "path" in fields:
+            parsed["probe_path"] = sanitize_text(fields["path"], max_chars=160)
+        for field in (
+            "expected_sha256",
+            "expected_bytes",
+            "expected_shape",
+            "response_sha256",
+            "response_bytes",
+            "response_payload_bytes",
+            "response_shape",
+            "classification",
+        ):
+            if field in fields:
+                parsed[field] = sanitize_text(fields[field], max_chars=160)
         if parsed:
             return parsed
     return {}

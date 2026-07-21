@@ -1918,8 +1918,11 @@ def test_protocol_probe_mismatch_reports_actionable_bounded_diagnostics() -> Non
     assert "expected_sha256=" in message
     assert "expected_bytes=23" in message
     assert "match=substring" in message
-    assert "expected_preview=recorded fixture marker" in message
-    assert 'response_preview={"Browser":"ReplayChrome"' in message
+    assert "expected_shape=utf8_text" in message
+    assert "response_sha256=" in message
+    assert "response_shape=json_object" in message
+    assert "recorded fixture marker" not in message
+    assert "ReplayChrome" not in message
     assert len(message) < 500
 
 
@@ -1976,7 +1979,7 @@ def test_protocol_probe_mismatch_classifies_recorded_response_selector_drift() -
         "required_change=align_compiler_runtime_recorded_response_selection"
         in message
     )
-    assert "recorded tool response" in message
+    assert "recorded tool response" not in message
 
 
 def test_protocol_probe_mismatch_does_not_misclassify_recorded_expected_value() -> None:
@@ -2069,7 +2072,7 @@ def test_websocket_probe_rejects_http_1_0_upgrade_response() -> None:
         )
 
 
-def test_websocket_probe_reports_bounded_invalid_handshake_preview() -> None:
+def test_websocket_probe_reports_content_free_invalid_handshake_diagnostics() -> None:
     with pytest.raises(ReplayServiceProtocolError) as error:
         _validate_websocket_handshake_response(
             (
@@ -2082,7 +2085,10 @@ def test_websocket_probe_reports_bounded_invalid_handshake_preview() -> None:
 
     message = str(error.value)
     assert "response_bytes=" in message
-    assert "response_preview=HTTP/1.1 200 OK" in message
+    assert "response_sha256=" in message
+    assert "response_shape=utf8_text" in message
+    assert "HTTP/1.1 200 OK" not in message
+    assert "upgrade route not reached" not in message
     assert len(message) < 500
 
 
