@@ -1711,6 +1711,19 @@ body {
   border: 1px solid var(--aw-border);
 }
 
+/* Mermaid diagrams */
+.md-typeset .mermaid {
+  overflow-x: auto;
+  padding: 1rem 0;
+  background: transparent;
+  text-align: center;
+}
+
+.md-typeset .mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* ============================================
    Accessibility Enhancements
    ============================================ */
