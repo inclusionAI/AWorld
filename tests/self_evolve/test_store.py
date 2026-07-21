@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import (
@@ -41,6 +43,34 @@ def test_store_creates_stable_run_directory_and_record(tmp_path) -> None:
         "metrics": [],
         "gate_results": [],
     }
+
+
+def test_store_tracks_active_run_lease_until_terminal_status(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+
+    run_dir = store.create_run(
+        SelfEvolveRun(
+            run_id="run-active",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+
+    lease = _read_json(run_dir / ".active.json")
+    assert lease["hostname"] == socket.gethostname()
+    assert lease["pid"] == os.getpid()
+    assert lease["started_at"] > 0
+
+    store.create_run(
+        SelfEvolveRun(
+            run_id="run-active",
+            target=target,
+            status=SelfEvolveRunStatus.SUCCEEDED,
+        )
+    )
+
+    assert not (run_dir / ".active.json").exists()
 
 
 def test_store_persists_candidate_report_recipe_and_lineage(tmp_path) -> None:

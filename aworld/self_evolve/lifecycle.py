@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import socket
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -12,12 +14,15 @@ from typing import Any, Iterable, Mapping
 class SelfEvolveArtifactRetentionPolicy:
     keep_latest_runs: int = 2
     raw_artifact_retention_days: int = 0
+    stale_run_retention_hours: int = 24
+    prune_unselected_candidate_materializations: bool = True
 
 
 _TERMINAL_STATUSES = {"succeeded", "failed", "rejected"}
 _INTERRUPTED_APPLY_STATUSES = {"backup_written", "applying"}
 _RAW_RUN_DIRS = {
     "evidence",
+    "repair_conformance",
     "replay",
     "replay_adaptation",
 }
@@ -40,6 +45,13 @@ _DUPLICATE_OUTPUT_NAMES = {
     "stdout.log",
     "stdout.txt",
 }
+_ACTIVE_RUN_LEASE = ".active.json"
+_DURABLE_CANDIDATE_REFERENCE_KEYS = {
+    "applied_candidate_id",
+    "best_candidate_id",
+    "selected_candidate_id",
+    "source_candidate_id",
+}
 
 
 def cleanup_self_evolve_artifacts(
@@ -55,6 +67,8 @@ def cleanup_self_evolve_artifacts(
         raise ValueError("keep_latest_runs must be non-negative")
     if retention.raw_artifact_retention_days < 0:
         raise ValueError("raw_artifact_retention_days must be non-negative")
+    if retention.stale_run_retention_hours < 0:
+        raise ValueError("stale_run_retention_hours must be non-negative")
 
     root = (
         Path(artifact_root)
@@ -82,19 +96,29 @@ def cleanup_self_evolve_artifacts(
     cutoff = (now if now is not None else time.time()) - (
         retention.raw_artifact_retention_days * 24 * 60 * 60
     )
+    stale_run_cutoff = (now if now is not None else time.time()) - (
+        retention.stale_run_retention_hours * 60 * 60
+    )
 
     for run_dir in sorted(run_dirs, key=lambda path: path.name):
         skip_reason = _cleanup_skip_reason(
             run_dir,
             recent_run_ids=recent_run_ids,
             referenced_run_ids=referenced_run_ids,
+            stale_run_cutoff=stale_run_cutoff,
         )
         if skip_reason is not None:
             skipped_runs.append({"run_id": run_dir.name, "reason": skip_reason})
             continue
 
         run_removed = False
-        for path in _terminal_cleanup_candidates(root, run_dir):
+        for path in _terminal_cleanup_candidates(
+            root,
+            run_dir,
+            prune_unselected_candidate_materializations=(
+                retention.prune_unselected_candidate_materializations
+            ),
+        ):
             if _is_age_gated_raw_path(path, run_dir=run_dir, root=root) and _path_mtime(path) > cutoff:
                 continue
             if not path.exists():
@@ -108,6 +132,7 @@ def cleanup_self_evolve_artifacts(
     return {
         "policy": asdict(retention),
         "removed_run_count": len(removed_run_ids),
+        "removed_run_ids": sorted(removed_run_ids),
         "removed_path_count": len(removed_paths),
         "removed_paths": removed_paths,
         "skipped_runs": skipped_runs,
@@ -119,6 +144,7 @@ def _empty_cleanup(policy: SelfEvolveArtifactRetentionPolicy) -> dict[str, Any]:
     return {
         "policy": asdict(policy),
         "removed_run_count": 0,
+        "removed_run_ids": [],
         "removed_path_count": 0,
         "removed_paths": [],
         "skipped_runs": [],
@@ -141,15 +167,19 @@ def _cleanup_skip_reason(
     *,
     recent_run_ids: set[str],
     referenced_run_ids: set[str],
+    stale_run_cutoff: float,
 ) -> str | None:
     if run_dir.name in recent_run_ids:
         return "recent_run"
     if run_dir.name in referenced_run_ids:
         return "referenced_by_lineage"
-    if _run_status(run_dir) not in _TERMINAL_STATUSES:
-        return "run_not_terminal"
     if _has_interrupted_apply(run_dir):
         return "apply_interrupted"
+    if _run_status(run_dir) not in _TERMINAL_STATUSES:
+        if _has_live_run_lease(run_dir):
+            return "run_active"
+        if _path_mtime(run_dir) > stale_run_cutoff:
+            return "run_not_terminal"
     return None
 
 
@@ -173,15 +203,96 @@ def _has_interrupted_apply(run_dir: Path) -> bool:
     return False
 
 
-def _terminal_cleanup_candidates(root: Path, run_dir: Path) -> Iterable[Path]:
+def _terminal_cleanup_candidates(
+    root: Path,
+    run_dir: Path,
+    *,
+    prune_unselected_candidate_materializations: bool,
+) -> Iterable[Path]:
     for name in sorted(_RAW_RUN_DIRS | _TEMP_RUN_DIRS):
         yield run_dir / name
     yield run_dir / "overlays"
+    yield run_dir / _ACTIVE_RUN_LEASE
+    if prune_unselected_candidate_materializations:
+        yield from _candidate_materialization_paths(run_dir)
     for child in sorted(run_dir.iterdir() if run_dir.exists() else ()):
         if child.name in _DUPLICATE_OUTPUT_NAMES or child.suffix in {".stdout", ".stderr"}:
             yield child
     evaluator_dir = root / "evaluator" / run_dir.name
     yield evaluator_dir
+
+
+def _candidate_materialization_paths(run_dir: Path) -> Iterable[Path]:
+    candidate_dir = run_dir / "candidates"
+    if not candidate_dir.is_dir():
+        return
+    protected_ids = _durable_candidate_ids(run_dir)
+    for path in sorted(candidate_dir.iterdir()):
+        candidate_id: str | None = None
+        if path.is_dir() and not path.is_symlink():
+            candidate_id = path.name
+        elif path.is_file() and path.suffix in {".diff", ".md"}:
+            candidate_id = path.stem
+        if candidate_id is not None and candidate_id not in protected_ids:
+            yield path
+
+
+def _durable_candidate_ids(run_dir: Path) -> set[str]:
+    candidate_ids: set[str] = set()
+    for name in ("run.json", "report.json"):
+        payload = _read_json_object(run_dir / name)
+        if payload is not None:
+            candidate_ids.update(_candidate_reference_values(payload))
+    for journal_path in (run_dir / "apply").glob("*.journal.json"):
+        payload = _read_json_object(journal_path)
+        candidate_id = payload.get("candidate_id") if payload else None
+        if isinstance(candidate_id, str) and candidate_id:
+            candidate_ids.add(candidate_id)
+    for lineage_path in (run_dir / "optimizer_lineage").glob("*.json"):
+        payload = _read_json_object(lineage_path)
+        parent_ids = payload.get("parent_candidate_ids") if payload else None
+        if isinstance(parent_ids, list):
+            candidate_ids.update(
+                value for value in parent_ids if isinstance(value, str) and value
+            )
+    return candidate_ids
+
+
+def _candidate_reference_values(value: Any, *, key: str | None = None) -> Iterable[str]:
+    if isinstance(value, Mapping):
+        for child_key, child_value in value.items():
+            yield from _candidate_reference_values(child_value, key=str(child_key))
+        return
+    if isinstance(value, list):
+        for child in value:
+            yield from _candidate_reference_values(child, key=key)
+        return
+    if (
+        isinstance(value, str)
+        and key in _DURABLE_CANDIDATE_REFERENCE_KEYS
+        and value
+    ):
+        yield value
+
+
+def _has_live_run_lease(run_dir: Path) -> bool:
+    payload = _read_json_object(run_dir / _ACTIVE_RUN_LEASE)
+    if payload is None:
+        return False
+    hostname = payload.get("hostname")
+    if isinstance(hostname, str) and hostname and hostname != socket.gethostname():
+        # A foreign host cannot be probed safely. Prefer retaining its run.
+        return True
+    pid = payload.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, PermissionError):
+        return True
+    return True
 
 
 def _is_age_gated_raw_path(path: Path, *, run_dir: Path, root: Path) -> bool:

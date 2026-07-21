@@ -329,6 +329,15 @@ Each run writes durable artifacts under `.aworld/self_evolve/<run_id>/`:
 - `replay_adaptation/<dataset_fingerprint>/workspace_manifest.json`: relative paths, modes, sizes, and SHA-256 digests for seed files.
 - `replay_adaptation/<dataset_fingerprint>/environment_snapshot.json`: bounded non-secret runtime, locale, platform, and observed tool metadata used in the adaptation fingerprint.
 
+Artifact retention runs both when a self-evolve run starts and when it reaches a
+terminal report. The two newest runs, lineage-referenced runs, interrupted apply
+runs, and runs with a live process lease keep their complete artifacts. Older
+eligible runs discard raw replay, replay-adaptation, repair-conformance, evaluator,
+overlay, and temporary-workspace data. Candidate JSON records remain durable so
+`--from-run` and audit tooling can reconstruct a candidate; only redundant Markdown,
+diff, and expanded package copies for unselected candidates are pruned. A non-terminal
+run without a live lease becomes eligible only after the stale-run retention window.
+
 Trajectory-set runs may also include framework-owned trajectory-set and population artifacts:
 
 - `trajectory_set/set.json`: validated copy or normalized representation of the trajectory-set input.

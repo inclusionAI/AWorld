@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import socket
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,6 +24,7 @@ from aworld.self_evolve.types import (
     DatasetRecipe,
     OptimizerLineage,
     SelfEvolveRun,
+    SelfEvolveRunStatus,
     to_json_dict,
 )
 from aworld.skills.release import mark_skill_content_candidate
@@ -45,6 +49,18 @@ class FilesystemSelfEvolveStore:
         run_dir = self.run_path(run.run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
         self._write_json(run_dir / "run.json", run)
+        active_lease = run_dir / ".active.json"
+        if run.status == SelfEvolveRunStatus.RUNNING:
+            self._write_json(
+                active_lease,
+                {
+                    "hostname": socket.gethostname(),
+                    "pid": os.getpid(),
+                    "started_at": time.time(),
+                },
+            )
+        else:
+            active_lease.unlink(missing_ok=True)
         return run_dir
 
     def write_candidate(self, run_id: str, candidate: CandidateVariant) -> Path:

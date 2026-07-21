@@ -589,6 +589,10 @@ class SelfEvolveRunner:
             "start",
             f"Starting self-evolve run {run_id}",
         )
+        startup_artifact_retention = _artifact_retention_report(
+            self.store,
+            run_id,
+        )
         _emit_progress(
             self.progress_callback,
             "trajectory_set_loading",
@@ -646,6 +650,7 @@ class SelfEvolveRunner:
             report["artifact_retention"] = _artifact_retention_report(
                 self.store,
                 run_id,
+                previous=startup_artifact_retention,
             )
             self.store.write_report(run_id, report)
             completed_run = SelfEvolveRun(
@@ -1372,6 +1377,7 @@ class SelfEvolveRunner:
         report["artifact_retention"] = _artifact_retention_report(
             self.store,
             run_id,
+            previous=startup_artifact_retention,
         )
         self.store.write_report(run_id, report)
 
@@ -3436,22 +3442,92 @@ def _stable_json_fingerprint(value: Any) -> str:
 def _artifact_retention_report(
     store: FilesystemSelfEvolveStore,
     run_id: str,
+    *,
+    previous: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     try:
-        cleanup = cleanup_self_evolve_artifacts(
+        cleanup: dict[str, object] = cleanup_self_evolve_artifacts(
             store.workspace_root,
             artifact_root=store.artifact_root,
             current_run_id=run_id,
         )
     except Exception as exc:
-        return {
+        current: dict[str, object] = {
             "status": "failed",
             "error": str(exc),
         }
-    return {
+        if previous is None:
+            return current
+        return _merge_artifact_retention_reports(previous, current)
+    current: dict[str, object] = {
         "status": "completed",
         **cleanup,
     }
+    if previous is None:
+        return current
+    return _merge_artifact_retention_reports(previous, current)
+
+
+def _merge_artifact_retention_reports(
+    previous: Mapping[str, object],
+    current: Mapping[str, object],
+) -> dict[str, object]:
+    removed_run_ids = sorted(
+        {
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(report.get("removed_run_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    removed_paths = list(
+        dict.fromkeys(
+            str(value)
+            for report in (previous, current)
+            for value in _retention_sequence(report.get("removed_paths"))
+            if isinstance(value, str) and value
+        )
+    )
+    final_state = current if current.get("status") == "completed" else previous
+    skipped_runs = [
+        value
+        for value in _retention_sequence(final_state.get("skipped_runs"))
+        if isinstance(value, Mapping)
+    ]
+    protected_run_ids = sorted(
+        {
+            str(value)
+            for value in _retention_sequence(final_state.get("protected_run_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    statuses = tuple(report.get("status") for report in (previous, current))
+    merged: dict[str, object] = {
+        "status": (
+            "completed" if statuses == ("completed", "completed") else "failed"
+        ),
+        "policy": current.get("policy", previous.get("policy", {})),
+        "removed_run_count": len(removed_run_ids),
+        "removed_run_ids": removed_run_ids,
+        "removed_path_count": len(removed_paths),
+        "removed_paths": removed_paths,
+        "skipped_runs": skipped_runs,
+        "protected_run_ids": protected_run_ids,
+    }
+    errors = [
+        report.get("error")
+        for report in (previous, current)
+        if isinstance(report.get("error"), str)
+    ]
+    if errors:
+        merged["errors"] = errors
+    return merged
+
+
+def _retention_sequence(value: object) -> tuple[object, ...]:
+    if not isinstance(value, (list, tuple, set)):
+        return ()
+    return tuple(value)
 
 
 def _rerun_evaluator_from_stored_run(
@@ -5063,16 +5139,23 @@ def _stored_repair_candidate_package(
     candidate_id: str,
 ) -> Mapping[str, object] | None:
     run_root = report_path.parent.resolve()
-    candidate_path = run_root / "candidates" / candidate_id / "candidate.json"
-    try:
-        resolved = candidate_path.resolve()
-    except OSError:
-        return None
-    if not _path_is_relative_to(resolved, run_root) or not resolved.is_file():
-        return None
-    try:
-        payload = _load_json_mapping(resolved)
-    except Exception:
+    payload: Mapping[str, Any] | None = None
+    for candidate_path in (
+        run_root / "candidates" / candidate_id / "candidate.json",
+        run_root / "candidates" / f"{candidate_id}.json",
+    ):
+        try:
+            resolved = candidate_path.resolve()
+        except OSError:
+            continue
+        if not _path_is_relative_to(resolved, run_root) or not resolved.is_file():
+            continue
+        try:
+            payload = _load_json_mapping(resolved)
+        except Exception:
+            continue
+        break
+    if payload is None:
         return None
     if payload.get("candidate_id") != candidate_id:
         return None
