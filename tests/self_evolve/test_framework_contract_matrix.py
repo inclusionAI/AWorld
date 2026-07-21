@@ -16,6 +16,7 @@ from typing import Any, Literal, Sequence
 
 import pytest
 
+from aworld.self_evolve.budget import BudgetStage, StageWorkload
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.credit_assignment import (
     TargetInventory,
@@ -734,3 +735,29 @@ def test_causal_lesson_contract_keeps_heterogeneous_events_distinct() -> None:
         "first_contract": 2,
         "second_contract": 1,
     }
+
+
+@pytest.mark.parametrize(
+    ("case_count", "repetitions", "shape_count", "replay_units", "shape_units"),
+    (
+        (1, 2, 2, 2, 2),
+        (3, 2, 2, 6, 2),
+    ),
+)
+def test_stage_budget_contract_uses_members_for_replay_and_shapes_for_conformance(
+    case_count: int,
+    repetitions: int,
+    shape_count: int,
+    replay_units: int,
+    shape_units: int,
+) -> None:
+    workload = StageWorkload(
+        case_count=case_count,
+        repetitions=repetitions,
+        distinct_conformance_shape_count=shape_count,
+    )
+
+    assert workload.units_for(BudgetStage.PAIRED_REPLAY) == replay_units
+    assert workload.units_for(BudgetStage.EVALUATION) == replay_units
+    assert workload.units_for(BudgetStage.CONFORMANCE) == shape_units
+    assert workload.units_for(BudgetStage.SCREENING) == 1

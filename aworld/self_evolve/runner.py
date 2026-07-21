@@ -4,7 +4,8 @@ import hashlib
 import inspect
 import json
 import re
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
+from decimal import Decimal
 from typing import Callable, Any
 from pathlib import Path
 from typing import Mapping, Iterable
@@ -86,6 +87,20 @@ from aworld.self_evolve.capability_contracts import (
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
+)
+from aworld.self_evolve.budget import (
+    BudgetCeilings,
+    BudgetDecision,
+    BudgetStage,
+    BudgetUsage,
+    CandidateAttemptEvent,
+    CandidateAttemptKey,
+    CandidateAttemptStage,
+    RepairFrontier,
+    RunBudgetLedger,
+    SchedulerState,
+    StageAwareCandidateScheduler,
+    aggregate_candidate_attempts,
 )
 from aworld.self_evolve.concurrency import (
     AWorldCandidatePopulationExecutor,
@@ -186,10 +201,464 @@ _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 
 
+@dataclass
+class _RunBudgetContext:
+    ledger: RunBudgetLedger
+    cold_start_by_stage: Mapping[BudgetStage, BudgetUsage | None]
+    decisions: list[dict[str, object]] = field(default_factory=list)
+    debits: list[dict[str, object]] = field(default_factory=list)
+    releases: list[dict[str, object]] = field(default_factory=list)
+
+    def estimate(self, stage: BudgetStage, item_id: str, *, units: int = 1):
+        return self.ledger.estimate_next(
+            stage=stage,
+            item_id=item_id,
+            units=units,
+            cold_start_per_unit=self.cold_start_by_stage.get(stage),
+            backend_proven_zero=(
+                self.cold_start_by_stage.get(stage) == BudgetUsage()
+            ),
+        )
+
+    def can_fit(self, stage: BudgetStage, item_id: str, *, units: int = 1) -> bool:
+        estimate = self.estimate(stage, item_id, units=units)
+        usage = estimate.resolved_usage()
+        if usage is None:
+            return False
+        remaining = self.ledger.remaining()
+        return bool(
+            (remaining.tokens is None or usage.tokens <= remaining.tokens)
+            and (
+                remaining.cost_usd is None
+                or usage.cost_usd <= remaining.cost_usd
+            )
+            and (
+                remaining.wall_seconds is None
+                or usage.wall_seconds <= remaining.wall_seconds
+            )
+        )
+
+    def reserve(
+        self,
+        stage: BudgetStage,
+        item_id: str,
+        *,
+        units: int = 1,
+    ) -> BudgetDecision:
+        decision = self.ledger.reserve(
+            self.estimate(stage, item_id, units=units)
+        )
+        self.decisions.append(decision.to_dict())
+        return decision
+
+    def debit(
+        self,
+        decision: BudgetDecision,
+        *,
+        tokens: int | None = None,
+        cost_usd: Decimal | None = None,
+        wall_seconds: Decimal | None = None,
+        actual_source: str,
+    ) -> None:
+        if not decision.allowed or decision.reservation_id is None:
+            return
+        reservation = next(
+            item
+            for item in self.ledger.outstanding_reservations
+            if item.reservation_id == decision.reservation_id
+        )
+        actual = BudgetUsage(
+            tokens=(reservation.usage.tokens if tokens is None else tokens),
+            cost_usd=(
+                reservation.usage.cost_usd if cost_usd is None else cost_usd
+            ),
+            wall_seconds=(
+                reservation.usage.wall_seconds
+                if wall_seconds is None
+                else wall_seconds
+            ),
+        )
+        result = self.ledger.debit_actual(decision.reservation_id, actual)
+        self.debits.append(
+            {**result.to_dict(), "actual_source": actual_source}
+        )
+
+    def release(self, decision: BudgetDecision, *, reason_code: str) -> None:
+        if not decision.allowed or decision.reservation_id is None:
+            return
+        reservation = self.ledger.release(decision.reservation_id)
+        self.releases.append(
+            {**reservation.to_dict(), "reason_code": reason_code}
+        )
+
+    def release_all(self, *, reason_code: str) -> None:
+        for reservation in tuple(self.ledger.outstanding_reservations):
+            released = self.ledger.release(reservation.reservation_id)
+            self.releases.append(
+                {**released.to_dict(), "reason_code": reason_code}
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ledger": self.ledger.to_dict(),
+            "decisions": list(self.decisions),
+            "debits": list(self.debits),
+            "releases": list(self.releases),
+        }
+
+
+@dataclass
+class _CandidateAttemptTracker:
+    store: FilesystemSelfEvolveStore
+    run_id: str
+    _events: dict[CandidateAttemptKey, list[CandidateAttemptEvent]] = field(
+        default_factory=dict
+    )
+    _candidate_keys: dict[str, CandidateAttemptKey] = field(default_factory=dict)
+
+    def start(
+        self,
+        *,
+        iteration: int,
+        slot: int,
+        candidate_id: str,
+        usage: BudgetUsage | None = None,
+    ) -> CandidateAttemptKey:
+        key = CandidateAttemptKey(self.run_id, iteration, slot)
+        self._append(
+            key,
+            CandidateAttemptStage.GENERATED,
+            candidate_id=candidate_id,
+            usage=usage,
+        )
+        self._candidate_keys.setdefault(candidate_id, key)
+        return key
+
+    def key_for_candidate(self, candidate_id: str) -> CandidateAttemptKey | None:
+        return self._candidate_keys.get(candidate_id)
+
+    def last_stage(self, key: CandidateAttemptKey) -> CandidateAttemptStage:
+        return self._events[key][-1].stage
+
+    def terminal(self, key: CandidateAttemptKey) -> bool:
+        return self._events[key][-1].terminal
+
+    def has_stage(
+        self,
+        key: CandidateAttemptKey,
+        *stages: CandidateAttemptStage,
+    ) -> bool:
+        expected = set(stages)
+        return any(event.stage in expected for event in self._events.get(key, ()))
+
+    def finalize_open(self, *, reason_code: str) -> None:
+        for key in sorted(self._events):
+            if not self.terminal(key):
+                self.emit(
+                    key,
+                    CandidateAttemptStage.NOT_RUN,
+                    reason_code=reason_code,
+                )
+
+    def emit(
+        self,
+        key: CandidateAttemptKey,
+        stage: CandidateAttemptStage,
+        *,
+        reason_code: str | None = None,
+        failure_event_id: str | None = None,
+        semantic_failure_key: str | None = None,
+        usage: BudgetUsage | None = None,
+        case_count: int | None = None,
+        distinct_conformance_shape_count: int | None = None,
+    ) -> CandidateAttemptEvent:
+        candidate_id = self._events[key][0].candidate_id
+        return self._append(
+            key,
+            stage,
+            candidate_id=candidate_id,
+            reason_code=reason_code,
+            failure_event_id=failure_event_id,
+            semantic_failure_key=semantic_failure_key,
+            usage=usage,
+            case_count=case_count,
+            distinct_conformance_shape_count=distinct_conformance_shape_count,
+        )
+
+    def _append(
+        self,
+        key: CandidateAttemptKey,
+        stage: CandidateAttemptStage,
+        *,
+        candidate_id: str,
+        reason_code: str | None = None,
+        failure_event_id: str | None = None,
+        semantic_failure_key: str | None = None,
+        usage: BudgetUsage | None = None,
+        case_count: int | None = None,
+        distinct_conformance_shape_count: int | None = None,
+    ) -> CandidateAttemptEvent:
+        values = self._events.setdefault(key, [])
+        event = CandidateAttemptEvent(
+            key=key,
+            sequence=len(values),
+            stage=stage,
+            candidate_id=candidate_id,
+            reason_code=reason_code,
+            failure_event_id=failure_event_id,
+            semantic_failure_key=semantic_failure_key,
+            usage=usage or BudgetUsage(),
+            case_count=case_count,
+            distinct_conformance_shape_count=distinct_conformance_shape_count,
+        )
+        self.store.append_candidate_attempt_event(event)
+        values.append(event)
+        return event
+
+
+def _configured_budget_usage(
+    *,
+    tokens: int | None,
+    cost_usd: float | Decimal | None,
+    wall_seconds: float | Decimal | None,
+    token_ceiling: int | None,
+    cost_ceiling: Decimal | None,
+    wall_ceiling: Decimal | None,
+) -> BudgetUsage | None:
+    """Resolve only unbounded unknown dimensions to accounting-neutral zero."""
+
+    if (
+        (tokens is None and token_ceiling is not None)
+        or (cost_usd is None and cost_ceiling is not None)
+        or (wall_seconds is None and wall_ceiling is not None)
+    ):
+        return None
+    return BudgetUsage(
+        tokens=0 if tokens is None else tokens,
+        cost_usd=(Decimal("0") if cost_usd is None else Decimal(str(cost_usd))),
+        wall_seconds=(
+            Decimal("0")
+            if wall_seconds is None
+            else Decimal(str(wall_seconds))
+        ),
+    )
+
+
+def _candidate_attempt_placeholder(iteration: int, slot: int) -> str:
+    return f"candidate-placeholder-{iteration + 1}-{slot + 1}"
+
+
+def _decimal_metric(value: object) -> Decimal | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        result = Decimal(str(value))
+    except Exception:
+        return None
+    return result if result.is_finite() and result >= 0 else None
+
+
+def _candidate_generation_actual_usage(
+    telemetry: object,
+) -> tuple[int | None, Decimal | None, str]:
+    """Read raw generation telemetry without double-counting token aliases."""
+
+    if not isinstance(telemetry, Mapping):
+        return None, None, "reserved_fallback_missing_telemetry"
+    token_telemetry = telemetry.get("token_usage")
+    if not isinstance(token_telemetry, Mapping):
+        token_telemetry = telemetry
+    tokens: int | None = None
+    source = "reserved_fallback_missing_tokens"
+    total = token_telemetry.get("total_tokens")
+    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+        tokens = total
+        source = "telemetry_total_tokens"
+    else:
+        for input_key, output_key, pair_source in (
+            ("input_tokens", "output_tokens", "telemetry_input_output_tokens"),
+            ("prompt_tokens", "completion_tokens", "telemetry_prompt_completion_tokens"),
+        ):
+            input_tokens = token_telemetry.get(input_key)
+            output_tokens = token_telemetry.get(output_key)
+            if all(
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+                for value in (input_tokens, output_tokens)
+            ):
+                tokens = int(input_tokens) + int(output_tokens)
+                source = pair_source
+                break
+    wall = None
+    for key in ("wall_seconds", "elapsed_seconds", "execution_seconds"):
+        wall = _decimal_metric(telemetry.get(key))
+        if wall is not None:
+            source += f"+telemetry_{key}"
+            break
+    return tokens, wall, source
+
+
+def _judge_actual_token_usage(
+    *summaries: EvaluationSummary | None,
+) -> tuple[int | None, str]:
+    """Sum one mutually-exclusive judge token shape per executed summary."""
+
+    total = 0
+    observed = False
+    sources: set[str] = set()
+    for summary in summaries:
+        if summary is None or summary.dataset_split == "single_case_replay":
+            continue
+        metrics = summary.metrics
+        raw_total = metrics.get("judge_total_tokens")
+        if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total >= 0:
+            total += raw_total
+            observed = True
+            sources.add("judge_total_tokens")
+            continue
+        raw_input = metrics.get("judge_input_tokens_total")
+        raw_output = metrics.get("judge_output_tokens_total")
+        if all(
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+            for value in (raw_input, raw_output)
+        ):
+            total += int(raw_input) + int(raw_output)
+            observed = True
+            sources.add("judge_input_output_tokens")
+            continue
+        estimated = metrics.get("judge_estimated_input_tokens_total")
+        if (
+            isinstance(estimated, (int, float))
+            and not isinstance(estimated, bool)
+            and estimated >= 0
+        ):
+            total += int(estimated)
+            observed = True
+            sources.add("judge_estimated_input_tokens_total")
+    if not observed:
+        return None, "reserved_fallback_missing_judge_telemetry"
+    return total, "+".join(sorted(sources))
+
+
+def _budget_usage_for_attempt_event(
+    decision: BudgetDecision,
+    *,
+    tokens: int | None = None,
+    cost_usd: Decimal | None = None,
+    wall_seconds: Decimal | None = None,
+) -> BudgetUsage:
+    estimate = decision.estimate.resolved_usage() or BudgetUsage()
+    return BudgetUsage(
+        tokens=estimate.tokens if tokens is None else tokens,
+        cost_usd=estimate.cost_usd if cost_usd is None else cost_usd,
+        wall_seconds=(
+            estimate.wall_seconds if wall_seconds is None else wall_seconds
+        ),
+    )
+
+
+def _typed_repair_frontiers(
+    feedback: Iterable[EvaluationSummary],
+) -> tuple[RepairFrontier, ...]:
+    """Build scheduler input solely from typed causal failure envelopes."""
+
+    frontiers: dict[str, RepairFrontier] = {}
+    for summary in feedback:
+        raw_events = summary.metrics.get("causal_failure_events")
+        for payload in (
+            raw_events if isinstance(raw_events, (list, tuple)) else ()
+        ):
+            if not isinstance(payload, Mapping):
+                continue
+            try:
+                event = _typed_causal_feedback_event(payload)
+            except (TypeError, ValueError):
+                continue
+            frontier = RepairFrontier(
+                semantic_key=event.semantic_key,
+                progress=max(
+                    event.occurrence_count,
+                    event.affected_member_count,
+                    event.distinct_source_count,
+                ),
+                owner=event.owner,
+                scope=event.scope,
+                repairable=event.repairable,
+            )
+            previous = frontiers.get(frontier.semantic_key)
+            if previous is None or frontier.progress > previous.progress:
+                frontiers[frontier.semantic_key] = frontier
+    return tuple(frontiers[key] for key in sorted(frontiers))
+
+
+def _feedback_failure_reference(
+    summary: EvaluationSummary,
+) -> tuple[str | None, str | None]:
+    raw_events = summary.metrics.get("causal_failure_events")
+    if not isinstance(raw_events, (list, tuple)):
+        return None, None
+    for payload in raw_events:
+        if not isinstance(payload, Mapping):
+            continue
+        try:
+            event = _typed_causal_feedback_event(payload)
+        except (TypeError, ValueError):
+            continue
+        occurrence_id = event.occurrence_ids[0] if event.occurrence_ids else None
+        return occurrence_id, event.semantic_key
+    return None, None
+
+
 @dataclass(frozen=True)
 class SelfEvolveRunnerResult:
     run: SelfEvolveRun
     selected_candidate: CandidateVariant | None
+
+
+def _terminal_candidate_evaluation_result(
+    *,
+    candidate: CandidateVariant,
+    iteration_number: int,
+    candidate_number: int,
+    candidate_count: int,
+    gate_results: Iterable[GateResult],
+    status: str = "rejected",
+) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
+    gates = tuple(gate_results)
+    failed_gates = tuple(gate for gate in gates if not gate.passed)
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=failed_gates,
+    )
+    report_item = _iteration_report_item(
+        iteration_number=iteration_number,
+        candidate_number=candidate_number,
+        candidate_count=candidate_count,
+        candidate=candidate,
+        status=status,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=failed_gates,
+    )
+    state = _iteration_state(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        replay_result=None,
+        replay_dataset=None,
+        gate_results=gates,
+        feedback=feedback,
+        status=status,
+    )
+    return state, report_item, feedback
 
 
 @dataclass(frozen=True)
@@ -546,6 +1015,23 @@ class SelfEvolveRunner:
         min_eval_cases: int = 30,
         judge_repetitions: int = 3,
         max_run_tokens: int = 500_000,
+        total_run_token_budget: int | None = None,
+        per_attempt_replay_token_limit: int | None = None,
+        max_run_cost_usd: float | Decimal | None = None,
+        max_run_wall_seconds: float | Decimal | None = None,
+        candidate_generation_tokens_per_unit: int | None = 4_096,
+        candidate_generation_cost_usd_per_unit: float | Decimal | None = Decimal("0.05"),
+        candidate_generation_wall_seconds_per_unit: float | Decimal | None = Decimal("120"),
+        candidate_screening_tokens_per_unit: int | None = 4_096,
+        candidate_screening_cost_usd_per_unit: float | Decimal | None = Decimal("0.05"),
+        candidate_screening_wall_seconds_per_unit: float | Decimal | None = Decimal("600"),
+        replay_tokens_per_unit: int | None = 4_096,
+        replay_cost_usd_per_unit: float | Decimal | None = Decimal("0.05"),
+        replay_wall_seconds_per_unit: float | Decimal | None = Decimal("600"),
+        evaluation_tokens_per_unit: int | None = 2_048,
+        evaluation_cost_usd_per_unit: float | Decimal | None = Decimal("0.02"),
+        evaluation_wall_seconds_per_unit: float | Decimal | None = Decimal("60"),
+        deprecated_config_mappings: Iterable[str] | Mapping[str, str] | None = None,
         auto_apply_target_types: tuple[str, ...] = ("skill",),
         allow_generated_target_mutation: bool = False,
         allow_external_target_mutation: bool = False,
@@ -576,6 +1062,144 @@ class SelfEvolveRunner:
         self.min_eval_cases = min_eval_cases
         self.judge_repetitions = judge_repetitions
         self.max_run_tokens = max_run_tokens
+        self.total_run_token_budget = (
+            max_run_tokens
+            if total_run_token_budget is None
+            else total_run_token_budget
+        )
+        self.per_attempt_replay_token_limit = (
+            max_run_tokens
+            if per_attempt_replay_token_limit is None
+            else per_attempt_replay_token_limit
+        )
+        self.max_run_cost_usd = (
+            Decimal(str(max_run_cost_usd))
+            if max_run_cost_usd is not None
+            else None
+        )
+        self.max_run_wall_seconds = (
+            Decimal(str(max_run_wall_seconds))
+            if max_run_wall_seconds is not None
+            else None
+        )
+        self.deprecated_config_mappings = (
+            dict(deprecated_config_mappings)
+            if isinstance(deprecated_config_mappings, Mapping)
+            else tuple(deprecated_config_mappings or ())
+        )
+        candidate_generation_tokens_per_unit = (
+            4_096
+            if candidate_generation_tokens_per_unit is None
+            else candidate_generation_tokens_per_unit
+        )
+        candidate_generation_cost_usd_per_unit = (
+            Decimal("0.05")
+            if candidate_generation_cost_usd_per_unit is None
+            else candidate_generation_cost_usd_per_unit
+        )
+        candidate_generation_wall_seconds_per_unit = (
+            Decimal("120")
+            if candidate_generation_wall_seconds_per_unit is None
+            else candidate_generation_wall_seconds_per_unit
+        )
+        candidate_screening_tokens_per_unit = (
+            4_096
+            if candidate_screening_tokens_per_unit is None
+            else candidate_screening_tokens_per_unit
+        )
+        candidate_screening_cost_usd_per_unit = (
+            Decimal("0.05")
+            if candidate_screening_cost_usd_per_unit is None
+            else candidate_screening_cost_usd_per_unit
+        )
+        candidate_screening_wall_seconds_per_unit = (
+            Decimal("600")
+            if candidate_screening_wall_seconds_per_unit is None
+            else candidate_screening_wall_seconds_per_unit
+        )
+        replay_tokens_per_unit = (
+            4_096 if replay_tokens_per_unit is None else replay_tokens_per_unit
+        )
+        replay_cost_usd_per_unit = (
+            Decimal("0.05")
+            if replay_cost_usd_per_unit is None
+            else replay_cost_usd_per_unit
+        )
+        replay_wall_seconds_per_unit = (
+            Decimal("600")
+            if replay_wall_seconds_per_unit is None
+            else replay_wall_seconds_per_unit
+        )
+        evaluation_tokens_per_unit = (
+            2_048
+            if evaluation_tokens_per_unit is None
+            else evaluation_tokens_per_unit
+        )
+        evaluation_cost_usd_per_unit = (
+            Decimal("0.02")
+            if evaluation_cost_usd_per_unit is None
+            else evaluation_cost_usd_per_unit
+        )
+        evaluation_wall_seconds_per_unit = (
+            Decimal("60")
+            if evaluation_wall_seconds_per_unit is None
+            else evaluation_wall_seconds_per_unit
+        )
+        self.candidate_generation_tokens_per_unit = (
+            candidate_generation_tokens_per_unit
+        )
+        self.candidate_screening_tokens_per_unit = (
+            candidate_screening_tokens_per_unit
+        )
+        self.replay_tokens_per_unit = replay_tokens_per_unit
+        self.evaluation_tokens_per_unit = evaluation_tokens_per_unit
+        self._budget_cold_start_by_stage = {
+            BudgetStage.CANDIDATE_GENERATION: _configured_budget_usage(
+                tokens=candidate_generation_tokens_per_unit,
+                cost_usd=candidate_generation_cost_usd_per_unit,
+                wall_seconds=candidate_generation_wall_seconds_per_unit,
+                token_ceiling=self.total_run_token_budget,
+                cost_ceiling=self.max_run_cost_usd,
+                wall_ceiling=self.max_run_wall_seconds,
+            ),
+            BudgetStage.CONFORMANCE: BudgetUsage(
+                tokens=0,
+                cost_usd=Decimal("0"),
+                wall_seconds=Decimal("30"),
+            ),
+            BudgetStage.SCREENING: _configured_budget_usage(
+                tokens=candidate_screening_tokens_per_unit,
+                cost_usd=candidate_screening_cost_usd_per_unit,
+                wall_seconds=candidate_screening_wall_seconds_per_unit,
+                token_ceiling=self.total_run_token_budget,
+                cost_ceiling=self.max_run_cost_usd,
+                wall_ceiling=self.max_run_wall_seconds,
+            ),
+            BudgetStage.PAIRED_REPLAY: _configured_budget_usage(
+                tokens=replay_tokens_per_unit,
+                cost_usd=replay_cost_usd_per_unit,
+                wall_seconds=replay_wall_seconds_per_unit,
+                token_ceiling=self.total_run_token_budget,
+                cost_ceiling=self.max_run_cost_usd,
+                wall_ceiling=self.max_run_wall_seconds,
+            ),
+            BudgetStage.EVALUATION: _configured_budget_usage(
+                tokens=evaluation_tokens_per_unit,
+                cost_usd=evaluation_cost_usd_per_unit,
+                wall_seconds=evaluation_wall_seconds_per_unit,
+                token_ceiling=self.total_run_token_budget,
+                cost_ceiling=self.max_run_cost_usd,
+                wall_ceiling=self.max_run_wall_seconds,
+            ),
+            BudgetStage.JUDGE: _configured_budget_usage(
+                tokens=evaluation_tokens_per_unit,
+                cost_usd=evaluation_cost_usd_per_unit,
+                wall_seconds=evaluation_wall_seconds_per_unit,
+                token_ceiling=self.total_run_token_budget,
+                cost_ceiling=self.max_run_cost_usd,
+                wall_ceiling=self.max_run_wall_seconds,
+            ),
+        }
         self.auto_apply_target_types = tuple(auto_apply_target_types)
         self.allow_generated_target_mutation = allow_generated_target_mutation
         self.allow_external_target_mutation = allow_external_target_mutation
@@ -618,6 +1242,24 @@ class SelfEvolveRunner:
         target_selection_decision: TargetSelectionDecision | None = None,
     ) -> SelfEvolveRunnerResult:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
+        budget_context = _RunBudgetContext(
+            ledger=RunBudgetLedger(
+                BudgetCeilings(
+                    total_tokens=self.total_run_token_budget,
+                    total_cost_usd=self.max_run_cost_usd,
+                    wall_seconds=self.max_run_wall_seconds,
+                )
+            ),
+            cold_start_by_stage=self._budget_cold_start_by_stage,
+        )
+        self.run_budget_ledger = budget_context.ledger
+        scheduler = StageAwareCandidateScheduler(
+            exploration_population=_candidate_generation_limit(
+                replay_candidate_limit=self.replay_candidate_limit,
+            )
+        )
+        scheduler_state = SchedulerState()
+        scheduler_decisions: list[dict[str, object]] = []
         if apply_policy not in {"proposal", "auto_verified"}:
             raise ValueError(f"unsupported apply policy: {apply_policy}")
         supplied_provenance = target_provenance
@@ -759,6 +1401,7 @@ class SelfEvolveRunner:
 
         run = SelfEvolveRun(run_id=run_id, target=target.identity, status=SelfEvolveRunStatus.RUNNING)
         self.store.create_run(run)
+        attempt_tracker = _CandidateAttemptTracker(self.store, run_id)
         self.store.write_dataset_recipe(run_id, dataset.recipe)
         if target_selection_report is not None:
             self.store.write_target_selection_report(run_id, target_selection_report)
@@ -876,6 +1519,16 @@ class SelfEvolveRunner:
             if feedback.metrics.get("candidate_status") == "accepted"
         }
         current_run_attempted_candidate_ids: set[str] = set()
+        (
+            canonical_candidate_id_by_package,
+            package_fingerprint_by_candidate_id,
+        ) = _load_prior_candidate_package_index(
+            self.store,
+            target.identity,
+            current_run_id=run_id,
+            candidate_ids=(rejected_candidate_ids | accepted_candidate_ids),
+        )
+        attempt_key_by_candidate_id: dict[str, CandidateAttemptKey] = {}
         rejected_semantic_lesson_fingerprints = (
             _load_prior_rejected_semantic_lesson_fingerprints(
                 self.store,
@@ -907,6 +1560,58 @@ class SelfEvolveRunner:
                 if repair_family is None:
                     break
                 progress_repair_families.add(repair_family)
+            repair_frontiers = _typed_repair_frontiers(validation_feedback)
+            focused_available = budget_context.can_fit(
+                BudgetStage.CANDIDATE_GENERATION,
+                f"iteration-{iteration_index + 1}-focused",
+                units=1,
+            )
+            diverse_available = budget_context.can_fit(
+                BudgetStage.CANDIDATE_GENERATION,
+                f"iteration-{iteration_index + 1}-focused-diverse",
+                units=2,
+            )
+            scheduler_decision = scheduler.schedule(
+                state=scheduler_state,
+                frontiers=repair_frontiers,
+                focused_budget_available=focused_available,
+                diverse_budget_available=diverse_available,
+                untyped_feedback_present=(
+                    bool(validation_feedback) and not repair_frontiers
+                ),
+            )
+            scheduler_state = scheduler_decision.state
+            scheduler_decisions.append(
+                {
+                    "iteration": iteration_index + 1,
+                    **scheduler_decision.to_dict(),
+                }
+            )
+            if scheduler_decision.stop or not scheduler_decision.slots:
+                break
+            generation_slot_count = len(scheduler_decision.slots)
+            generation_budget = budget_context.reserve(
+                BudgetStage.CANDIDATE_GENERATION,
+                f"iteration-{iteration_index + 1}-generation",
+                units=generation_slot_count,
+            )
+            if not generation_budget.allowed:
+                for slot in scheduler_decision.slots:
+                    placeholder = _candidate_attempt_placeholder(
+                        iteration_index,
+                        slot.slot,
+                    )
+                    key = attempt_tracker.start(
+                        iteration=iteration_index,
+                        slot=slot.slot,
+                        candidate_id=placeholder,
+                    )
+                    attempt_tracker.emit(
+                        key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code="generation_budget_denied",
+                    )
+                break
             _emit_progress(
                 self.progress_callback,
                 "candidate_generation",
@@ -931,9 +1636,7 @@ class SelfEvolveRunner:
                 prior_feedback=prior_feedback,
                 lesson_records=iteration_lesson_records,
                 dataset=dataset,
-                max_candidates=_candidate_generation_limit(
-                    replay_candidate_limit=self.replay_candidate_limit,
-                ),
+                max_candidates=generation_slot_count,
                 replay_requirements=replay_preflight.requirements,
                 target_package_inventory=target_package_inventory,
             )
@@ -941,7 +1644,43 @@ class SelfEvolveRunner:
                 optimizer_request,
                 evolution_context=compile_evolution_context(optimizer_request),
             )
-            optimizer_result = await self.optimizer.propose(optimizer_request)
+            try:
+                optimizer_result = await self.optimizer.propose(optimizer_request)
+            except Exception as exc:
+                budget_context.release(
+                    generation_budget,
+                    reason_code="candidate_generation_exception",
+                )
+                for slot in scheduler_decision.slots:
+                    placeholder = _candidate_attempt_placeholder(
+                        iteration_index,
+                        slot.slot,
+                    )
+                    key = attempt_tracker.start(
+                        iteration=iteration_index,
+                        slot=slot.slot,
+                        candidate_id=placeholder,
+                    )
+                    attempt_tracker.emit(
+                        key,
+                        CandidateAttemptStage.BLOCKED,
+                        reason_code="candidate_generation_infrastructure_failed",
+                    )
+                optimizer_diagnostics.append(
+                    {
+                        "iteration": iteration_index + 1,
+                        "candidate_ids": [],
+                        "diagnostics": {
+                            "candidate_generation_failure": {
+                                "code": "candidate_generation_infrastructure_error",
+                                "error_type": type(exc).__name__,
+                                "stage": "optimizer",
+                            }
+                        },
+                    }
+                )
+                infrastructure_blocked = True
+                break
             population_execution = optimizer_result.diagnostics.get(
                 "candidate_population_execution"
             )
@@ -950,6 +1689,15 @@ class SelfEvolveRunner:
                     "candidate_generation",
                     population_execution,
                 )
+            generation_tokens, generation_wall, generation_source = (
+                _candidate_generation_actual_usage(population_execution)
+            )
+            budget_context.debit(
+                generation_budget,
+                tokens=generation_tokens,
+                wall_seconds=generation_wall,
+                actual_source=generation_source,
+            )
             filtered_known_duplicates = _known_duplicate_candidate_count(
                 optimizer_result.candidates,
                 rejected_candidate_ids=rejected_candidate_ids,
@@ -963,6 +1711,28 @@ class SelfEvolveRunner:
                 lineage_fingerprints=current_lineage_fingerprints,
                 rejected_semantic_lesson_fingerprints=rejected_semantic_lesson_fingerprints,
             )
+            candidate_protocol_overflow_count = max(
+                0,
+                len(optimizer_result.candidates) - generation_slot_count,
+            )
+            iteration_optimizer_diagnostics = {
+                **dict(optimizer_result.diagnostics),
+                "filtered_known_duplicate_candidates": filtered_known_duplicates,
+                "filtered_semantic_lesson_duplicate_candidates": (
+                    filtered_semantic_lesson_duplicates
+                ),
+            }
+            if candidate_protocol_overflow_count:
+                iteration_optimizer_diagnostics[
+                    "candidate_protocol_overflow_count"
+                ] = candidate_protocol_overflow_count
+                iteration_optimizer_diagnostics[
+                    "candidate_protocol_error"
+                ] = {
+                    "code": "candidate_population_exceeds_scheduled_slots",
+                    "scheduled_slot_count": generation_slot_count,
+                    "returned_candidate_count": len(optimizer_result.candidates),
+                }
             optimizer_diagnostics.append(
                 {
                     "iteration": iteration_index + 1,
@@ -970,30 +1740,227 @@ class SelfEvolveRunner:
                         candidate.candidate_id for candidate in optimizer_result.candidates
                     ],
                     "diagnostics": public_diagnostic_projection(
-                        {
-                            **dict(optimizer_result.diagnostics),
-                            "filtered_known_duplicate_candidates": filtered_known_duplicates,
-                            "filtered_semantic_lesson_duplicate_candidates": (
-                                filtered_semantic_lesson_duplicates
-                            ),
-                        }
+                        iteration_optimizer_diagnostics
                     ),
                 }
             )
-            for candidate in optimizer_result.candidates:
-                all_candidates.append(candidate)
-                target.preserve_proposal(self.store, run_id, candidate)
+            generated = (
+                ()
+                if candidate_protocol_overflow_count
+                else tuple(optimizer_result.candidates)
+            )
+            unique_generated: list[CandidateVariant] = []
+            unique_candidate_ids: set[str] = set()
+            generation_duplicate_feedback: list[EvaluationSummary] = []
+            generation_usage = _budget_usage_for_attempt_event(
+                generation_budget,
+                tokens=generation_tokens,
+                wall_seconds=generation_wall,
+            )
+            invalid_slots_remaining = _non_negative_int(
+                optimizer_result.diagnostics.get(
+                    "candidate_protocol_invalid_count"
+                )
+            )
+            if candidate_protocol_overflow_count:
+                invalid_slots_remaining = generation_slot_count
+            for slot_index in range(generation_slot_count):
+                generated_candidate = (
+                    generated[slot_index]
+                    if slot_index < len(generated)
+                    else None
+                )
+                if generated_candidate is None:
+                    placeholder = _candidate_attempt_placeholder(
+                        iteration_index,
+                        slot_index,
+                    )
+                    key = attempt_tracker.start(
+                        iteration=iteration_index,
+                        slot=slot_index,
+                        candidate_id=placeholder,
+                        usage=(generation_usage if slot_index == 0 else None),
+                    )
+                    if candidate_protocol_overflow_count:
+                        reason_code = "candidate_population_exceeds_scheduled_slots"
+                    elif invalid_slots_remaining:
+                        invalid_slots_remaining -= 1
+                        reason_code = "candidate_protocol_invalid"
+                    elif isinstance(
+                        optimizer_result.diagnostics.get(
+                            "candidate_generation_failure"
+                        ),
+                        Mapping,
+                    ):
+                        reason_code = "candidate_generation_infrastructure_failed"
+                    else:
+                        reason_code = "candidate_generation_no_output"
+                    attempt_tracker.emit(
+                        key,
+                        (
+                            CandidateAttemptStage.BLOCKED
+                            if reason_code.endswith("infrastructure_failed")
+                            else CandidateAttemptStage.NOT_RUN
+                        ),
+                        reason_code=reason_code,
+                    )
+                    continue
+
+                package_fingerprint = candidate_package_fingerprint(
+                    generated_candidate
+                )
+                canonical_id = canonical_candidate_id_by_package.get(
+                    package_fingerprint
+                )
+                prior_candidate_duplicate = (
+                    generated_candidate.candidate_id in rejected_candidate_ids
+                    or generated_candidate.candidate_id in accepted_candidate_ids
+                )
+                semantic_lesson_duplicate = _is_semantic_lesson_duplicate(
+                    generated_candidate.candidate_id,
+                    lineage_fingerprints=current_lineage_fingerprints,
+                    rejected_semantic_lesson_fingerprints=(
+                        rejected_semantic_lesson_fingerprints
+                    ),
+                )
+                candidate_id_collision = (
+                    generated_candidate.candidate_id
+                    in package_fingerprint_by_candidate_id
+                    and package_fingerprint_by_candidate_id[
+                        generated_candidate.candidate_id
+                    ]
+                    != package_fingerprint
+                )
+                lifecycle_candidate_id = (
+                    canonical_id
+                    if canonical_id is not None
+                    else generated_candidate.candidate_id
+                )
+                key = attempt_tracker.start(
+                    iteration=iteration_index,
+                    slot=slot_index,
+                    candidate_id=lifecycle_candidate_id,
+                    usage=(generation_usage if slot_index == 0 else None),
+                )
+                if (
+                    canonical_id is not None
+                    or candidate_id_collision
+                    or prior_candidate_duplicate
+                    or semantic_lesson_duplicate
+                ):
+                    attempt_tracker.emit(
+                        key,
+                        CandidateAttemptStage.DUPLICATE_FILTERED,
+                    )
+                    attempt_tracker.emit(
+                        key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code=(
+                            "candidate_id_collision"
+                            if candidate_id_collision
+                            else (
+                                "duplicate_prior_candidate"
+                                if prior_candidate_duplicate
+                                else (
+                                    "duplicate_semantic_lesson"
+                                    if semantic_lesson_duplicate
+                                    else "duplicate_candidate_package"
+                                )
+                            )
+                        ),
+                    )
+                    if prior_candidate_duplicate:
+                        duplicate_gate_name = (
+                            "duplicate_accepted_candidate"
+                            if generated_candidate.candidate_id
+                            in accepted_candidate_ids
+                            else "duplicate_rejected_candidate"
+                        )
+                        duplicate_feedback = EvaluationSummary(
+                            variant_id=generated_candidate.candidate_id,
+                            dataset_split="validation",
+                            metrics={
+                                "failed_gates": [duplicate_gate_name],
+                                "candidate_status": "rejected",
+                                "failure_class": "candidate",
+                                "repairable": True,
+                            },
+                        )
+                        duplicate_gate = GateResult(
+                            gate_name=duplicate_gate_name,
+                            passed=False,
+                            reason="candidate repeats a prior terminal candidate",
+                            details={
+                                "candidate_id": generated_candidate.candidate_id,
+                                "failure_class": "candidate",
+                                "code": "duplicate_prior_candidate",
+                            },
+                        )
+                        generation_duplicate_feedback.append(duplicate_feedback)
+                        iteration_states.append(
+                            _iteration_state(
+                                candidate=generated_candidate,
+                                baseline_summary=None,
+                                candidate_summary=None,
+                                held_out_summary=None,
+                                replay_result=None,
+                                replay_dataset=None,
+                                gate_results=(duplicate_gate,),
+                                feedback=(duplicate_feedback,),
+                                status="rejected",
+                            )
+                        )
+                    continue
+                canonical_candidate_id_by_package[package_fingerprint] = (
+                    generated_candidate.candidate_id
+                )
+                package_fingerprint_by_candidate_id[
+                    generated_candidate.candidate_id
+                ] = package_fingerprint
+                attempt_tracker.emit(key, CandidateAttemptStage.UNIQUE)
+                attempt_key_by_candidate_id[
+                    generated_candidate.candidate_id
+                ] = key
+                unique_generated.append(generated_candidate)
+                unique_candidate_ids.add(generated_candidate.candidate_id)
+                all_candidates.append(generated_candidate)
+                target.preserve_proposal(
+                    self.store,
+                    run_id,
+                    generated_candidate,
+                )
             for lineage in optimizer_result.lineage:
+                if (
+                    lineage.candidate_id not in unique_candidate_ids
+                    or lineage.candidate_id
+                    in optimizer_lineage_paths_by_candidate
+                ):
+                    continue
                 lineage_path = self.store.write_optimizer_lineage(run_id, lineage)
                 optimizer_lineage_paths.append(str(lineage_path))
                 optimizer_lineage_paths_by_candidate[lineage.candidate_id] = str(
                     lineage_path
                 )
 
+            if generation_duplicate_feedback:
+                validation_feedback = _merge_validation_feedback(
+                    validation_feedback,
+                    tuple(generation_duplicate_feedback),
+                )
+                iteration_reports.extend(
+                    {
+                        "iteration": iteration_index + 1,
+                        "candidate_id": item.variant_id,
+                        "status": "rejected",
+                        "failed_gates": list(item.metrics["failed_gates"]),
+                    }
+                    for item in generation_duplicate_feedback
+                )
+
             candidate_population = _rank_candidate_population(
                 tuple(
                     candidate
-                    for candidate in optimizer_result.candidates
+                    for candidate in unique_generated
                     if candidate.candidate_id not in rejected_candidate_ids
                     and candidate.candidate_id not in accepted_candidate_ids
                     and not _is_semantic_lesson_duplicate(
@@ -1040,7 +2007,7 @@ class SelfEvolveRunner:
                     optimizer_result.diagnostics.get(
                         "candidate_protocol_invalid_count"
                     )
-                )
+                ) + candidate_protocol_overflow_count
                 if protocol_invalid_count:
                     validation_feedback = _merge_validation_feedback(
                         validation_feedback,
@@ -1058,6 +2025,9 @@ class SelfEvolveRunner:
                                     "candidate_protocol_invalid_count": (
                                         protocol_invalid_count
                                     ),
+                                    "candidate_protocol_overflow_count": (
+                                        candidate_protocol_overflow_count
+                                    ),
                                 },
                             ),
                         ),
@@ -1071,16 +2041,27 @@ class SelfEvolveRunner:
                         }
                     )
                     continue
+                if generation_duplicate_feedback:
+                    continue
                 skipped_feedback: list[EvaluationSummary] = []
                 skipped_duplicates = [
                     candidate
-                    for candidate in optimizer_result.candidates
+                    for candidate in unique_generated
                     if candidate.candidate_id in rejected_candidate_ids
                     or candidate.candidate_id in accepted_candidate_ids
                 ]
                 for candidate_index, skipped_candidate in enumerate(
                     skipped_duplicates[: max(1, self.replay_candidate_limit)]
                 ):
+                    skipped_key = attempt_key_by_candidate_id.get(
+                        skipped_candidate.candidate_id
+                    )
+                    if skipped_key is not None:
+                        attempt_tracker.emit(
+                            skipped_key,
+                            CandidateAttemptStage.REJECTED,
+                            reason_code="duplicate_prior_candidate",
+                        )
                     duplicate_gates: list[GateResult] = []
                     accepted_gate = _duplicate_accepted_candidate_gate(
                         skipped_candidate,
@@ -1166,7 +2147,98 @@ class SelfEvolveRunner:
             duplicate_population_stalls = 0
             candidate_generation_infrastructure_retries = 0
 
+            local_gate_results_by_candidate: dict[str, tuple[GateResult, ...]] = {}
+            locally_valid_candidates: list[CandidateVariant] = []
+            local_gate_feedback: list[EvaluationSummary] = []
+            current_content = target.load_current_content()
+            for candidate in candidate_population:
+                attempt_key = attempt_key_by_candidate_id.get(
+                    candidate.candidate_id
+                )
+                local_results = tuple(
+                    _candidate_gate_results(
+                        candidate,
+                        current_content=current_content,
+                        workspace_root=self.store.workspace_root,
+                        max_chars=self.max_run_tokens,
+                        target_provenance=target_provenance,
+                        target_provenance_unresolved_reason=(
+                            target_provenance_unresolved_reason
+                        ),
+                        allow_generated_target_mutation=(
+                            self.allow_generated_target_mutation
+                        ),
+                        allow_external_target_mutation=(
+                            self.allow_external_target_mutation
+                        ),
+                    )
+                )
+                local_gate_results_by_candidate[candidate.candidate_id] = local_results
+                if attempt_key is None:
+                    continue
+                attempt_tracker.emit(attempt_key, CandidateAttemptStage.LOCAL_GATES)
+                failed_local = tuple(
+                    gate
+                    for gate in local_results
+                    if not gate.passed
+                    and not (
+                        apply_policy == "proposal"
+                        and gate.gate_name == "trust_provenance"
+                    )
+                )
+                if not failed_local:
+                    locally_valid_candidates.append(candidate)
+                    continue
+                local_feedback = EvaluationSummary(
+                    variant_id=candidate.candidate_id,
+                    dataset_split="validation",
+                    metrics={
+                        "failed_gates": [gate.gate_name for gate in failed_local],
+                        "candidate_status": "rejected",
+                        "failure_class": "candidate",
+                        "repairable": True,
+                    },
+                )
+                local_gate_feedback.append(local_feedback)
+                iteration_states.append(
+                    _iteration_state(
+                        candidate=candidate,
+                        baseline_summary=None,
+                        candidate_summary=None,
+                        held_out_summary=None,
+                        replay_result=None,
+                        replay_dataset=None,
+                        gate_results=local_results,
+                        feedback=(local_feedback,),
+                        status="rejected",
+                    )
+                )
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.REJECTED,
+                    reason_code="local_gate_rejected",
+                )
+            if local_gate_feedback:
+                validation_feedback = _merge_validation_feedback(
+                    validation_feedback,
+                    tuple(local_gate_feedback),
+                )
+                rejected_candidate_ids.update(
+                    item.variant_id for item in local_gate_feedback
+                )
+                iteration_reports.extend(
+                    {
+                        "iteration": iteration_index + 1,
+                        "candidate_id": item.variant_id,
+                        "status": "local_gate_rejected",
+                        "failed_gates": list(item.metrics.get("failed_gates", [])),
+                    }
+                    for item in local_gate_feedback
+                )
+            candidate_population = tuple(locally_valid_candidates)
             screening_candidates = candidate_population
+            if not candidate_population:
+                continue
             repair_conformance_contracts = (
                 _candidate_repair_conformance_contracts(
                     optimizer_result
@@ -1180,6 +2252,9 @@ class SelfEvolveRunner:
                 apply_policy=apply_policy,
                 capability_requirements=replay_preflight.requirements,
                 repair_conformance_contracts=repair_conformance_contracts,
+                attempt_tracker=attempt_tracker,
+                attempt_keys=attempt_key_by_candidate_id,
+                budget_context=budget_context,
             )
             if screening_report is not None:
                 population_screening_reports.append(screening_report)
@@ -1209,6 +2284,24 @@ class SelfEvolveRunner:
                     }
                     for item in screening_feedback
                 )
+                for item in screening_feedback:
+                    screened_key = attempt_key_by_candidate_id.get(
+                        item.variant_id
+                    )
+                    if (
+                        screened_key is not None
+                        and not attempt_tracker.terminal(screened_key)
+                    ):
+                        failure_event_id, semantic_key = (
+                            _feedback_failure_reference(item)
+                        )
+                        attempt_tracker.emit(
+                            screened_key,
+                            CandidateAttemptStage.REJECTED,
+                            reason_code="candidate_validation_rejected",
+                            failure_event_id=failure_event_id,
+                            semantic_failure_key=semantic_key,
+                        )
             if screening_feedback and not candidate_population:
                 continue
 
@@ -1260,8 +2353,33 @@ class SelfEvolveRunner:
                     accepted_candidate_ids=accepted_candidate_ids,
                     baseline_replay_dir=reusable_baseline_replay_dir,
                     capability_requirements=replay_preflight.requirements,
+                    attempt_key=attempt_key_by_candidate_id.get(
+                        iteration_candidate.candidate_id
+                    ),
+                    attempt_tracker=attempt_tracker,
+                    budget_context=budget_context,
+                    precomputed_gate_results=local_gate_results_by_candidate.get(
+                        iteration_candidate.candidate_id,
+                        (),
+                    ),
                 )
-                report_item["lifecycle_stage"] = "authoritative_replay"
+                evaluated_attempt_key = attempt_key_by_candidate_id.get(
+                    iteration_candidate.candidate_id
+                )
+                if (
+                    evaluated_attempt_key is not None
+                    and attempt_tracker.has_stage(
+                        evaluated_attempt_key,
+                        CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+                        CandidateAttemptStage.PAIRED_REPLAY_COMPLETED,
+                        CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE,
+                    )
+                ):
+                    report_item["lifecycle_stage"] = "authoritative_replay"
+                elif evaluated_attempt_key is not None:
+                    report_item["lifecycle_stage"] = attempt_tracker.last_stage(
+                        evaluated_attempt_key
+                    ).value
                 validation_feedback = _merge_validation_feedback(
                     validation_feedback,
                     candidate_feedback,
@@ -1313,6 +2431,10 @@ class SelfEvolveRunner:
             ):
                 break
 
+        attempt_tracker.finalize_open(
+            reason_code="run_terminated_before_candidate"
+        )
+        budget_context.release_all(reason_code="run_terminal_cleanup")
         selected_state = _select_iteration_state(iteration_states)
         if selected_state is not None:
             selected_candidate = selected_state["candidate"]  # type: ignore[assignment]
@@ -1426,7 +2548,14 @@ class SelfEvolveRunner:
                     stages=execution_stages,
                 ),
             },
+            "budget": budget_context.to_dict(),
         }
+        if self.deprecated_config_mappings:
+            report["deprecated_config_mappings"] = (
+                dict(self.deprecated_config_mappings)
+                if isinstance(self.deprecated_config_mappings, Mapping)
+                else list(self.deprecated_config_mappings)
+            )
         terminal_cause = _terminal_cause(
             final_status=final_status,
             optimizer_diagnostics=optimizer_diagnostics,
@@ -1443,6 +2572,9 @@ class SelfEvolveRunner:
             replay_candidate_limit=self.replay_candidate_limit,
             optimizer_diagnostics=optimizer_diagnostics,
             screening_reports=population_screening_reports,
+            attempt_events=self.store.read_all_candidate_attempt_events(run_id),
+            budget_report=budget_context.to_dict(),
+            scheduler_decisions=scheduler_decisions,
         )
         if population_report is not None:
             report["population"] = population_report
@@ -1601,6 +2733,9 @@ class SelfEvolveRunner:
         repair_conformance_contracts: Mapping[
             str, RepairConformanceContract
         ] | None = None,
+        attempt_tracker: _CandidateAttemptTracker | None = None,
+        attempt_keys: Mapping[str, CandidateAttemptKey] | None = None,
+        budget_context: _RunBudgetContext | None = None,
     ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
         repair_conformance_contracts = repair_conformance_contracts or {}
         if (
@@ -1618,6 +2753,9 @@ class SelfEvolveRunner:
                 candidates=candidates,
                 capability_requirements=capability_requirements,
                 repair_conformance_contracts=repair_conformance_contracts,
+                attempt_tracker=attempt_tracker,
+                attempt_keys=attempt_keys,
+                budget_context=budget_context,
             )
         )
         if not conformance_candidates:
@@ -1669,6 +2807,9 @@ class SelfEvolveRunner:
                 dataset=screening_dataset,
             ),
         )
+        screening_budget_denied_ids: set[str] = set()
+        screening_terminal_ids: set[str] = set()
+        stopped_by_shared_screening = False
         for candidate in conformance_candidates:
             conformance_contract = repair_conformance_contracts.get(
                 candidate.candidate_id
@@ -1677,22 +2818,136 @@ class SelfEvolveRunner:
                 candidate,
                 candidate_id=f"{candidate.candidate_id}--screening",
             )
-            replay_result, replay_dataset, replay_gate = (
-                await self._replay_selected_candidate(
-                    run_id=run_id,
-                    target=target,
-                    dataset=screening_dataset,
-                    selected_candidate=screening_candidate,
-                    apply_policy=apply_policy,
-                    baseline_replay_dir=screening_baseline_replay_dir,
-                    baseline_repetitions=1,
-                    candidate_repetitions=1,
-                    progress_stage="candidate_screening",
-                    timeout_seconds=_candidate_screening_timeout(
-                        self.replay_timeout_seconds
+            screening_budget: BudgetDecision | None = None
+            if budget_context is not None:
+                screening_budget = budget_context.reserve(
+                    BudgetStage.SCREENING,
+                    f"{candidate.candidate_id}-screening",
+                    units=1,
+                )
+                if not screening_budget.allowed:
+                    screening_budget_denied_ids.add(candidate.candidate_id)
+                    attempts.append(
+                        {
+                            "candidate_id": candidate.candidate_id,
+                            "screening_candidate_id": screening_candidate.candidate_id,
+                            "passed": False,
+                            "reason": "representative screening was not run because budget was denied",
+                            "details": {
+                                "failure_class": "budget",
+                                "code": "screening_budget_denied",
+                                "budget_decision": screening_budget.to_dict(),
+                            },
+                        }
+                    )
+                    attempt_key = (
+                        attempt_keys.get(candidate.candidate_id)
+                        if attempt_keys is not None
+                        else None
+                    )
+                    if attempt_tracker is not None and attempt_key is not None:
+                        attempt_tracker.emit(
+                            attempt_key,
+                            CandidateAttemptStage.NOT_RUN,
+                            reason_code="screening_budget_denied",
+                        )
+                    continue
+            attempt_key = (
+                attempt_keys.get(candidate.candidate_id)
+                if attempt_keys is not None
+                else None
+            )
+
+            def screening_lifecycle(
+                stage: str,
+                payload: Mapping[str, object],
+            ) -> None:
+                if attempt_tracker is None or attempt_key is None:
+                    return
+                if (
+                    stage == "adaptation_completed"
+                    and attempt_tracker.last_stage(attempt_key)
+                    is CandidateAttemptStage.LOCAL_GATES
+                ):
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.ADAPTATION,
+                        case_count=1,
+                    )
+                elif stage == "replay_started":
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.SCREENING,
+                        case_count=1,
+                        usage=(
+                            _budget_usage_for_attempt_event(screening_budget)
+                            if screening_budget is not None
+                            else None
+                        ),
+                    )
+            try:
+                replay_result, replay_dataset, replay_gate = (
+                    await self._replay_selected_candidate(
+                        run_id=run_id,
+                        target=target,
+                        dataset=screening_dataset,
+                        selected_candidate=screening_candidate,
+                        apply_policy=apply_policy,
+                        baseline_replay_dir=screening_baseline_replay_dir,
+                        baseline_repetitions=1,
+                        candidate_repetitions=1,
+                        progress_stage="candidate_screening",
+                        timeout_seconds=_candidate_screening_timeout(
+                            self.replay_timeout_seconds
+                        ),
+                        lifecycle_callback=screening_lifecycle,
+                    )
+                )
+            except Exception as exc:
+                replay_result = None
+                replay_dataset = None
+                replay_gate = GateResult(
+                    gate_name="candidate_screening",
+                    passed=False,
+                    reason="candidate screening backend failed",
+                    details={
+                        "failure_class": "infrastructure",
+                        "code": "candidate_screening_infrastructure_error",
+                        "type": type(exc).__name__,
+                    },
+                )
+            if screening_budget is not None:
+                budget_context.debit(
+                    screening_budget,
+                    actual_source="reserved_fallback_screening",
+                )
+            if (
+                attempt_tracker is not None
+                and attempt_key is not None
+                and replay_result is None
+                and not attempt_tracker.terminal(attempt_key)
+            ):
+                failure_class = (
+                    replay_gate.details.get("failure_class")
+                    if replay_gate is not None
+                    and isinstance(replay_gate.details, Mapping)
+                    else None
+                )
+                terminal_stage = (
+                    CandidateAttemptStage.BLOCKED
+                    if failure_class == "infrastructure"
+                    else CandidateAttemptStage.REJECTED
+                )
+                attempt_tracker.emit(
+                    attempt_key,
+                    terminal_stage,
+                    reason_code=(
+                        "screening_adaptation_blocked"
+                        if terminal_stage is CandidateAttemptStage.BLOCKED
+                        else "screening_adaptation_rejected"
                     ),
                 )
-            )
+                screening_terminal_ids.add(candidate.candidate_id)
             if (
                 conformance_contract is not None
                 and replay_gate is not None
@@ -1734,15 +2989,54 @@ class SelfEvolveRunner:
                 selected_candidate = candidate
                 break
             if (
-                replay_result is not None
-                and _shared_replay_failure_blocks_population(replay_result)
-                and not _screening_attempt_requires_candidate_repair(attempts[-1])
+                (
+                    replay_result is not None
+                    and _shared_replay_failure_blocks_population(replay_result)
+                    and not _screening_attempt_requires_candidate_repair(attempts[-1])
+                )
+                or (
+                    replay_gate is not None
+                    and isinstance(replay_gate.details, Mapping)
+                    and replay_gate.details.get("failure_class") == "infrastructure"
+                )
             ):
+                stopped_by_shared_screening = True
                 break
+
+        if stopped_by_shared_screening:
+            attempted_ids = {
+                str(attempt.get("candidate_id"))
+                for attempt in attempts
+                if isinstance(attempt.get("candidate_id"), str)
+            }
+            for pending_candidate in conformance_candidates:
+                if pending_candidate.candidate_id in attempted_ids:
+                    continue
+                screening_terminal_ids.add(pending_candidate.candidate_id)
+                pending_key = (
+                    attempt_keys.get(pending_candidate.candidate_id)
+                    if attempt_keys is not None
+                    else None
+                )
+                if (
+                    attempt_tracker is not None
+                    and pending_key is not None
+                    and not attempt_tracker.terminal(pending_key)
+                ):
+                    attempt_tracker.emit(
+                        pending_key,
+                        CandidateAttemptStage.BLOCKED,
+                        reason_code="screening_shared_infrastructure_blocked",
+                    )
 
         selection_reason = "representative replay produced a comparable pair"
         if selected_candidate is None:
-            if any(_screening_attempt_requires_candidate_repair(item) for item in attempts):
+            if stopped_by_shared_screening:
+                selection_reason = (
+                    "screening stopped after a shared infrastructure failure"
+                )
+                selected_candidates = ()
+            elif any(_screening_attempt_requires_candidate_repair(item) for item in attempts):
                 selection_reason = (
                     "screening isolated a repairable candidate replay capability "
                     "failure; authoritative replay deferred to candidate repair"
@@ -1758,7 +3052,12 @@ class SelfEvolveRunner:
                     "screening was inconclusive; authoritative full replay preserved "
                     "the ranked population"
                 )
-                selected_candidates = conformance_candidates
+                selected_candidates = tuple(
+                    candidate
+                    for candidate in conformance_candidates
+                    if candidate.candidate_id not in screening_budget_denied_ids
+                    and candidate.candidate_id not in screening_terminal_ids
+                )
         else:
             selected_candidates = (selected_candidate,)
         screening_report = {
@@ -1777,6 +3076,7 @@ class SelfEvolveRunner:
                 "baseline_repetitions": 1,
                 "candidate_repetitions": 1,
                 "attempts": attempts,
+                "stopped_by_shared_infrastructure": stopped_by_shared_screening,
             }
         return (
             selected_candidates,
@@ -1796,6 +3096,9 @@ class SelfEvolveRunner:
         candidates: tuple[CandidateVariant, ...],
         capability_requirements: tuple[ReplayCapabilityRequirement, ...],
         repair_conformance_contracts: Mapping[str, RepairConformanceContract],
+        attempt_tracker: _CandidateAttemptTracker | None = None,
+        attempt_keys: Mapping[str, CandidateAttemptKey] | None = None,
+        budget_context: _RunBudgetContext | None = None,
     ) -> tuple[tuple[CandidateVariant, ...], dict[str, object] | None]:
         applicable = tuple(
             candidate
@@ -1821,11 +3124,22 @@ class SelfEvolveRunner:
             if contract is None:
                 passed_candidates.append(candidate)
                 continue
+            attempt_key = (
+                attempt_keys.get(candidate.candidate_id)
+                if attempt_keys is not None
+                else None
+            )
             source_conformance = evaluate_candidate_source_conformance(
                 candidate,
                 contract,
             )
             if not source_conformance.passed:
+                if attempt_tracker is not None and attempt_key is not None:
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.REJECTED,
+                        reason_code="source_conformance_rejected",
+                    )
                 attempts.append(
                     _repair_conformance_screening_attempt(
                         candidate,
@@ -1841,7 +3155,51 @@ class SelfEvolveRunner:
                 candidate=candidate,
                 contract=contract,
                 capability_requirements=capability_requirements,
+                budget_context=budget_context,
             )
+            if attempt_tracker is not None and attempt_key is not None:
+                if (
+                    attempt_tracker.last_stage(attempt_key)
+                    is CandidateAttemptStage.LOCAL_GATES
+                ):
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.ADAPTATION,
+                        case_count=len(dataset.cases),
+                    )
+                gate_code = (
+                    str(gate.details.get("code") or "")
+                    if isinstance(gate.details, Mapping)
+                    else ""
+                )
+                probe_plan_payload = (
+                    gate.details.get("probe_plan")
+                    if isinstance(gate.details, Mapping)
+                    else None
+                )
+                probe_groups = (
+                    probe_plan_payload.get("groups")
+                    if isinstance(probe_plan_payload, Mapping)
+                    else None
+                )
+                shape_count = (
+                    len(probe_groups)
+                    if isinstance(probe_groups, (list, tuple))
+                    else 0
+                )
+                if gate_code == "conformance_budget_denied":
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code="conformance_budget_denied",
+                    )
+                elif gate_code != "repair_capability_compile_failed":
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.CONFORMANCE,
+                        case_count=len(dataset.cases),
+                        distinct_conformance_shape_count=shape_count,
+                    )
             attempt = {
                 "candidate_id": candidate.candidate_id,
                 "screening_candidate_id": None,
@@ -1884,6 +3242,7 @@ class SelfEvolveRunner:
         candidate: CandidateVariant,
         contract: RepairConformanceContract,
         capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
+        budget_context: _RunBudgetContext | None = None,
     ) -> GateResult:
         if target.identity.path is None:
             return _repair_conformance_gate(
@@ -2020,6 +3379,28 @@ class SelfEvolveRunner:
         )
         group_results: list[dict[str, object]] = []
         groups = probe_plan.groups
+        conformance_budget: BudgetDecision | None = None
+        if groups and budget_context is not None:
+            conformance_budget = budget_context.reserve(
+                BudgetStage.CONFORMANCE,
+                f"{candidate.candidate_id}-conformance",
+                units=len(groups),
+            )
+            if not conformance_budget.allowed:
+                return GateResult(
+                    gate_name="candidate_repair_conformance",
+                    passed=False,
+                    reason="repair conformance was not run because budget was denied",
+                    details={
+                        "failure_class": "budget",
+                        "repairable": False,
+                        "stage": "repair_conformance",
+                        "code": "conformance_budget_denied",
+                        "probe_plan": probe_plan.to_dict(),
+                        "distinct_conformance_shape_count": len(groups),
+                        "budget_decision": conformance_budget.to_dict(),
+                    },
+                )
         for group_index, group in enumerate(groups):
             fingerprint = group.fingerprint
             artifact_dir = artifact_root / (
@@ -2125,6 +3506,11 @@ class SelfEvolveRunner:
                     ),
                 }
             )
+        if conformance_budget is not None:
+            budget_context.debit(
+                conformance_budget,
+                actual_source="reserved_fallback_local_conformance",
+            )
         failed_groups = tuple(
             result for result in group_results if result.get("passed") is False
         )
@@ -2192,6 +3578,10 @@ class SelfEvolveRunner:
         accepted_candidate_ids: set[str],
         baseline_replay_dir: str | None = None,
         capability_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
+        attempt_key: CandidateAttemptKey | None = None,
+        attempt_tracker: _CandidateAttemptTracker | None = None,
+        budget_context: _RunBudgetContext | None = None,
+        precomputed_gate_results: tuple[GateResult, ...] = (),
     ) -> tuple[dict[str, object], dict[str, object], tuple[EvaluationSummary, ...]]:
         baseline_summary: EvaluationSummary | None = None
         candidate_summary: EvaluationSummary | None = None
@@ -2200,25 +3590,33 @@ class SelfEvolveRunner:
         replay_dataset: SelfEvolveDataset | None = None
         gate_results: list[GateResult] = []
 
-        current_content = target.load_current_content()
-        gate_results.extend(
-            _candidate_gate_results(
-                candidate,
-                current_content=current_content,
-                workspace_root=self.store.workspace_root,
-                max_chars=self.max_run_tokens,
-                target_provenance=target_provenance,
-                target_provenance_unresolved_reason=(
-                    target_provenance_unresolved_reason
-                ),
-                allow_generated_target_mutation=(
-                    self.allow_generated_target_mutation
-                ),
-                allow_external_target_mutation=(
-                    self.allow_external_target_mutation
-                ),
+        if precomputed_gate_results:
+            gate_results.extend(precomputed_gate_results)
+        else:
+            current_content = target.load_current_content()
+            gate_results.extend(
+                _candidate_gate_results(
+                    candidate,
+                    current_content=current_content,
+                    workspace_root=self.store.workspace_root,
+                    max_chars=self.max_run_tokens,
+                    target_provenance=target_provenance,
+                    target_provenance_unresolved_reason=(
+                        target_provenance_unresolved_reason
+                    ),
+                    allow_generated_target_mutation=(
+                        self.allow_generated_target_mutation
+                    ),
+                    allow_external_target_mutation=(
+                        self.allow_external_target_mutation
+                    ),
+                )
             )
-        )
+            if attempt_tracker is not None and attempt_key is not None:
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.LOCAL_GATES,
+                )
         if not self.skip_duplicate_rejected_candidate_gate:
             duplicate_accepted_gate = _duplicate_accepted_candidate_gate(
                 candidate,
@@ -2244,6 +3642,16 @@ class SelfEvolveRunner:
         )
         if accepted_duplicate_blocked or rejected_duplicate_blocked:
             failed_gates = [gate for gate in gate_results if not gate.passed]
+            if (
+                attempt_tracker is not None
+                and attempt_key is not None
+                and not attempt_tracker.terminal(attempt_key)
+            ):
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.REJECTED,
+                    reason_code="duplicate_prior_candidate",
+                )
             feedback = (
                 EvaluationSummary(
                     variant_id=candidate.candidate_id,
@@ -2278,19 +3686,96 @@ class SelfEvolveRunner:
             )
             return state, report_item, feedback
 
-        gate_results.append(
-            BudgetGate().evaluate(
-                estimate_replay_cost(
-                    dataset=dataset,
-                    candidate_count=candidate_count,
-                    judge_repetitions=self.judge_repetitions,
-                    baseline_repetitions=self.baseline_replay_repetitions,
-                    candidate_repetitions=self.candidate_replay_repetitions,
-                    replay_candidate_limit=self.replay_candidate_limit,
-                    max_run_tokens=self.max_run_tokens,
-                )
+        per_attempt_budget_gate = BudgetGate().evaluate(
+            estimate_replay_cost(
+                dataset=_replayable_user_task_dataset(dataset),
+                candidate_count=1,
+                judge_repetitions=self.judge_repetitions,
+                baseline_repetitions=self.baseline_replay_repetitions,
+                candidate_repetitions=self.candidate_replay_repetitions,
+                replay_candidate_limit=self.replay_candidate_limit,
+                max_run_tokens=self.per_attempt_replay_token_limit,
+                estimated_tokens_per_replay=self.replay_tokens_per_unit,
             )
         )
+        per_attempt_budget_gate = replace(
+            per_attempt_budget_gate,
+            details={
+                **dict(per_attempt_budget_gate.details or {}),
+                "budget_semantics": "per_attempt_replay_ceiling",
+                "baseline_reuse_accounting": (
+                    "conservative_independent_attempt_includes_baseline"
+                ),
+                "run_ledger_is_authoritative_for_baseline_reuse": True,
+            },
+        )
+        gate_results.append(per_attempt_budget_gate)
+        replay_case_count = sum(
+            1
+            for case in dataset.cases
+            if _is_replayable_user_task_case(case)
+        )
+        replay_planned = bool(
+            self.replay_enabled
+            and candidate.target.target_type == "skill"
+            and self.candidate_replay_backend is not None
+            and replay_case_count > 0
+        )
+        if replay_planned and not per_attempt_budget_gate.passed:
+            if attempt_tracker is not None and attempt_key is not None:
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.NOT_RUN,
+                    reason_code="per_attempt_replay_budget_denied",
+                )
+            return _terminal_candidate_evaluation_result(
+                candidate=candidate,
+                iteration_number=iteration_number,
+                candidate_number=candidate_number,
+                candidate_count=candidate_count,
+                gate_results=gate_results,
+            )
+        replay_budget: BudgetDecision | None = None
+        if replay_planned and budget_context is not None:
+            replay_units = (
+                replay_case_count * self.candidate_replay_repetitions
+                + (
+                    0
+                    if baseline_replay_dir is not None
+                    else replay_case_count * self.baseline_replay_repetitions
+                )
+            )
+            replay_budget = budget_context.reserve(
+                BudgetStage.PAIRED_REPLAY,
+                f"{candidate.candidate_id}-paired-replay",
+                units=replay_units,
+            )
+            if not replay_budget.allowed:
+                gate_results.append(
+                    GateResult(
+                        gate_name="run_budget_paired_replay",
+                        passed=False,
+                        reason="paired replay was not run because budget was denied",
+                        details={
+                            "failure_class": "budget",
+                            "code": "replay_budget_denied",
+                            "budget_decision": replay_budget.to_dict(),
+                        },
+                    )
+                )
+                if attempt_tracker is not None and attempt_key is not None:
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code="replay_budget_denied",
+                    )
+                return _terminal_candidate_evaluation_result(
+                    candidate=candidate,
+                    iteration_number=iteration_number,
+                    candidate_number=candidate_number,
+                    candidate_count=candidate_count,
+                    gate_results=gate_results,
+                )
         capability_gates = self._validate_candidate_capabilities(
             run_id=run_id,
             target=target,
@@ -2300,19 +3785,93 @@ class SelfEvolveRunner:
         )
         gate_results.extend(capability_gates)
         capability_blocked = any(not gate.passed for gate in capability_gates)
+        replay_started = False
+
+        def replay_lifecycle(
+            stage: str,
+            payload: Mapping[str, object],
+        ) -> None:
+            nonlocal replay_started
+            if stage == "replay_started":
+                replay_started = True
+            if attempt_tracker is None or attempt_key is None:
+                return
+            if (
+                stage == "adaptation_completed"
+                and attempt_tracker.last_stage(attempt_key)
+                is CandidateAttemptStage.LOCAL_GATES
+            ):
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.ADAPTATION,
+                    case_count=replay_case_count,
+                )
+            elif stage == "replay_started":
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+                    case_count=replay_case_count,
+                    usage=(
+                        _budget_usage_for_attempt_event(replay_budget)
+                        if replay_budget is not None
+                        else None
+                    ),
+                )
+            elif stage == "replay_completed":
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.PAIRED_REPLAY_COMPLETED,
+                    case_count=replay_case_count,
+                )
+            elif stage == "replay_comparable":
+                attempt_tracker.emit(
+                    attempt_key,
+                    CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE,
+                    case_count=replay_case_count,
+                )
         if not capability_blocked:
-            replay_result, replay_dataset, replay_gate = (
-                await self._replay_selected_candidate(
+            try:
+                replay_result, replay_dataset, replay_gate = (
+                    await self._replay_selected_candidate(
                     run_id=run_id,
                     target=target,
                     dataset=dataset,
                     selected_candidate=candidate,
                     apply_policy=apply_policy,
                     baseline_replay_dir=baseline_replay_dir,
+                    lifecycle_callback=replay_lifecycle,
                 )
-            )
+                )
+            except Exception as exc:
+                replay_result = None
+                replay_dataset = None
+                replay_gate = GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason="candidate replay backend failed",
+                    details={
+                        "failure_class": "infrastructure",
+                        "code": "candidate_replay_infrastructure_error",
+                        "type": type(exc).__name__,
+                    },
+                )
             if replay_gate is not None:
                 gate_results.append(replay_gate)
+        if replay_budget is not None:
+            if replay_started:
+                budget_context.debit(
+                    replay_budget,
+                    actual_source="reserved_fallback_paired_replay",
+                )
+            else:
+                budget_context.release(
+                    replay_budget,
+                    reason_code=(
+                        "capability_gate_blocked"
+                        if capability_blocked
+                        else "replay_not_started"
+                    ),
+                )
         replay_confidence_gate = _replay_confidence_gate(
             replay_result,
             dataset=dataset,
@@ -2322,14 +3881,94 @@ class SelfEvolveRunner:
             gate_results.append(replay_confidence_gate)
 
         evaluation_dataset = replay_dataset or dataset
-        if self.evaluation_backend is not None:
-            replay_blocked_verified_apply = (
+        replay_blocked_verified_apply = (
+            apply_policy == "auto_verified"
+            and self.replay_enabled
+            and candidate.target.target_type == "skill"
+            and replay_dataset is None
+        )
+        evaluation_budget: BudgetDecision | None = None
+        judge_budget: BudgetDecision | None = None
+        evaluation_case_count = len(evaluation_dataset.cases)
+        if (
+            self.evaluation_backend is not None
+            and not replay_blocked_verified_apply
+            and budget_context is not None
+        ):
+            evaluation_variants = 2
+            if (
                 apply_policy == "auto_verified"
-                and self.replay_enabled
-                and candidate.target.target_type == "skill"
-                and replay_dataset is None
+                and not _can_reuse_single_case_replay_validation(evaluation_dataset)
+            ):
+                evaluation_variants += 1
+            evaluation_units = max(
+                1,
+                evaluation_case_count * evaluation_variants,
             )
+            evaluation_budget = budget_context.reserve(
+                BudgetStage.EVALUATION,
+                f"{candidate.candidate_id}-evaluation",
+                units=evaluation_units,
+            )
+            judge_budget = budget_context.reserve(
+                BudgetStage.JUDGE,
+                f"{candidate.candidate_id}-judge",
+                units=max(1, evaluation_units * self.judge_repetitions),
+            )
+            denied_decision = next(
+                (
+                    decision
+                    for decision in (evaluation_budget, judge_budget)
+                    if not decision.allowed
+                ),
+                None,
+            )
+            if denied_decision is not None:
+                for decision in (evaluation_budget, judge_budget):
+                    if decision.allowed:
+                        budget_context.release(
+                            decision,
+                            reason_code="dependent_evaluation_budget_denied",
+                        )
+                denied_stage = denied_decision.stage.value
+                gate_results.append(
+                    GateResult(
+                        gate_name=f"run_budget_{denied_stage}",
+                        passed=False,
+                        reason="evaluation was not run because budget was denied",
+                        details={
+                            "failure_class": "budget",
+                            "code": f"{denied_stage}_budget_denied",
+                            "budget_decision": denied_decision.to_dict(),
+                        },
+                    )
+                )
+                if attempt_tracker is not None and attempt_key is not None:
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.NOT_RUN,
+                        reason_code=f"{denied_stage}_budget_denied",
+                    )
+                return _terminal_candidate_evaluation_result(
+                    candidate=candidate,
+                    iteration_number=iteration_number,
+                    candidate_number=candidate_number,
+                    candidate_count=candidate_count,
+                    gate_results=gate_results,
+                )
+        if self.evaluation_backend is not None:
             if not replay_blocked_verified_apply:
+                if attempt_tracker is not None and attempt_key is not None:
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.EVALUATION,
+                        case_count=evaluation_case_count,
+                        usage=(
+                            _budget_usage_for_attempt_event(evaluation_budget)
+                            if evaluation_budget is not None
+                            else None
+                        ),
+                    )
                 try:
                     _emit_progress(
                         self.progress_callback,
@@ -2456,6 +4095,23 @@ class SelfEvolveRunner:
                             },
                         )
                     )
+                finally:
+                    if evaluation_budget is not None:
+                        budget_context.debit(
+                            evaluation_budget,
+                            actual_source="reserved_fallback_evaluation",
+                        )
+                    if judge_budget is not None:
+                        judge_tokens, judge_source = _judge_actual_token_usage(
+                            baseline_summary,
+                            candidate_summary,
+                            held_out_summary,
+                        )
+                        budget_context.debit(
+                            judge_budget,
+                            tokens=judge_tokens,
+                            actual_source=judge_source,
+                        )
         elif apply_policy == "auto_verified":
             gate_results.append(
                 GateResult(
@@ -2487,11 +4143,51 @@ class SelfEvolveRunner:
             )
 
         failed_gates = [gate for gate in gate_results if not gate.passed]
+        proposal_blocked = any(
+            isinstance(gate.details, Mapping)
+            and gate.details.get("failure_class") in {"infrastructure", "budget"}
+            for gate in failed_gates
+        )
         status = (
             "accepted"
-            if apply_policy != "auto_verified" or not failed_gates
+            if (
+                (apply_policy != "auto_verified" and not proposal_blocked)
+                or (apply_policy == "auto_verified" and not failed_gates)
+            )
             else "rejected"
         )
+        if (
+            attempt_tracker is not None
+            and attempt_key is not None
+            and not attempt_tracker.terminal(attempt_key)
+        ):
+            infrastructure_failure = any(
+                not gate.passed
+                and isinstance(gate.details, Mapping)
+                and gate.details.get("failure_class") == "infrastructure"
+                for gate in gate_results
+            )
+            attempt_tracker.emit(
+                attempt_key,
+                (
+                    CandidateAttemptStage.SELECTED
+                    if status == "accepted"
+                    else (
+                        CandidateAttemptStage.BLOCKED
+                        if infrastructure_failure
+                        else CandidateAttemptStage.REJECTED
+                    )
+                ),
+                reason_code=(
+                    "candidate_selected"
+                    if status == "accepted"
+                    else (
+                        "candidate_evaluation_blocked"
+                        if infrastructure_failure
+                        else "candidate_evaluation_rejected"
+                    )
+                ),
+            )
         report_item = _iteration_report_item(
             iteration_number=iteration_number,
             candidate_number=candidate_number,
@@ -2846,6 +4542,7 @@ class SelfEvolveRunner:
         candidate_repetitions: int | None = None,
         progress_stage: str = "candidate_replay",
         timeout_seconds: int | None = None,
+        lifecycle_callback: Callable[[str, Mapping[str, object]], None] | None = None,
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
@@ -2909,6 +4606,11 @@ class SelfEvolveRunner:
                 selected_candidate
             ),
         )
+        if lifecycle_callback is not None:
+            lifecycle_callback(
+                "adaptation_completed",
+                {"passed": adaptation_gate.passed},
+            )
         if replay_adaptation is None or not adaptation_gate.passed:
             return None, None, adaptation_gate
         _emit_progress(
@@ -2936,7 +4638,7 @@ class SelfEvolveRunner:
                 agent=self.replay_agent,
                 timeout_seconds=effective_timeout_seconds,
                 max_steps=self.replay_max_steps,
-                max_tokens=self.max_run_tokens,
+                max_tokens=self.per_attempt_replay_token_limit,
                 baseline_repetitions=effective_baseline_repetitions,
                 candidate_repetitions=effective_candidate_repetitions,
                 baseline_replay_dir=baseline_replay_dir,
@@ -2964,6 +4666,19 @@ class SelfEvolveRunner:
             len(replay_history) if isinstance(replay_history, list) else 0
         )
         try:
+            if lifecycle_callback is not None:
+                lifecycle_callback(
+                    "replay_started",
+                    {
+                        "case_count": sum(
+                            1
+                            for case in dataset.cases
+                            if _is_replayable_user_task_case(case)
+                        ),
+                        "baseline_repetitions": effective_baseline_repetitions,
+                        "candidate_repetitions": effective_candidate_repetitions,
+                    },
+                )
             replay_result = await self.candidate_replay_backend.replay_candidate(
                 request,
                 candidate=selected_candidate,
@@ -2974,6 +4689,17 @@ class SelfEvolveRunner:
                 for observability in replay_history[replay_history_start:]:
                     if isinstance(observability, Mapping):
                         self.execution_telemetry.record("replay", observability)
+        if lifecycle_callback is not None:
+            lifecycle_callback(
+                "replay_completed",
+                {
+                    "case_count": sum(
+                        1
+                        for case in dataset.cases
+                        if _is_replayable_user_task_case(case)
+                    )
+                },
+            )
         normalized = normalize_replay_members(
             dataset=dataset,
             replay_result=replay_result,
@@ -3004,6 +4730,17 @@ class SelfEvolveRunner:
             candidate=selected_candidate,
             normalized=normalized,
         )
+        if lifecycle_callback is not None:
+            lifecycle_callback(
+                "replay_comparable",
+                {
+                    "case_count": sum(
+                        1
+                        for case in dataset.cases
+                        if _is_replayable_user_task_case(case)
+                    )
+                },
+            )
         return (
             replay_result,
             replay_dataset,
@@ -3330,6 +5067,23 @@ def optimize_from_cli_request(
     judge_repetitions: int = 3,
     judge_timeout_seconds: float | None = 300.0,
     max_run_tokens: int = 500_000,
+    total_run_token_budget: int | None = None,
+    per_attempt_replay_token_limit: int | None = None,
+    max_run_cost_usd: float | Decimal | None = None,
+    max_run_wall_seconds: float | Decimal | None = None,
+    candidate_generation_tokens_per_unit: int | None = None,
+    candidate_generation_cost_usd_per_unit: float | Decimal | None = None,
+    candidate_generation_wall_seconds_per_unit: float | Decimal | None = None,
+    candidate_screening_tokens_per_unit: int | None = None,
+    candidate_screening_cost_usd_per_unit: float | Decimal | None = None,
+    candidate_screening_wall_seconds_per_unit: float | Decimal | None = None,
+    replay_tokens_per_unit: int | None = None,
+    replay_cost_usd_per_unit: float | Decimal | None = None,
+    replay_wall_seconds_per_unit: float | Decimal | None = None,
+    evaluation_tokens_per_unit: int | None = None,
+    evaluation_cost_usd_per_unit: float | Decimal | None = None,
+    evaluation_wall_seconds_per_unit: float | Decimal | None = None,
+    deprecated_config_mappings: Iterable[str] | Mapping[str, str] | None = None,
     min_score_delta: float = 0.0,
     auto_apply_target_types: tuple[str, ...] = ("skill",),
     allow_generated_target_mutation: bool = False,
@@ -3647,6 +5401,35 @@ def optimize_from_cli_request(
         min_eval_cases=min_eval_cases,
         judge_repetitions=judge_repetitions,
         max_run_tokens=max_run_tokens,
+        total_run_token_budget=total_run_token_budget,
+        per_attempt_replay_token_limit=per_attempt_replay_token_limit,
+        max_run_cost_usd=max_run_cost_usd,
+        max_run_wall_seconds=max_run_wall_seconds,
+        candidate_generation_tokens_per_unit=(
+            candidate_generation_tokens_per_unit
+        ),
+        candidate_generation_cost_usd_per_unit=(
+            candidate_generation_cost_usd_per_unit
+        ),
+        candidate_generation_wall_seconds_per_unit=(
+            candidate_generation_wall_seconds_per_unit
+        ),
+        candidate_screening_tokens_per_unit=(
+            candidate_screening_tokens_per_unit
+        ),
+        candidate_screening_cost_usd_per_unit=(
+            candidate_screening_cost_usd_per_unit
+        ),
+        candidate_screening_wall_seconds_per_unit=(
+            candidate_screening_wall_seconds_per_unit
+        ),
+        replay_tokens_per_unit=replay_tokens_per_unit,
+        replay_cost_usd_per_unit=replay_cost_usd_per_unit,
+        replay_wall_seconds_per_unit=replay_wall_seconds_per_unit,
+        evaluation_tokens_per_unit=evaluation_tokens_per_unit,
+        evaluation_cost_usd_per_unit=evaluation_cost_usd_per_unit,
+        evaluation_wall_seconds_per_unit=evaluation_wall_seconds_per_unit,
+        deprecated_config_mappings=deprecated_config_mappings,
         auto_apply_target_types=auto_apply_target_types,
         allow_generated_target_mutation=allow_generated_target_mutation,
         allow_external_target_mutation=allow_external_target_mutation,
@@ -4912,6 +6695,45 @@ def _load_prior_rejected_feedback(
             if len(feedback) >= limit:
                 return tuple(feedback)
     return tuple(feedback)
+
+
+def _load_prior_candidate_package_index(
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTargetRef,
+    *,
+    current_run_id: str,
+    candidate_ids: set[str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Index canonical prior packages without mutating any prior artifact."""
+
+    package_to_candidate: dict[str, str] = {}
+    package_by_candidate: dict[str, str] = {}
+    if not store.artifact_root.exists() or not candidate_ids:
+        return package_to_candidate, package_by_candidate
+    for report_path in sorted(store.artifact_root.glob("*/report.json")):
+        if report_path.parent.name == current_run_id:
+            continue
+        try:
+            report = _load_json_mapping(report_path)
+        except Exception:
+            continue
+        if not _report_matches_target(report, target):
+            continue
+        candidate_root = report_path.parent / "candidates"
+        for candidate_id in sorted(candidate_ids):
+            candidate_path = candidate_root / f"{candidate_id}.json"
+            if not candidate_path.is_file() or candidate_path.is_symlink():
+                continue
+            try:
+                candidate = _load_candidate_variant(candidate_path)
+            except Exception:
+                continue
+            if candidate.target != target:
+                continue
+            fingerprint = candidate_package_fingerprint(candidate)
+            package_to_candidate.setdefault(fingerprint, candidate_id)
+            package_by_candidate.setdefault(candidate_id, fingerprint)
+    return package_to_candidate, package_by_candidate
 
 
 def _load_prior_rejected_semantic_lesson_fingerprints(
@@ -8118,8 +9940,12 @@ def _population_report(
     replay_candidate_limit: int,
     optimizer_diagnostics: list[dict[str, object]] | None = None,
     screening_reports: list[dict[str, object]] | None = None,
+    attempt_events: Iterable[CandidateAttemptEvent] = (),
+    budget_report: Mapping[str, object] | None = None,
+    scheduler_decisions: Iterable[Mapping[str, object]] = (),
 ) -> dict[str, object] | None:
-    if not all_candidates and not iteration_reports:
+    attempt_events = tuple(attempt_events)
+    if not all_candidates and not iteration_reports and not attempt_events:
         return None
     replayed_candidate_ids = [
         str(item.get("candidate_id"))
@@ -8160,19 +9986,6 @@ def _population_report(
             "attempted_candidate_ids": replayed_candidate_ids,
         },
     }
-    strategy_records = _candidate_strategy_records(optimizer_diagnostics or ())
-    if strategy_records:
-        replayed_set = set(replayed_candidate_ids)
-        non_replayed = [
-            {
-                **record,
-                "not_replayed_reason": "not_replayed_due_to_budget",
-            }
-            for record in strategy_records
-            if str(record.get("candidate_id")) not in replayed_set
-        ]
-        if non_replayed:
-            report["non_replayed_candidate_strategies"] = non_replayed
     if screening_reports:
         latest_validation = screening_reports[-1]
         latest_conformance = latest_validation.get("conformance")
@@ -8251,7 +10064,86 @@ def _population_report(
                     "rejected_candidate_ids": rejected_ids,
                 }
             )
+    stored_events = attempt_events
+    terminal_reason_by_candidate: dict[str, str] = {}
+    if stored_events:
+        compatibility_lifecycle = lifecycle
+        aggregate = aggregate_candidate_attempts(stored_events)
+        grouped_events: dict[CandidateAttemptKey, list[CandidateAttemptEvent]] = {}
+        for event in stored_events:
+            grouped_events.setdefault(event.key, []).append(event)
+        replayed_candidate_ids = list(
+            dict.fromkeys(
+                event.candidate_id
+                for event in stored_events
+                if event.stage is CandidateAttemptStage.PAIRED_REPLAY_STARTED
+            )
+        )
+        for events in grouped_events.values():
+            terminal = sorted(events, key=lambda item: item.sequence)[-1]
+            if terminal.terminal and terminal.reason_code is not None:
+                terminal_reason_by_candidate[terminal.candidate_id] = (
+                    terminal.reason_code
+                )
+        report.update(
+            {
+                "generation_attempt_count": aggregate.attempt_count,
+                "unique_candidate_count": aggregate.unique_candidate_count,
+                "duplicate_attempt_count": aggregate.duplicate_attempt_count,
+                "terminal_attempt_count": aggregate.terminal_attempt_count,
+                "replayed_candidate_count": aggregate.paired_replay_started_count,
+                "replayed_candidate_ids": replayed_candidate_ids,
+                "paired_replay_started_count": (
+                    aggregate.paired_replay_started_count
+                ),
+                "paired_replay_completed_count": (
+                    aggregate.paired_replay_completed_count
+                ),
+                "paired_replay_comparable_count": (
+                    aggregate.paired_replay_comparable_count
+                ),
+                "non_replayed_candidate_count": max(
+                    0,
+                    aggregate.unique_candidate_count
+                    - len(set(replayed_candidate_ids)),
+                ),
+            }
+        )
+        lifecycle = aggregate.to_dict()
+        report["compatibility_aliases"] = {
+            "generated_candidate_count": {
+                "value": len(all_candidates),
+                "semantic": "canonical_unique_candidates_persisted",
+            },
+            "replayed_candidate_count": {
+                "value": aggregate.paired_replay_started_count,
+                "semantic": "paired_replay_started_attempts",
+            },
+            "legacy_stage_details": compatibility_lifecycle,
+        }
+    strategy_records = _candidate_strategy_records(optimizer_diagnostics or ())
+    if strategy_records:
+        replayed_set = set(replayed_candidate_ids)
+        non_replayed: list[dict[str, object]] = []
+        for record in strategy_records:
+            candidate_id = str(record.get("candidate_id"))
+            if candidate_id in replayed_set:
+                continue
+            terminal_reason = terminal_reason_by_candidate.get(candidate_id)
+            item = dict(record)
+            if terminal_reason is not None:
+                item["terminal_reason_code"] = terminal_reason
+                if "budget_denied" in terminal_reason:
+                    item["not_replayed_reason"] = "not_replayed_due_to_budget"
+            non_replayed.append(item)
+        if non_replayed:
+            report["non_replayed_candidate_strategies"] = non_replayed
     report["lifecycle"] = lifecycle
+    if budget_report is not None:
+        report["budget"] = dict(budget_report)
+    scheduler_payload = [dict(item) for item in scheduler_decisions]
+    if scheduler_payload:
+        report["scheduler_decisions"] = scheduler_payload
     return report
 
 
