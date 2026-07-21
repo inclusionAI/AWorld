@@ -264,6 +264,7 @@ def test_discover_capability_inside_skill_root(tmp_path: Path) -> None:
     assert discovered.package_fingerprint.startswith("sha256:")
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_requires_declared_protocol_probes(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler_path = skill / "replay/compiler.py"
@@ -291,6 +292,7 @@ def test_skill_runtime_requires_declared_protocol_probes(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.replay_sandbox
 def test_runtime_required_requirement_rejects_fixture_only_transport(
     tmp_path: Path,
 ) -> None:
@@ -309,6 +311,7 @@ def test_runtime_required_requirement_rejects_fixture_only_transport(
         )
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_rejects_readiness_only_protocol_probe(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler_path = skill / "replay/compiler.py"
@@ -337,6 +340,7 @@ def test_skill_runtime_rejects_readiness_only_protocol_probe(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     tmp_path: Path,
 ) -> None:
@@ -374,6 +378,7 @@ def test_skill_runtime_accepts_declared_websocket_data_plane_probe(
     assert probe.response_contains == "recorded fixture"
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_with_recorded_responses_must_consume_response_index(
     tmp_path: Path,
 ) -> None:
@@ -415,6 +420,7 @@ def test_skill_runtime_with_recorded_responses_must_consume_response_index(
         )
 
 
+@pytest.mark.replay_sandbox
 def test_frozen_verification_rejects_recorded_response_index_tampering(
     tmp_path: Path,
 ) -> None:
@@ -439,6 +445,7 @@ def test_frozen_verification_rejects_recorded_response_index_tampering(
         verify_frozen_replay_capability(frozen)
 
 
+@pytest.mark.replay_sandbox
 @pytest.mark.parametrize(
     ("probe_count", "accepted"),
     [(16, True), (17, False)],
@@ -490,6 +497,7 @@ def test_skill_runtime_protocol_probe_limit_is_bounded_but_covers_observed_opera
             )
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_advertised_websocket_validation_requires_websocket_data_plane_probe(
     tmp_path: Path,
 ) -> None:
@@ -525,6 +533,7 @@ def test_skill_runtime_advertised_websocket_validation_requires_websocket_data_p
         )
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_allows_structural_http_discovery_expectation_with_fixture_backed_websocket_probe(
     tmp_path: Path,
 ) -> None:
@@ -564,6 +573,7 @@ def test_skill_runtime_allows_structural_http_discovery_expectation_with_fixture
     ]
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_rejects_data_plane_expectation_not_in_fixture(
     tmp_path: Path,
 ) -> None:
@@ -605,6 +615,7 @@ def test_skill_runtime_rejects_data_plane_expectation_not_in_fixture(
     assert "expected_sha256=" in message
 
 
+@pytest.mark.replay_sandbox
 def test_skill_runtime_accepts_semantically_decoded_fixture_container_expectation(
     tmp_path: Path,
 ) -> None:
@@ -859,6 +870,7 @@ def test_recorded_response_index_prefers_semantically_richer_transport_record() 
     assert ready[0]["semantic_payload_score"] > ready[1]["semantic_payload_score"]
 
 
+@pytest.mark.replay_sandbox
 def test_freeze_places_operation_index_next_to_nested_fixture(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, nested_fixture=True)
     capability = discover_replay_capability(skill)
@@ -912,6 +924,7 @@ def test_discovery_rejects_entrypoint_escape(tmp_path: Path) -> None:
         discover_replay_capability(skill)
 
 
+@pytest.mark.replay_sandbox
 def test_compile_and_freeze_capability_is_deterministic(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     capability = discover_replay_capability(skill)
@@ -936,6 +949,7 @@ def test_compile_and_freeze_capability_is_deterministic(tmp_path: Path) -> None:
     assert frozen.fingerprint.startswith("sha256:")
 
 
+@pytest.mark.replay_sandbox
 def test_compile_normalizes_requirement_id_endpoint_replacement_keys(
     tmp_path: Path,
 ) -> None:
@@ -962,6 +976,7 @@ def test_compile_normalizes_requirement_id_endpoint_replacement_keys(
     }
 
 
+@pytest.mark.replay_sandbox
 def test_compile_infers_single_service_endpoint_replacement(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler = skill / "replay/compiler.py"
@@ -986,6 +1001,7 @@ def test_compile_infers_single_service_endpoint_replacement(tmp_path: Path) -> N
     }
 
 
+@pytest.mark.replay_sandbox
 def test_compile_accepts_unused_evidence_backed_fixture(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler = skill / "replay/compiler.py"
@@ -1015,6 +1031,7 @@ def test_compile_accepts_unused_evidence_backed_fixture(tmp_path: Path) -> None:
     assert {item.path for item in frozen.fixtures} == {"fixture.txt", "extra.txt"}
 
 
+@pytest.mark.replay_sandbox
 def test_double_compile_rejects_different_fixture_hashes(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, nondeterministic=True)
     capability = discover_replay_capability(skill)
@@ -1028,6 +1045,7 @@ def test_double_compile_rejects_different_fixture_hashes(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_rejects_unrecorded_evidence_reference(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, invalid_evidence=True)
     capability = discover_replay_capability(skill)
@@ -1041,6 +1059,7 @@ def test_compile_rejects_unrecorded_evidence_reference(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_rejects_fixture_bytes_not_present_in_cited_context(
     tmp_path: Path,
 ) -> None:
@@ -1064,6 +1083,7 @@ def test_compile_rejects_fixture_bytes_not_present_in_cited_context(
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_recomputes_context_snapshot_fingerprint(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path)
     compiler = skill / "replay/compiler.py"
@@ -1090,6 +1110,7 @@ def test_compile_recomputes_context_snapshot_fingerprint(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_rejects_capability_that_mutates_its_package(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, mutate_runtime=True)
     capability = discover_replay_capability(skill)
@@ -1103,6 +1124,7 @@ def test_compile_rejects_capability_that_mutates_its_package(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.replay_sandbox
 def test_compile_rejects_undeclared_output_files(tmp_path: Path) -> None:
     skill = _write_capability_skill(tmp_path, undeclared_output=True)
     capability = discover_replay_capability(skill)
@@ -1116,6 +1138,7 @@ def test_compile_rejects_undeclared_output_files(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.replay_sandbox
 def test_frozen_capability_verification_rejects_runtime_tampering(
     tmp_path: Path,
 ) -> None:

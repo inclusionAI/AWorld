@@ -1831,6 +1831,7 @@ def test_replay_service_protocol_trace_contract_rejects_missing_trace(
 
 
 @pytest.mark.asyncio
+@pytest.mark.replay_sandbox
 async def test_skill_owned_replay_service_is_isolated_per_variant(
     tmp_path: Path,
 ) -> None:
