@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from dataclasses import replace
@@ -4431,6 +4432,403 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
     assert report["iterations"][0]["status"] == "rejected"
     assert report["iterations"][1]["candidate_id"] == "candidate-2"
     assert report["iterations"][1]["status"] == "accepted"
+    assert report["budget"]["ledger"]["outstanding_reservations"] == []
+
+
+def _cycle1_runner_fixture(
+    tmp_path: Path,
+    *,
+    case_count: int = 1,
+) -> tuple[Path, SelfEvolveDataset]:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True, exist_ok=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    cases = tuple(
+        EvalCase(case_id=f"case-{index}", input={"content": f"task-{index}"})
+        for index in range(1, case_count + 1)
+    )
+    return skill_path, SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={"kind": "cycle1-runner-contract"},
+            split_seed="cycle1",
+            splits={"train": [case.case_id for case in cases]},
+            trainable_case_ids=tuple(case.case_id for case in cases),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared_stage", ("conformance", "screening"))
+async def test_shared_candidate_validation_stops_before_next_iteration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shared_stage: str,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            candidate = CandidateVariant(
+                candidate_id=f"candidate-shared-{optimizer_calls}",
+                target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+                content=(
+                    "---\nname: demo\n---\n# Demo\n\n"
+                    f"Shared validation candidate {optimizer_calls}.\n"
+                ),
+                rationale="shared infrastructure propagation",
+            )
+            return OptimizerResult(candidates=(candidate,))
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        max_iterations=3,
+        replay_candidate_limit=1,
+    )
+
+    async def shared_validation(**kwargs):
+        stage_report = {
+            "generated_candidate_count": len(kwargs["candidates"]),
+            "attempted_candidate_count": 1,
+            "passed_candidate_ids": [],
+            "stopped_by_shared_infrastructure": True,
+            "attempts": [],
+        }
+        return (), {
+            "generated_candidate_count": len(kwargs["candidates"]),
+            "selected_candidate_ids": [],
+            "attempts": [],
+            "conformance": (
+                stage_report if shared_stage == "conformance" else None
+            ),
+            "screening": stage_report if shared_stage == "screening" else None,
+        }
+
+    monkeypatch.setattr(runner, "_screen_candidate_population", shared_validation)
+
+    await runner.run_explicit_target(
+        run_id=f"run-shared-{shared_stage}-stop",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    events = runner.store.read_all_candidate_attempt_events(
+        f"run-shared-{shared_stage}-stop"
+    )
+    assert optimizer_calls == 1
+    assert events
+    assert all(event.terminal for event in events if event.sequence == max(
+        item.sequence for item in events if item.key == event.key
+    ))
+    terminal_events = [
+        event
+        for event in events
+        if event.sequence == max(
+            item.sequence for item in events if item.key == event.key
+        )
+    ]
+    assert {event.stage.value for event in terminal_events} == {"blocked"}
+    assert {event.reason_code for event in terminal_events} == {
+        "candidate_validation_shared_infrastructure_blocked"
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persistence_method",
+    ("write_candidate", "write_optimizer_lineage"),
+)
+async def test_persistence_error_finalizes_attempts_and_preserves_original_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    persistence_method: str,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="candidate-persistence-error",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nImproved guidance.\n",
+        rationale="persistence failure cleanup",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(candidate,),
+                lineage=(
+                    OptimizerLineage(
+                        candidate_id=candidate.candidate_id,
+                        optimizer_name="cycle1-test",
+                        optimizer_version="1",
+                    ),
+                ),
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(store=store, optimizer=Optimizer())
+    original_error = OSError(f"{persistence_method} unavailable")
+
+    def fail_persistence(*args, **kwargs):
+        raise original_error
+
+    monkeypatch.setattr(store, persistence_method, fail_persistence)
+
+    with pytest.raises(OSError) as raised:
+        await runner.run_explicit_target(
+            run_id=f"run-{persistence_method}-error",
+            target=SkillTextTarget(skill_path),
+            dataset=dataset,
+            trace_packs=(),
+            apply_policy="proposal",
+        )
+
+    assert raised.value is original_error
+    events = store.read_all_candidate_attempt_events(
+        f"run-{persistence_method}-error"
+    )
+    terminal_events = {
+        event.key: event
+        for event in events
+        if event.sequence == max(
+            item.sequence for item in events if item.key == event.key
+        )
+    }
+    assert terminal_events
+    assert all(event.terminal for event in terminal_events.values())
+    candidate_terminal = next(
+        event
+        for event in terminal_events.values()
+        if event.candidate_id == candidate.candidate_id
+    )
+    assert candidate_terminal.stage.value == "blocked"
+    assert candidate_terminal.reason_code == "run_unhandled_exception"
+    assert runner.run_budget_ledger.outstanding_reservations == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "original_error",
+    (RuntimeError("capability validation failed"), asyncio.CancelledError()),
+)
+async def test_capability_validation_abort_releases_budget_and_blocks_open_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    original_error: BaseException,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="candidate-capability-abort",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nImproved guidance.\n",
+        rationale="capability cleanup",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        replay_candidate_limit=1,
+    )
+
+    def abort_capability_validation(**kwargs):
+        raise original_error
+
+    monkeypatch.setattr(
+        runner,
+        "_validate_candidate_capabilities",
+        abort_capability_validation,
+    )
+
+    with pytest.raises(type(original_error)) as raised:
+        await runner.run_explicit_target(
+            run_id="run-capability-validation-abort",
+            target=SkillTextTarget(skill_path),
+            dataset=dataset,
+            trace_packs=(),
+            apply_policy="proposal",
+        )
+
+    assert raised.value is original_error
+    events = runner.store.read_all_candidate_attempt_events(
+        "run-capability-validation-abort"
+    )
+    assert events[-1].terminal is True
+    assert events[-1].stage.value == "blocked"
+    assert events[-1].reason_code == "run_unhandled_exception"
+    assert runner.run_budget_ledger.outstanding_reservations == ()
+
+
+@pytest.mark.asyncio
+async def test_generation_exception_debits_reserved_fallback_instead_of_releasing(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            raise RuntimeError("generation transport failed")
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    await SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_candidate_limit=1,
+        candidate_generation_tokens_per_unit=17,
+        candidate_generation_cost_usd_per_unit=0,
+        candidate_generation_wall_seconds_per_unit=3,
+    ).run_explicit_target(
+        run_id="run-generation-exception-debit",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-generation-exception-debit") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    generation_debits = [
+        item for item in report["budget"]["debits"]
+        if item["stage"] == "candidate_generation"
+    ]
+    assert len(generation_debits) == 1
+    assert generation_debits[0]["actual"] == {
+        "tokens": 17,
+        "cost_usd": "0",
+        "wall_seconds": "3",
+    }
+    assert generation_debits[0]["actual_source"] == (
+        "reserved_fallback_candidate_generation_exception"
+    )
+    assert not any(
+        item["estimate"]["stage"] == "candidate_generation"
+        for item in report["budget"]["releases"]
+    )
+    assert report["population"]["lifecycle"]["terminal_reason_counts"] == {
+        "candidate_generation_infrastructure_failed": 1
+    }
+
+
+@pytest.mark.asyncio
+async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-wall-{index}",
+            target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+            content=(
+                "---\nname: demo\n---\n# Demo\n\n"
+                f"Wall candidate {index}.\n"
+            ),
+            rationale="telemetry wall overrun",
+        )
+        for index in (1, 2)
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=candidates)
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            raise AssertionError("wall overrun must block evaluation")
+
+    replay_calls: list[str] = []
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        replay_candidate_limit=2,
+        max_run_wall_seconds=3,
+        candidate_generation_wall_seconds_per_unit=0,
+        candidate_screening_wall_seconds_per_unit=0,
+        replay_wall_seconds_per_unit=1,
+        evaluation_wall_seconds_per_unit=1,
+    )
+
+    async def replay_with_actual_telemetry(**kwargs):
+        replay_calls.append(kwargs["selected_candidate"].candidate_id)
+        callback = kwargs["lifecycle_callback"]
+        callback("adaptation_completed", {"passed": True})
+        callback("replay_started", {"case_count": 1})
+        runner.execution_telemetry.record(
+            "replay",
+            {
+                "item_count": 2,
+                "elapsed_seconds": 5.0,
+                "token_usage": {"total_tokens": 23},
+            },
+        )
+        callback("replay_completed", {"case_count": 1})
+        callback("replay_comparable", {"case_count": 1})
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="comparable replay supplied by test backend",
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        replay_with_actual_telemetry,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-replay-wall-overrun",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (store.run_path("run-replay-wall-overrun") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    replay_debit = next(
+        item for item in report["budget"]["debits"]
+        if item["stage"] == "paired_replay"
+    )
+    assert replay_calls == ["candidate-wall-1"]
+    assert replay_debit["actual"]["tokens"] == 23
+    assert replay_debit["actual"]["wall_seconds"] == "5"
+    assert replay_debit["ceiling_overrun"]["wall_seconds"] == "2"
+    terminal_reasons = report["population"]["lifecycle"][
+        "terminal_reason_counts"
+    ]
+    assert terminal_reasons == {
+        "evaluation_budget_denied": 1,
+        "replay_budget_denied": 1,
+    }
     assert report["budget"]["ledger"]["outstanding_reservations"] == []
 
 

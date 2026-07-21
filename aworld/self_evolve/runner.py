@@ -298,6 +298,18 @@ class _RunBudgetContext:
                 {**released.to_dict(), "reason_code": reason_code}
             )
 
+    def release_all_best_effort(self, *, reason_code: str) -> None:
+        """Release every surviving reservation without masking a run exception."""
+
+        for reservation in tuple(self.ledger.outstanding_reservations):
+            try:
+                released = self.ledger.release(reservation.reservation_id)
+            except BaseException:
+                continue
+            self.releases.append(
+                {**released.to_dict(), "reason_code": reason_code}
+            )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "ledger": self.ledger.to_dict(),
@@ -360,6 +372,21 @@ class _CandidateAttemptTracker:
                     reason_code=reason_code,
                 )
 
+    def block_open_best_effort(self, *, reason_code: str) -> None:
+        """Fail closed after an unhandled run error while preserving that error."""
+
+        for key in sorted(self._events):
+            if self.terminal(key):
+                continue
+            try:
+                self.emit(
+                    key,
+                    CandidateAttemptStage.BLOCKED,
+                    reason_code=reason_code,
+                )
+            except BaseException:
+                continue
+
     def emit(
         self,
         key: CandidateAttemptKey,
@@ -414,6 +441,24 @@ class _CandidateAttemptTracker:
         self.store.append_candidate_attempt_event(event)
         values.append(event)
         return event
+
+
+@dataclass
+class _RunFailureCleanup:
+    """Bindings used by the public runner boundary for fail-closed cleanup."""
+
+    budget_context: _RunBudgetContext | None = None
+    attempt_tracker: _CandidateAttemptTracker | None = None
+
+    def cleanup(self) -> None:
+        if self.attempt_tracker is not None:
+            self.attempt_tracker.block_open_best_effort(
+                reason_code="run_unhandled_exception"
+            )
+        if self.budget_context is not None:
+            self.budget_context.release_all_best_effort(
+                reason_code="run_unhandled_exception_cleanup"
+            )
 
 
 def _configured_budget_usage(
@@ -497,6 +542,129 @@ def _candidate_generation_actual_usage(
             source += f"+telemetry_{key}"
             break
     return tokens, wall, source
+
+
+@dataclass(frozen=True)
+class _TelemetryUsageSnapshot:
+    tokens: int | None = None
+    cost_usd: Decimal | None = None
+    wall_seconds: Decimal | None = None
+    batch_count: int | None = None
+
+
+def _stage_telemetry_usage_snapshot(
+    telemetry: SelfEvolveExecutionTelemetry,
+    stage: str,
+) -> _TelemetryUsageSnapshot:
+    """Read cumulative, content-free usage for one execution stage."""
+
+    report = telemetry.to_report()
+    stage_report = report.get(stage)
+    if not isinstance(stage_report, Mapping):
+        return _TelemetryUsageSnapshot(batch_count=0)
+    tokens: int | None = None
+    token_usage = stage_report.get("token_usage")
+    if isinstance(token_usage, Mapping):
+        total = token_usage.get("total_tokens")
+        if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+            tokens = total
+        else:
+            for input_key, output_key in (
+                ("input_tokens", "output_tokens"),
+                ("prompt_tokens", "completion_tokens"),
+            ):
+                input_tokens = token_usage.get(input_key)
+                output_tokens = token_usage.get(output_key)
+                if all(
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                    for value in (input_tokens, output_tokens)
+                ):
+                    tokens = int(input_tokens) + int(output_tokens)
+                    break
+    cost_usd = None
+    for key in ("total_cost_usd", "cost_usd"):
+        cost_usd = _decimal_metric(stage_report.get(key))
+        if cost_usd is not None:
+            break
+    wall_seconds = None
+    batches = stage_report.get("batches")
+    if isinstance(batches, (list, tuple)):
+        if any(
+            isinstance(item, Mapping) and "elapsed_seconds" in item
+            for item in batches
+        ):
+            wall_seconds = _decimal_metric(stage_report.get("elapsed_seconds"))
+        elif any(
+            isinstance(item, Mapping) and "execution_seconds" in item
+            for item in batches
+        ):
+            wall_seconds = _decimal_metric(stage_report.get("execution_seconds"))
+    if wall_seconds is None:
+        for key in ("elapsed_seconds", "execution_seconds", "wall_seconds"):
+            if key not in stage_report:
+                continue
+            wall_seconds = _decimal_metric(stage_report.get(key))
+            if wall_seconds is not None:
+                break
+    raw_batch_count = stage_report.get("batch_count")
+    batch_count = (
+        raw_batch_count
+        if isinstance(raw_batch_count, int)
+        and not isinstance(raw_batch_count, bool)
+        and raw_batch_count >= 0
+        else None
+    )
+    return _TelemetryUsageSnapshot(
+        tokens=tokens,
+        cost_usd=cost_usd,
+        wall_seconds=wall_seconds,
+        batch_count=batch_count,
+    )
+
+
+def _stage_telemetry_usage_delta(
+    before: _TelemetryUsageSnapshot,
+    after: _TelemetryUsageSnapshot,
+) -> tuple[int | None, Decimal | None, Decimal | None, str]:
+    if (
+        before.batch_count is not None
+        and after.batch_count is not None
+        and after.batch_count <= before.batch_count
+    ):
+        return None, None, None, "reserved_fallback_missing_stage_telemetry_delta"
+
+    def decimal_delta(
+        previous: Decimal | None,
+        current: Decimal | None,
+    ) -> Decimal | None:
+        if current is None:
+            return None
+        return max(Decimal("0"), current - (previous or Decimal("0")))
+
+    token_delta = (
+        max(0, after.tokens - (before.tokens or 0))
+        if after.tokens is not None
+        else None
+    )
+    cost_delta = decimal_delta(before.cost_usd, after.cost_usd)
+    wall_delta = decimal_delta(before.wall_seconds, after.wall_seconds)
+    observed = [
+        name
+        for name, value in (
+            ("tokens", token_delta),
+            ("cost_usd", cost_delta),
+            ("wall_seconds", wall_delta),
+        )
+        if value is not None
+    ]
+    source = (
+        "telemetry_delta_" + "+".join(observed)
+        if observed
+        else "reserved_fallback_missing_stage_telemetry_delta"
+    )
+    return token_delta, cost_delta, wall_delta, source
 
 
 def _judge_actual_token_usage(
@@ -1274,6 +1442,36 @@ class SelfEvolveRunner:
         target_provenance: TargetProvenance | None = None,
         target_selection_decision: TargetSelectionDecision | None = None,
     ) -> SelfEvolveRunnerResult:
+        failure_cleanup = _RunFailureCleanup()
+        try:
+            return await self._run_explicit_target(
+                run_id=run_id,
+                target=target,
+                dataset=dataset,
+                trace_packs=trace_packs,
+                apply_policy=apply_policy,
+                target_selection_report=target_selection_report,
+                target_provenance=target_provenance,
+                target_selection_decision=target_selection_decision,
+                failure_cleanup=failure_cleanup,
+            )
+        except BaseException:
+            failure_cleanup.cleanup()
+            raise
+
+    async def _run_explicit_target(
+        self,
+        *,
+        run_id: str,
+        target: SelfEvolveTarget,
+        dataset: SelfEvolveDataset,
+        trace_packs: tuple[TracePack, ...],
+        apply_policy: str = "proposal",
+        target_selection_report: TargetSelectionReport | None = None,
+        target_provenance: TargetProvenance | None = None,
+        target_selection_decision: TargetSelectionDecision | None = None,
+        failure_cleanup: _RunFailureCleanup,
+    ) -> SelfEvolveRunnerResult:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
         budget_context = _RunBudgetContext(
             ledger=RunBudgetLedger(
@@ -1285,6 +1483,7 @@ class SelfEvolveRunner:
             ),
             cold_start_by_stage=self._budget_cold_start_by_stage,
         )
+        failure_cleanup.budget_context = budget_context
         self.run_budget_ledger = budget_context.ledger
         scheduler = StageAwareCandidateScheduler(
             exploration_population=_candidate_generation_limit(
@@ -1435,6 +1634,7 @@ class SelfEvolveRunner:
         run = SelfEvolveRun(run_id=run_id, target=target.identity, status=SelfEvolveRunStatus.RUNNING)
         self.store.create_run(run)
         attempt_tracker = _CandidateAttemptTracker(self.store, run_id)
+        failure_cleanup.attempt_tracker = attempt_tracker
         self.store.write_dataset_recipe(run_id, dataset.recipe)
         if target_selection_report is not None:
             self.store.write_target_selection_report(run_id, target_selection_report)
@@ -1680,9 +1880,12 @@ class SelfEvolveRunner:
             try:
                 optimizer_result = await self.optimizer.propose(optimizer_request)
             except Exception as exc:
-                budget_context.release(
+                # The optimizer call crossed the execution boundary. With no
+                # trustworthy partial telemetry, conservatively debit the
+                # complete reservation instead of treating the work as unused.
+                budget_context.debit(
                     generation_budget,
-                    reason_code="candidate_generation_exception",
+                    actual_source="reserved_fallback_candidate_generation_exception",
                 )
                 for slot in scheduler_decision.slots:
                     placeholder = _candidate_attempt_placeholder(
@@ -2291,6 +2494,26 @@ class SelfEvolveRunner:
             )
             if screening_report is not None:
                 population_screening_reports.append(screening_report)
+            if _candidate_validation_stopped_by_shared_infrastructure(
+                screening_report
+            ):
+                infrastructure_blocked = True
+                for blocked_candidate in screening_candidates:
+                    blocked_key = attempt_key_by_candidate_id.get(
+                        blocked_candidate.candidate_id
+                    )
+                    if (
+                        blocked_key is not None
+                        and not attempt_tracker.terminal(blocked_key)
+                    ):
+                        attempt_tracker.emit(
+                            blocked_key,
+                            CandidateAttemptStage.BLOCKED,
+                            reason_code=(
+                                "candidate_validation_shared_infrastructure_blocked"
+                            ),
+                        )
+                break
             screening_feedback = _candidate_screening_repair_feedback(
                 screening_candidates,
                 screening_report,
@@ -2918,6 +3141,10 @@ class SelfEvolveRunner:
                             else None
                         ),
                     )
+            screening_telemetry_before = _stage_telemetry_usage_snapshot(
+                self.execution_telemetry,
+                "replay",
+            )
             try:
                 replay_result, replay_dataset, replay_gate = (
                     await self._replay_selected_candidate(
@@ -2939,6 +3166,16 @@ class SelfEvolveRunner:
             except Exception as exc:
                 replay_result = None
                 replay_dataset = None
+                failure_event = ReplayFailureEvent(
+                    code="candidate_screening_infrastructure_error",
+                    owner=FailureOwner.INFRASTRUCTURE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.SHARED_RUN,
+                    repairable=False,
+                    category="candidate_screening",
+                    summary="candidate screening backend failed",
+                    diagnostics={"error_type": type(exc).__name__},
+                )
                 replay_gate = GateResult(
                     gate_name="candidate_screening",
                     passed=False,
@@ -2947,28 +3184,50 @@ class SelfEvolveRunner:
                         "failure_class": "infrastructure",
                         "code": "candidate_screening_infrastructure_error",
                         "type": type(exc).__name__,
+                        "failure_event": failure_event.to_dict(),
+                        "causal_failure_events": [failure_event.to_dict()],
                     },
                 )
             if screening_budget is not None:
+                screening_telemetry_after = _stage_telemetry_usage_snapshot(
+                    self.execution_telemetry,
+                    "replay",
+                )
+                (
+                    screening_tokens,
+                    screening_cost,
+                    screening_wall,
+                    screening_usage_source,
+                ) = _stage_telemetry_usage_delta(
+                    screening_telemetry_before,
+                    screening_telemetry_after,
+                )
                 budget_context.debit(
                     screening_budget,
-                    actual_source="reserved_fallback_screening",
+                    tokens=screening_tokens,
+                    cost_usd=screening_cost,
+                    wall_seconds=screening_wall,
+                    actual_source=screening_usage_source,
                 )
+            shared_screening_failure = bool(
+                (
+                    replay_result is not None
+                    and _shared_replay_failure_blocks_population(replay_result)
+                )
+                or (
+                    replay_gate is not None
+                    and _gate_has_typed_shared_infrastructure_failure(replay_gate)
+                )
+            )
             if (
                 attempt_tracker is not None
                 and attempt_key is not None
                 and replay_result is None
                 and not attempt_tracker.terminal(attempt_key)
             ):
-                failure_class = (
-                    replay_gate.details.get("failure_class")
-                    if replay_gate is not None
-                    and isinstance(replay_gate.details, Mapping)
-                    else None
-                )
                 terminal_stage = (
                     CandidateAttemptStage.BLOCKED
-                    if failure_class == "infrastructure"
+                    if shared_screening_failure
                     else CandidateAttemptStage.REJECTED
                 )
                 attempt_tracker.emit(
@@ -3021,18 +3280,20 @@ class SelfEvolveRunner:
             if passed:
                 selected_candidate = candidate
                 break
-            if (
-                (
-                    replay_result is not None
-                    and _shared_replay_failure_blocks_population(replay_result)
-                    and not _screening_attempt_requires_candidate_repair(attempts[-1])
-                )
-                or (
-                    replay_gate is not None
-                    and isinstance(replay_gate.details, Mapping)
-                    and replay_gate.details.get("failure_class") == "infrastructure"
-                )
+            if shared_screening_failure and not _screening_attempt_requires_candidate_repair(
+                attempts[-1]
             ):
+                if (
+                    attempt_tracker is not None
+                    and attempt_key is not None
+                    and not attempt_tracker.terminal(attempt_key)
+                ):
+                    attempt_tracker.emit(
+                        attempt_key,
+                        CandidateAttemptStage.BLOCKED,
+                        reason_code="screening_shared_infrastructure_blocked",
+                    )
+                    screening_terminal_ids.add(candidate.candidate_id)
                 stopped_by_shared_screening = True
                 break
 
@@ -3819,6 +4080,8 @@ class SelfEvolveRunner:
         gate_results.extend(capability_gates)
         capability_blocked = any(not gate.passed for gate in capability_gates)
         replay_started = False
+        replay_telemetry_before = _TelemetryUsageSnapshot(batch_count=0)
+        replay_telemetry_after = replay_telemetry_before
 
         def replay_lifecycle(
             stage: str,
@@ -3863,6 +4126,10 @@ class SelfEvolveRunner:
                     case_count=replay_case_count,
                 )
         if not capability_blocked:
+            replay_telemetry_before = _stage_telemetry_usage_snapshot(
+                self.execution_telemetry,
+                "replay",
+            )
             try:
                 replay_result, replay_dataset, replay_gate = (
                     await self._replay_selected_candidate(
@@ -3890,11 +4157,24 @@ class SelfEvolveRunner:
                 )
             if replay_gate is not None:
                 gate_results.append(replay_gate)
+            replay_telemetry_after = _stage_telemetry_usage_snapshot(
+                self.execution_telemetry,
+                "replay",
+            )
         if replay_budget is not None:
             if replay_started:
+                replay_tokens, replay_cost, replay_wall, replay_usage_source = (
+                    _stage_telemetry_usage_delta(
+                        replay_telemetry_before,
+                        replay_telemetry_after,
+                    )
+                )
                 budget_context.debit(
                     replay_budget,
-                    actual_source="reserved_fallback_paired_replay",
+                    tokens=replay_tokens,
+                    cost_usd=replay_cost,
+                    wall_seconds=replay_wall,
+                    actual_source=replay_usage_source,
                 )
             else:
                 budget_context.release(
@@ -3979,7 +4259,14 @@ class SelfEvolveRunner:
                 if attempt_tracker is not None and attempt_key is not None:
                     attempt_tracker.emit(
                         attempt_key,
-                        CandidateAttemptStage.NOT_RUN,
+                        (
+                            CandidateAttemptStage.REJECTED
+                            if attempt_tracker.has_stage(
+                                attempt_key,
+                                CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+                            )
+                            else CandidateAttemptStage.NOT_RUN
+                        ),
                         reason_code=f"{denied_stage}_budget_denied",
                     )
                 return _terminal_candidate_evaluation_result(
@@ -4002,6 +4289,10 @@ class SelfEvolveRunner:
                             else None
                         ),
                     )
+                evaluation_telemetry_before = _stage_telemetry_usage_snapshot(
+                    self.execution_telemetry,
+                    "evaluation",
+                )
                 try:
                     _emit_progress(
                         self.progress_callback,
@@ -4130,9 +4421,27 @@ class SelfEvolveRunner:
                     )
                 finally:
                     if evaluation_budget is not None:
+                        evaluation_telemetry_after = (
+                            _stage_telemetry_usage_snapshot(
+                                self.execution_telemetry,
+                                "evaluation",
+                            )
+                        )
+                        (
+                            evaluation_tokens,
+                            evaluation_cost,
+                            evaluation_wall,
+                            evaluation_usage_source,
+                        ) = _stage_telemetry_usage_delta(
+                            evaluation_telemetry_before,
+                            evaluation_telemetry_after,
+                        )
                         budget_context.debit(
                             evaluation_budget,
-                            actual_source="reserved_fallback_evaluation",
+                            tokens=evaluation_tokens,
+                            cost_usd=evaluation_cost,
+                            wall_seconds=evaluation_wall,
+                            actual_source=evaluation_usage_source,
                         )
                     if judge_budget is not None:
                         judge_tokens, judge_source = _judge_actual_token_usage(
@@ -8240,20 +8549,46 @@ def _candidate_validation_report_for_persistence(
 
 
 def _conformance_gate_blocks_population(gate: GateResult) -> bool:
+    return _gate_has_typed_shared_infrastructure_failure(gate)
+
+
+def _gate_has_typed_shared_infrastructure_failure(gate: GateResult) -> bool:
     details = gate.details
     if not isinstance(details, Mapping):
         return False
+    raw_events: list[Mapping[str, object]] = []
     raw_event = details.get("failure_event")
-    if not isinstance(raw_event, Mapping):
+    if isinstance(raw_event, Mapping):
+        raw_events.append(raw_event)
+    raw_causal_events = details.get("causal_failure_events")
+    if isinstance(raw_causal_events, (list, tuple)):
+        raw_events.extend(
+            item for item in raw_causal_events if isinstance(item, Mapping)
+        )
+    for payload in raw_events:
+        try:
+            event = _typed_causal_feedback_event(payload)
+        except (TypeError, ValueError):
+            continue
+        if (
+            FailureEventSource.NATIVE.value in event.source_kinds
+            and event.scope is FailureScope.SHARED_RUN
+            and event.owner
+            in {FailureOwner.INFRASTRUCTURE, FailureOwner.FRAMEWORK}
+        ):
+            return True
+    return False
+
+
+def _candidate_validation_stopped_by_shared_infrastructure(
+    report: Mapping[str, object] | None,
+) -> bool:
+    if not isinstance(report, Mapping):
         return False
-    try:
-        event = _typed_causal_feedback_event(raw_event)
-    except (TypeError, ValueError):
-        return False
-    return bool(
-        FailureEventSource.NATIVE.value in event.source_kinds
-        and event.scope is FailureScope.SHARED_RUN
-        and event.owner in {FailureOwner.INFRASTRUCTURE, FailureOwner.FRAMEWORK}
+    return any(
+        isinstance(stage_report, Mapping)
+        and stage_report.get("stopped_by_shared_infrastructure") is True
+        for stage_report in (report.get("conformance"), report.get("screening"))
     )
 
 
