@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, Sequence
@@ -1157,6 +1158,18 @@ def _case_dependency_input(
 
 
 def _normalize_detected_url(value: str) -> str:
+    # URL regexes that stop only at ASCII whitespace can absorb adjacent
+    # natural-language prose in scripts that use full-width punctuation. Raw
+    # non-ASCII punctuation is not a legal URI delimiter unless percent-
+    # encoded, so treat the first such punctuation mark as the evidence URL
+    # boundary while preserving Unicode letters in valid IRIs.
+    for index, character in enumerate(value):
+        if (
+            ord(character) > 127
+            and unicodedata.category(character).startswith("P")
+        ):
+            value = value[:index]
+            break
     normalized = value.rstrip(".,")
     for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
         while normalized.endswith(closing) and normalized.count(closing) > normalized.count(

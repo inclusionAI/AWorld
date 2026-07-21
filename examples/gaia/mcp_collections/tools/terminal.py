@@ -67,6 +67,34 @@ REMINDER_NOTIFICATION_PATTERNS = (
     r"\bnotify-send\b",
     r"\bterminal-notifier\b",
 )
+_MAX_INLINE_STREAM_CHARS = 16_384
+
+
+def _bounded_inline_stream(
+    value: str,
+    *,
+    max_chars: int = _MAX_INLINE_STREAM_CHARS,
+) -> str:
+    """Bound terminal streams before they enter model/context processing.
+
+    Commands such as ``grep ... | head`` can still emit a multi-megabyte
+    single line.  Returning that line in full makes every downstream parser,
+    logger, and tokenizer pay the unbounded cost before normal memory
+    compaction can run.  Preserve a deterministic head/tail diagnostic and
+    tell the caller how to obtain the complete result safely.
+    """
+
+    if len(value) <= max_chars:
+        return value
+    head_chars = max(max_chars // 2, 1)
+    tail_chars = max(max_chars - head_chars, 1)
+    omitted_chars = max(0, len(value) - head_chars - tail_chars)
+    return (
+        f"{value[:head_chars]}\n\n"
+        f"[terminal output truncated: {omitted_chars} chars omitted; "
+        "redirect the complete output to a file and inspect a byte-bounded excerpt]\n\n"
+        f"{value[-tail_chars:]}"
+    )
 
 
 def _should_log_taskgroup_error(error: BaseException) -> bool:
@@ -223,8 +251,15 @@ class TerminalActionCollection(ActionCollection):
         Returns:
             Formatted string suitable for LLM consumption
         """
+        stdout = _bounded_inline_stream(result.stdout)
+        stderr = _bounded_inline_stream(result.stderr)
         if output_format == "json":
-            return json.dumps(result.model_dump(), indent=2)
+            return json.dumps(
+                result.model_copy(
+                    update={"stdout": stdout, "stderr": stderr}
+                ).model_dump(),
+                indent=2,
+            )
 
         elif output_format == "text":
             output_parts = [
@@ -234,11 +269,11 @@ class TerminalActionCollection(ActionCollection):
                 f"Return Code: {result.return_code}",
             ]
 
-            if result.stdout:
-                output_parts.extend(["\nOutput:", result.stdout])
+            if stdout:
+                output_parts.extend(["\nOutput:", stdout])
 
-            if result.stderr:
-                output_parts.extend(["\nErrors/Warnings:", result.stderr])
+            if stderr:
+                output_parts.extend(["\nErrors/Warnings:", stderr])
 
             return "\n".join(output_parts)
 
@@ -254,11 +289,11 @@ class TerminalActionCollection(ActionCollection):
                 f"**Timestamp:** {result.timestamp}",
             ]
 
-            if result.stdout:
-                output_parts.extend(["\n## Output", "```", result.stdout.strip(), "```"])
+            if stdout:
+                output_parts.extend(["\n## Output", "```", stdout.strip(), "```"])
 
-            if result.stderr:
-                output_parts.extend(["\n## Errors/Warnings", "```", result.stderr.strip(), "```"])
+            if stderr:
+                output_parts.extend(["\n## Errors/Warnings", "```", stderr.strip(), "```"])
 
             return "\n".join(output_parts)
 

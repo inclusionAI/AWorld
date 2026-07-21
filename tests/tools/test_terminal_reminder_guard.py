@@ -3,7 +3,10 @@ import pytest
 
 from examples.gaia.mcp_collections.base import ActionArguments
 from examples.gaia.mcp_collections.tools.terminal import (
+    CommandResult,
     TerminalActionCollection,
+    _MAX_INLINE_STREAM_CHARS,
+    _bounded_inline_stream,
     _check_delayed_reminder_simulation,
     _should_log_taskgroup_error,
 )
@@ -30,6 +33,39 @@ def test_terminal_entrypoint_logs_unexpected_taskgroup_errors():
     error = _EXCEPTION_GROUP_TYPE("unhandled errors in a TaskGroup", [RuntimeError("boom")])
 
     assert _should_log_taskgroup_error(error) is True
+
+
+def test_terminal_output_is_bounded_before_context_processing():
+    oversized = "HEAD" + ("x" * (_MAX_INLINE_STREAM_CHARS * 2)) + "TAIL"
+
+    bounded = _bounded_inline_stream(oversized)
+
+    assert bounded.startswith("HEAD")
+    assert bounded.endswith("TAIL")
+    assert "terminal output truncated" in bounded
+    assert "redirect the complete output to a file" in bounded
+    assert len(bounded) < len(oversized)
+
+
+@pytest.mark.parametrize("output_format", ["text", "markdown", "json"])
+def test_terminal_formatter_never_embeds_an_unbounded_stream(output_format):
+    terminal = TerminalActionCollection(
+        ActionArguments(name="terminal", workspace=".", unittest=True)
+    )
+    result = CommandResult(
+        command="produce-output",
+        success=True,
+        stdout="a" * (_MAX_INLINE_STREAM_CHARS * 2),
+        stderr="b" * (_MAX_INLINE_STREAM_CHARS * 2),
+        return_code=0,
+        duration="0:00:01",
+        timestamp="2026-07-20T00:00:00",
+    )
+
+    formatted = terminal._format_command_output(result, output_format)
+
+    assert formatted.count("terminal output truncated") == 2
+    assert len(formatted) < len(result.stdout) + len(result.stderr)
 
 
 @pytest.mark.parametrize(

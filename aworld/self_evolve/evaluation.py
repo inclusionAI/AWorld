@@ -603,9 +603,19 @@ def _run_evaluator_cli_subprocess(
             raise ValueError("isolated evaluator report is invalid") from exc
         if isinstance(report, Mapping):
             return report
+    process_diagnostics = []
+    for label, value in (("stderr", completed.stderr), ("stdout", completed.stdout)):
+        bounded = _bounded_text(str(value or "").strip())
+        if bounded:
+            process_diagnostics.append(f"{label}={bounded}")
+    diagnostic_suffix = (
+        "; " + "; ".join(process_diagnostics)
+        if process_diagnostics
+        else ""
+    )
     raise RuntimeError(
         "isolated evaluator subprocess did not produce a report "
-        f"(exit={completed.returncode})"
+        f"(exit={completed.returncode}){diagnostic_suffix}"
     )
 
 

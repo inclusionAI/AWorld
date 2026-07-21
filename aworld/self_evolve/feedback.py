@@ -175,11 +175,15 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
         files.append(item)
     if not files:
         return None
-    return {
+    package = {
         "candidate_id": sanitize_text(value.get("candidate_id"), max_chars=160),
         "rationale": sanitize_text(value.get("rationale"), max_chars=1_000),
         "files": files,
     }
+    raw_content = value.get("content")
+    if isinstance(raw_content, str) and raw_content.strip():
+        package["content"] = sanitize_source_text(raw_content, max_chars=8_000)
+    return package
 
 
 def _metric_summary(metrics: Mapping[str, Any]) -> dict[str, Any]:
@@ -245,6 +249,14 @@ def _required_behaviors(
                 "non_compacted_evidence",
                 "claim_evidence_ledger",
                 "claim_by_claim_verification",
+            ]
+        )
+    if has_incomplete_evidence:
+        behaviors.extend(
+            [
+                "verify_task_semantic_sufficiency_before_finalizing",
+                "do_not_treat_transport_success_as_task_completion",
+                "continue_bounded_acquisition_when_payload_is_only_metadata_or_execution_summary",
             ]
         )
     if has_manifest_errors:
@@ -409,6 +421,17 @@ def _repair_plan(
             ]
         )
         acceptance_criteria.append("all_final_claims_have_non_compacted_support")
+    if evidence.get("evidence_incomplete") is True:
+        issues.append("semantically_insufficient_evidence")
+        actions.extend(
+            [
+                "check_payload_supports_requested_claims_before_stopping",
+                "continue_with_one_materially_different_bounded_source_when_payload_is_only_a_transport_or_execution_summary",
+            ]
+        )
+        acceptance_criteria.append(
+            "transport_success_is_not_accepted_without_task_semantic_support"
+        )
     if has_manifest_problem:
         issues.append("invalid_evidence_manifest")
         actions.append("write_valid_bounded_evidence_manifest")

@@ -8,7 +8,7 @@ from typing import Any
 import json_repair
 
 from aworld.self_evolve.candidate_package import validate_candidate_files
-from aworld.self_evolve.patch_intent import apply_skill_patch_intent
+from aworld.self_evolve.patch_intent import validate_skill_patch_intent
 from aworld.self_evolve.types import CandidateFileDelta
 
 
@@ -363,7 +363,7 @@ def _validate_candidate_payload(
         )
     if has_patch_intent:
         try:
-            apply_skill_patch_intent(current_content, patch_intent)
+            validate_skill_patch_intent(patch_intent)
         except ValueError as exc:
             raise CandidateProtocolError(
                 "invalid_patch_intent",

@@ -167,6 +167,60 @@ def test_resolve_model_profile_prefers_workspace_over_global_config(
     assert config.llm_api_key == "workspace-secret"
 
 
+def test_resolve_model_profile_accepts_unique_configured_model_name_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EmptyConfig:
+        def load_config(self):
+            return {"models": {}}
+
+    monkeypatch.setattr("aworld_cli.core.config.get_config", lambda: EmptyConfig())
+
+    config = resolve_model_profile(
+        "gpt-example",
+        config_dict={
+            "models": {
+                "judge": {
+                    "provider": "openai",
+                    "model": "gpt-example",
+                    "api_key": "judge-secret",
+                }
+            }
+        },
+    )
+
+    assert config.llm_provider == "openai"
+    assert config.llm_model_name == "gpt-example"
+    assert config.llm_api_key == "judge-secret"
+
+
+def test_resolve_model_profile_prefers_exact_name_over_model_name_alias() -> None:
+    config = resolve_model_profile(
+        "judge",
+        config_dict={
+            "models": {
+                "judge": {"provider": "openai", "model": "exact-model"},
+                "alias-source": {"provider": "openai", "model": "judge"},
+            }
+        },
+    )
+
+    assert config.llm_model_name == "exact-model"
+
+
+def test_resolve_model_profile_rejects_ambiguous_model_name_alias() -> None:
+    with pytest.raises(KeyError, match="model profile alias is ambiguous"):
+        resolve_model_profile(
+            "shared-model",
+            config_dict={
+                "models": {
+                    "judge-a": {"provider": "openai", "model": "shared-model"},
+                    "judge-b": {"provider": "openai", "model": "shared-model"},
+                }
+            },
+        )
+
+
 def test_resolve_model_profile_raises_for_missing_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     class EmptyConfig:
         def load_config(self):

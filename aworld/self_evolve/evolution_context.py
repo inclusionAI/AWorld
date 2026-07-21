@@ -28,9 +28,11 @@ MAX_CONTEXT_FEEDBACK_ITEMS = 24
 MAX_CONTEXT_LESSONS = 32
 MAX_CONTEXT_REQUIREMENTS = 64
 MAX_CURRENT_CONTENT_CHARS = 400_000
-MAX_CONTEXT_TRACE_CHARS = 64_000
+MAX_CONTEXT_TRACE_CHARS = 12_000
 MAX_TRACE_STEPS_PER_PACK = 8
 MAX_TRACE_TOOL_CALLS_PER_STEP = 2
+MAX_REPAIR_PROMPT_SOURCE_CHARS = 40_000
+MAX_PROMPT_FEEDBACK_CHARS = 16_000
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,19 @@ class EvolutionContext:
     acceptance_constraints: tuple[str, ...]
     expected_output: Mapping[str, object]
 
+    def repair_focus_for_candidate(
+        self,
+        *,
+        candidate_index: int,
+    ) -> Mapping[str, object] | None:
+        if isinstance(candidate_index, bool) or candidate_index < 0:
+            raise ValueError("candidate_index must be non-negative")
+        _, repair_focus, _ = _focused_validation_feedback(
+            self.validation_feedback,
+            candidate_index=candidate_index,
+        )
+        return repair_focus
+
     def to_prompt_payload(self, *, candidate_index: int) -> dict[str, object]:
         if isinstance(candidate_index, bool) or candidate_index < 0:
             raise ValueError("candidate_index must be non-negative")
@@ -62,18 +77,41 @@ class EvolutionContext:
             candidate_index=candidate_index,
         )
         focused_repair = repair_focus is not None
+        repair_conformance = (
+            compile_repair_conformance_contract(repair_focus)
+            if (
+                repair_focus is not None
+                and not _repair_feedback_reached_judged_task_output(repair_focus)
+            )
+            else None
+        )
+        prompt_repair_focus = (
+            _bounded_repair_focus_for_prompt(
+                repair_focus,
+                required_branch_paths=(
+                    repair_conformance.required_branch_paths
+                    if repair_conformance is not None
+                    else ()
+                ),
+            )
+            if repair_focus is not None
+            else None
+        )
         prompt_feedback = (
             tuple(_without_repair_candidate_package(item) for item in feedback)
             if focused_repair
             else feedback
         )
+        prompt_feedback = _budget_prompt_feedback(prompt_feedback)
         payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "candidate_index": candidate_index,
             "population_strategy": strategy,
             "target": dict(self.target),
-            "current_content": self.current_content,
-            "target_package_inventory": list(self.target_package_inventory),
+            "current_content": "" if focused_repair else self.current_content,
+            "target_package_inventory": (
+                [] if focused_repair else list(self.target_package_inventory)
+            ),
             # Once a concrete candidate package and a machine-readable failure
             # are available, they are the authoritative repair context. Repeating
             # the original trajectory and lessons makes the source delta harder to
@@ -85,21 +123,37 @@ class EvolutionContext:
             "observed_failures": list(self.observed_failures),
             "required_behaviors": list(self.required_behaviors),
             "preserved_behaviors": list(self.preserved_behaviors),
-            "capability_requirements": list(self.capability_requirements),
-            "capability_contracts": list(self.capability_contracts),
+            "capability_requirements": (
+                [] if focused_repair else list(self.capability_requirements)
+            ),
+            "capability_contracts": (
+                [] if focused_repair else list(self.capability_contracts)
+            ),
             "acceptance_constraints": list(self.acceptance_constraints),
             "expected_output": dict(self.expected_output),
         }
-        if repair_focus is not None:
+        if prompt_repair_focus is not None:
             payload["repair_context_mode"] = "focused_candidate_delta"
-            payload["repair_focus"] = repair_focus
-            repair_conformance = compile_repair_conformance_contract(
-                repair_focus
-            )
+            payload["repair_focus"] = prompt_repair_focus
+            payload["repair_prompt_budget"] = {
+                "source_chars": MAX_REPAIR_PROMPT_SOURCE_CHARS,
+                "omitted_current_content_chars": len(self.current_content),
+                "omitted_target_package_inventory_items": len(
+                    self.target_package_inventory
+                ),
+                "omitted_capability_requirements": len(
+                    self.capability_requirements
+                ),
+                "omitted_capability_contracts": len(
+                    self.capability_contracts
+                ),
+            }
             if repair_conformance is not None:
                 payload["repair_conformance"] = repair_conformance.to_dict()
         if repair_support is not None:
-            payload["repair_support"] = repair_support
+            payload["repair_support"] = _repair_support_prompt_summary(
+                repair_support
+            )
         return payload
 
 
@@ -113,6 +167,165 @@ def _without_repair_candidate_package(
         for key, value in feedback.items()
         if key != "repair_candidate_package"
     }
+
+
+def _budget_prompt_feedback(
+    feedback: Sequence[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    if _serialized_size(feedback) <= MAX_PROMPT_FEEDBACK_CHARS:
+        return tuple(feedback)
+
+    selected: list[Mapping[str, object]] = []
+    omitted = 0
+    for item in feedback:
+        compact = _compact_prompt_feedback_item(item)
+        if _serialized_size((*selected, compact)) > MAX_PROMPT_FEEDBACK_CHARS:
+            omitted += 1
+            continue
+        selected.append(compact)
+    if omitted:
+        marker = {
+            "feedback_items_omitted": omitted,
+            "reason": "prompt_feedback_char_budget",
+        }
+        if _serialized_size((*selected, marker)) <= MAX_PROMPT_FEEDBACK_CHARS:
+            selected.append(marker)
+    return tuple(selected)
+
+
+def _compact_prompt_feedback_item(
+    item: Mapping[str, object],
+) -> Mapping[str, object]:
+    compact: dict[str, object] = {
+        "variant_id": sanitize_text(item.get("variant_id"), max_chars=160),
+        "dataset_split": sanitize_text(
+            item.get("dataset_split"),
+            max_chars=80,
+        ),
+        "feedback_compacted": True,
+    }
+    for key, limit in (("failed_gates", 8), ("required_behaviors", 4)):
+        raw = item.get(key)
+        if isinstance(raw, list):
+            compact[key] = [
+                sanitize_text(value, max_chars=160)
+                for value in raw[:limit]
+                if str(value).strip()
+            ]
+    metrics = item.get("metrics")
+    if isinstance(metrics, Mapping):
+        compact["metrics"] = sanitize_metric_value(metrics, max_chars=120)
+    diagnostics = item.get("candidate_validation_diagnostics")
+    if isinstance(diagnostics, list):
+        compact["candidate_validation_diagnostics"] = [
+            {
+                key: sanitize_metric_value(diagnostic.get(key), max_chars=160)
+                for key in ("code", "stage", "reason", "field_path")
+                if diagnostic.get(key) is not None
+            }
+            for diagnostic in diagnostics[:4]
+            if isinstance(diagnostic, Mapping)
+        ]
+    repair_plan = item.get("repair_plan")
+    if isinstance(repair_plan, Mapping):
+        compact["repair_plan"] = {
+            key: [
+                sanitize_text(value, max_chars=160)
+                for value in raw[:4]
+                if str(value).strip()
+            ]
+            for key in ("issues", "actions", "acceptance_criteria")
+            if isinstance((raw := repair_plan.get(key)), list)
+        }
+    return compact
+
+
+def _bounded_repair_focus_for_prompt(
+    repair_focus: Mapping[str, object],
+    *,
+    required_branch_paths: Sequence[str],
+) -> Mapping[str, object]:
+    """Keep complete high-value source files and inventory omitted overlay files."""
+
+    package = repair_focus.get("repair_candidate_package")
+    if not isinstance(package, Mapping):
+        return repair_focus
+    raw_files = package.get("files")
+    if not isinstance(raw_files, list):
+        return repair_focus
+    required = frozenset(required_branch_paths)
+    ranked_files = sorted(
+        (
+            (index, item)
+            for index, item in enumerate(raw_files)
+            if isinstance(item, Mapping)
+        ),
+        key=lambda value: (
+            0
+            if str(value[1].get("path") or "") in required
+            else (
+                1
+                if str(value[1].get("path") or "").startswith("replay/")
+                else 2
+            ),
+            -len(
+                value[1].get("content")
+                if isinstance(value[1].get("content"), str)
+                else ""
+            ),
+            value[0],
+        ),
+    )
+    included_paths: set[str] = set()
+    remaining_chars = MAX_REPAIR_PROMPT_SOURCE_CHARS
+    for _, item in ranked_files:
+        path = str(item.get("path") or "")
+        content = item.get("content")
+        if (
+            not path
+            or not isinstance(content, str)
+            or len(content) > remaining_chars
+        ):
+            continue
+        included_paths.add(path)
+        remaining_chars -= len(content)
+
+    prompt_files: list[dict[str, object]] = []
+    for raw_file in raw_files:
+        if not isinstance(raw_file, Mapping):
+            continue
+        item = dict(raw_file)
+        path = str(item.get("path") or "")
+        content = item.get("content")
+        if isinstance(content, str) and path not in included_paths:
+            item.pop("content", None)
+            item["content_omitted"] = True
+            item["content_chars"] = len(content)
+            item["content_sha256"] = hashlib.sha256(
+                content.encode("utf-8")
+            ).hexdigest()
+        prompt_files.append(item)
+    prompt_package = dict(package)
+    prompt_package["files"] = prompt_files
+    prompt_focus = dict(repair_focus)
+    prompt_focus["repair_candidate_package"] = prompt_package
+    return prompt_focus
+
+
+def _repair_support_prompt_summary(
+    repair_support: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Expose complementary diagnostics without duplicating rejected source."""
+
+    summary = dict(_compact_prompt_feedback_item(repair_support))
+    package = repair_support.get("repair_candidate_package")
+    if isinstance(package, Mapping):
+        summary["repair_candidate_id"] = sanitize_text(
+            package.get("candidate_id"),
+            max_chars=160,
+        )
+        summary["repair_candidate_source_omitted"] = True
+    return summary
 
 
 def _focused_validation_feedback(
@@ -192,6 +405,11 @@ def _repair_support_is_complementary(
     model context.
     """
 
+    if _repair_feedback_reached_judged_task_output(focus):
+        # The focused package has already completed authoritative replay and
+        # exposed task output to a judge. Transplanting source from a lower
+        # replay/conformance frontier can only regress that verified runtime.
+        return False
     focus_codes = _specific_repair_conformance_failure_codes(focus)
     if focus_codes:
         # A machine-checked conformance failure has an exact focused source and
@@ -238,6 +456,8 @@ def _specific_repair_conformance_failure_codes(
 def _repair_feedback_reached_task_plane(
     feedback: Mapping[str, object],
 ) -> bool:
+    if _repair_feedback_reached_judged_task_output(feedback):
+        return True
     diagnostic_text = json.dumps(
         feedback.get("candidate_validation_diagnostics", ()),
         ensure_ascii=False,
@@ -245,10 +465,68 @@ def _repair_feedback_reached_task_plane(
         default=str,
     ).lower()
     return (
-        "implement_observed_endpoint_interactions" in diagnostic_text
+        "finalize_after_successful_endpoint_interaction" in diagnostic_text
+        or "implement_observed_endpoint_interactions" in diagnostic_text
         or "failed to deserialize" in diagnostic_text
         or "missing field" in diagnostic_text
         or '"requires_fixture_derived_probe": true' in diagnostic_text
+    )
+
+
+def _repair_feedback_reached_judged_task_output(
+    feedback: Mapping[str, object],
+) -> bool:
+    """Return whether feedback was produced after a judge saw task output.
+
+    Judge-stage feedback is a deeper verified frontier than replay or protocol
+    diagnostics: the candidate has already completed the data plane and exposed
+    an answer for groundedness/completeness review.  Keep the check structural so
+    it applies to any target or dataset rather than matching task text.
+    """
+
+    metrics = feedback.get("metrics")
+    evidence = feedback.get("evidence")
+    failed_gates = feedback.get("failed_gates")
+    if not isinstance(metrics, Mapping):
+        metrics = {}
+    if not isinstance(evidence, Mapping):
+        evidence = {}
+    gate_names = (
+        {str(value) for value in failed_gates}
+        if isinstance(failed_gates, (list, tuple))
+        else set()
+    )
+    has_judge_metrics = any(
+        key in metrics
+        for key in (
+            "score",
+            "A1_groundedness",
+            "A2_completeness",
+            "veto_triggered",
+        )
+    ) or any(
+        key in evidence
+        for key in (
+            "evidence_incomplete",
+            "evidence_compacted",
+            "evidence_block_count",
+            "veto_triggered",
+        )
+    )
+    if not has_judge_metrics:
+        return False
+    return (
+        str(feedback.get("dataset_split") or "")
+        in {"validation", "held_out", "single_case_replay"}
+        or bool(
+            gate_names
+            & {
+                "evidence_quality",
+                "held_out_verification",
+                "required_verification",
+                "score_improvement",
+            }
+        )
     )
 
 
@@ -275,11 +553,20 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
             and "implement_observed_endpoint_interactions" in diagnostic_text
         )
     )
+    if _repair_feedback_reached_judged_task_output(feedback):
+        # Once a judge has scored a completed task answer, repair the answer and
+        # its evidence contract before revisiting older replay/conformance
+        # branches. Held-out feedback wins ties with validation from the same
+        # evaluated package, while recency still breaks ties within each split.
+        split_offset = 5_000 if feedback.get("dataset_split") == "held_out" else 0
+        return 200_000 + split_offset + interaction_progress
     if (
         isinstance(metrics, Mapping)
         and metrics.get("authoritative_replay_failure") is True
     ):
         return 150_000 + interaction_progress
+    if "finalize_after_successful_endpoint_interaction" in diagnostic_text:
+        return 145_000 + interaction_progress
     if "repair_conformance" in diagnostic_text:
         # Keep repair search on the deepest verified frontier. A candidate that
         # inherited a real task-plane failure remains ahead of transport-only
@@ -515,31 +802,55 @@ def _trace_evidence_payloads(
     if not selected_packs:
         return ()
     per_pack_budget = max(
-        2_000,
-        min(16_000, MAX_CONTEXT_TRACE_CHARS // len(selected_packs)),
+        256,
+        min(8_000, MAX_CONTEXT_TRACE_CHARS // len(selected_packs)),
     )
     payloads: list[Mapping[str, object]] = []
     for pack in selected_packs:
+        identifier_chars = min(
+            80,
+            max(24, per_pack_budget // 6),
+        )
         representative_steps = _representative_trace_steps(
             pack.steps,
             limit=MAX_TRACE_STEPS_PER_PACK,
         )
-        payload = {
-            "pack_id": sanitize_text(pack.pack_id, max_chars=160),
-            "task_id": sanitize_text(pack.task_id, max_chars=160),
+        payload: dict[str, object] = {
+            "pack_id": sanitize_text(
+                pack.pack_id,
+                max_chars=identifier_chars,
+            ),
+            "task_id": sanitize_text(
+                pack.task_id,
+                max_chars=identifier_chars,
+            ),
             "evidence_step_ids": [
-                sanitize_text(step.evidence_id, max_chars=160)
-                for step in representative_steps
+                sanitize_text(
+                    step.evidence_id,
+                    max_chars=identifier_chars,
+                )
+                for step in (
+                    representative_steps
+                    if len(representative_steps) <= 2
+                    else (representative_steps[0], representative_steps[-1])
+                )
             ],
             "final_action_excerpt": sanitize_text(
                 pack.final_action_excerpt,
-                max_chars=2_000,
-            ),
-            "steps": _bounded_trace_step_payloads(
-                representative_steps,
-                max_chars=per_pack_budget,
+                max_chars=min(
+                    800,
+                    max(32, per_pack_budget // 5),
+                ),
             ),
         }
+        step_budget = max(
+            0,
+            per_pack_budget - _serialized_size(payload) - 16,
+        )
+        payload["steps"] = _bounded_trace_step_payloads(
+            representative_steps,
+            max_chars=step_budget,
+        )
         payloads.append(payload)
     return tuple(payloads)
 
@@ -776,7 +1087,7 @@ def _feedback_string_values(
             for value in raw
             if str(value).strip()
         )
-    return tuple(sorted(values))
+    return tuple(sorted(values)[:MAX_CONTEXT_REQUIREMENTS])
 
 
 def _preserved_behaviors(lessons: Sequence[object]) -> tuple[str, ...]:

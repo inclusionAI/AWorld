@@ -205,6 +205,26 @@ def test_rejects_candidate_with_both_content_and_patch_intent() -> None:
     assert error.value.code == "ambiguous_candidate_body"
 
 
+def test_accepts_structural_replace_patch_before_focused_base_is_available() -> None:
+    normalized = normalize_candidate_output(
+        {
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "replace_section",
+                        "heading": "Focused Candidate Section",
+                        "content": "Keep the verified behavior and finalize once.",
+                    }
+                ]
+            },
+            "rationale": "Apply this delta to the focused repair candidate.",
+        },
+        current_content=CURRENT_CONTENT,
+    )
+
+    assert normalized["patch_intent"]["operations"][0]["op"] == "replace_section"
+
+
 def test_protocol_error_exposes_bounded_typed_diagnostic() -> None:
     error = CandidateProtocolError(
         "missing_candidate_body",

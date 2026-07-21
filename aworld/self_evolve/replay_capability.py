@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+import ctypes
+import functools
 import hashlib
 import json
 import re
@@ -54,6 +57,7 @@ _MAX_FIXTURE_FILE_BYTES = 16 * 1024 * 1024
 _MAX_FIXTURE_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_READINESS_TIMEOUT_SECONDS = 30.0
 REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES = 16
+REPLAY_RESPONSE_INDEX_ENV = "AWORLD_REPLAY_RESPONSE_INDEX"
 
 REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS = tuple(
     sorted(_SUPPORTED_READINESS_KINDS)
@@ -64,6 +68,71 @@ REPLAY_CAPABILITY_SUPPORTED_PROTOCOL_PROBE_KINDS = tuple(
 REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS = tuple(
     sorted(_SUPPORTED_SERVICE_TRANSPORTS)
 )
+
+
+class _DarwinProcTaskInfo(ctypes.Structure):
+    """Subset layout returned by ``proc_pidinfo(PROC_PIDTASKINFO)``."""
+
+    _fields_ = [
+        ("pti_virtual_size", ctypes.c_uint64),
+        ("pti_resident_size", ctypes.c_uint64),
+        ("pti_total_user", ctypes.c_uint64),
+        ("pti_total_system", ctypes.c_uint64),
+        ("pti_threads_user", ctypes.c_uint64),
+        ("pti_threads_system", ctypes.c_uint64),
+        ("pti_policy", ctypes.c_int32),
+        ("pti_faults", ctypes.c_int32),
+        ("pti_pageins", ctypes.c_int32),
+        ("pti_cow_faults", ctypes.c_int32),
+        ("pti_messages_sent", ctypes.c_int32),
+        ("pti_messages_received", ctypes.c_int32),
+        ("pti_syscalls_mach", ctypes.c_int32),
+        ("pti_syscalls_unix", ctypes.c_int32),
+        ("pti_csw", ctypes.c_int32),
+        ("pti_threadnum", ctypes.c_int32),
+        ("pti_numrunning", ctypes.c_int32),
+        ("pti_priority", ctypes.c_int32),
+    ]
+
+
+@functools.lru_cache(maxsize=1)
+def _darwin_libproc() -> Any | None:
+    try:
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    except OSError:
+        return None
+    library.proc_pidinfo.argtypes = (
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint64,
+        ctypes.c_void_p,
+        ctypes.c_int,
+    )
+    library.proc_pidinfo.restype = ctypes.c_int
+    return library
+
+
+def _darwin_process_memory_bytes(process_id: int) -> int | None:
+    """Read RSS without spawning ``ps`` on every watchdog sample."""
+
+    library = _darwin_libproc()
+    if library is None:
+        return None
+    info = _DarwinProcTaskInfo()
+    info_size = ctypes.sizeof(info)
+    result_size = library.proc_pidinfo(
+        process_id,
+        4,  # PROC_PIDTASKINFO
+        0,
+        ctypes.byref(info),
+        info_size,
+    )
+    if result_size == info_size:
+        return int(info.pti_resident_size)
+    if result_size == 0:
+        # A process can exit between poll() and the watchdog sample.
+        return 0
+    return None
 
 
 class ReplayCapabilityError(RuntimeError):
@@ -500,6 +569,7 @@ def compile_and_freeze_capability(
             output_root=compile_a / "output",
             frozen_root=frozen_root,
         )
+        verify_frozen_replay_capability(frozen)
     except Exception:
         _remove_path(frozen_root)
         raise
@@ -534,6 +604,7 @@ def verify_frozen_replay_capability(capability: FrozenReplayCapability) -> None:
                 raise ReplayCapabilityError(
                     f"frozen replay capability file changed: {category}/{item.path}"
                 )
+    _verify_recorded_response_indexes_and_runtime_bindings(capability, root=root)
     manifest = _read_json_object(
         root / "frozen_manifest.json",
         label="frozen replay capability manifest",
@@ -570,6 +641,124 @@ def verify_frozen_replay_capability(capability: FrozenReplayCapability) -> None:
         raise ReplayCapabilityError("frozen replay capability fingerprint mismatch")
     if manifest.get("fingerprint") != capability.fingerprint:
         raise ReplayCapabilityError("frozen replay capability manifest mismatch")
+
+
+def _verify_recorded_response_indexes_and_runtime_bindings(
+    capability: FrozenReplayCapability,
+    *,
+    root: Path,
+) -> None:
+    """Verify framework-derived sidecars and the generic runtime binding.
+
+    Operation-indexed response sidecars are derived from immutable fixtures,
+    rather than declared by a skill compiler. Recomputing them here both
+    protects their integrity and establishes a transport-independent contract:
+    a skill runtime cannot claim readiness while ignoring recorded responses
+    that the framework has made available to it.
+    """
+
+    fixture_root = root / "fixtures"
+    runtime_root = root / "runtime"
+    observed_operations = _declared_probe_operations(capability.services)
+    verified_fixtures: dict[str, Mapping[str, Any]] = {}
+    for service in capability.services:
+        response_index = verified_fixtures.get(service.response_fixture)
+        if response_index is None:
+            fixture_path = _resolve_output_file(
+                fixture_root,
+                service.response_fixture,
+            )
+            try:
+                response_index = _build_recorded_response_index(
+                    fixture_path.read_bytes(),
+                    observed_operations=observed_operations,
+                )
+            except OSError as exc:
+                raise ReplayCapabilityError(
+                    "cannot verify frozen replay response index"
+                ) from exc
+            verified_fixtures[service.response_fixture] = response_index
+            sidecar_path = fixture_path.with_suffix(".responses.json")
+            if response_index.get("records"):
+                actual_index = _read_json_object(
+                    sidecar_path,
+                    label="frozen replay response index",
+                )
+                if actual_index != response_index:
+                    raise ReplayCapabilityError(
+                        "frozen replay response index does not match its fixture"
+                    )
+
+        records = response_index.get("records")
+        has_nonempty_record = isinstance(records, list) and any(
+            isinstance(record, Mapping)
+            and record.get("non_empty") is True
+            and "value" in record
+            for record in records
+        )
+        if service.transport != "skill_runtime" or not has_nonempty_record:
+            continue
+        if service.runtime_entrypoint is None:
+            raise ReplayCapabilityError(
+                "skill runtime with recorded responses requires an entrypoint"
+            )
+        runtime_entrypoint = _resolve_output_file(
+            runtime_root,
+            service.runtime_entrypoint,
+        )
+        try:
+            source = runtime_entrypoint.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ReplayCapabilityError(
+                "skill runtime entrypoint must be readable UTF-8 source"
+            ) from exc
+        if not _runtime_consumes_recorded_response_index(source):
+            raise ReplayCapabilityError(
+                "skill runtime with recorded responses must consume "
+                f"{REPLAY_RESPONSE_INDEX_ENV} as a JSON sidecar file path, "
+                "not a numeric index: open the path, iterate "
+                "index_object['records'], and project record['value']; do not "
+                "substitute a recursive scan of the raw fixture"
+            )
+
+
+def _runtime_consumes_recorded_response_index(source: str) -> bool:
+    """Recognize the minimal language-level sidecar consumption contract."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    reads_environment_binding = False
+    accessed_keys: set[object] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            key_node = node.slice
+            if isinstance(key_node, ast.Constant):
+                accessed_keys.add(key_node.value)
+                if key_node.value == REPLAY_RESPONSE_INDEX_ENV:
+                    reads_environment_binding = True
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            key = node.args[0].value
+            if node.func.attr == "get":
+                accessed_keys.add(key)
+            if (
+                key == REPLAY_RESPONSE_INDEX_ENV
+                and node.func.attr in {"get", "getenv"}
+            ):
+                reads_environment_binding = True
+    # The framework index builder only emits records whose projected values
+    # are non-empty. Runtimes may still inspect the ``non_empty`` metadata, but
+    # requiring that exact spelling would reject an equivalent bounded
+    # records/value projection before the precise protocol probe can verify it.
+    return reads_environment_binding and {"records", "value"}.issubset(
+        accessed_keys
+    )
 
 
 def _parse_manifest(raw: Mapping[str, Any]) -> ReplayCapabilityManifest:
@@ -1193,6 +1382,33 @@ def _build_recorded_response_index(
                 (item, (*path, str(index)), inherited_operation, decoded_depth)
                 for index, item in reversed(list(enumerate(node[:4096])))
             )
+    # This sidecar is a runtime selection index, not a raw event log. Preserve
+    # the source ordinal, but put bounded, probeable values first so the public
+    # "first non_empty record" rule agrees with the framework's strict probe.
+    # Otherwise a truncated JSON-looking wrapper can precede a later decoded
+    # composite: the runtime selects the wrapper while preflight silently
+    # derives expectations from the composite.
+    for record in records:
+        assertion_count, transport_ready = _runtime_response_record_evidence(
+            record.get("value")
+        )
+        record["protocol_eligible"] = (
+            record.get("non_empty") is True and assertion_count > 0
+        )
+        record["transport_ready"] = (
+            record["protocol_eligible"] and transport_ready
+        )
+        record["semantic_payload_score"] = _runtime_response_semantic_score(
+            record.get("value")
+        )
+    records.sort(
+        key=lambda record: (
+            not bool(record.get("protocol_eligible")),
+            not bool(record.get("transport_ready")),
+            -int(record.get("semantic_payload_score") or 0),
+            int(record.get("ordinal") or 0),
+        )
+    )
     # A trajectory may label the producer operation (for example
     # ``read_file``), while a skill-owned adapter receives a protocol method
     # (for example ``Runtime.evaluate``).  Alias each declared probe operation
@@ -1230,6 +1446,119 @@ def _build_recorded_response_index(
         "operations": operations[:64],
         "records": records,
     }
+
+
+def _runtime_response_record_evidence(value: Any) -> tuple[int, bool]:
+    """Return bounded assertion count and direct-transport eligibility.
+
+    This mirrors the generic replay probe's value rules without persisting
+    assertion text. JSON-looking strings are recursively decoded, so an
+    oversized or truncated wrapper is not preferred over a complete record.
+    """
+
+    selected: set[str] = set()
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    visited = 0
+    while pending and visited < 4096 and len(selected) < 2:
+        current, decoded_depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            encoded = json.dumps(
+                current,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).strip()
+            if encoded and len(encoded) <= 4096:
+                selected.add(encoded)
+            pending.extend(
+                (nested, decoded_depth)
+                for nested in reversed(list(current.values())[:512])
+            )
+            continue
+        if isinstance(current, (list, tuple)):
+            encoded = json.dumps(
+                current,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).strip()
+            if encoded and len(encoded) <= 4096:
+                selected.add(encoded)
+            pending.extend(
+                (nested, decoded_depth)
+                for nested in reversed(list(current)[:512])
+            )
+            continue
+        if isinstance(current, str):
+            stripped = current.strip()
+            if (
+                decoded_depth < 4
+                and stripped[:1] in {"{", "["}
+                and len(stripped) <= 64 * 1024
+            ):
+                try:
+                    decoded = json.loads(stripped)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, (Mapping, list)):
+                    pending.append((decoded, decoded_depth + 1))
+                    continue
+            if stripped and len(stripped) <= 4096:
+                selected.add(stripped)
+        elif isinstance(current, (int, float)) and not isinstance(current, bool):
+            selected.add(json.dumps(current, ensure_ascii=False))
+
+    try:
+        encoded_bytes = len(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError):
+        encoded_bytes = 48 * 1024 + 1
+    return len(selected), encoded_bytes <= 48 * 1024
+
+
+def _runtime_response_semantic_score(value: Any) -> int:
+    """Rank bounded records by task-bearing payload richness.
+
+    Transport readiness alone cannot distinguish an execution-status envelope
+    from the actual bounded content captured later in the same operation.  Use
+    only generic structural signals so response indexes prefer richer payloads
+    without depending on a task, endpoint, field name, or fixture value.
+    """
+
+    pending: list[Any] = [value]
+    visited = 0
+    scalar_count = 0
+    container_count = 0
+    text_chars = 0
+    while pending and visited < 4096:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            container_count += 1
+            pending.extend(reversed(list(current.values())[:512]))
+        elif isinstance(current, (list, tuple)):
+            container_count += 1
+            pending.extend(reversed(list(current)[:512]))
+        elif isinstance(current, str):
+            stripped = current.strip()
+            if stripped:
+                scalar_count += 1
+                text_chars += min(len(stripped), 32 * 1024)
+        elif isinstance(current, (int, float)) and not isinstance(current, bool):
+            scalar_count += 1
+            text_chars += len(str(current))
+
+    return (
+        min(text_chars, 64 * 1024)
+        + min(scalar_count, 256) * 32
+        + min(container_count, 256) * 8
+    )
 
 
 def _declared_probe_operations(
@@ -1999,7 +2328,12 @@ def _validate_declared_output_files(
     undeclared = observed - allowed
     if undeclared:
         raise ReplayCapabilityError(
-            f"replay capability produced undeclared output files: {sorted(undeclared)}"
+            "replay capability produced undeclared output files: "
+            f"{sorted(undeclared)}. Remove them: the compiler may write only "
+            "result.json and its declared evidence fixtures. The framework "
+            "derives the recorded-response sidecar after compile and supplies "
+            "its path through AWORLD_REPLAY_RESPONSE_INDEX automatically; do "
+            "not write, declare, relocate, or pass a compiler-owned response index"
         )
 
 
@@ -2086,16 +2420,24 @@ def replay_process_resource_limiter(
 def replay_process_memory_bytes(process_id: int) -> int:
     if sys.platform != "darwin":
         return 0
+    native_rss = _darwin_process_memory_bytes(process_id)
+    if native_rss is not None:
+        return native_rss
     ps = Path("/bin/ps")
     if not ps.is_file():
         raise ReplayCapabilityError("memory watchdog requires /bin/ps")
-    result = subprocess.run(
-        [str(ps), "-o", "rss=", "-p", str(process_id)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=1.0,
-    )
+    try:
+        result = subprocess.run(
+            [str(ps), "-o", "rss=", "-p", str(process_id)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+    except subprocess.TimeoutExpired:
+        # RSS is sampled repeatedly. A transient scheduler delay must not turn a
+        # successfully completed replay into an infrastructure failure.
+        return 0
     value = result.stdout.strip()
     if not value:
         return 0

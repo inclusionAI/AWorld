@@ -25,6 +25,7 @@ from aworld_cli.executors.continuous import ContinuousExecutor
 from aworld_cli.models import AgentInfo
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
+from aworld_cli.runtime.cli import _apply_runtime_skill_paths_to_swarm
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
 from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
 from aworld.plugins.discovery import discover_plugins
@@ -48,6 +49,27 @@ def _get_builtin_goal_plugin_root() -> Path:
         / "builtin_plugins"
         / "goal_session"
     )
+
+
+def test_explicit_runtime_skill_paths_reach_task_time_resolver() -> None:
+    conf = SimpleNamespace(
+        ext={
+            "skill_resolver_inputs": {
+                "compatibility_sources": ["/existing/skills"],
+            }
+        }
+    )
+    swarm = SimpleNamespace(_communicate_agent=SimpleNamespace(conf=conf))
+
+    _apply_runtime_skill_paths_to_swarm(
+        swarm,
+        ("/candidate/skills", "/existing/skills"),
+    )
+
+    assert conf.ext["skill_resolver_inputs"]["compatibility_sources"] == [
+        "/existing/skills",
+        "/candidate/skills",
+    ]
 
 
 def test_skill_install_and_list_cli(
@@ -738,7 +760,7 @@ def test_run_top_level_command_emits_machine_readable_trajectory(
         remote_backend=None,
         agent_dir=None,
         agent_file=None,
-        skill_path=None,
+        skill_path=["/tmp/candidate-skills"],
         env_file=".env",
         emit_trajectory=True,
     )
@@ -781,7 +803,7 @@ def test_run_top_level_command_dispatches_global_evolve_mode(
         remote_backend=None,
         agent_dir=None,
         agent_file=None,
-        skill_path=None,
+        skill_path=["/tmp/candidate-skills"],
         env_file=".env",
         emit_trajectory=False,
     )
@@ -807,6 +829,7 @@ def test_run_top_level_command_dispatches_global_evolve_mode(
     assert config.judge_config.mode == "agent_md"
     assert config.judge_config.agent_path == "agent.md"
     assert config.judge_config.model_profile == "judge"
+    assert captured["skill_paths"] == ["/tmp/candidate-skills"]
 
 
 def test_run_top_level_command_prefers_task_response_trajectory(

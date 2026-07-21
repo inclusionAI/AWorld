@@ -319,6 +319,25 @@ def test_dependency_analysis_strips_sentence_punctuation_from_urls(
     assert requirement.identifier == "https://example.com/report"
 
 
+def test_dependency_analysis_stops_at_unicode_sentence_punctuation(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=_dataset(
+            "Use https://example.com/report，then compare it with prior evidence."
+        ),
+        workspace_root=workspace,
+    )
+
+    requirement = next(
+        item for item in report.requirements if item.kind == "http_resource"
+    )
+    assert requirement.identifier == "https://example.com/report"
+
+
 def test_dependency_analysis_preserves_balanced_url_parentheses(
     tmp_path: Path,
 ) -> None:

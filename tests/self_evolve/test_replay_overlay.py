@@ -37,19 +37,25 @@ from aworld.self_evolve.replay import (
     candidate_replay_is_comparable,
     load_candidate_replay_result,
     _invalid_evidence_manifest_entry_reason,
+    _evidence_manifest_metrics,
     _member_artifact_name,
     _member_baseline_replay_dir,
     _probe_advertised_websockets,
     _attach_replay_service_protocol_diagnostics,
+    _classify_candidate_task_rollout_nontermination,
     _preserve_replay_service_protocol_trace,
+    _protocol_probe_response_mismatch,
     _probe_replay_service,
+    _replay_capability_recorded_response_values,
     _read_websocket_frame,
     _replay_capability_fixture_summaries,
+    _replay_dependency_boundary_failure,
     replay_capability_fixture_leaf_values,
     replay_capability_fixture_response_leaf_values,
     _replay_service_failure_with_stderr,
     _replay_failure_outcome,
     _run_replay_cli,
+    _validate_nonempty_correlated_json_response,
     _validate_replay_service_protocol_trace,
     _validate_websocket_handshake_response,
 )
@@ -130,6 +136,169 @@ def test_replay_capability_fixture_summary_exposes_shape_without_content(
         }
     ]
     assert "secret-value" not in json.dumps(summaries)
+
+
+def test_recorded_response_values_are_scoped_by_sidecar_operation(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    fixture = frozen_root / "fixtures" / "fixture.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("{}", encoding="utf-8")
+    fixture.with_suffix(".responses.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.recorded_response_index.v1",
+                "records": [
+                    {
+                        "operation": "records.alpha",
+                        "non_empty": True,
+                        "value": {
+                            "message": "alpha recorded",
+                            "items": [1, 2],
+                        },
+                    },
+                    {
+                        "operation": "records.beta",
+                        "non_empty": True,
+                        "value": {"message": "beta recorded"},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo.replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=(
+            ReplayServiceSpec(
+                service_id="svc-1",
+                requirement_id="req-1",
+                transport="skill_runtime",
+                response_fixture="fixture.json",
+            ),
+        ),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    values = _replay_capability_recorded_response_values(capability)
+
+    assert values["fixture.json"]["records.alpha"] == (
+        '{"items":[1,2],"message":"alpha recorded"}',
+        "alpha recorded",
+        "1",
+        "2",
+    )
+    assert "beta recorded" not in values["fixture.json"]["records.alpha"]
+    assert values["fixture.json"]["records.beta"] == (
+        '{"message":"beta recorded"}',
+        "beta recorded",
+    )
+
+
+def test_correlated_probe_matches_encoded_record_container_semantically() -> None:
+    recorded_container = '{"items":[1,2],"message":"alpha recorded"}'
+    response_payload = json.dumps(
+        {
+            "id": 7,
+            "result": {
+                "items": [1, 2],
+                "message": "alpha recorded",
+            },
+        }
+    ).encode("utf-8")
+
+    _validate_nonempty_correlated_json_response(
+        request_text='{"id":7,"method":"records.alpha"}',
+        response_payload=response_payload,
+        response_contains="alpha recorded",
+        required_recorded_response_values=(
+            recorded_container,
+            "alpha recorded",
+        ),
+    )
+
+    with pytest.raises(
+        ReplayServiceProtocolError,
+        match="surrounding recorded response context",
+    ):
+        _validate_nonempty_correlated_json_response(
+            request_text='{"id":7,"method":"records.alpha"}',
+            response_payload=json.dumps(
+                {"id": 7, "result": {"message": "alpha recorded"}}
+            ).encode("utf-8"),
+            response_contains="alpha recorded",
+            required_recorded_response_values=(
+                recorded_container,
+                "alpha recorded",
+            ),
+        )
+
+
+def test_http_probe_requires_surrounding_recorded_response_context() -> None:
+    class RecordedHTTPHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "result": {
+                        "items": [1, 2],
+                        "message": "alpha recorded",
+                    },
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RecordedHTTPHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _probe_replay_service(
+            "127.0.0.1",
+            server.server_port,
+            "http",
+            "/",
+            required_recorded_response_values=(
+                '{"items":[1,2],"message":"alpha recorded"}',
+                "alpha recorded",
+            ),
+        )
+        with pytest.raises(
+            ReplayServiceProtocolError,
+            match="surrounding recorded response context",
+        ):
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "http",
+                "/",
+                required_recorded_response_values=(
+                    '{"items":[1,2],"message":"alpha recorded"}',
+                    "missing recorded sibling",
+                ),
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_replay_capability_fixture_leaf_values_walk_arbitrary_nested_arrays(
@@ -802,6 +971,74 @@ def test_protocol_probe_mismatch_reports_actionable_bounded_diagnostics() -> Non
     assert len(message) < 500
 
 
+def test_protocol_probe_mismatch_classifies_recorded_response_selector_drift() -> None:
+    recorded = {
+        "success": True,
+        "message": "recorded tool response",
+    }
+
+    class RecordedResponseHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            body = json.dumps(recorded).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RecordedResponseHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(ReplayServiceProtocolError) as error:
+            _probe_replay_service(
+                "127.0.0.1",
+                server.server_port,
+                "http",
+                "/",
+                response_contains="compiler selected another fixture leaf",
+                diagnostic_recorded_response_values=(
+                    json.dumps(
+                        recorded,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "recorded tool response",
+                ),
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    message = str(error.value)
+    assert "classification=recorded_response_selector_drift" in message
+    assert (
+        "required_change=align_compiler_runtime_recorded_response_selection"
+        in message
+    )
+    assert "recorded tool response" in message
+
+
+def test_protocol_probe_mismatch_does_not_misclassify_recorded_expected_value() -> None:
+    message = _protocol_probe_response_mismatch(
+        kind="http",
+        path="/",
+        expected="recorded expected",
+        response=b'HTTP/1.0 200 OK\r\n\r\n{"value":"different"}',
+        diagnostic_recorded_response_values=("recorded expected",),
+    )
+
+    assert "recorded_response_selector_drift" not in message
+
+
 def test_http_probe_accepts_semantically_equivalent_json_descendant() -> None:
     expected_value = {
         "success": True,
@@ -1349,6 +1586,113 @@ def test_failed_replay_includes_preserved_protocol_trace_diagnostics(
             ),
         }
     ]
+
+
+def test_candidate_timeout_after_completed_data_interaction_is_repairable() -> None:
+    trace = "\n".join(
+        (
+            '{"direction":"received","sequence":0,"kind":"http",'
+            '"fields":["healthz"],"correlation":{"id":"opaque"}}',
+            '{"direction":"emitted","sequence":1,"kind":"http",'
+            '"fields":["healthz"],"correlation":{"id":"opaque"}}',
+            '{"direction":"received","sequence":2,"kind":"http",'
+            '"fields":["content"],"correlation":{"id":"opaque"}}',
+            '{"direction":"emitted","sequence":3,"kind":"http",'
+            '"fields":["content"],"correlation":{"id":"opaque"}}',
+        )
+    )
+    result = ReplayExecutionResult(
+        status="failed",
+        trajectory=[],
+        failure={
+            "type": "TimeoutExpired",
+            "reason": "replay timed out",
+            "diagnostics": {
+                "replay_service_protocol_traces": [{"tail": trace}],
+            },
+        },
+    )
+
+    classified = _classify_candidate_task_rollout_nontermination(
+        result,
+        variant_id="candidate-1",
+    )
+    baseline = _classify_candidate_task_rollout_nontermination(
+        result,
+        variant_id="baseline",
+    )
+
+    assert classified.failure == {
+        **result.failure,
+        "outcome": "candidate_failure",
+        "failure_class": "candidate_task_behavior",
+        "failure_stage": "task_rollout",
+        "repairable": True,
+        "completed_data_plane_operations": ["content"],
+    }
+    assert baseline.failure == result.failure
+
+
+def test_candidate_timeout_after_completed_root_http_interaction_is_repairable() -> None:
+    trace = "\n".join(
+        (
+            '{"direction":"received","sequence":0,"kind":"http",'
+            '"fields":["method","path"],'
+            '"correlation":{"path":"/","method":"GET"}}',
+            '{"direction":"emitted","sequence":1,"kind":"http",'
+            '"fields":["ok","result","correlation"],'
+            '"correlation":{"path":"/","method":"GET"}}',
+        )
+    )
+    result = ReplayExecutionResult(
+        status="failed",
+        trajectory=[],
+        failure={
+            "type": "TimeoutExpired",
+            "reason": "replay timed out",
+            "diagnostics": {
+                "replay_service_protocol_traces": [{"tail": trace}],
+            },
+        },
+    )
+
+    classified = _classify_candidate_task_rollout_nontermination(
+        result,
+        variant_id="candidate-1",
+    )
+
+    assert classified.failure is not None
+    assert classified.failure["failure_class"] == "candidate_task_behavior"
+    assert classified.failure["completed_data_plane_operations"] == ["/"]
+
+
+def test_candidate_readiness_only_timeout_is_not_task_behavior_failure() -> None:
+    trace = "\n".join(
+        (
+            '{"direction":"received","sequence":0,"kind":"http",'
+            '"fields":["healthz"],"correlation":{"id":"opaque"}}',
+            '{"direction":"emitted","sequence":1,"kind":"http",'
+            '"fields":["healthz"],"correlation":{"id":"opaque"}}',
+        )
+    )
+    result = ReplayExecutionResult(
+        status="failed",
+        trajectory=[],
+        failure={
+            "type": "TimeoutExpired",
+            "reason": "replay timed out",
+            "diagnostics": {
+                "replay_service_protocol_traces": [{"tail": trace}],
+            },
+        },
+    )
+
+    classified = _classify_candidate_task_rollout_nontermination(
+        result,
+        variant_id="candidate-1",
+    )
+
+    assert classified.failure == result.failure
 
 
 def test_protocol_trace_diagnostics_keep_terminal_interactions(
@@ -3729,6 +4073,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
             task_text="Replay this task",
             skill_root=str(tmp_path / "skills"),
             artifact_dir=str(tmp_path / "artifacts"),
+            skill_names=("demo",),
             agent="Aworld",
         )
     )
@@ -3736,12 +4081,17 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert result.succeeded is True
     assert result.trajectory == trajectory
     assert "--emit-trajectory" in captured["command"]
+    assert captured["command"][
+        captured["command"].index("--skill") + 1
+    ] == "demo"
     task_index = captured["command"].index("--task") + 1
     task_text = captured["command"][task_index]
     assert task_text.startswith("Replay this task")
     assert "Self-evolve replay evidence requirements" in task_text
     assert "artifact-first" in task_text
     assert "bounded structured summaries" in task_text
+    assert "A line-count limit such as `head -N` is not a byte bound" in task_text
+    assert "explicit byte-bounded excerpt or selected structured fields" in task_text
     assert "compacted" in task_text
     assert "Self-evolve replay runtime contract" in task_text
     assert "Task-plane operations required by the original task are allowed" in task_text
@@ -3899,6 +4249,41 @@ async def test_aworld_cli_replay_executor_rejects_undeclared_loopback_fallback(
     assert result.metrics["undeclared_loopback_endpoint_count"] == 1
 
 
+def test_replay_dependency_boundary_ignores_unresolved_endpoint_templates() -> None:
+    trajectory = [
+        {
+            "action": {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "mcp",
+                            "arguments": json.dumps(
+                                {
+                                    "command": (
+                                        "for port in 50001 50002; do "
+                                        'curl "http://127.0.0.1:${port}/"; '
+                                        "done; "
+                                        "curl http://127.0.0.1:50001/"
+                                    )
+                                }
+                            ),
+                        }
+                    }
+                ]
+            }
+        }
+    ]
+
+    failure = _replay_dependency_boundary_failure(
+        trajectory,
+        environment={
+            "AWORLD_REPLAY_ENDPOINT_RECORDED": "http://127.0.0.1:50001"
+        },
+    )
+
+    assert failure is None
+
+
 @pytest.mark.asyncio
 async def test_aworld_cli_replay_executor_normalizes_stale_workspace_paths(
     monkeypatch: pytest.MonkeyPatch,
@@ -4051,6 +4436,91 @@ async def test_aworld_cli_replay_executor_accepts_compacted_markers_with_valid_m
         == "bounded non-compacted evidence excerpt"
     )
     assert bundle["entries"][0]["bounded_evidence"]["truncated"] is False
+
+
+def test_evidence_manifest_accepts_consecutive_pretty_printed_json_objects(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    first_artifact = artifact_dir / "first.txt"
+    second_artifact = artifact_dir / "second.txt"
+    first_artifact.write_text("first bounded evidence", encoding="utf-8")
+    second_artifact.write_text("second bounded evidence", encoding="utf-8")
+    manifest = artifact_dir / "evidence_manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "source_id": "first",
+                "artifact_path": str(first_artifact),
+                "extraction_method": "bounded_extract",
+                "bounded_excerpt": "first bounded evidence",
+            },
+            indent=2,
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "source_id": "second",
+                "artifact_path": str(second_artifact),
+                "extraction_method": "bounded_extract",
+                "bounded_excerpt": "second bounded evidence",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = _evidence_manifest_metrics(
+        artifact_dir=artifact_dir,
+        evidence_manifest=manifest,
+        workspace_root=tmp_path,
+    )
+
+    assert metrics["evidence_manifest_valid"] is True
+    assert metrics["evidence_manifest_entry_count"] == 2
+    assert "evidence_manifest_invalid_entry_count" not in metrics
+    assert metrics["evidence_bundle_valid"] is True
+
+
+def test_evidence_manifest_normalizes_bounded_excerpt_fields(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    artifact = artifact_dir / "source.json"
+    artifact.write_text("x" * 20_000, encoding="utf-8")
+    manifest = artifact_dir / "evidence_manifest.jsonl"
+    excerpts = [
+        "Evaluation runs compare outputs against explicit criteria.",
+        "Scores can be attached to traces for later analysis.",
+    ]
+    manifest.write_text(
+        json.dumps(
+            {
+                "source_id": "documentation",
+                "artifact_path": str(artifact),
+                "extraction_method": "selected_fields",
+                "bounded_excerpt_fields": excerpts,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = _evidence_manifest_metrics(
+        artifact_dir=artifact_dir,
+        evidence_manifest=manifest,
+        workspace_root=tmp_path,
+    )
+    bundle = json.loads((artifact_dir / "evidence_bundle.json").read_text())
+
+    assert metrics["evidence_manifest_valid"] is True
+    assert metrics["evidence_bundle_valid"] is True
+    assert bundle["entries"][0]["bounded_evidence"] == {
+        "bounded_excerpts": excerpts,
+    }
 
 
 @pytest.mark.asyncio
@@ -4225,6 +4695,88 @@ async def test_aworld_cli_replay_executor_accepts_non_file_evidence_metadata(
             "source_id": "scheduled_notification",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_aworld_cli_replay_executor_canonicalizes_bounded_metadata_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "Tool output compacted for context reuse.",
+                    }
+                ]
+            },
+            "action": {"content": "Analysis completed.", "is_agent_finished": "True"},
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    def fake_run(command, **kwargs):
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "evidence_manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "source_id": "aggregate_analysis",
+                    "evidence_type": "metadata",
+                    "extraction_method": "bounded structured synthesis",
+                    "bounded_excerpt": {
+                        "sources_examined": 4,
+                        "claims_supported": ["claim-a", "claim-b"],
+                        "complete": True,
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Tool output compacted for context reuse.\n"
+            + json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("aworld.self_evolve.replay._run_replay_cli", fake_run)
+
+    result = await AWorldCliReplayExecutor()(
+        ReplayExecutionRequest(
+            variant_id="candidate",
+            task_id="task-1",
+            candidate_id="cand-1",
+            workspace_root=str(tmp_path),
+            task_input={"content": "Replay this task"},
+            task_text="Replay this task",
+            skill_root=str(tmp_path / "skills"),
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.metrics["evidence_bundle_valid"] is True
+    assert "evidence_manifest_invalid_entry_count" not in result.metrics
+    bundle = json.loads((tmp_path / "artifacts" / "evidence_bundle.json").read_text())
+    assert bundle["entries"][0]["metadata"] == {
+        "bounded_excerpt": {
+            "sources_examined": 4,
+            "claims_supported": ["claim-a", "claim-b"],
+            "complete": True,
+        }
+    }
 
 
 def test_replay_evidence_manifest_rejects_oversized_metadata(tmp_path: Path) -> None:

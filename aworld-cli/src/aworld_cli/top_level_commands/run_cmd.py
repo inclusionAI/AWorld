@@ -137,6 +137,7 @@ class RunTopLevelCommand:
                 prompt=args.task,
                 agent_name=agent_name,
                 requested_skill_names=args.skill,
+                skill_paths=args.skill_path,
                 max_runs=args.max_runs,
                 max_cost=args.max_cost,
                 max_duration=args.max_duration,

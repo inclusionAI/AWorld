@@ -29,6 +29,17 @@ class TargetInventory:
                 return entry
         return None
 
+    def only_target_types(self, target_types: Iterable[str]) -> TargetInventory:
+        allowed = frozenset(target_types)
+        return TargetInventory(
+            entries=tuple(
+                entry for entry in self.entries if entry.target.target_type in allowed
+            ),
+            draft_skill_root=(
+                self.draft_skill_root if "skill" in allowed else None
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class TargetSelectionReport:
@@ -92,30 +103,14 @@ class TrajectoryCreditAssigner:
         evidence_ids = _matching_evidence_ids(trace_pack, signal.keywords)
 
         if signal.target_type == "no_target":
-            llm_report = self._assign_from_llm(trace_pack, signals)
-            if llm_report is not None:
-                return llm_report
-            existing_reusable_skill_report = self._assign_existing_reusable_skill(
+            fallback_report = self._assign_fallback_target(
                 trace_pack,
                 serialized=serialized,
                 existing_signals=signals,
+                include_llm=True,
             )
-            if existing_reusable_skill_report is not None:
-                return existing_reusable_skill_report
-            draft_skill_report = self._assign_new_skill_candidate(
-                trace_pack,
-                serialized=serialized,
-                existing_signals=signals,
-            )
-            if draft_skill_report is not None:
-                return draft_skill_report
-            skill_report = self._assign_from_skill_inventory(
-                trace_pack,
-                serialized=serialized,
-                existing_signals=signals,
-            )
-            if skill_report is not None:
-                return skill_report
+            if fallback_report is not None:
+                return fallback_report
             return TargetSelectionReport(
                 selected_target=None,
                 confidence=signal.confidence,
@@ -127,26 +122,47 @@ class TrajectoryCreditAssigner:
             )
 
         entry = self.inventory.find(signal.target_type, signal.target_id)
-        if entry is None and "browser_runtime_issue" in signals:
-            skill_report = self._assign_from_skill_inventory(
+        if entry is None:
+            unavailable_signal = f"unavailable_signaled_target:{signal.target_type}"
+            fallback_signals = _dedupe(signals + (unavailable_signal,))
+            fallback_report = self._assign_fallback_target(
                 trace_pack,
                 serialized=serialized,
-                existing_signals=signals,
+                existing_signals=fallback_signals,
+                include_llm=True,
             )
-            if skill_report is not None:
-                return skill_report
-        if entry is None:
+            if fallback_report is not None:
+                diagnostics = dict(fallback_report.diagnostics or {})
+                diagnostics["unavailable_signaled_target"] = {
+                    "target_type": signal.target_type,
+                    "target_id": signal.target_id,
+                }
+                return TargetSelectionReport(
+                    selected_target=fallback_report.selected_target,
+                    confidence=fallback_report.confidence,
+                    evidence_step_ids=fallback_report.evidence_step_ids,
+                    failure_category=fallback_report.failure_category,
+                    signals=fallback_report.signals,
+                    no_target_reason=fallback_report.no_target_reason,
+                    diagnostics=diagnostics,
+                )
             return TargetSelectionReport(
                 selected_target=None,
                 confidence=0.0,
                 evidence_step_ids=evidence_ids,
                 failure_category="no_target",
-                signals=signals,
+                signals=fallback_signals,
                 no_target_reason=(
                     f"deterministic signal selected {signal.target_type}:{signal.target_id}, "
-                    "but the target is not present in inventory"
+                    "but the target is not available in the active capability inventory"
                 ),
-                diagnostics={"pack_id": trace_pack.pack_id},
+                diagnostics={
+                    "pack_id": trace_pack.pack_id,
+                    "unavailable_signaled_target": {
+                        "target_type": signal.target_type,
+                        "target_id": signal.target_id,
+                    },
+                },
             )
 
         return TargetSelectionReport(
@@ -156,7 +172,39 @@ class TrajectoryCreditAssigner:
             failure_category=signal.failure_category,
             signals=signals,
             diagnostics={"pack_id": trace_pack.pack_id},
-            )
+        )
+
+    def _assign_fallback_target(
+        self,
+        trace_pack: TracePack,
+        *,
+        serialized: str,
+        existing_signals: tuple[str, ...],
+        include_llm: bool,
+    ) -> TargetSelectionReport | None:
+        if include_llm:
+            llm_report = self._assign_from_llm(trace_pack, existing_signals)
+            if llm_report is not None:
+                return llm_report
+        existing_reusable_skill_report = self._assign_existing_reusable_skill(
+            trace_pack,
+            serialized=serialized,
+            existing_signals=existing_signals,
+        )
+        if existing_reusable_skill_report is not None:
+            return existing_reusable_skill_report
+        draft_skill_report = self._assign_new_skill_candidate(
+            trace_pack,
+            serialized=serialized,
+            existing_signals=existing_signals,
+        )
+        if draft_skill_report is not None:
+            return draft_skill_report
+        return self._assign_from_skill_inventory(
+            trace_pack,
+            serialized=serialized,
+            existing_signals=existing_signals,
+        )
 
     def _assign_new_skill_candidate(
         self,
