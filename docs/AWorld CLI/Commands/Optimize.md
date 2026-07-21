@@ -236,8 +236,9 @@ promoted to run-wide infrastructure failures.
 
 Member manifests fail closed when members are missing, duplicated, unexpected, empty,
 or carry a request that changes root-level run, candidate, target, overlay, agent, or
-provenance fields. Only task identity/input, task-input fingerprint, member baseline
-path, and the deterministic repetition distribution may differ per member. Numeric
+provenance fields. Task identity/input, task-input fingerprint, member baseline path,
+and repetition counts must exactly match the values deterministically derived for that
+dataset member; every other request field must equal the root request. Numeric
 repetition child directories are reconstructed when lifecycle v2 artifacts are loaded,
 so paired evaluation has the same repetition cardinality before and after persistence.
 
