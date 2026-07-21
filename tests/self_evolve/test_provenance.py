@@ -6,6 +6,8 @@ import pytest
 
 from aworld.self_evolve.provenance import (
     TargetProvenance,
+    TargetProvenanceResolution,
+    TargetProvenanceStatus,
     resolve_target_provenance,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
@@ -156,6 +158,60 @@ def test_provenance_resolution_returns_structured_unresolved_result() -> None:
     assert resolution.status == "unresolved"
     assert resolution.provenance is None
     assert resolution.reason == "target identity is incomplete"
+
+
+@pytest.mark.parametrize("status", ["unknown", "legacy", "bogus", ""])
+def test_provenance_resolution_rejects_untyped_status_values(status: str) -> None:
+    with pytest.raises(ValueError):
+        TargetProvenanceResolution(
+            status=status,
+            provenance=None,
+            reason="invalid status",
+        )
+
+
+def test_provenance_resolution_normalizes_typed_status_and_enforces_state() -> None:
+    target = SelfEvolveTargetRef("skill", "capability")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="repository",
+        trust_level="local",
+        protected=False,
+        reason="local capability",
+    )
+
+    resolved = TargetProvenanceResolution(
+        status="resolved",
+        provenance=provenance,
+        reason="resolved locally",
+    )
+    unresolved = TargetProvenanceResolution(
+        status="unresolved",
+        provenance=None,
+        reason="could not resolve",
+    )
+
+    assert resolved.status is TargetProvenanceStatus.RESOLVED
+    assert unresolved.status is TargetProvenanceStatus.UNRESOLVED
+    with pytest.raises(ValueError, match="resolved provenance resolution requires"):
+        TargetProvenanceResolution(
+            status="resolved",
+            provenance=None,
+            reason="missing provenance",
+        )
+    with pytest.raises(ValueError, match="unresolved provenance resolution cannot"):
+        TargetProvenanceResolution(
+            status="unresolved",
+            provenance=provenance,
+            reason="must not carry authority",
+        )
+    with pytest.raises(ValueError, match="requires typed target provenance"):
+        TargetProvenanceResolution(
+            status="resolved",
+            provenance={"trust_level": "local"},
+            reason="untyped authorization claim",
+        )
 
 
 @pytest.mark.parametrize("link_kind", ["directory", "file"])

@@ -663,30 +663,30 @@ class SelfEvolveRunner:
                     workspace_root=self.store.workspace_root,
                 )
 
-        if supplied_decision is not None:
-            if not supplied_decision.provenance_resolution.resolved:
-                provenance_resolution = supplied_decision.provenance_resolution
-            elif (
-                supplied_decision.provenance_resolution.provenance
-                != provenance_resolution.provenance
-            ):
-                provenance_resolution = TargetProvenanceResolution(
-                    status=TargetProvenanceStatus.UNRESOLVED,
-                    provenance=None,
-                    reason=(
-                        "supplied target decision does not match authoritative resolution"
-                    ),
-                )
-
+        authoritative_resolution = provenance_resolution
         if (
-            supplied_provenance is not None
-            and provenance_resolution.provenance != supplied_provenance
+            supplied_decision is not None
+            and supplied_decision.provenance_resolution
+            != authoritative_resolution
         ):
             provenance_resolution = TargetProvenanceResolution(
                 status=TargetProvenanceStatus.UNRESOLVED,
                 provenance=None,
-                reason="supplied provenance does not match authoritative resolution",
+                reason=(
+                    "supplied target decision does not match authoritative resolution"
+                ),
             )
+
+        if supplied_provenance is not None:
+            if (
+                not authoritative_resolution.resolved
+                or authoritative_resolution.provenance != supplied_provenance
+            ):
+                provenance_resolution = TargetProvenanceResolution(
+                    status=TargetProvenanceStatus.UNRESOLVED,
+                    provenance=None,
+                    reason="supplied provenance does not match authoritative resolution",
+                )
             if target_selection_report is not None:
                 target_selection_report = replace(
                     target_selection_report,
@@ -694,7 +694,11 @@ class SelfEvolveRunner:
                     provenance_reason=provenance_resolution.reason,
                 )
 
-        target_provenance = provenance_resolution.provenance
+        target_provenance = (
+            provenance_resolution.provenance
+            if provenance_resolution.resolved
+            else None
+        )
         target_provenance_unresolved_reason = (
             None if provenance_resolution.resolved else provenance_resolution.reason
         )
@@ -3214,30 +3218,15 @@ def optimize_from_cli_request(
             trace_packs,
         )
         explicit_inventory = build_default_target_inventory(workspace_root)
-        if target_selection_report is not None:
-            explicit_decision = build_target_selection_decision(
-                target_selection_report,
-                inventory=explicit_inventory,
-                selection_origin="operator_explicit",
-                workspace_root=workspace_root,
-            )
-            target_selection_report = explicit_decision.report
-            target_provenance = explicit_decision.provenance
-            target_selection_decision = explicit_decision
-        else:
-            explicit_entry = explicit_inventory.find(
-                target_adapter.identity.target_type,
-                target_adapter.identity.target_id,
-            )
-            explicit_resolution = resolve_target_provenance(
-                target_adapter.identity,
-                selection_origin="operator_explicit",
-                inventory_provenance=(
-                    explicit_entry.provenance if explicit_entry is not None else None
-                ),
-                workspace_root=workspace_root,
-            )
-            target_provenance = explicit_resolution.provenance
+        explicit_decision = build_target_selection_decision(
+            target_selection_report,
+            inventory=explicit_inventory,
+            selection_origin=TargetSelectionOrigin.OPERATOR_EXPLICIT,
+            workspace_root=workspace_root,
+        )
+        target_selection_report = explicit_decision.report
+        target_provenance = explicit_decision.provenance
+        target_selection_decision = explicit_decision
 
     if include_prior_runs:
         built_dataset = _include_prior_run_cases(
@@ -3843,7 +3832,11 @@ def _rerun_evaluator_from_stored_run(
         provenance_resolution=authoritative_resolution,
         selection_origin=selection_origin,
     )
-    target_provenance = authoritative_resolution.provenance
+    target_provenance = (
+        authoritative_resolution.provenance
+        if authoritative_resolution.resolved
+        else None
+    )
     if apply_policy == "auto_verified" and evaluation_backend is None:
         evaluation_backend = _evaluation_backend_from_judge_config(
             judge_config,
@@ -8603,9 +8596,7 @@ def _target_selection_priority(report: TargetSelectionReport) -> int:
 def _explicit_target_selection_report(
     target: SelfEvolveTargetRef,
     trace_packs: tuple[TracePack, ...],
-) -> TargetSelectionReport | None:
-    if not trace_packs:
-        return None
+) -> TargetSelectionReport:
     evidence_step_ids = tuple(
         step.evidence_id
         for trace_pack in trace_packs

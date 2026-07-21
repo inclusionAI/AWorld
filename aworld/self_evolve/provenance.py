@@ -93,12 +93,34 @@ class TargetProvenanceResolution:
     provenance: TargetProvenance | None
     reason: str
 
+    def __post_init__(self) -> None:
+        typed_status = TargetProvenanceStatus(self.status)
+        object.__setattr__(self, "status", typed_status)
+        if self.provenance is not None and not isinstance(
+            self.provenance,
+            TargetProvenance,
+        ):
+            raise ValueError(
+                "provenance resolution requires typed target provenance"
+            )
+        if (
+            typed_status == TargetProvenanceStatus.RESOLVED
+            and self.provenance is None
+        ):
+            raise ValueError(
+                "resolved provenance resolution requires target provenance"
+            )
+        if (
+            typed_status == TargetProvenanceStatus.UNRESOLVED
+            and self.provenance is not None
+        ):
+            raise ValueError(
+                "unresolved provenance resolution cannot carry target provenance"
+            )
+
     @property
     def resolved(self) -> bool:
-        return (
-            self.status == TargetProvenanceStatus.RESOLVED
-            and self.provenance is not None
-        )
+        return self.status == TargetProvenanceStatus.RESOLVED
 
 
 _TRUSTED_COMBINATIONS = frozenset(
