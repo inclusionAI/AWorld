@@ -25,6 +25,10 @@ from aworld.self_evolve.evolution_context import (
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
+from aworld.self_evolve.repair_conformance import (
+    RepairConformanceContract,
+    compile_repair_conformance_contract,
+)
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, OptimizerLineage
 
 
@@ -74,6 +78,7 @@ class TraceReflectiveLLMMutator:
         seen_content_fingerprints: set[str] = set()
         require_targeted_delta = _request_has_high_baseline_regression(request)
         candidate_strategy_records: list[dict[str, Any]] = []
+        private_repair_contracts: dict[str, RepairConformanceContract] = {}
         candidate_generation_failure: dict[str, str] | None = None
         candidate_protocol_invalid_count = 0
         candidate_outputs: list[tuple[int, Any]] = []
@@ -201,6 +206,13 @@ class TraceReflectiveLLMMutator:
                 files=files,
             )
             candidates.append(candidate)
+            context = request.evolution_context or compile_evolution_context(request)
+            repair_focus = context.repair_focus_for_candidate(
+                candidate_index=index
+            )
+            private_contract = compile_repair_conformance_contract(repair_focus)
+            if private_contract is not None:
+                private_repair_contracts[candidate_id] = private_contract
             candidate_strategy_records.append(
                 {
                     "candidate_id": candidate_id,
@@ -243,6 +255,7 @@ class TraceReflectiveLLMMutator:
             candidates=tuple(candidates),
             lineage=tuple(lineage),
             diagnostics=diagnostics,
+            private_context=private_repair_contracts,
         )
 
 

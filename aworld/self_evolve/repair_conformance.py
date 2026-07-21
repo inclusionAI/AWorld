@@ -4,11 +4,12 @@ import ast
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 from aworld.self_evolve.replay_capability import (
+    FrozenReplayCapability,
     REPLAY_CAPABILITY_SCHEMA_VERSION,
     ReplayProtocolProbe,
     ReplayServiceSpec,
@@ -51,6 +52,12 @@ class RepairConformanceContract:
     required_fixture_probe_operations: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
+        """Return the private execution contract.
+
+        This representation may contain exact assertions and must only travel
+        through :class:`OptimizerResult.private_context`.  Reports, prompts,
+        feedback, and optimizer diagnostics must use :meth:`to_public_dict`.
+        """
         return {
             "focus_candidate_id": self.focus_candidate_id,
             "failure_codes": list(self.failure_codes),
@@ -78,8 +85,65 @@ class RepairConformanceContract:
             ),
         }
 
+    def to_public_dict(self) -> dict[str, object]:
+        """Return a content-free projection safe for prompts and artifacts."""
+
+        exact_probe = None
+        if self.exact_probe is not None:
+            encoded = self.exact_probe.expected_response.encode("utf-8")
+            exact_probe = {
+                "kind": self.exact_probe.kind,
+                "path": self.exact_probe.path,
+                "expected_response_fingerprint": (
+                    "sha256:" + hashlib.sha256(encoded).hexdigest()
+                ),
+                "expected_response_shape": {
+                    "kind": "text",
+                    "size_bucket": max(1, len(encoded)).bit_length(),
+                },
+                "private_contract_ref": (
+                    "repair-contract:"
+                    + hashlib.sha256(
+                        (
+                            self.focus_candidate_id
+                            + "\0"
+                            + self.exact_probe.kind
+                            + "\0"
+                            + self.exact_probe.path
+                            + "\0"
+                            + self.exact_probe.expected_response
+                        ).encode("utf-8")
+                    ).hexdigest()[:24]
+                ),
+            }
+        return {
+            "projection_schema_version": (
+                "aworld.self_evolve.repair_conformance.public.v1"
+            ),
+            "focus_candidate_id": self.focus_candidate_id,
+            "failure_codes": list(self.failure_codes),
+            "interaction_progress": self.interaction_progress,
+            "base_file_fingerprints": dict(self.base_file_fingerprints),
+            "required_branch_paths": list(self.required_branch_paths),
+            "base_branch_fingerprints": dict(self.base_branch_fingerprints),
+            "base_fixture_selector_fingerprints": dict(
+                self.base_fixture_selector_fingerprints
+            ),
+            "manifest_path": self.manifest_path,
+            "exact_probe": exact_probe,
+            "late_observed_operations": list(self.late_observed_operations),
+            "requires_fixture_derived_probe": self.requires_fixture_derived_probe,
+            "required_fixture_probe_operations": list(
+                self.required_fixture_probe_operations
+            ),
+        }
+
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "RepairConformanceContract":
+        if value.get("projection_schema_version") is not None:
+            raise ValueError(
+                "public repair conformance projections are not execution contracts"
+            )
         exact_raw = value.get("exact_probe")
         exact_probe = (
             ExactRepairProbe(
@@ -182,6 +246,10 @@ class RepairConformanceProbeGroup:
     probe_path: str
     operation: str | None
     case_ids: tuple[str, ...]
+    selector: "RepairConformanceProbeSelector" = field(
+        repr=False,
+        compare=False,
+    )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -194,6 +262,75 @@ class RepairConformanceProbeGroup:
             "operation": self.operation,
             "case_ids": list(self.case_ids[:_MAX_CONFORMANCE_REPORT_CASES]),
         }
+
+
+@dataclass(frozen=True)
+class RepairConformanceProbeSelector:
+    """Private selector used to project one semantic group for execution."""
+
+    service_index: int
+    probe_index: int | None
+
+
+def project_replay_capability_for_probe_group(
+    capability: FrozenReplayCapability,
+    group: RepairConformanceProbeGroup,
+) -> FrozenReplayCapability:
+    """Project a frozen capability onto exactly one conformance group.
+
+    The projection retains runtime files required to launch the selected
+    service, while filtering service, fixture, evidence, endpoint, and handled
+    requirement views.  The selector is deliberately omitted from persisted
+    group reports.
+    """
+
+    selector = group.selector
+    if selector.service_index < 0 or selector.service_index >= len(capability.services):
+        raise ValueError("conformance group service selector is out of range")
+    service = capability.services[selector.service_index]
+    if (
+        service.service_id != group.service_id
+        or service.requirement_id != group.requirement_id
+    ):
+        raise ValueError("conformance group selector does not match frozen service")
+    if selector.probe_index is None:
+        projected_service = replace(service, protocol_probes=())
+    else:
+        if selector.probe_index < 0 or selector.probe_index >= len(service.protocol_probes):
+            raise ValueError("conformance group probe selector is out of range")
+        projected_service = replace(
+            service,
+            protocol_probes=(service.protocol_probes[selector.probe_index],),
+        )
+    fixture_paths = {service.response_fixture}
+    return replace(
+        capability,
+        handled_requirements=tuple(
+            item
+            for item in capability.handled_requirements
+            if item == group.requirement_id
+        ),
+        unhandled_requirements=(),
+        evidence_refs={
+            key: value
+            for key, value in capability.evidence_refs.items()
+            if key == group.requirement_id
+        },
+        fixture_evidence_refs={
+            key: value
+            for key, value in capability.fixture_evidence_refs.items()
+            if key in fixture_paths
+        },
+        fixtures=tuple(
+            item for item in capability.fixtures if item.path in fixture_paths
+        ),
+        endpoint_replacements={
+            key: value
+            for key, value in capability.endpoint_replacements.items()
+            if key == group.requirement_id
+        },
+        services=(projected_service,),
+    )
 
 
 @dataclass(frozen=True)
@@ -285,7 +422,7 @@ def build_repair_conformance_probe_plan(
             else ()
         )
     )
-    for service in services:
+    for service_index, service in enumerate(services):
         requirement = requirements_by_id.get(service.requirement_id)
         case_ids = tuple(
             dict.fromkeys(
@@ -301,7 +438,7 @@ def build_repair_conformance_probe_plan(
         probes: tuple[ReplayProtocolProbe | None, ...] = (
             tuple(service.protocol_probes) or (None,)
         )
-        for probe in probes:
+        for probe_index, probe in enumerate(probes):
             operation = _repair_probe_operation(
                 probe.request_text if probe is not None else None
             )
@@ -362,6 +499,10 @@ def build_repair_conformance_probe_plan(
                     ),
                     "operation": operation,
                     "case_ids": [],
+                    "selector": RepairConformanceProbeSelector(
+                        service_index=service_index,
+                        probe_index=(probe_index if probe is not None else None),
+                    ),
                 },
             )
             grouped_case_ids = group["case_ids"]
@@ -384,6 +525,7 @@ def build_repair_conformance_probe_plan(
                 else None
             ),
             case_ids=tuple(value["case_ids"]),
+            selector=value["selector"],
         )
         for fingerprint, value in sorted(grouped.items())
     )
@@ -2240,8 +2382,11 @@ def _inherited_repair_conformance_contract(
         if isinstance(value, Mapping):
             raw_contract = value.get("repair_conformance")
             if isinstance(raw_contract, Mapping):
-                contract = RepairConformanceContract.from_dict(raw_contract)
-                if contract.focus_candidate_id:
+                try:
+                    contract = RepairConformanceContract.from_dict(raw_contract)
+                except ValueError:
+                    contract = None
+                if contract is not None and contract.focus_candidate_id:
                     inherited.append(contract)
             for key, nested in value.items():
                 if key == "repair_conformance":

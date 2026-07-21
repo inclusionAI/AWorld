@@ -58,6 +58,33 @@ def test_frozen_fixture_shape_fingerprint_ignores_recorded_scalar_values(
     assert "private-beta" not in json.dumps(distinct)
 
 
+def test_frozen_fixture_shape_fingerprint_includes_structure_after_128th_node(
+    tmp_path: Path,
+) -> None:
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "recorded.json"
+    capability = SimpleNamespace(
+        frozen_root=str(tmp_path),
+        services=(SimpleNamespace(response_fixture="recorded.json"),),
+    )
+    prefix = [{"value": index} for index in range(128)]
+    fixture_path.write_text(
+        json.dumps([*prefix, {"tail": "private"}]),
+        encoding="utf-8",
+    )
+    object_tail = frozen_replay_fixture_shape_fingerprints(capability)
+    fixture_path.write_text(
+        json.dumps([*prefix, ["private"]]),
+        encoding="utf-8",
+    )
+    array_tail = frozen_replay_fixture_shape_fingerprints(capability)
+
+    assert object_tail != array_tail
+    assert "private" not in json.dumps(object_tail)
+    assert "private" not in json.dumps(array_tail)
+
+
 def _nested_recorded_fixture_value() -> str:
     return json.dumps(
         {

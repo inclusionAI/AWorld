@@ -16,6 +16,7 @@ from aworld.self_evolve.types import (
 if TYPE_CHECKING:
     from aworld.self_evolve.evolution_context import EvolutionContext
     from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
+    from aworld.self_evolve.repair_conformance import RepairConformanceContract
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,13 @@ class OptimizerResult:
     candidates: tuple[CandidateVariant, ...]
     lineage: tuple[OptimizerLineage, ...] = ()
     diagnostics: Mapping[str, object] = field(default_factory=dict)
+    # Non-persistent execution-only context.  Exact repair assertions must not
+    # be copied into diagnostics, prompts, feedback, lineage, or reports.
+    private_context: Mapping[str, "RepairConformanceContract"] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
 
 
 class CandidateOptimizer(Protocol):

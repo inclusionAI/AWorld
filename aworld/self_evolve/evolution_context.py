@@ -150,7 +150,9 @@ class EvolutionContext:
                 ),
             }
             if repair_conformance is not None:
-                payload["repair_conformance"] = repair_conformance.to_dict()
+                payload["repair_conformance"] = (
+                    repair_conformance.to_public_dict()
+                )
         if repair_support is not None:
             payload["repair_support"] = _repair_support_prompt_summary(
                 repair_support
@@ -163,11 +165,47 @@ def _without_repair_candidate_package(
 ) -> Mapping[str, object]:
     """Keep diagnostics in the prompt while source lives only in repair_focus."""
 
-    return {
+    return _public_repair_value({
         key: value
         for key, value in feedback.items()
         if key != "repair_candidate_package"
+    })
+
+
+_PRIVATE_REPAIR_VALUE_KEYS = frozenset(
+    {
+        "expected_preview",
+        "response_preview",
+        "expected_response",
+        "response_contains",
+        "fixture_bytes",
+        "fixture_content",
     }
+)
+
+
+def _public_repair_value(value: object) -> object:
+    """Project diagnostic context without payload-bearing assertion values."""
+
+    if isinstance(value, Mapping):
+        projected: dict[str, object] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if key in _PRIVATE_REPAIR_VALUE_KEYS and isinstance(item, (str, bytes)):
+                encoded = item.encode("utf-8") if isinstance(item, str) else item
+                projected[f"{key}_fingerprint"] = (
+                    "sha256:" + hashlib.sha256(encoded).hexdigest()
+                )
+                projected[f"{key}_shape"] = {
+                    "kind": "text" if isinstance(item, str) else "bytes",
+                    "size_bucket": max(1, len(encoded)).bit_length(),
+                }
+                continue
+            projected[key] = _public_repair_value(item)
+        return projected
+    if isinstance(value, (list, tuple)):
+        return [_public_repair_value(item) for item in value]
+    return value
 
 
 def _budget_prompt_feedback(
@@ -308,7 +346,8 @@ def _bounded_repair_focus_for_prompt(
         prompt_files.append(item)
     prompt_package = dict(package)
     prompt_package["files"] = prompt_files
-    prompt_focus = dict(repair_focus)
+    prompt_focus = _public_repair_value(repair_focus)
+    assert isinstance(prompt_focus, dict)
     prompt_focus["repair_candidate_package"] = prompt_package
     return prompt_focus
 

@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from aworld.self_evolve.repair_conformance import (
+    ExactRepairProbe,
     RepairConformanceContract,
     build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
+    project_replay_capability_for_probe_group,
 )
 from aworld.self_evolve.replay_capability import (
+    FrozenReplayCapability,
+    FrozenReplayFile,
     ReplayProtocolProbe,
     ReplayReadinessProbe,
     ReplayServiceSpec,
@@ -78,6 +84,126 @@ def _service(*probes: ReplayProtocolProbe) -> ReplayServiceSpec:
         readiness=ReplayReadinessProbe(kind="http", timeout_seconds=1, path="/ready"),
         protocol_probes=tuple(probes),
     )
+
+
+def test_public_contract_projection_cannot_reconstruct_private_assertion() -> None:
+    secret = "PRIVATE_RAW_RECORDED_FIXTURE_VALUE"
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("generic_failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+        exact_probe=ExactRepairProbe(
+            kind="http",
+            path="/query",
+            expected_response=secret,
+        ),
+    )
+
+    private_roundtrip = RepairConformanceContract.from_dict(contract.to_dict())
+    public = contract.to_public_dict()
+    assert private_roundtrip == contract
+    assert secret not in json.dumps(public, sort_keys=True)
+    with pytest.raises(ValueError, match="public repair conformance"):
+        RepairConformanceContract.from_dict(public)
+
+
+def test_probe_group_projection_executes_only_selected_service_and_probe() -> None:
+    requirements = tuple(
+        ReplayCapabilityRequirement(
+            requirement_id=f"requirement-{index}",
+            kind="local_endpoint",
+            identifier=f"endpoint-{index}",
+            case_ids=(f"case-{index}",),
+            evidence_refs=(f"evidence-{index}",),
+            status="runtime_required",
+        )
+        for index in (1, 2)
+    )
+    services = tuple(
+        ReplayServiceSpec(
+            service_id=f"service-{index}",
+            requirement_id=f"requirement-{index}",
+            transport="skill_runtime",
+            response_fixture=f"fixture-{index}.json",
+            runtime_entrypoint="replay/runtime.py",
+            readiness=ReplayReadinessProbe(
+                kind="http", timeout_seconds=1, path=f"/ready-{index}"
+            ),
+            protocol_probes=(
+                ReplayProtocolProbe(
+                    kind="http",
+                    timeout_seconds=1,
+                    path=f"/query-{index}",
+                    request_text=json.dumps({"operation": f"records.{index}"}),
+                ),
+            ),
+        )
+        for index in (1, 2)
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("generic_failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+    )
+    plan = build_repair_conformance_probe_plan(
+        capability_id="generic-capability",
+        services=services,
+        requirements=requirements,
+        fixture_shape_fingerprints={
+            "fixture-1.json": "sha256:shape-1",
+            "fixture-2.json": "sha256:shape-2",
+        },
+        contract=contract,
+        dataset_case_ids=("case-1", "case-2"),
+    )
+    capability = FrozenReplayCapability(
+        capability_id="generic-capability",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root="/tmp/frozen",
+        handled_requirements=("requirement-1", "requirement-2"),
+        unhandled_requirements=(),
+        evidence_refs={
+            "requirement-1": ("evidence-1",),
+            "requirement-2": ("evidence-2",),
+        },
+        fixture_evidence_refs={
+            "fixture-1.json": ("evidence-1",),
+            "fixture-2.json": ("evidence-2",),
+        },
+        fixtures=tuple(
+            FrozenReplayFile(path=f"fixture-{index}.json", sha256="x", size=1)
+            for index in (1, 2)
+        ),
+        runtime_files=(),
+        endpoint_replacements={
+            "requirement-1": "service-1",
+            "requirement-2": "service-2",
+        },
+        services=services,
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+
+    projections = tuple(
+        project_replay_capability_for_probe_group(capability, group)
+        for group in plan.groups
+    )
+
+    assert len(projections) == 2
+    assert [len(item.services) for item in projections] == [1, 1]
+    assert {
+        item.services[0].service_id for item in projections
+    } == {"service-1", "service-2"}
+    assert all(len(item.services[0].protocol_probes) == 1 for item in projections)
+    assert all("selector" not in group.to_dict() for group in plan.groups)
 
 
 def test_probe_plan_deduplicates_repeated_cases_and_preserves_distinct_shapes() -> None:
