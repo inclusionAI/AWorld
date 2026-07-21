@@ -15,15 +15,15 @@ import statistics
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Protocol, Sequence, runtime_checkable
 
 from aworld.self_evolve.failure_events import FailureOwner, FailureScope
 
 
-BUDGET_LEDGER_SCHEMA_VERSION = "aworld.self_evolve.run_budget.v2"
+BUDGET_LEDGER_SCHEMA_VERSION = "aworld.self_evolve.run_budget.v3"
 BUDGET_DECISION_SCHEMA_VERSION = "aworld.self_evolve.budget_decision.v1"
 BUDGET_DEBIT_OBSERVATION_SCHEMA_VERSION = (
-    "aworld.self_evolve.budget_debit_observation.v1"
+    "aworld.self_evolve.budget_debit_observation.v2"
 )
 CANDIDATE_ATTEMPT_EVENT_SCHEMA_VERSION = (
     "aworld.self_evolve.candidate_attempt_event.v1"
@@ -46,6 +46,15 @@ class BudgetStage(str, Enum):
     PAIRED_REPLAY = "paired_replay"
     EVALUATION = "evaluation"
     JUDGE = "judge"
+
+
+@runtime_checkable
+class ZeroBudgetUsageProofProvider(Protocol):
+    """Optional backend capability for explicitly free stage execution."""
+
+    def proves_zero_budget_usage(self, stage: BudgetStage) -> bool:
+        """Return the literal boolean ``True`` only for a proven-free stage."""
+        ...
 
 
 class BudgetEstimateSource(str, Enum):
@@ -192,6 +201,190 @@ class BudgetUsage:
             wall_seconds=_decimal(
                 value.get("wall_seconds", "0"),
                 field_name="wall_seconds",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class BudgetUsageCompleteness:
+    """Whether each lower-bound usage dimension is a complete actual value."""
+
+    tokens: bool = True
+    cost_usd: bool = True
+    wall_seconds: bool = True
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, bool)
+            for value in (self.tokens, self.cost_usd, self.wall_seconds)
+        ):
+            raise TypeError("budget usage completeness values must be booleans")
+
+    @classmethod
+    def incomplete(cls) -> "BudgetUsageCompleteness":
+        return cls(tokens=False, cost_usd=False, wall_seconds=False)
+
+    @property
+    def all_complete(self) -> bool:
+        return self.tokens and self.cost_usd and self.wall_seconds
+
+    def to_dict(self) -> dict[str, bool]:
+        return {
+            "tokens": self.tokens,
+            "cost_usd": self.cost_usd,
+            "wall_seconds": self.wall_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "BudgetUsageCompleteness":
+        fields = ("tokens", "cost_usd", "wall_seconds")
+        if any(not isinstance(value.get(field), bool) for field in fields):
+            raise ValueError("budget usage completeness payload is malformed")
+        return cls(
+            tokens=value["tokens"],  # type: ignore[arg-type]
+            cost_usd=value["cost_usd"],  # type: ignore[arg-type]
+            wall_seconds=value["wall_seconds"],  # type: ignore[arg-type]
+        )
+
+
+@dataclass(frozen=True)
+class ObservedBudgetUsage:
+    """Per-unit complete actual values; ``None`` dimensions are not samples."""
+
+    tokens: int | None = None
+    cost_usd: Decimal | None = None
+    wall_seconds: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.tokens is not None:
+            object.__setattr__(
+                self,
+                "tokens",
+                _non_negative_int(self.tokens, field_name="observed tokens"),
+            )
+        object.__setattr__(
+            self,
+            "cost_usd",
+            _optional_decimal(self.cost_usd, field_name="observed cost_usd"),
+        )
+        object.__setattr__(
+            self,
+            "wall_seconds",
+            _optional_decimal(
+                self.wall_seconds,
+                field_name="observed wall_seconds",
+            ),
+        )
+
+    @property
+    def has_observation(self) -> bool:
+        return any(
+            value is not None
+            for value in (self.tokens, self.cost_usd, self.wall_seconds)
+        )
+
+    def scale(self, units: int) -> "ObservedBudgetUsage":
+        count = _non_negative_int(units, field_name="units")
+        return ObservedBudgetUsage(
+            tokens=self.tokens * count if self.tokens is not None else None,
+            cost_usd=(
+                self.cost_usd * count if self.cost_usd is not None else None
+            ),
+            wall_seconds=(
+                self.wall_seconds * count
+                if self.wall_seconds is not None
+                else None
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "tokens": self.tokens,
+            "cost_usd": (
+                _decimal_text(self.cost_usd)
+                if self.cost_usd is not None
+                else None
+            ),
+            "wall_seconds": (
+                _decimal_text(self.wall_seconds)
+                if self.wall_seconds is not None
+                else None
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ObservedBudgetUsage":
+        return cls(
+            tokens=(
+                _non_negative_int(value.get("tokens"), field_name="observed tokens")
+                if value.get("tokens") is not None
+                else None
+            ),
+            cost_usd=_optional_decimal(
+                value.get("cost_usd"),
+                field_name="observed cost_usd",
+            ),
+            wall_seconds=_optional_decimal(
+                value.get("wall_seconds"),
+                field_name="observed wall_seconds",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class BudgetUsageObservation:
+    """Known usage lower bounds and per-dimension actual completeness."""
+
+    known_lower_bound: BudgetUsage = BudgetUsage()
+    completeness: BudgetUsageCompleteness = BudgetUsageCompleteness()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.known_lower_bound, BudgetUsage):
+            raise TypeError("known budget usage lower bound must be typed")
+        if not isinstance(self.completeness, BudgetUsageCompleteness):
+            raise TypeError("budget usage completeness must be typed")
+
+    def conservative_usage(self, reserved: BudgetUsage) -> BudgetUsage:
+        if not isinstance(reserved, BudgetUsage):
+            raise TypeError("reserved budget usage must be typed")
+        return BudgetUsage(
+            tokens=(
+                self.known_lower_bound.tokens
+                if self.completeness.tokens
+                else max(self.known_lower_bound.tokens, reserved.tokens)
+            ),
+            cost_usd=(
+                self.known_lower_bound.cost_usd
+                if self.completeness.cost_usd
+                else max(self.known_lower_bound.cost_usd, reserved.cost_usd)
+            ),
+            wall_seconds=(
+                self.known_lower_bound.wall_seconds
+                if self.completeness.wall_seconds
+                else max(
+                    self.known_lower_bound.wall_seconds,
+                    reserved.wall_seconds,
+                )
+            ),
+        )
+
+    def observed_per_unit(self, *, units: int) -> ObservedBudgetUsage:
+        count = _positive_int(units, field_name="units")
+        return ObservedBudgetUsage(
+            tokens=(
+                (self.known_lower_bound.tokens + count - 1) // count
+                if self.completeness.tokens
+                else None
+            ),
+            cost_usd=(
+                self.known_lower_bound.cost_usd / Decimal(count)
+                if self.completeness.cost_usd
+                else None
+            ),
+            wall_seconds=(
+                self.known_lower_bound.wall_seconds / Decimal(count)
+                if self.completeness.wall_seconds
+                else None
             ),
         )
 
@@ -567,8 +760,11 @@ class BudgetDebitObservation:
     previous_observation_id: str | None
     reservation_id: str
     estimate: StageBudgetEstimate
+    known_lower_bound: BudgetUsage
+    actual_completeness: BudgetUsageCompleteness
     actual: BudgetUsage
     per_unit_actual: BudgetUsage
+    observed_per_unit: ObservedBudgetUsage
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -592,23 +788,44 @@ class BudgetDebitObservation:
         )
         if not isinstance(self.estimate, StageBudgetEstimate):
             raise TypeError("debit observation estimate must be typed")
-        if not isinstance(self.actual, BudgetUsage) or not isinstance(
-            self.per_unit_actual,
-            BudgetUsage,
+        if not all(
+            isinstance(item, BudgetUsage)
+            for item in (
+                self.known_lower_bound,
+                self.actual,
+                self.per_unit_actual,
+            )
         ):
             raise TypeError("debit observation usage must be typed")
+        if not isinstance(self.actual_completeness, BudgetUsageCompleteness):
+            raise TypeError("debit observation completeness must be typed")
+        if not isinstance(self.observed_per_unit, ObservedBudgetUsage):
+            raise TypeError("debit observed per-unit usage must be typed")
         if self.reservation_id != self.estimate.reservation_id:
             raise ValueError("debit observation reservation does not match estimate")
         if self.sequence == 0 and self.previous_observation_id is not None:
             raise ValueError("first debit observation cannot reference a predecessor")
         if self.sequence > 0 and self.previous_observation_id is None:
             raise ValueError("non-initial debit observation requires a predecessor")
+        reserved = self.estimate.resolved_usage()
+        if reserved is None:
+            raise ValueError("debit observation estimate must resolve reserved usage")
+        usage_observation = BudgetUsageObservation(
+            known_lower_bound=self.known_lower_bound,
+            completeness=self.actual_completeness,
+        )
+        if self.actual != usage_observation.conservative_usage(reserved):
+            raise ValueError("debit observation actual usage is not conservative")
         expected_per_unit = _per_unit_usage(
             self.actual,
             units=self.estimate.units,
         )
         if self.per_unit_actual != expected_per_unit:
             raise ValueError("debit observation per-unit usage is inconsistent")
+        if self.observed_per_unit != usage_observation.observed_per_unit(
+            units=self.estimate.units,
+        ):
+            raise ValueError("debit observation complete actual usage is inconsistent")
 
     @property
     def observation_id(self) -> str:
@@ -619,8 +836,11 @@ class BudgetDebitObservation:
                 "previous_observation_id": self.previous_observation_id,
                 "reservation_id": self.reservation_id,
                 "estimate": self.estimate.to_dict(),
+                "known_lower_bound": self.known_lower_bound.to_dict(),
+                "actual_completeness": self.actual_completeness.to_dict(),
                 "actual": self.actual.to_dict(),
                 "per_unit_actual": self.per_unit_actual.to_dict(),
+                "observed_per_unit": self.observed_per_unit.to_dict(),
             },
         )
 
@@ -631,8 +851,11 @@ class BudgetDebitObservation:
             "previous_observation_id": self.previous_observation_id,
             "reservation_id": self.reservation_id,
             "estimate": self.estimate.to_dict(),
+            "known_lower_bound": self.known_lower_bound.to_dict(),
+            "actual_completeness": self.actual_completeness.to_dict(),
             "actual": self.actual.to_dict(),
             "per_unit_actual": self.per_unit_actual.to_dict(),
+            "observed_per_unit": self.observed_per_unit.to_dict(),
             "observation_id": self.observation_id,
         }
 
@@ -641,16 +864,29 @@ class BudgetDebitObservation:
         if value.get("schema_version") != BUDGET_DEBIT_OBSERVATION_SCHEMA_VERSION:
             raise ValueError("unsupported budget debit observation schema")
         raw_estimate = value.get("estimate")
+        raw_known_lower_bound = value.get("known_lower_bound")
+        raw_completeness = value.get("actual_completeness")
         raw_actual = value.get("actual")
         raw_per_unit = value.get("per_unit_actual")
+        raw_observed_per_unit = value.get("observed_per_unit")
         if not all(
             isinstance(item, Mapping)
-            for item in (raw_estimate, raw_actual, raw_per_unit)
+            for item in (
+                raw_estimate,
+                raw_known_lower_bound,
+                raw_completeness,
+                raw_actual,
+                raw_per_unit,
+                raw_observed_per_unit,
+            )
         ):
             raise ValueError("budget debit observation payload is malformed")
         assert isinstance(raw_estimate, Mapping)
+        assert isinstance(raw_known_lower_bound, Mapping)
+        assert isinstance(raw_completeness, Mapping)
         assert isinstance(raw_actual, Mapping)
         assert isinstance(raw_per_unit, Mapping)
+        assert isinstance(raw_observed_per_unit, Mapping)
         observation = cls(
             sequence=_non_negative_int(
                 value.get("sequence"),
@@ -669,8 +905,13 @@ class BudgetDebitObservation:
                 field_name="reservation_id",
             ),
             estimate=StageBudgetEstimate.from_dict(raw_estimate),
+            known_lower_bound=BudgetUsage.from_dict(raw_known_lower_bound),
+            actual_completeness=BudgetUsageCompleteness.from_dict(raw_completeness),
             actual=BudgetUsage.from_dict(raw_actual),
             per_unit_actual=BudgetUsage.from_dict(raw_per_unit),
+            observed_per_unit=ObservedBudgetUsage.from_dict(
+                raw_observed_per_unit
+            ),
         )
         if value.get("observation_id") != observation.observation_id:
             raise ValueError("budget debit observation id does not match payload")
@@ -683,8 +924,10 @@ class BudgetDebitResult:
     stage: BudgetStage
     item_id: str
     reserved: BudgetUsage
+    known_lower_bound: BudgetUsage
+    actual_completeness: BudgetUsageCompleteness
     actual: BudgetUsage
-    observed_per_unit: BudgetUsage
+    observed_per_unit: ObservedBudgetUsage
     reservation_overrun: BudgetUsage
     ceiling_overrun: BudgetUsage
     remaining: BudgetRemaining
@@ -695,6 +938,8 @@ class BudgetDebitResult:
             "stage": self.stage.value,
             "item_id": self.item_id,
             "reserved": self.reserved.to_dict(),
+            "known_lower_bound": self.known_lower_bound.to_dict(),
+            "actual_completeness": self.actual_completeness.to_dict(),
             "actual": self.actual.to_dict(),
             "observed_per_unit": self.observed_per_unit.to_dict(),
             "reservation_overrun": self.reservation_overrun.to_dict(),
@@ -707,16 +952,112 @@ class BudgetDebitResult:
 class StageEstimateStatistics:
     stage: BudgetStage
     sample_count: int
-    median: BudgetUsage
-    upper_conservative: BudgetUsage
+    sample_count_by_dimension: "BudgetDimensionSampleCounts"
+    median: ObservedBudgetUsage
+    upper_conservative: ObservedBudgetUsage
 
     def to_dict(self) -> dict[str, object]:
         return {
             "stage": self.stage.value,
             "sample_count": self.sample_count,
+            "sample_count_by_dimension": self.sample_count_by_dimension.to_dict(),
             "median": self.median.to_dict(),
             "upper_conservative": self.upper_conservative.to_dict(),
         }
+
+
+@dataclass(frozen=True)
+class BudgetDimensionSampleCounts:
+    tokens: int = 0
+    cost_usd: int = 0
+    wall_seconds: int = 0
+
+    def __post_init__(self) -> None:
+        for field_name in ("tokens", "cost_usd", "wall_seconds"):
+            object.__setattr__(
+                self,
+                field_name,
+                _non_negative_int(
+                    getattr(self, field_name),
+                    field_name=f"{field_name} sample count",
+                ),
+            )
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "tokens": self.tokens,
+            "cost_usd": self.cost_usd,
+            "wall_seconds": self.wall_seconds,
+        }
+
+
+@dataclass
+class _StageObservedSamples:
+    tokens: list[int] = field(default_factory=list)
+    cost_usd: list[Decimal] = field(default_factory=list)
+    wall_seconds: list[Decimal] = field(default_factory=list)
+
+    @property
+    def has_observation(self) -> bool:
+        return bool(self.tokens or self.cost_usd or self.wall_seconds)
+
+    @property
+    def counts(self) -> BudgetDimensionSampleCounts:
+        return BudgetDimensionSampleCounts(
+            tokens=len(self.tokens),
+            cost_usd=len(self.cost_usd),
+            wall_seconds=len(self.wall_seconds),
+        )
+
+    def append(self, observation: ObservedBudgetUsage) -> None:
+        if observation.tokens is not None:
+            self.tokens.append(observation.tokens)
+            del self.tokens[:-_MAX_OBSERVED_SAMPLES_PER_STAGE]
+        if observation.cost_usd is not None:
+            self.cost_usd.append(observation.cost_usd)
+            del self.cost_usd[:-_MAX_OBSERVED_SAMPLES_PER_STAGE]
+        if observation.wall_seconds is not None:
+            self.wall_seconds.append(observation.wall_seconds)
+            del self.wall_seconds[:-_MAX_OBSERVED_SAMPLES_PER_STAGE]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "tokens": list(self.tokens),
+            "cost_usd": [_decimal_text(value) for value in self.cost_usd],
+            "wall_seconds": [
+                _decimal_text(value) for value in self.wall_seconds
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "_StageObservedSamples":
+        raw_tokens = value.get("tokens")
+        raw_cost = value.get("cost_usd")
+        raw_wall = value.get("wall_seconds")
+        if not all(isinstance(item, list) for item in (raw_tokens, raw_cost, raw_wall)):
+            raise ValueError("observed stage samples payload is malformed")
+        assert isinstance(raw_tokens, list)
+        assert isinstance(raw_cost, list)
+        assert isinstance(raw_wall, list)
+        if any(
+            len(item) > _MAX_OBSERVED_SAMPLES_PER_STAGE
+            for item in (raw_tokens, raw_cost, raw_wall)
+        ):
+            raise ValueError("observed stage samples exceed rolling window")
+        return cls(
+            tokens=[
+                _non_negative_int(item, field_name="observed tokens")
+                for item in raw_tokens
+            ],
+            cost_usd=[
+                _decimal(item, field_name="observed cost_usd")
+                for item in raw_cost
+            ],
+            wall_seconds=[
+                _decimal(item, field_name="observed wall_seconds")
+                for item in raw_wall
+            ],
+        )
 
 
 @dataclass
@@ -724,7 +1065,7 @@ class RunBudgetLedger:
     ceilings: BudgetCeilings
     _spent_by_stage: dict[BudgetStage, BudgetUsage] = field(default_factory=dict)
     _reservations: dict[str, BudgetReservation] = field(default_factory=dict)
-    _observed_by_stage: dict[BudgetStage, list[BudgetUsage]] = field(
+    _observed_by_stage: dict[BudgetStage, _StageObservedSamples] = field(
         default_factory=dict
     )
     _debit_observations: list[BudgetDebitObservation] = field(
@@ -858,18 +1199,33 @@ class RunBudgetLedger:
         self,
         reservation_id: str,
         actual: BudgetUsage,
+        *,
+        actual_completeness: BudgetUsageCompleteness | None = None,
     ) -> BudgetDebitResult:
         if not isinstance(actual, BudgetUsage):
             raise TypeError("actual budget usage must be typed")
+        completeness = actual_completeness or BudgetUsageCompleteness()
+        if not isinstance(completeness, BudgetUsageCompleteness):
+            raise TypeError("actual budget usage completeness must be typed")
         reservation = self._reservations.pop(reservation_id, None)
         if reservation is None:
             raise KeyError(f"unknown budget reservation: {reservation_id}")
+        usage_observation = BudgetUsageObservation(
+            known_lower_bound=actual,
+            completeness=completeness,
+        )
+        accounted_actual = usage_observation.conservative_usage(
+            reservation.usage
+        )
         self._spent_by_stage[reservation.estimate.stage] = (
             self._spent_by_stage.get(reservation.estimate.stage, BudgetUsage())
-            + actual
+            + accounted_actual
         )
         per_unit_actual = _per_unit_usage(
-            actual,
+            accounted_actual,
+            units=reservation.estimate.units,
+        )
+        observed_per_unit = usage_observation.observed_per_unit(
             units=reservation.estimate.units,
         )
         observation = BudgetDebitObservation(
@@ -881,25 +1237,30 @@ class RunBudgetLedger:
             ),
             reservation_id=reservation.reservation_id,
             estimate=reservation.estimate,
-            actual=actual,
+            known_lower_bound=actual,
+            actual_completeness=completeness,
+            actual=accounted_actual,
             per_unit_actual=per_unit_actual,
+            observed_per_unit=observed_per_unit,
         )
         self._debit_observations.append(observation)
-        observations = self._observed_by_stage.setdefault(
-            reservation.estimate.stage,
-            [],
-        )
-        observations.append(per_unit_actual)
-        del observations[:-_MAX_OBSERVED_SAMPLES_PER_STAGE]
+        if observed_per_unit.has_observation:
+            observations = self._observed_by_stage.setdefault(
+                reservation.estimate.stage,
+                _StageObservedSamples(),
+            )
+            observations.append(observed_per_unit)
         return BudgetDebitResult(
             reservation_id=reservation_id,
             stage=reservation.estimate.stage,
             item_id=reservation.estimate.item_id,
             reserved=reservation.usage,
-            actual=actual,
-            observed_per_unit=per_unit_actual,
+            known_lower_bound=actual,
+            actual_completeness=completeness,
+            actual=accounted_actual,
+            observed_per_unit=observed_per_unit,
             reservation_overrun=_positive_usage_difference(
-                actual,
+                accounted_actual,
                 reservation.usage,
             ),
             ceiling_overrun=self.overrun(),
@@ -917,22 +1278,46 @@ class RunBudgetLedger:
         stage: BudgetStage,
     ) -> StageEstimateStatistics | None:
         normalized_stage = BudgetStage(stage)
-        samples = self._observed_by_stage.get(normalized_stage, ())
-        if not samples:
+        samples = self._observed_by_stage.get(normalized_stage)
+        if samples is None or not samples.has_observation:
             return None
+        counts = samples.counts
         return StageEstimateStatistics(
             stage=normalized_stage,
-            sample_count=len(samples),
-            median=BudgetUsage(
-                tokens=math.ceil(statistics.median(item.tokens for item in samples)),
-                cost_usd=_decimal_median(item.cost_usd for item in samples),
-                wall_seconds=_decimal_median(item.wall_seconds for item in samples),
+            sample_count=max(counts.tokens, counts.cost_usd, counts.wall_seconds),
+            sample_count_by_dimension=counts,
+            median=ObservedBudgetUsage(
+                tokens=(
+                    math.ceil(statistics.median(samples.tokens))
+                    if samples.tokens
+                    else None
+                ),
+                cost_usd=(
+                    _decimal_median(samples.cost_usd)
+                    if samples.cost_usd
+                    else None
+                ),
+                wall_seconds=(
+                    _decimal_median(samples.wall_seconds)
+                    if samples.wall_seconds
+                    else None
+                ),
             ),
-            upper_conservative=BudgetUsage(
-                tokens=_upper_quantile_int(item.tokens for item in samples),
-                cost_usd=_upper_quantile_decimal(item.cost_usd for item in samples),
-                wall_seconds=_upper_quantile_decimal(
-                    item.wall_seconds for item in samples
+            upper_conservative=ObservedBudgetUsage(
+                tokens=(
+                    _upper_quantile_int(samples.tokens)
+                    if samples.tokens
+                    else None
+                ),
+                cost_usd=(
+                    _upper_quantile_decimal(samples.cost_usd)
+                    if samples.cost_usd
+                    else None
+                ),
+                wall_seconds=(
+                    _upper_quantile_decimal(samples.wall_seconds)
+                    if samples.wall_seconds
+                    else None
                 ),
             ),
         )
@@ -953,20 +1338,7 @@ class RunBudgetLedger:
         ):
             raise TypeError("cold-start budget estimate must be BudgetUsage")
         statistics_value = self.estimate_statistics(stage)
-        if statistics_value is not None:
-            return StageBudgetEstimate.from_per_unit(
-                stage=stage,
-                item_id=item_id,
-                per_unit=statistics_value.upper_conservative,
-                units=count,
-                source=BudgetEstimateSource.OBSERVED_ROBUST,
-                confidence=(
-                    BudgetEstimateConfidence.HIGH
-                    if statistics_value.sample_count >= 5
-                    else BudgetEstimateConfidence.MEDIUM
-                ),
-            )
-        if backend_proven_zero:
+        if statistics_value is None and backend_proven_zero:
             return StageBudgetEstimate(
                 stage=stage,
                 item_id=item_id,
@@ -978,34 +1350,96 @@ class RunBudgetLedger:
                 backend_proven_zero=True,
                 units=count,
             )
-        if cold_start_per_unit is not None:
-            if cold_start_per_unit == BudgetUsage():
-                return StageBudgetEstimate(
-                    stage=stage,
-                    item_id=item_id,
-                    tokens=None,
-                    cost_usd=None,
-                    wall_seconds=None,
-                    source=BudgetEstimateSource.UNKNOWN,
-                    confidence=BudgetEstimateConfidence.UNKNOWN,
-                    units=count,
-                )
-            return StageBudgetEstimate.from_per_unit(
-                stage=stage,
-                item_id=item_id,
-                per_unit=cold_start_per_unit,
-                units=count,
-                source=BudgetEstimateSource.CONFIGURED_COLD_START,
-                confidence=BudgetEstimateConfidence.LOW,
+        configured_per_unit = (
+            cold_start_per_unit
+            if cold_start_per_unit is not None
+            and cold_start_per_unit != BudgetUsage()
+            else None
+        )
+        configured = (
+            configured_per_unit.scale(count)
+            if configured_per_unit is not None
+            else None
+        )
+        observed = (
+            statistics_value.upper_conservative.scale(count)
+            if statistics_value is not None
+            else ObservedBudgetUsage()
+        )
+
+        tokens = (
+            observed.tokens
+            if observed.tokens is not None
+            else (
+                0
+                if backend_proven_zero
+                else (configured.tokens if configured is not None else None)
             )
+        )
+        cost_usd = (
+            observed.cost_usd
+            if observed.cost_usd is not None
+            else (
+                Decimal("0")
+                if backend_proven_zero
+                else (configured.cost_usd if configured is not None else None)
+            )
+        )
+        wall_seconds = (
+            observed.wall_seconds
+            if observed.wall_seconds is not None
+            else (
+                Decimal("0")
+                if backend_proven_zero
+                else (
+                    configured.wall_seconds if configured is not None else None
+                )
+            )
+        )
+        if statistics_value is not None:
+            counts = statistics_value.sample_count_by_dimension
+
+            def dimension_confidence(
+                observed_value: object | None,
+                sample_count: int,
+            ) -> BudgetEstimateConfidence:
+                if observed_value is not None:
+                    return (
+                        BudgetEstimateConfidence.HIGH
+                        if sample_count >= 5
+                        else BudgetEstimateConfidence.MEDIUM
+                    )
+                if backend_proven_zero:
+                    return BudgetEstimateConfidence.PROVEN
+                if configured is not None:
+                    return BudgetEstimateConfidence.LOW
+                return BudgetEstimateConfidence.UNKNOWN
+
+            confidence = _minimum_estimate_confidence(
+                (
+                    dimension_confidence(observed.tokens, counts.tokens),
+                    dimension_confidence(observed.cost_usd, counts.cost_usd),
+                    dimension_confidence(
+                        observed.wall_seconds,
+                        counts.wall_seconds,
+                    ),
+                )
+            )
+            source = BudgetEstimateSource.OBSERVED_ROBUST
+        elif configured is not None:
+            confidence = BudgetEstimateConfidence.LOW
+            source = BudgetEstimateSource.CONFIGURED_COLD_START
+        else:
+            confidence = BudgetEstimateConfidence.UNKNOWN
+            source = BudgetEstimateSource.UNKNOWN
         return StageBudgetEstimate(
             stage=stage,
             item_id=item_id,
-            tokens=None,
-            cost_usd=None,
-            wall_seconds=None,
-            source=BudgetEstimateSource.UNKNOWN,
-            confidence=BudgetEstimateConfidence.UNKNOWN,
+            tokens=tokens,
+            cost_usd=cost_usd,
+            wall_seconds=wall_seconds,
+            source=source,
+            confidence=confidence,
             units=count,
         )
 
@@ -1021,7 +1455,7 @@ class RunBudgetLedger:
                 item.to_dict() for item in self.outstanding_reservations
             ],
             "observed_by_stage": {
-                stage.value: [sample.to_dict() for sample in samples]
+                stage.value: samples.to_dict()
                 for stage, samples in sorted(
                     self._observed_by_stage.items(),
                     key=lambda item: item[0].value,
@@ -1062,15 +1496,18 @@ class RunBudgetLedger:
             ledger._debit_observations.append(observation)
 
         derived_spent: dict[BudgetStage, BudgetUsage] = {}
-        derived_observed: dict[BudgetStage, list[BudgetUsage]] = {}
+        derived_observed: dict[BudgetStage, _StageObservedSamples] = {}
         for observation in ledger._debit_observations:
             stage = observation.estimate.stage
             derived_spent[stage] = (
                 derived_spent.get(stage, BudgetUsage()) + observation.actual
             )
-            samples = derived_observed.setdefault(stage, [])
-            samples.append(observation.per_unit_actual)
-            del samples[:-_MAX_OBSERVED_SAMPLES_PER_STAGE]
+            if observation.observed_per_unit.has_observation:
+                samples = derived_observed.setdefault(
+                    stage,
+                    _StageObservedSamples(),
+                )
+                samples.append(observation.observed_per_unit)
 
         raw_spent = value.get("spent_by_stage", {})
         if not isinstance(raw_spent, Mapping):
@@ -1122,20 +1559,14 @@ class RunBudgetLedger:
         raw_observed = value.get("observed_by_stage", {})
         if not isinstance(raw_observed, Mapping):
             raise ValueError("observed_by_stage must be a mapping")
-        serialized_observed: dict[BudgetStage, list[BudgetUsage]] = {}
+        serialized_observed: dict[BudgetStage, _StageObservedSamples] = {}
         for stage, samples in raw_observed.items():
-            if not isinstance(samples, list):
-                raise ValueError("observed stage samples must be a list")
-            if len(samples) > _MAX_OBSERVED_SAMPLES_PER_STAGE:
-                raise ValueError("observed stage samples exceed rolling window")
+            if not isinstance(samples, Mapping):
+                raise ValueError("observed stage samples must be a mapping")
             normalized_stage = BudgetStage(str(stage))
-            serialized_observed[normalized_stage] = [
-                BudgetUsage.from_dict(sample)
-                for sample in samples
-                if isinstance(sample, Mapping)
-            ]
-            if len(serialized_observed[normalized_stage]) != len(samples):
-                raise ValueError("observed stage samples contain invalid usage")
+            serialized_observed[normalized_stage] = _StageObservedSamples.from_dict(
+                samples
+            )
         if serialized_observed != derived_observed:
             raise ValueError("observed_by_stage does not match debit observations")
         ledger._observed_by_stage = derived_observed
@@ -1200,6 +1631,22 @@ def _positive_usage_difference(actual: BudgetUsage, expected: BudgetUsage) -> Bu
             actual.wall_seconds - expected.wall_seconds,
         ),
     )
+
+
+def _minimum_estimate_confidence(
+    values: Iterable[BudgetEstimateConfidence],
+) -> BudgetEstimateConfidence:
+    rank = {
+        BudgetEstimateConfidence.UNKNOWN: 0,
+        BudgetEstimateConfidence.LOW: 1,
+        BudgetEstimateConfidence.MEDIUM: 2,
+        BudgetEstimateConfidence.HIGH: 3,
+        BudgetEstimateConfidence.PROVEN: 4,
+    }
+    normalized = tuple(BudgetEstimateConfidence(value) for value in values)
+    if not normalized:
+        return BudgetEstimateConfidence.UNKNOWN
+    return min(normalized, key=rank.__getitem__)
 
 
 def _denied_budget_reason(

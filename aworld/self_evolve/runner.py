@@ -93,6 +93,8 @@ from aworld.self_evolve.budget import (
     BudgetDecision,
     BudgetStage,
     BudgetUsage,
+    BudgetUsageCompleteness,
+    BudgetUsageObservation,
     CandidateAttemptEvent,
     CandidateAttemptKey,
     CandidateAttemptStage,
@@ -100,6 +102,7 @@ from aworld.self_evolve.budget import (
     RunBudgetLedger,
     SchedulerState,
     StageAwareCandidateScheduler,
+    ZeroBudgetUsageProofProvider,
     aggregate_candidate_attempts,
 )
 from aworld.self_evolve.concurrency import (
@@ -205,6 +208,9 @@ _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 class _RunBudgetContext:
     ledger: RunBudgetLedger
     cold_start_by_stage: Mapping[BudgetStage, BudgetUsage | None]
+    backend_proven_zero_by_stage: Mapping[BudgetStage, bool] = field(
+        default_factory=dict
+    )
     decisions: list[dict[str, object]] = field(default_factory=list)
     debits: list[dict[str, object]] = field(default_factory=list)
     releases: list[dict[str, object]] = field(default_factory=list)
@@ -215,6 +221,9 @@ class _RunBudgetContext:
             item_id=item_id,
             units=units,
             cold_start_per_unit=self.cold_start_by_stage.get(stage),
+            backend_proven_zero=(
+                self.backend_proven_zero_by_stage.get(stage) is True
+            ),
         )
 
     def can_fit(self, stage: BudgetStage, item_id: str, *, units: int = 1) -> bool:
@@ -255,27 +264,36 @@ class _RunBudgetContext:
         tokens: int | None = None,
         cost_usd: Decimal | None = None,
         wall_seconds: Decimal | None = None,
+        usage_observation: BudgetUsageObservation | None = None,
         actual_source: str,
     ) -> None:
         if not decision.allowed or decision.reservation_id is None:
             return
-        reservation = next(
-            item
-            for item in self.ledger.outstanding_reservations
-            if item.reservation_id == decision.reservation_id
-        )
-        actual = BudgetUsage(
-            tokens=(reservation.usage.tokens if tokens is None else tokens),
-            cost_usd=(
-                reservation.usage.cost_usd if cost_usd is None else cost_usd
+        if usage_observation is not None and any(
+            value is not None for value in (tokens, cost_usd, wall_seconds)
+        ):
+            raise ValueError(
+                "usage_observation cannot be combined with dimension arguments"
+            )
+        observation = usage_observation or BudgetUsageObservation(
+            known_lower_bound=BudgetUsage(
+                tokens=0 if tokens is None else tokens,
+                cost_usd=Decimal("0") if cost_usd is None else cost_usd,
+                wall_seconds=(
+                    Decimal("0") if wall_seconds is None else wall_seconds
+                ),
             ),
-            wall_seconds=(
-                reservation.usage.wall_seconds
-                if wall_seconds is None
-                else wall_seconds
+            completeness=BudgetUsageCompleteness(
+                tokens=tokens is not None,
+                cost_usd=cost_usd is not None,
+                wall_seconds=wall_seconds is not None,
             ),
         )
-        result = self.ledger.debit_actual(decision.reservation_id, actual)
+        result = self.ledger.debit_actual(
+            decision.reservation_id,
+            observation.known_lower_bound,
+            actual_completeness=observation.completeness,
+        )
         self.debits.append(
             {**result.to_dict(), "actual_source": actual_source}
         )
@@ -567,6 +585,12 @@ class _TelemetryUsageSnapshot:
     batches: tuple[Mapping[str, object], ...] = ()
 
 
+@dataclass(frozen=True)
+class _TelemetryUsageDelta:
+    observation: BudgetUsageObservation
+    source: str
+
+
 def _sanitized_telemetry_usage_batch(
     value: Mapping[str, object],
 ) -> dict[str, object]:
@@ -661,10 +685,16 @@ def _canonical_batch_decimal_usage(
 def _stage_telemetry_usage_delta(
     before: _TelemetryUsageSnapshot,
     after: _TelemetryUsageSnapshot,
-) -> tuple[int | None, Decimal | None, Decimal | None, str]:
+) -> _TelemetryUsageDelta:
     cursor = len(before.batches)
     if len(after.batches) <= cursor or after.batches[:cursor] != before.batches:
-        return None, None, None, "reserved_fallback_missing_stage_telemetry_delta"
+        return _TelemetryUsageDelta(
+            observation=BudgetUsageObservation(
+                known_lower_bound=BudgetUsage(),
+                completeness=BudgetUsageCompleteness.incomplete(),
+            ),
+            source="reserved_fallback_missing_stage_telemetry_delta",
+        )
     new_batches = after.batches[cursor:]
     batch_tokens = tuple(_canonical_batch_token_usage(batch) for batch in new_batches)
     batch_costs = tuple(
@@ -679,36 +709,48 @@ def _stage_telemetry_usage_delta(
         )
         for batch in new_batches
     )
-    token_delta = (
-        sum(int(value) for value in batch_tokens)
-        if all(value is not None for value in batch_tokens)
-        else None
+    token_complete = all(value is not None for value in batch_tokens)
+    cost_complete = all(value is not None for value in batch_costs)
+    wall_complete = all(value is not None for value in batch_walls)
+    token_delta = sum(
+        int(value) for value in batch_tokens if value is not None
     )
-    cost_delta = (
-        sum((value for value in batch_costs if value is not None), Decimal("0"))
-        if all(value is not None for value in batch_costs)
-        else None
+    cost_delta = sum(
+        (value for value in batch_costs if value is not None), Decimal("0")
     )
-    wall_delta = (
-        sum((value for value in batch_walls if value is not None), Decimal("0"))
-        if all(value is not None for value in batch_walls)
-        else None
+    wall_delta = sum(
+        (value for value in batch_walls if value is not None), Decimal("0")
     )
-    observed = [
-        name
-        for name, value in (
-            ("tokens", token_delta),
-            ("cost_usd", cost_delta),
-            ("wall_seconds", wall_delta),
-        )
-        if value is not None
-    ]
+    observed = []
+    for name, values, complete in (
+        ("tokens", batch_tokens, token_complete),
+        ("cost_usd", batch_costs, cost_complete),
+        ("wall_seconds", batch_walls, wall_complete),
+    ):
+        if complete:
+            observed.append(name)
+        elif any(value is not None for value in values):
+            observed.append(f"{name}_lower_bound")
     source = (
         "telemetry_delta_" + "+".join(observed)
         if observed
         else "reserved_fallback_missing_stage_telemetry_delta"
     )
-    return token_delta, cost_delta, wall_delta, source
+    return _TelemetryUsageDelta(
+        observation=BudgetUsageObservation(
+            known_lower_bound=BudgetUsage(
+                tokens=token_delta,
+                cost_usd=cost_delta,
+                wall_seconds=wall_delta,
+            ),
+            completeness=BudgetUsageCompleteness(
+                tokens=token_complete,
+                cost_usd=cost_complete,
+                wall_seconds=wall_complete,
+            ),
+        ),
+        source=source,
+    )
 
 
 def _judge_actual_token_usage(
@@ -878,6 +920,9 @@ class _FixedCandidateOptimizer:
     candidate: CandidateVariant
     source_run_id: str
 
+    def proves_zero_budget_usage(self, stage: BudgetStage) -> bool:
+        return stage is BudgetStage.CANDIDATE_GENERATION
+
     async def propose(self, request: OptimizerRequest) -> OptimizerResult:
         return OptimizerResult(
             candidates=(self.candidate,),
@@ -894,6 +939,9 @@ class _StoredCandidateReplayBackend:
     replay_result: CandidateReplayResult
     source_replay_path: str
 
+    def proves_zero_budget_usage(self, stage: BudgetStage) -> bool:
+        return stage is BudgetStage.PAIRED_REPLAY
+
     async def replay_candidate(
         self,
         request,
@@ -907,6 +955,21 @@ class _StoredCandidateReplayBackend:
                 f"{self.replay_result.request.candidate_id} != {candidate.candidate_id}"
             )
         return self.replay_result
+
+
+def _backend_proves_zero_budget_usage(
+    backend: object | None,
+    stage: BudgetStage,
+) -> bool:
+    """Accept only an explicit stage-scoped backend proof of zero usage."""
+
+    if not isinstance(backend, ZeroBudgetUsageProofProvider):
+        return False
+    try:
+        return backend.proves_zero_budget_usage(stage) is True
+    except Exception:
+        # A broken optional capability must fail closed to normal reservation.
+        return False
 
 
 def _emit_progress(
@@ -1529,6 +1592,30 @@ class SelfEvolveRunner:
                 )
             ),
             cold_start_by_stage=self._budget_cold_start_by_stage,
+            backend_proven_zero_by_stage={
+                BudgetStage.CANDIDATE_GENERATION: (
+                    _backend_proves_zero_budget_usage(
+                        self.optimizer,
+                        BudgetStage.CANDIDATE_GENERATION,
+                    )
+                ),
+                BudgetStage.SCREENING: _backend_proves_zero_budget_usage(
+                    self.candidate_replay_backend,
+                    BudgetStage.SCREENING,
+                ),
+                BudgetStage.PAIRED_REPLAY: _backend_proves_zero_budget_usage(
+                    self.candidate_replay_backend,
+                    BudgetStage.PAIRED_REPLAY,
+                ),
+                BudgetStage.EVALUATION: _backend_proves_zero_budget_usage(
+                    self.evaluation_backend,
+                    BudgetStage.EVALUATION,
+                ),
+                BudgetStage.JUDGE: _backend_proves_zero_budget_usage(
+                    self.evaluation_backend,
+                    BudgetStage.JUDGE,
+                ),
+            },
         )
         failure_cleanup.budget_context = budget_context
         self.run_budget_ledger = budget_context.ledger
@@ -3240,21 +3327,14 @@ class SelfEvolveRunner:
                     self.execution_telemetry,
                     "replay",
                 )
-                (
-                    screening_tokens,
-                    screening_cost,
-                    screening_wall,
-                    screening_usage_source,
-                ) = _stage_telemetry_usage_delta(
+                screening_usage = _stage_telemetry_usage_delta(
                     screening_telemetry_before,
                     screening_telemetry_after,
                 )
                 budget_context.debit(
                     screening_budget,
-                    tokens=screening_tokens,
-                    cost_usd=screening_cost,
-                    wall_seconds=screening_wall,
-                    actual_source=screening_usage_source,
+                    usage_observation=screening_usage.observation,
+                    actual_source=screening_usage.source,
                 )
             shared_screening_failure = bool(
                 (
@@ -4027,6 +4107,10 @@ class SelfEvolveRunner:
             )
             return state, report_item, feedback
 
+        replay_backend_proven_zero = _backend_proves_zero_budget_usage(
+            self.candidate_replay_backend,
+            BudgetStage.PAIRED_REPLAY,
+        )
         per_attempt_budget_gate = BudgetGate().evaluate(
             estimate_replay_cost(
                 dataset=_replayable_user_task_dataset(dataset),
@@ -4036,7 +4120,12 @@ class SelfEvolveRunner:
                 candidate_repetitions=self.candidate_replay_repetitions,
                 replay_candidate_limit=self.replay_candidate_limit,
                 max_run_tokens=self.per_attempt_replay_token_limit,
-                estimated_tokens_per_replay=self.replay_tokens_per_unit,
+                estimated_tokens_per_replay=(
+                    None
+                    if replay_backend_proven_zero
+                    else self.replay_tokens_per_unit
+                ),
+                backend_proven_zero=replay_backend_proven_zero,
             )
         )
         per_attempt_budget_gate = replace(
@@ -4210,18 +4299,14 @@ class SelfEvolveRunner:
             )
         if replay_budget is not None:
             if replay_started:
-                replay_tokens, replay_cost, replay_wall, replay_usage_source = (
-                    _stage_telemetry_usage_delta(
-                        replay_telemetry_before,
-                        replay_telemetry_after,
-                    )
+                replay_usage = _stage_telemetry_usage_delta(
+                    replay_telemetry_before,
+                    replay_telemetry_after,
                 )
                 budget_context.debit(
                     replay_budget,
-                    tokens=replay_tokens,
-                    cost_usd=replay_cost,
-                    wall_seconds=replay_wall,
-                    actual_source=replay_usage_source,
+                    usage_observation=replay_usage.observation,
+                    actual_source=replay_usage.source,
                 )
             else:
                 budget_context.release(
@@ -4476,21 +4561,14 @@ class SelfEvolveRunner:
                                 "evaluation",
                             )
                         )
-                        (
-                            evaluation_tokens,
-                            evaluation_cost,
-                            evaluation_wall,
-                            evaluation_usage_source,
-                        ) = _stage_telemetry_usage_delta(
+                        evaluation_usage = _stage_telemetry_usage_delta(
                             evaluation_telemetry_before,
                             evaluation_telemetry_after,
                         )
                         budget_context.debit(
                             evaluation_budget,
-                            tokens=evaluation_tokens,
-                            cost_usd=evaluation_cost,
-                            wall_seconds=evaluation_wall,
-                            actual_source=evaluation_usage_source,
+                            usage_observation=evaluation_usage.observation,
+                            actual_source=evaluation_usage.source,
                         )
                     if judge_budget is not None:
                         judge_tokens, judge_source = _judge_actual_token_usage(
