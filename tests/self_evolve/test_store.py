@@ -4,6 +4,13 @@ import json
 import os
 import socket
 
+import pytest
+
+from aworld.self_evolve.budget import (
+    CandidateAttemptEvent,
+    CandidateAttemptKey,
+    CandidateAttemptStage,
+)
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.types import (
     CandidateFileDelta,
@@ -123,6 +130,121 @@ def test_store_persists_candidate_report_recipe_and_lineage(tmp_path) -> None:
     assert _read_json(report_path) == report
     assert _read_json(recipe_path)["held_out_case_ids"] == ["case-3"]
     assert _read_json(lineage_path)["optimizer_name"] == "llm-mutator"
+
+
+def test_store_appends_duplicate_generation_attempts_without_overwriting_canonical(
+    tmp_path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    candidate = CandidateVariant(
+        candidate_id="cand-stable",
+        target=target,
+        content="# Stable candidate\n",
+        rationale="canonical package",
+    )
+    lineage = OptimizerLineage(
+        candidate_id=candidate.candidate_id,
+        optimizer_name="llm-mutator",
+        optimizer_version="1",
+        rationale="canonical lineage",
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.create_run(SelfEvolveRun(run_id="run-attempts", target=target))
+    candidate_path = store.write_candidate("run-attempts", candidate)
+    lineage_path = store.write_optimizer_lineage("run-attempts", lineage)
+    canonical_candidate = candidate_path.read_bytes()
+    canonical_lineage = lineage_path.read_bytes()
+
+    first_key = CandidateAttemptKey("run-attempts", 0, 0)
+    second_key = CandidateAttemptKey("run-attempts", 1, 0)
+    events = (
+        CandidateAttemptEvent(
+            key=first_key,
+            sequence=0,
+            stage=CandidateAttemptStage.GENERATED,
+            candidate_id=candidate.candidate_id,
+        ),
+        CandidateAttemptEvent(
+            key=first_key,
+            sequence=1,
+            stage=CandidateAttemptStage.UNIQUE,
+            candidate_id=candidate.candidate_id,
+        ),
+        CandidateAttemptEvent(
+            key=second_key,
+            sequence=0,
+            stage=CandidateAttemptStage.GENERATED,
+            candidate_id=candidate.candidate_id,
+        ),
+        CandidateAttemptEvent(
+            key=second_key,
+            sequence=1,
+            stage=CandidateAttemptStage.DUPLICATE_FILTERED,
+            candidate_id=candidate.candidate_id,
+        ),
+        CandidateAttemptEvent(
+            key=second_key,
+            sequence=2,
+            stage=CandidateAttemptStage.NOT_RUN,
+            candidate_id=candidate.candidate_id,
+            reason_code="duplicate_candidate",
+        ),
+    )
+    for event in events:
+        store.append_candidate_attempt_event(event)
+
+    assert store.read_candidate_attempt_events(first_key) == events[:2]
+    assert store.read_candidate_attempt_events(second_key) == events[2:]
+    assert store.read_all_candidate_attempt_events("run-attempts") == events
+    assert store.candidate_attempt_path(first_key) != store.candidate_attempt_path(
+        second_key
+    )
+    assert candidate_path.read_bytes() == canonical_candidate
+    assert lineage_path.read_bytes() == canonical_lineage
+
+
+def test_store_rejects_invalid_attempt_transition_without_appending(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    key = CandidateAttemptKey("run-invalid-attempt", 0, 0)
+    generated = CandidateAttemptEvent(
+        key=key,
+        sequence=0,
+        stage=CandidateAttemptStage.GENERATED,
+        candidate_id="candidate-1",
+    )
+    store.append_candidate_attempt_event(generated)
+    invalid = CandidateAttemptEvent(
+        key=key,
+        sequence=1,
+        stage=CandidateAttemptStage.PAIRED_REPLAY_STARTED,
+        candidate_id="candidate-1",
+    )
+
+    with pytest.raises(ValueError, match="illegal candidate attempt transition"):
+        store.append_candidate_attempt_event(invalid)
+
+    assert store.read_candidate_attempt_events(key) == (generated,)
+
+
+def test_store_rejects_candidate_attempt_path_key_mismatch(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    path_key = CandidateAttemptKey("run-path-key", 0, 0)
+    foreign_key = CandidateAttemptKey("run-path-key", 0, 1)
+    foreign_event = CandidateAttemptEvent(
+        key=foreign_key,
+        sequence=0,
+        stage=CandidateAttemptStage.GENERATED,
+        candidate_id="candidate-1",
+    )
+    path = store.candidate_attempt_path(path_key)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(foreign_event.to_dict(), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="path/key mismatch"):
+        store.read_candidate_attempt_events(path_key)
 
 
 def test_run_record_serializes_metrics_and_gate_results(tmp_path) -> None:
