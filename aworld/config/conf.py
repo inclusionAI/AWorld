@@ -203,8 +203,26 @@ class SelfEvolveConfig(BaseConfig):
 
     mode: Literal["off", "offline", "shadow", "online"] = "off"
     apply_policy: Literal["proposal", "auto_verified"] = "proposal"
+    # ``max_run_tokens`` remains readable for existing configs.  New callers
+    # should use the explicit total-run ceiling below.
     max_run_tokens: int = 500000
+    total_run_token_budget: Optional[int] = None
+    per_attempt_replay_token_limit: Optional[int] = None
     max_run_cost_usd: Optional[float] = None
+    max_run_wall_seconds: Optional[float] = None
+    candidate_generation_tokens_per_unit: Optional[int] = None
+    candidate_generation_cost_usd_per_unit: Optional[float] = None
+    candidate_generation_wall_seconds_per_unit: Optional[float] = None
+    candidate_screening_tokens_per_unit: Optional[int] = None
+    candidate_screening_cost_usd_per_unit: Optional[float] = None
+    candidate_screening_wall_seconds_per_unit: Optional[float] = None
+    replay_tokens_per_unit: Optional[int] = None
+    replay_cost_usd_per_unit: Optional[float] = None
+    replay_wall_seconds_per_unit: Optional[float] = None
+    evaluation_tokens_per_unit: Optional[int] = None
+    evaluation_cost_usd_per_unit: Optional[float] = None
+    evaluation_wall_seconds_per_unit: Optional[float] = None
+    deprecated_config_mappings: tuple[str, ...] = ()
     min_eval_cases: int = 30
     judge_repetitions: int = 3
     judge_timeout_seconds: int = 300
@@ -257,6 +275,45 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("replay_timeout_seconds must be positive")
         if self.replay_stability_margin < 0:
             raise ValueError("replay_stability_margin must be non-negative")
+        for field_name in (
+            "max_run_tokens",
+            "total_run_token_budget",
+            "per_attempt_replay_token_limit",
+            "candidate_generation_tokens_per_unit",
+            "candidate_screening_tokens_per_unit",
+            "replay_tokens_per_unit",
+            "evaluation_tokens_per_unit",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{field_name} must be positive")
+        for field_name in ("max_run_cost_usd", "max_run_wall_seconds"):
+            value = getattr(self, field_name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{field_name} must be positive")
+        for field_name in (
+            "candidate_generation_cost_usd_per_unit",
+            "candidate_generation_wall_seconds_per_unit",
+            "candidate_screening_cost_usd_per_unit",
+            "candidate_screening_wall_seconds_per_unit",
+            "replay_cost_usd_per_unit",
+            "replay_wall_seconds_per_unit",
+            "evaluation_cost_usd_per_unit",
+            "evaluation_wall_seconds_per_unit",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+        if self.total_run_token_budget is None:
+            self.total_run_token_budget = self.max_run_tokens
+            self.deprecated_config_mappings = tuple(
+                dict.fromkeys(
+                    (
+                        *self.deprecated_config_mappings,
+                        "max_run_tokens_to_total_run_token_budget",
+                    )
+                )
+            )
         return self
 
 

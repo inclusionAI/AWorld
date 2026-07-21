@@ -1233,7 +1233,78 @@ def test_replay_cost_preflight_counts_replays_judges_and_verification_budget() -
     assert estimate.verification_command_count == 8
     assert estimate.judge_call_count == 9
     assert estimate.estimated_tokens == 1200
+    assert estimate.estimated_tokens_per_replay == 100
     assert estimate.estimated_cost_usd == 0.12
+    assert estimate.estimate_known is True
+    assert estimate.estimate_source.value == "configured_cold_start"
+    assert estimate.estimate_confidence.value == "low"
+
+
+def test_replay_cost_unknown_tokens_fail_closed_under_token_ceiling() -> None:
+    estimate = estimate_replay_cost(
+        dataset=_dataset((EvalCase(case_id="case-1", input="one"),)),
+        candidate_count=1,
+        judge_repetitions=1,
+        max_run_tokens=10_000,
+    )
+
+    assert estimate.estimated_tokens is None
+    assert estimate.estimated_tokens_per_replay is None
+    assert estimate.estimate_known is False
+    assert estimate.estimate_source.value == "unknown"
+    assert estimate.estimate_confidence.value == "unknown"
+    assert estimate.passed is False
+    assert estimate.reason == "estimated replay tokens are unknown under max_run_tokens"
+
+
+def test_replay_cost_accepts_only_explicit_backend_proven_zero() -> None:
+    dataset = _dataset((EvalCase(case_id="case-1", input="one"),))
+
+    estimate = estimate_replay_cost(
+        dataset=dataset,
+        candidate_count=3,
+        judge_repetitions=1,
+        backend_proven_zero=True,
+        max_run_tokens=1,
+    )
+
+    assert estimate.estimated_tokens == 0
+    assert estimate.estimated_tokens_per_replay == 0
+    assert estimate.estimate_known is True
+    assert estimate.estimate_source.value == "backend_proven_zero"
+    assert estimate.estimate_confidence.value == "proven"
+    assert estimate.passed is True
+    with pytest.raises(ValueError, match="backend_proven_zero"):
+        estimate_replay_cost(
+            dataset=dataset,
+            candidate_count=1,
+            judge_repetitions=1,
+            estimated_tokens_per_replay=0,
+        )
+
+
+def test_replay_cost_is_monotonic_from_one_to_three_candidates() -> None:
+    dataset = _dataset((EvalCase(case_id="case-1", input="one"),))
+
+    one = estimate_replay_cost(
+        dataset=dataset,
+        candidate_count=1,
+        judge_repetitions=2,
+        estimated_tokens_per_replay=100,
+    )
+    three = estimate_replay_cost(
+        dataset=dataset,
+        candidate_count=3,
+        judge_repetitions=2,
+        estimated_tokens_per_replay=100,
+    )
+
+    assert three.candidate_replay_count > one.candidate_replay_count
+    assert three.total_replay_count > one.total_replay_count
+    assert three.judge_call_count > one.judge_call_count
+    assert three.estimated_tokens is not None
+    assert one.estimated_tokens is not None
+    assert three.estimated_tokens > one.estimated_tokens
 
 
 @pytest.mark.asyncio
