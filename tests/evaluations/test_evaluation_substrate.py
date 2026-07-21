@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from pathlib import Path
@@ -1490,7 +1491,11 @@ async def test_agent_judge_backend_denies_artifact_reads_outside_index(tmp_path:
         result = payload["artifact_read_results"][0]
         assert result["status"] == "denied"
         assert result["reason"] == "path_not_in_artifact_index"
+        assert result["artifact_index_present"] is True
+        assert result["allowed_path_count"] == 1
+        assert len(result["requested_path_fingerprint"]) == 16
         assert "content" not in result
+        assert str(allowed_path) not in json.dumps(result)
         return {"score": 10.0, "verdict": "Fail"}
 
     prompt = {
@@ -1517,13 +1522,20 @@ async def test_agent_judge_backend_denies_artifact_reads_outside_index(tmp_path:
         prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
     )
 
-    payload = await backend.judge(
+    execution = await backend.execute(
         case_input={"query": "evaluate"},
         target={"answer": "done"},
         suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
     )
 
-    assert payload["score"] == pytest.approx(10.0)
+    assert execution.payload["score"] == pytest.approx(10.0)
+    denied_diagnostic = execution.diagnostics[-1]
+    assert denied_diagnostic["artifact_read_denied_count"] == 1
+    assert denied_diagnostic["artifact_read_denial_reasons"] == [
+        "path_not_in_artifact_index"
+    ]
+    assert len(denied_diagnostic["artifact_read_denied_path_fingerprints"][0]) == 16
+    assert str(allowed_path) not in json.dumps(denied_diagnostic)
 
 
 @pytest.mark.asyncio
@@ -1580,6 +1592,147 @@ async def test_agent_judge_backend_accumulates_multi_round_artifact_reads(
 
     assert payload["score"] == pytest.approx(91.0)
     assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_records_per_call_artifact_diagnostics(
+    tmp_path: Path,
+) -> None:
+    artifact_path = tmp_path / "evidence.txt"
+    artifact_path.write_text("grounded evidence", encoding="utf-8")
+    call_count = 0
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return {"artifact_read_requests": [{"path": str(artifact_path)}]}
+        return {"score": 91.0, "verdict": "Pass"}
+
+    prompt = {
+        "artifact_backed_evidence": {
+            "mode": "read_only_artifact_index",
+            "read_policy": {
+                "read_only": True,
+                "external_network_allowed": False,
+                "mutation_allowed": False,
+            },
+            "artifacts": [
+                {"kind": "source_artifact", "path": str(artifact_path), "available": True}
+            ],
+        },
+    }
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
+    )
+
+    execution = await backend.execute(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    assert [item["phase"] for item in execution.diagnostics] == [
+        "initial_judge",
+        "artifact_read_round_1",
+    ]
+    initial, followup = execution.diagnostics
+    assert initial["status"] == "succeeded"
+    assert initial["artifact_request_count"] == 1
+    assert initial["artifact_read_count"] == 0
+    assert followup["status"] == "succeeded"
+    assert followup["artifact_read_count"] == 1
+    assert followup["artifact_read_chars"] == len("grounded evidence")
+    assert followup["prompt_chars"] > initial["prompt_chars"]
+    assert followup["estimated_input_tokens"] > 0
+    assert followup["latency_ms"] >= 0
+    assert "content" not in json.dumps(execution.diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_timeout_identifies_artifact_read_phase(
+    tmp_path: Path,
+) -> None:
+    artifact_path = tmp_path / "evidence.txt"
+    artifact_path.write_text("grounded evidence", encoding="utf-8")
+    call_count = 0
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return {"artifact_read_requests": [{"path": str(artifact_path)}]}
+        await asyncio.sleep(1)
+        return {"score": 91.0, "verdict": "Pass"}
+
+    prompt = {
+        "artifact_backed_evidence": {
+            "mode": "read_only_artifact_index",
+            "read_policy": {
+                "read_only": True,
+                "external_network_allowed": False,
+                "mutation_allowed": False,
+            },
+            "artifacts": [
+                {"kind": "source_artifact", "path": str(artifact_path), "available": True}
+            ],
+        },
+    }
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(prompt),
+        timeout_seconds=0.01,
+    )
+
+    with pytest.raises(asyncio.TimeoutError) as exc_info:
+        await backend.execute(
+            case_input={"query": "evaluate"},
+            target={"answer": "done"},
+            suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+        )
+
+    diagnostics = exc_info.value.judge_diagnostics
+    assert [item["status"] for item in diagnostics] == ["succeeded", "timed_out"]
+    assert diagnostics[-1]["phase"] == "artifact_read_round_1"
+    assert diagnostics[-1]["artifact_read_count"] == 1
+    assert diagnostics[-1]["timeout_seconds"] == pytest.approx(0.01)
+    assert diagnostics[-1]["latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_flow_exposes_judge_call_diagnostics() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return {"score": 0.9, "verdict": "Pass"}
+
+    suite = EvalSuiteDef(
+        suite_id="diagnostic-suite",
+        cases=[EvalCaseDef(case_id="case-1", input={"query": "hello"})],
+        judge_schema=JudgeSchemaDef(required_fields=("score", "verdict")),
+        judge_backend=AgentJudgeBackend(
+            backend_id="diagnostic-agent",
+            system_prompt="judge",
+            executor=fake_executor,
+            prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+        ),
+    )
+
+    report = await run_evaluation_flow(
+        EvaluationFlowDef(
+            target={"kind": "file", "target_path": "artifact.txt"},
+            suite=suite,
+        )
+    )
+
+    diagnostics = report["results"][0]["judge_diagnostics"]
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["phase"] == "initial_judge"
+    assert diagnostics[0]["status"] == "succeeded"
+    assert "_judge_diagnostics" not in report["results"][0]["judge"]
 
 
 @pytest.mark.asyncio
@@ -1730,7 +1883,7 @@ async def test_builtin_app_evaluator_passes_visual_target_images_to_agent_backen
 
     captured = {}
 
-    async def fake_executor(prompt, system_prompt: str):
+    async def fake_executor(prompt, system_prompt: str, **kwargs):
         captured["prompt"] = prompt
         return {
             "results": [

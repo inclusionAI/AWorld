@@ -28,6 +28,100 @@ from aworld.core.context.amni import ApplicationContext, TaskInput
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 
 
+def _safe_getattr(target, name: str, default=None):
+    try:
+        return getattr(target, name)
+    except Exception:
+        return default
+
+
+def _append_agent_like(items: list, candidate) -> None:
+    if candidate is None:
+        return
+    if isinstance(candidate, (list, tuple, set)):
+        for item in candidate:
+            _append_agent_like(items, item)
+        return
+    if isinstance(candidate, dict):
+        for item in candidate.values():
+            _append_agent_like(items, item)
+        return
+    if getattr(candidate, "conf", None) is not None:
+        items.append(candidate)
+
+
+def _iter_swarm_config_agents(swarm) -> list:
+    agents = []
+    # Do not access Swarm.agents or Swarm.ordered_agents here: those properties
+    # lazily reset uninitialized swarms before the real task/context/tools exist.
+    swarm_state = getattr(swarm, "__dict__", {}) if swarm is not None else {}
+    if isinstance(swarm_state, dict):
+        _append_agent_like(agents, swarm_state.get("_communicate_agent"))
+        _append_agent_like(agents, swarm_state.get("topology"))
+        _append_agent_like(agents, swarm_state.get("register_agents"))
+        agent_graph = swarm_state.get("agent_graph")
+        if agent_graph is not None:
+            _append_agent_like(agents, getattr(agent_graph, "root_agent", None))
+            _append_agent_like(agents, getattr(agent_graph, "ordered_agents", None))
+            _append_agent_like(agents, getattr(agent_graph, "agents", None))
+        builder = swarm_state.get("builder")
+        if builder is not None:
+            _append_agent_like(agents, getattr(builder, "root_agent", None))
+
+    if not agents:
+        _append_agent_like(agents, swarm)
+
+    unique = []
+    seen = set()
+    for agent in agents:
+        key = id(agent)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(agent)
+    return unique
+
+
+def _apply_self_evolve_config_to_swarm(swarm, self_evolve_config) -> None:
+    if self_evolve_config is None or swarm is None:
+        return
+    for agent in _iter_swarm_config_agents(swarm):
+        conf = getattr(agent, "conf", None)
+        if conf is None:
+            continue
+        try:
+            conf.self_evolve_config = self_evolve_config
+        except Exception:
+            continue
+
+
+def _apply_runtime_skill_paths_to_swarm(
+    swarm,
+    skill_paths: tuple[str, ...],
+) -> None:
+    """Expose explicit CLI skill sources to task-time skill resolution."""
+
+    if not skill_paths or swarm is None:
+        return
+    for agent in _iter_swarm_config_agents(swarm):
+        conf = getattr(agent, "conf", None)
+        if conf is None:
+            continue
+        ext = dict(getattr(conf, "ext", None) or {})
+        resolver_inputs = dict(ext.get("skill_resolver_inputs", {}) or {})
+        sources = [
+            str(item)
+            for item in resolver_inputs.get("compatibility_sources", [])
+            if str(item).strip()
+        ]
+        for skill_path in skill_paths:
+            if skill_path not in sources:
+                sources.append(skill_path)
+        resolver_inputs["compatibility_sources"] = sources
+        ext["skill_resolver_inputs"] = resolver_inputs
+        conf.ext = ext
+
+
 class CliRuntime(BaseCliRuntime):
     """
     CLI runtime that supports agents from multiple sources.
@@ -68,6 +162,8 @@ class CliRuntime(BaseCliRuntime):
         require_same_resume_agent: bool = True,
         resume_cwd: str | None = None,
         fail_on_missing_agent: bool = False,
+        self_evolve_config=None,
+        skill_paths: Optional[List[str]] = None,
     ):
         """
         Initialize CLI Runtime.
@@ -98,6 +194,14 @@ class CliRuntime(BaseCliRuntime):
         self._require_same_resume_agent = require_same_resume_agent
         self._resume_cwd = resume_cwd
         self._fail_on_missing_agent = fail_on_missing_agent
+        self._self_evolve_config = self_evolve_config
+        self.runtime_skill_paths = tuple(
+            dict.fromkeys(
+                str(Path(item).expanduser().resolve())
+                for item in skill_paths or ()
+                if str(item).strip()
+            )
+        )
     
     def _parse_config(
         self, 
@@ -343,6 +447,12 @@ class CliRuntime(BaseCliRuntime):
                 )
                 # Get swarm with context
                 swarm = await local_agent.get_swarm(temp_context)
+
+            _apply_self_evolve_config_to_swarm(swarm, self._self_evolve_config)
+            _apply_runtime_skill_paths_to_swarm(
+                swarm,
+                self.runtime_skill_paths,
+            )
             
             executor = LocalAgentExecutor(
                 swarm, 

@@ -207,6 +207,11 @@ class MemoryFactory:
         Returns:
             MemoryBase: Memory instance.
         """
+        from aworld.memory.scope import LocalMemoryScope
+
+        scoped = LocalMemoryScope.current()
+        if scoped is not None:
+            return scoped
         if MEMORY_HOLDER.get("instance"):
             logger.info(f"instance use cached memory instance")
             return MEMORY_HOLDER["instance"]

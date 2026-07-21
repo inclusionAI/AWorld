@@ -354,9 +354,11 @@ def _build_cli_agent_judge_backend(
     backend_id: str,
     prompt_builder,
     judge_timeout_seconds: float | None = None,
+    judge_model_profile: str | None = None,
     system_prompt_prefix: str | None = None,
 ):
     executor_cache: dict[str, Any] = {}
+    model_config = _resolve_named_judge_model_config(judge_model_profile)
 
     async def _executor(prompt, system_prompt):
         if isinstance(prompt, tuple):
@@ -364,6 +366,7 @@ def _build_cli_agent_judge_backend(
         executor = executor_cache.get("executor")
         if executor is None:
             executor = await _load_cli_agent_executor(agent_name)
+            _apply_model_config_to_local_executor(executor, model_config)
             executor_cache["executor"] = executor
         swarm = getattr(executor, "swarm", None)
         if swarm is not None:
@@ -394,13 +397,19 @@ def _resolve_source_judge_backend(
     named_backend_prefix: str,
     prompt_builder,
     judge_timeout_seconds: float | None = None,
+    judge_model_profile: str | None = None,
 ) -> JudgeBackend:
     if judge_agent_path is not None:
+        model_config = _resolve_judge_model_config(
+            judge_agent_path=judge_agent_path,
+            judge_model_profile=judge_model_profile,
+        )
         return AgentJudgeBackend.from_agent_markdown_as_instructions(
             judge_agent_path,
             backend_id=file_backend_id,
             prompt_builder=prompt_builder,
             timeout_seconds=judge_timeout_seconds,
+            model_config=model_config,
             system_prompt_prefix=(
                 _TRAJECTORY_JUDGE_SYSTEM_CONTRACT
                 if file_backend_id == "trajectory-evaluator-agent-md"
@@ -414,6 +423,7 @@ def _resolve_source_judge_backend(
             backend_id=f"{named_backend_prefix}:{resolved_name}",
             prompt_builder=prompt_builder,
             judge_timeout_seconds=judge_timeout_seconds,
+            judge_model_profile=judge_model_profile,
             system_prompt_prefix=(
                 _TRAJECTORY_JUDGE_SYSTEM_CONTRACT
                 if file_backend_id == "trajectory-evaluator-agent-md"
@@ -423,6 +433,74 @@ def _resolve_source_judge_backend(
     if judge_backend_ref is not None and str(judge_backend_ref).strip():
         return _load_source_judge_backend_ref(str(judge_backend_ref).strip())
     raise ValueError("exactly one judge selector is required: --judge-agent, --judge-agent-name, or --judge-backend-ref")
+
+
+def _resolve_judge_model_config(
+    *,
+    judge_agent_path: Path,
+    judge_model_profile: str | None,
+):
+    profile = (judge_model_profile or "").strip()
+    if not profile:
+        profile = _agent_markdown_model_profile(judge_agent_path) or ""
+    if not profile:
+        return None
+    from aworld_cli.core.model_profiles import resolve_model_profile
+
+    return resolve_model_profile(profile)
+
+
+def _resolve_named_judge_model_config(judge_model_profile: str | None):
+    profile = (judge_model_profile or "").strip()
+    if not profile:
+        return None
+    from aworld_cli.core.model_profiles import resolve_model_profile
+
+    return resolve_model_profile(profile)
+
+
+def _apply_model_config_to_local_executor(executor: Any, model_config: Any | None) -> None:
+    if model_config is None or executor is None:
+        return
+    agents: list[Any] = []
+    swarm = getattr(executor, "swarm", None)
+    if swarm is not None:
+        try:
+            from aworld_cli.runtime.cli import _iter_swarm_config_agents
+
+            agents.extend(_iter_swarm_config_agents(swarm))
+        except Exception:
+            pass
+    if getattr(executor, "conf", None) is not None:
+        agents.append(executor)
+
+    seen: set[int] = set()
+    for agent in agents:
+        key = id(agent)
+        if key in seen:
+            continue
+        seen.add(key)
+        conf = getattr(agent, "conf", None)
+        if conf is None:
+            continue
+        try:
+            conf.llm_config = model_config
+        except Exception:
+            continue
+
+
+def _agent_markdown_model_profile(path: Path) -> str | None:
+    try:
+        from aworld.utils.skill_loader import extract_front_matter
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        frontmatter, _ = extract_front_matter(lines)
+    except Exception:
+        return None
+    value = frontmatter.get("model_profile")
+    if value in (None, ""):
+        return None
+    return str(value).strip() or None
 
 
 class _CliAgentRuntimeHarness:
@@ -736,7 +814,13 @@ def _evidence_digest_bundle_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     digest_entry = {
         "source_id": str(entry.get("source_id") or ""),
         "artifact_path": str(entry.get("artifact_path") or ""),
+        "evidence_type": str(entry.get("evidence_type") or ""),
         "extraction_method": str(entry.get("extraction_method") or ""),
+        "metadata": (
+            _compact_digest_mapping(entry["metadata"])
+            if isinstance(entry.get("metadata"), Mapping)
+            else {}
+        ),
         "evidence": _compact_digest_mapping(evidence),
     }
     return {key: value for key, value in digest_entry.items() if value not in ("", {})}
@@ -1057,11 +1141,16 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
 
 
 def _prompt_bundle_artifact_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    compacted = {
         "source_id": str(entry.get("source_id") or ""),
         "artifact_path": str(entry.get("artifact_path") or ""),
+        "evidence_type": str(entry.get("evidence_type") or ""),
         "extraction_method": str(entry.get("extraction_method") or ""),
     }
+    metadata = entry.get("metadata")
+    if isinstance(metadata, Mapping):
+        compacted["metadata"] = _compact_digest_mapping(metadata)
+    return {key: value for key, value in compacted.items() if value not in ("", {})}
 
 
 def _compact_prompt_bundle_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -1260,6 +1349,7 @@ def _build_source_suite(
     out_dir: str | None,
     agent: str | None = None,
     judge_timeout_seconds: float | None = None,
+    judge_model_profile: str | None = None,
 ):
     agent_name = agent or "Aworld"
     trajectory_gate = GatePolicyDef(
@@ -1307,6 +1397,7 @@ def _build_source_suite(
             named_backend_prefix="source-agent",
             prompt_builder=_build_source_prompt,
             judge_timeout_seconds=judge_timeout_seconds,
+            judge_model_profile=judge_model_profile,
         )
         return create_source_eval_suite(
             suite_id="task-source-evaluator",
@@ -1333,6 +1424,7 @@ def _build_source_suite(
             named_backend_prefix="source-agent",
             prompt_builder=_build_source_prompt,
             judge_timeout_seconds=judge_timeout_seconds,
+            judge_model_profile=judge_model_profile,
         )
         return create_source_eval_suite(
             suite_id="answer-source-evaluator",
@@ -1365,6 +1457,7 @@ def _build_source_suite(
             named_backend_prefix="trajectory-evaluator-agent",
             prompt_builder=_build_trajectory_prompt,
             judge_timeout_seconds=judge_timeout_seconds,
+            judge_model_profile=judge_model_profile,
         )
         return create_source_eval_suite(
             suite_id="trajectory-source-evaluator",
@@ -1396,6 +1489,7 @@ def run_evaluator_source_cli(
     answer_field: str = "answer",
     interactive_approval: bool = False,
     judge_timeout_seconds: float | None = None,
+    judge_model_profile: str | None = None,
 ) -> dict:
     hooks = _load_evaluator_hooks()
     kind = (kind or "").strip().lower()
@@ -1424,6 +1518,7 @@ def run_evaluator_source_cli(
         "workspace_path": workspace_path,
         "output_path": str(Path(output).expanduser().resolve()) if output else None,
         "judge_timeout_seconds": judge_timeout_seconds,
+        "judge_model_profile": judge_model_profile,
     }
     hook_state = _run_evaluator_hooks(
         hooks,
@@ -1440,6 +1535,7 @@ def run_evaluator_source_cli(
             "agent": agent,
             "interactive_approval": interactive_approval,
             "judge_timeout_seconds": judge_timeout_seconds,
+            "judge_model_profile": judge_model_profile,
         },
     )
     suite = _build_source_suite(
@@ -1455,6 +1551,7 @@ def run_evaluator_source_cli(
         out_dir=out_dir,
         agent=agent,
         judge_timeout_seconds=judge_timeout_seconds,
+        judge_model_profile=judge_model_profile,
     )
     agent_name = agent or "Aworld"
     executes_agent = kind == "task" or (kind == "trajectory" and not task_id)
@@ -1468,6 +1565,7 @@ def run_evaluator_source_cli(
         "judge_backend_ref": judge_backend_ref,
         "agent": agent_name if executes_agent else agent,
         "judge_timeout_seconds": judge_timeout_seconds,
+        "judge_model_profile": judge_model_profile,
         "source_out_dir": str(Path(out_dir).expanduser().resolve()) if out_dir else None,
         "report_output_path": str(Path(output).expanduser().resolve()) if output else None,
     }
@@ -1514,6 +1612,7 @@ def run_evaluator_source_cli(
         "judge_backend_ref": judge_backend_ref,
         "agent": agent_name if executes_agent else agent,
         "judge_timeout_seconds": judge_timeout_seconds,
+        "judge_model_profile": judge_model_profile,
     }
     report["automation"] = _build_automation_summary(report)
     output_path = _source_report_path(

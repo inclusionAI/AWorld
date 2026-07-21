@@ -824,6 +824,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
         context = await build_context(task_input, self.swarm, workspace)
 
         # Set workspace_path for hook system (CLI working directory)
+        context.execution_scope = "cli_interactive"
+        context.context_info["execution_scope"] = "cli_interactive"
         context.workspace_path = os.getcwd()
         runtime = getattr(self, "_base_runtime", None)
         if runtime is not None and getattr(runtime, "_steering", None) is not None:

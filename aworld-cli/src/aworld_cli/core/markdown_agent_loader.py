@@ -382,6 +382,16 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                     logger.warning(f"⚠️ model_config value '{model_config}' is neither valid JSON nor a file path, using None")
         elif model_config is None or (isinstance(model_config, dict) and not model_config):
             model_config = None
+        model_profile = front_matter.get("model_profile")
+        if model_config is None and model_profile:
+            try:
+                from aworld_cli.core.model_profiles import resolve_model_profile
+
+                resolved_profile = resolve_model_profile(str(model_profile))
+                model_config = resolved_profile.model_dump(mode="python")
+                logger.info(f"✅ Using model_profile from markdown: {model_profile}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to resolve model_profile '{model_profile}' in {md_file_path}: {e}")
 
         # Get PTC tools (Programmatic Tool Calling)
         ptc_tools = front_matter.get("ptc_tools")

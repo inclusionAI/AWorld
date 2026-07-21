@@ -29,6 +29,17 @@ class TargetInventory:
                 return entry
         return None
 
+    def only_target_types(self, target_types: Iterable[str]) -> TargetInventory:
+        allowed = frozenset(target_types)
+        return TargetInventory(
+            entries=tuple(
+                entry for entry in self.entries if entry.target.target_type in allowed
+            ),
+            draft_skill_root=(
+                self.draft_skill_root if "skill" in allowed else None
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class TargetSelectionReport:
@@ -92,30 +103,14 @@ class TrajectoryCreditAssigner:
         evidence_ids = _matching_evidence_ids(trace_pack, signal.keywords)
 
         if signal.target_type == "no_target":
-            llm_report = self._assign_from_llm(trace_pack, signals)
-            if llm_report is not None:
-                return llm_report
-            existing_reusable_skill_report = self._assign_existing_reusable_skill(
+            fallback_report = self._assign_fallback_target(
                 trace_pack,
                 serialized=serialized,
                 existing_signals=signals,
+                include_llm=True,
             )
-            if existing_reusable_skill_report is not None:
-                return existing_reusable_skill_report
-            draft_skill_report = self._assign_new_skill_candidate(
-                trace_pack,
-                serialized=serialized,
-                existing_signals=signals,
-            )
-            if draft_skill_report is not None:
-                return draft_skill_report
-            skill_report = self._assign_from_skill_inventory(
-                trace_pack,
-                serialized=serialized,
-                existing_signals=signals,
-            )
-            if skill_report is not None:
-                return skill_report
+            if fallback_report is not None:
+                return fallback_report
             return TargetSelectionReport(
                 selected_target=None,
                 confidence=signal.confidence,
@@ -128,17 +123,46 @@ class TrajectoryCreditAssigner:
 
         entry = self.inventory.find(signal.target_type, signal.target_id)
         if entry is None:
+            unavailable_signal = f"unavailable_signaled_target:{signal.target_type}"
+            fallback_signals = _dedupe(signals + (unavailable_signal,))
+            fallback_report = self._assign_fallback_target(
+                trace_pack,
+                serialized=serialized,
+                existing_signals=fallback_signals,
+                include_llm=True,
+            )
+            if fallback_report is not None:
+                diagnostics = dict(fallback_report.diagnostics or {})
+                diagnostics["unavailable_signaled_target"] = {
+                    "target_type": signal.target_type,
+                    "target_id": signal.target_id,
+                }
+                return TargetSelectionReport(
+                    selected_target=fallback_report.selected_target,
+                    confidence=fallback_report.confidence,
+                    evidence_step_ids=fallback_report.evidence_step_ids,
+                    failure_category=fallback_report.failure_category,
+                    signals=fallback_report.signals,
+                    no_target_reason=fallback_report.no_target_reason,
+                    diagnostics=diagnostics,
+                )
             return TargetSelectionReport(
                 selected_target=None,
                 confidence=0.0,
                 evidence_step_ids=evidence_ids,
                 failure_category="no_target",
-                signals=signals,
+                signals=fallback_signals,
                 no_target_reason=(
                     f"deterministic signal selected {signal.target_type}:{signal.target_id}, "
-                    "but the target is not present in inventory"
+                    "but the target is not available in the active capability inventory"
                 ),
-                diagnostics={"pack_id": trace_pack.pack_id},
+                diagnostics={
+                    "pack_id": trace_pack.pack_id,
+                    "unavailable_signaled_target": {
+                        "target_type": signal.target_type,
+                        "target_id": signal.target_id,
+                    },
+                },
             )
 
         return TargetSelectionReport(
@@ -148,7 +172,39 @@ class TrajectoryCreditAssigner:
             failure_category=signal.failure_category,
             signals=signals,
             diagnostics={"pack_id": trace_pack.pack_id},
-            )
+        )
+
+    def _assign_fallback_target(
+        self,
+        trace_pack: TracePack,
+        *,
+        serialized: str,
+        existing_signals: tuple[str, ...],
+        include_llm: bool,
+    ) -> TargetSelectionReport | None:
+        if include_llm:
+            llm_report = self._assign_from_llm(trace_pack, existing_signals)
+            if llm_report is not None:
+                return llm_report
+        existing_reusable_skill_report = self._assign_existing_reusable_skill(
+            trace_pack,
+            serialized=serialized,
+            existing_signals=existing_signals,
+        )
+        if existing_reusable_skill_report is not None:
+            return existing_reusable_skill_report
+        draft_skill_report = self._assign_new_skill_candidate(
+            trace_pack,
+            serialized=serialized,
+            existing_signals=existing_signals,
+        )
+        if draft_skill_report is not None:
+            return draft_skill_report
+        return self._assign_from_skill_inventory(
+            trace_pack,
+            serialized=serialized,
+            existing_signals=existing_signals,
+        )
 
     def _assign_new_skill_candidate(
         self,
@@ -243,7 +299,10 @@ class TrajectoryCreditAssigner:
         for entry in self.inventory.entries:
             if entry.target.target_type != "skill" or entry.provenance.protected:
                 continue
-            aliases = _skill_match_aliases(entry)
+            aliases = _dedupe(
+                _skill_match_aliases(entry)
+                + _tool_anchored_skill_aliases(entry, trace_pack)
+            )
             matched_aliases = tuple(alias for alias in aliases if alias in serialized)
             if matched_aliases:
                 matches.append((len(matched_aliases), entry, matched_aliases))
@@ -458,6 +517,15 @@ def _deterministic_signal(serialized: str) -> _Signal:
             signals=("result_validation_mismatch",),
             keywords=("result validation mismatch", "anchors"),
         )
+    if _looks_like_browser_runtime_issue(serialized):
+        return _Signal(
+            target_type="skill",
+            target_id="agent-browser",
+            failure_category="skill",
+            confidence=0.9,
+            signals=("browser_runtime_issue",),
+            keywords=("browser", "chrome", "cdp", "login", "profile", "session"),
+        )
     if "skill_tool" in serialized or "active_skill" in serialized:
         return _Signal(
             target_type="tool-description",
@@ -484,6 +552,24 @@ def _deterministic_signal(serialized: str) -> _Signal:
         signals=("low_confidence",),
         keywords=(),
         reason="deterministic signals did not identify a supported self-evolve target",
+    )
+
+
+def _looks_like_browser_runtime_issue(serialized: str) -> bool:
+    browser_markers = ("browser", "chrome", "cdp", "devtools", "playwright")
+    runtime_markers = (
+        "logged out",
+        "logged-out",
+        "not logged in",
+        "login",
+        "profile",
+        "session",
+        "cookie",
+        "cookies",
+        "connect_over_cdp",
+    )
+    return any(marker in serialized for marker in browser_markers) and any(
+        marker in serialized for marker in runtime_markers
     )
 
 
@@ -549,12 +635,34 @@ def _skill_match_aliases(entry: TargetInventoryEntry) -> tuple[str, ...]:
         if not lowered:
             continue
         normalized.append(lowered)
-        normalized.extend(
-            token
-            for token in re.findall(r"[a-z0-9]+", lowered)
-            if len(token) >= 5 and token not in _WEAK_SKILL_ALIAS_TOKENS
-        )
     return tuple(dict.fromkeys(normalized))
+
+
+def _tool_anchored_skill_aliases(
+    entry: TargetInventoryEntry,
+    trace_pack: TracePack,
+) -> tuple[str, ...]:
+    tool_text = " ".join(
+        tool_name.lower()
+        for step in trace_pack.steps
+        for tool_name in step.tool_names
+    )
+    if not tool_text:
+        return ()
+
+    aliases = [entry.target.target_id]
+    aliases.extend(alias for alias in entry.aliases[:2] if alias)
+    anchored: list[str] = []
+    for alias in aliases:
+        lowered = alias.strip().lower()
+        for token in re.findall(r"[a-z0-9]+", lowered):
+            if (
+                len(token) >= 5
+                and token not in _WEAK_SKILL_ALIAS_TOKENS
+                and token in tool_text
+            ):
+                anchored.append(token)
+    return tuple(dict.fromkeys(anchored))
 
 
 def _skill_frontmatter(path: Path) -> dict[str, str]:

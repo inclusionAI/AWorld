@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -36,6 +37,30 @@ class TracePack:
             return None
         content = self.steps[-1].action.get("content")
         return content if isinstance(content, str) else None
+
+
+@dataclass(frozen=True)
+class TrajectoryLogRecord:
+    record_index: int
+    task_id: str
+    record_metadata: Mapping[str, Any]
+    trajectory: tuple[Mapping[str, Any], ...]
+
+    @property
+    def source_fingerprint(self) -> str:
+        payload = {
+            "record_index": self.record_index,
+            "task_id": self.task_id,
+            "record_metadata": dict(self.record_metadata),
+            "trajectory": list(self.trajectory),
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def build_trace_pack(
@@ -85,24 +110,53 @@ def trace_packs_from_trajectory_log(
     max_steps: int = 8,
     max_text_chars: int = 2000,
 ) -> list[TracePack]:
-    packs: list[TracePack] = []
+    return [
+        build_trace_pack(
+            record.trajectory,
+            source_kind="trajectory_log",
+            task_id=record.task_id,
+            max_steps=max_steps,
+            max_text_chars=max_text_chars,
+        )
+        for record in load_trajectory_log_records(path)
+    ]
+
+
+def load_trajectory_log_records(path: str | Path) -> list[TrajectoryLogRecord]:
+    records: list[TrajectoryLogRecord] = []
     for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
         if not raw_line.strip():
             continue
-        record = _trajectory_log_record(raw_line)
-        if record is None:
+        payload = _trajectory_log_record(raw_line)
+        if payload is None:
             continue
-        trajectory = json.loads(record["trajectory"])
-        packs.append(
-            build_trace_pack(
-                trajectory,
-                source_kind="trajectory_log",
-                task_id=record.get("task_id"),
-                max_steps=max_steps,
-                max_text_chars=max_text_chars,
+        raw_trajectory = payload.get("trajectory")
+        try:
+            trajectory = (
+                json.loads(raw_trajectory)
+                if isinstance(raw_trajectory, str)
+                else raw_trajectory
+            )
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(trajectory, list):
+            continue
+        task_id = str(payload.get("task_id") or "")
+        records.append(
+            TrajectoryLogRecord(
+                record_index=len(records),
+                task_id=task_id,
+                record_metadata={
+                    str(key): value
+                    for key, value in payload.items()
+                    if key != "trajectory"
+                },
+                trajectory=tuple(
+                    item for item in trajectory if isinstance(item, Mapping)
+                ),
             )
         )
-    return packs
+    return records
 
 
 def _trajectory_log_record(raw_line: str) -> Mapping[str, Any] | None:
@@ -133,11 +187,36 @@ def _select_boundary_items(
         return indexed_items, []
     if max_steps == 1:
         return [indexed_items[-1]], indexed_items[:-1]
+    if max_steps == 2:
+        selected = [indexed_items[0], indexed_items[-1]]
+        return selected, indexed_items[1:-1]
 
-    head_count = max_steps // 2
-    tail_count = max_steps - head_count
-    selected = indexed_items[:head_count] + indexed_items[-tail_count:]
-    omitted = indexed_items[head_count:-tail_count]
+    head_count = 2 if max_steps >= 4 else 1
+    tail_count = 2 if max_steps >= 4 else 1
+    middle_count = max_steps - head_count - tail_count
+    selected_indexes = set(range(head_count))
+    selected_indexes.update(range(len(items) - tail_count, len(items)))
+    start_anchor = head_count - 1
+    end_anchor = len(items) - tail_count
+    for slot in range(middle_count):
+        source_index = round(
+            start_anchor
+            + (slot + 1)
+            * (end_anchor - start_anchor)
+            / (middle_count + 1)
+        )
+        selected_indexes.add(source_index)
+    if len(selected_indexes) < max_steps:
+        for source_index in range(head_count, len(items) - tail_count):
+            selected_indexes.add(source_index)
+            if len(selected_indexes) == max_steps:
+                break
+    selected = [indexed_items[index] for index in sorted(selected_indexes)]
+    omitted = [
+        indexed_items[index]
+        for index in range(len(items))
+        if index not in selected_indexes
+    ]
     return selected, omitted
 
 

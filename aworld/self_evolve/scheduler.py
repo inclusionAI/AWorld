@@ -229,7 +229,7 @@ def _run_framework_job(
         current_trajectory=tuple(
             item for item in trajectory if isinstance(item, Mapping)
         ),
-        apply_policy=config.apply_policy,
+        apply_policy=_effective_background_apply_policy(config),
         infer_target=True,
         min_eval_cases=config.min_eval_cases,
         judge_repetitions=config.judge_repetitions,
@@ -248,6 +248,14 @@ def _run_framework_job(
         replay_stability_margin=config.replay_stability_margin,
         runtime_registry_refresher=runtime_registry_refresher,
     )
+
+
+def _effective_background_apply_policy(config: SelfEvolveConfig) -> str:
+    if config.mode == "shadow":
+        return "proposal"
+    if config.mode == "online":
+        return "auto_verified"
+    return config.apply_policy
 
 
 def _replay_diagnostics(result: Mapping[str, Any]) -> dict[str, Any]:

@@ -21,6 +21,14 @@ class SelfEvolveTargetRef:
 
 
 @dataclass(frozen=True)
+class CandidateFileDelta:
+    path: str
+    operation: str = "upsert"
+    content: str | None = None
+    executable: bool = False
+
+
+@dataclass(frozen=True)
 class EvaluationSummary:
     variant_id: str
     metrics: Mapping[str, Any]
@@ -43,6 +51,7 @@ class CandidateVariant:
     rationale: str
     parent_candidate_ids: tuple[str, ...] = ()
     target_fingerprint: str | None = None
+    files: tuple[CandidateFileDelta, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,10 @@ class OptimizerLineage:
     optimizer_version: str
     parent_candidate_ids: tuple[str, ...] = ()
     trainable_case_ids: tuple[str, ...] = ()
+    content_fingerprint: str | None = None
+    semantic_fingerprint: str | None = None
+    lesson_set_fingerprint: str | None = None
+    addressed_lesson_ids: tuple[str, ...] = ()
     rationale: str | None = None
 
 

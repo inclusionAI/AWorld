@@ -286,8 +286,62 @@ def test_serve_command_dispatches_with_bootstrap_and_global_options(
             "remote_backends": ["http://backend"],
             "local_dirs": ["./resolved-agents"],
             "agent_files": None,
+            "session_id": None,
+            "self_evolve_config": None,
         }
     ]
+
+
+def test_interactive_command_dispatches_evolve_mode(monkeypatch):
+    from aworld_cli import main as main_module
+
+    calls = []
+
+    async def fake_run_interactive_mode(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("aworld_cli.main._show_banner", lambda: None)
+    monkeypatch.setattr("aworld_cli.main.init_middlewares", lambda **kwargs: None)
+    monkeypatch.setattr("aworld_cli.main._resolve_agent_dirs", lambda agent_dirs: [])
+    monkeypatch.setattr(
+        "aworld_cli.core.config.load_config_with_env",
+        lambda env_file: ({"provider": "demo"}, "env", env_file),
+    )
+    monkeypatch.setattr("aworld_cli.core.config.has_model_config", lambda config: True)
+    monkeypatch.setattr(
+        "aworld_cli.core.runtime_skill_registry.build_runtime_skill_registry_view",
+        lambda skill_paths=None, cwd=None: type(
+            "FakeRegistry",
+            (),
+            {"get_all_skills": lambda self: {}},
+        )(),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.main._run_interactive_mode",
+        fake_run_interactive_mode,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "--evolve=online",
+            "--judge-agent",
+            "agent.md",
+            "--judge-model-profile",
+            "judge",
+            "interactive",
+            "--agent",
+            "Aworld",
+        ]
+    )
+
+    assert handled is True
+    config = calls[0]["self_evolve_config"]
+    assert config.mode == "online"
+    assert config.apply_policy == "auto_verified"
+    assert config.judge_config.mode == "agent_md"
+    assert config.judge_config.agent_path == "agent.md"
+    assert config.judge_config.model_profile == "judge"
 
 
 def test_interactive_command_dispatches_with_bootstrap_and_global_options(
@@ -375,6 +429,8 @@ def test_interactive_command_dispatches_with_bootstrap_and_global_options(
             "remote_backends": ["http://backend"],
             "local_dirs": ["./resolved-agents"],
             "agent_files": None,
+            "session_id": None,
+            "self_evolve_config": None,
         }
     ]
 

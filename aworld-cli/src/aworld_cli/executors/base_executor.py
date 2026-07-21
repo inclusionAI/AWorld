@@ -52,6 +52,34 @@ from .output_manager import OutputManager
 from .tool_logger import get_tool_logger
 
 
+_MAX_TOOL_RESULT_DISPLAY_CHARS = 64 * 1024
+
+
+def _bound_tool_result_display_content(
+    content: str,
+    *,
+    max_chars: int = _MAX_TOOL_RESULT_DISPLAY_CHARS,
+) -> str:
+    """Bound diagnostic rendering before regex cleanup or JSON inspection.
+
+    Tool results are compacted separately before reuse by the model, but CLI
+    rendering happens earlier in the output pipeline.  A single generated-log
+    line can be several megabytes, so even display-only cleanup regexes can
+    otherwise monopolize a CPU core before compaction gets a chance to run.
+    """
+
+    if len(content) <= max_chars:
+        return content
+    head_chars = max(max_chars // 2, 1)
+    tail_chars = max(max_chars - head_chars, 1)
+    omitted_chars = max(0, len(content) - head_chars - tail_chars)
+    return (
+        f"{content[:head_chars]}\n"
+        f"[tool result display truncated: {omitted_chars} chars omitted]\n"
+        f"{content[-tail_chars:]}"
+    )
+
+
 def env_stream_no_truncate() -> bool:
     """
     Return True when NO_TRUNCATE is 1/true/yes.
@@ -1000,6 +1028,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         import re
         if not content:
             return content
+        content = _bound_tool_result_display_content(content)
 
         # Pattern to match file:line references (e.g., "server.py:619", "main.py:123")
         # Matches: filename.extension:number
@@ -1009,9 +1038,13 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         filtered_content = re.sub(file_line_pattern, '', content)
 
         # Remove "Processing request of type" lines
-        # This removes the entire line containing this text
-        processing_pattern = r'.*Processing request of type.*\n?'
-        filtered_content = re.sub(processing_pattern, '', filtered_content, flags=re.IGNORECASE)
+        # using a linear, line-oriented check.  The previous unanchored
+        # ``.*...`` regex had pathological runtime on very long log lines.
+        filtered_content = "\n".join(
+            line
+            for line in filtered_content.splitlines()
+            if "processing request of type" not in line.casefold()
+        )
 
         # Clean up extra whitespace and empty lines that might be left behind
         filtered_content = re.sub(r'\n\s*\n', '\n', filtered_content)  # Remove empty lines

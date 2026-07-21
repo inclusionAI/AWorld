@@ -6,6 +6,13 @@ from .provider import (
 )
 from .hashing import compute_stable_prefix_hash
 from .state import PromptAssemblyRuntimeState
+from .budget import (
+    BudgetedPromptAssemblyPlan,
+    BudgetedPromptAssemblyProvider,
+    BudgetedPromptSection,
+    PromptBudgetExceededError,
+    PromptBudgetPolicy,
+)
 
 __all__ = [
     "PromptAssemblyPlan",
@@ -16,4 +23,9 @@ __all__ = [
     "CacheAwarePromptAssemblyProvider",
     "compute_stable_prefix_hash",
     "PromptAssemblyRuntimeState",
+    "PromptBudgetPolicy",
+    "PromptBudgetExceededError",
+    "BudgetedPromptSection",
+    "BudgetedPromptAssemblyPlan",
+    "BudgetedPromptAssemblyProvider",
 ]

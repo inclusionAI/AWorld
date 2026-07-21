@@ -33,7 +33,14 @@ _RELEASE_CHECK_GROUPS = (
     {
         "check_id": "evidence_integrity",
         "label": "Evidence integrity",
-        "gate_names": {"evidence_quality", "candidate_replay", "judge_only_signal"},
+        "gate_names": {
+            "candidate_capability_replay",
+            "candidate_replay",
+            "evidence_quality",
+            "judge_only_signal",
+            "replay_adaptation",
+            "replay_capability",
+        },
     },
     {
         "check_id": "verification",
@@ -67,6 +74,8 @@ def build_release_checklist(
     ]
     if failed_blocking:
         status = "blocked"
+    elif not any(check["status"] != "not_run" for check in checks):
+        status = "not_run"
     elif apply_policy == "auto_verified" and all(
         check["status"] in {"passed", "not_run"} for check in checks
     ):

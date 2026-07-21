@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 import aworld.evaluations.substrate as substrate_module
+from aworld.config.conf import ModelConfig
 from aworld.evaluations.manifests import get_declared_eval_suite_schema
 from aworld.evaluations.report import EvaluatorReport
 from aworld_cli.evaluator_runtime import (
@@ -128,6 +129,95 @@ def test_run_evaluator_source_cli_builds_task_answer_flow_with_default_fields(
     assert output.exists()
 
 
+def test_run_evaluator_source_cli_uses_judge_model_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text("---\nname: judge\n---\nJudge.\n", encoding="utf-8")
+    captured = {}
+
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        lambda profile: ModelConfig(
+            llm_provider="anthropic",
+            llm_model_name=f"{profile}-model",
+            llm_api_key="profile-key",
+        ),
+    )
+
+    async def fake_run_evaluation_flow(flow):
+        captured["backend"] = flow.suite.judge_backend
+        return {
+            "report_version": 1,
+            "suite_id": "answer-source-evaluator",
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="answer",
+        judge_agent=str(judge_agent),
+        judge_model_profile="judge",
+    )
+
+    model_config = captured["backend"].model_config
+    assert model_config.llm_provider == "anthropic"
+    assert model_config.llm_model_name == "judge-model"
+    assert report["source_selection"]["judge_model_profile"] == "judge"
+
+
+def test_run_evaluator_source_cli_uses_agent_markdown_model_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    judge_agent = tmp_path / "agent.md"
+    judge_agent.write_text(
+        "---\nname: judge\nmodel_profile: judge\n---\nJudge.\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        lambda profile: ModelConfig(
+            llm_provider="openai",
+            llm_model_name=f"{profile}-model",
+            llm_api_key="profile-key",
+        ),
+    )
+
+    async def fake_run_evaluation_flow(flow):
+        captured["backend"] = flow.suite.judge_backend
+        return {
+            "report_version": 1,
+            "suite_id": "answer-source-evaluator",
+            "summary": {"answer-source-evaluator": {"score": {"mean": 0.9}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 0.9},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+
+    run_evaluator_source_cli(
+        input=str(input_path),
+        kind="answer",
+        judge_agent=str(judge_agent),
+    )
+
+    assert captured["backend"].model_config.llm_model_name == "judge-model"
+
+
 def test_source_file_judge_agent_uses_direct_instruction_backend(tmp_path: Path) -> None:
     input_path = tmp_path / "answers.jsonl"
     _write_answer_source(input_path)
@@ -207,6 +297,75 @@ def test_run_evaluator_source_cli_supports_cli_judge_agent_name(
     assert report["judge_backend"]["backend_id"] == "source-agent:JudgeTeam"
     assert report["source_selection"]["judge_agent_name"] == "JudgeTeam"
     assert report["source_selection"]["judge_agent"] is None
+
+
+def test_run_evaluator_source_cli_applies_model_profile_to_cli_judge_agent_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "answers.jsonl"
+    _write_answer_source(input_path)
+    captured = {}
+    judge_conf = SimpleNamespace(llm_config=None)
+    judge_agent = SimpleNamespace(conf=judge_conf)
+    judge_swarm = SimpleNamespace(_communicate_agent=judge_agent)
+
+    class FakeExecutor:
+        swarm = judge_swarm
+
+    async def fake_load_cli_agent_executor(agent_name):
+        captured["agent_name"] = agent_name
+        return FakeExecutor()
+
+    monkeypatch.setattr(
+        "aworld_cli.evaluator_runtime._load_cli_agent_executor",
+        fake_load_cli_agent_executor,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        lambda profile: ModelConfig(
+            llm_provider="anthropic",
+            llm_model_name=f"{profile}-model",
+            llm_api_key="profile-key",
+        ),
+    )
+
+    async def fake_run_evaluation_flow(flow):
+        captured["flow"] = flow
+        await flow.suite.judge_backend.execute(
+            flow.suite.cases[0].input,
+            {"answer": "existing"},
+            flow.suite,
+        )
+        return {
+            "report_version": 1,
+            "suite_id": "answer-source-evaluator",
+            "judge_backend": {"backend_id": flow.suite.judge_backend.backend_id},
+            "summary": {"answer-source-evaluator": {"score": {"mean": 91}}},
+            "results": [],
+            "gate": {"status": "pass", "metric_name": "score", "value": 91},
+            "approval": {"required": False, "resolved": False, "approved": None},
+        }
+
+    async def fake_runner_run(**kwargs):
+        return SimpleNamespace(answer='{"score": 91, "verdict": "Pass", "veto_triggered": false}')
+
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.run_evaluation_flow", fake_run_evaluation_flow)
+    monkeypatch.setattr("aworld_cli.evaluator_runtime.Runners.run", fake_runner_run)
+
+    report = run_evaluator_source_cli(
+        input=str(input_path),
+        kind="answer",
+        judge_agent_name="JudgeTeam",
+        judge_model_profile="judge",
+        output=str(tmp_path / "report.json"),
+    )
+
+    assert captured["agent_name"] == "JudgeTeam"
+    assert judge_conf.llm_config.llm_provider == "anthropic"
+    assert judge_conf.llm_config.llm_model_name == "judge-model"
+    assert judge_conf.llm_config.llm_api_key == "profile-key"
+    assert report["source_selection"]["judge_model_profile"] == "judge"
 
 
 def test_run_evaluator_source_cli_supports_judge_backend_ref(
@@ -882,6 +1041,63 @@ def test_trajectory_prompt_includes_canonical_evidence_bundle(tmp_path: Path) ->
     assert prompt["evidence_digest"]["entries"][0]["evidence"]["bounded_excerpt"] == (
         "short verified evidence"
     )
+
+
+def test_trajectory_prompt_preserves_non_file_evidence_metadata_in_digest(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "evidence_bundle.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "format": "aworld.self_evolve.evidence_bundle",
+                "version": 1,
+                "valid": True,
+                "entries": [
+                    {
+                        "source_id": "scheduled_notification",
+                        "evidence_type": "metadata",
+                        "extraction_method": "scheduler_response",
+                        "metadata": {
+                            "operation": "schedule_notification",
+                            "reference_id": "job-123",
+                            "status": "scheduled",
+                        },
+                        "bounded_evidence": {
+                            "bounded_excerpt": "Notification job job-123 was scheduled."
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = json.loads(
+        _build_trajectory_prompt(
+            {"input": "schedule the report"},
+            {
+                "case_id": "case-1",
+                "answer": "scheduled",
+                "trajectory": [],
+                "artifacts": {"outcome": {"extracted_path": None}},
+                "evidence_bundle_path": str(bundle_path),
+            },
+            suite=None,
+        )
+    )
+
+    digest_entry = prompt["evidence_digest"]["entries"][0]
+    assert digest_entry["evidence_type"] == "metadata"
+    assert digest_entry["metadata"] == {
+        "operation": "schedule_notification",
+        "reference_id": "job-123",
+        "status": "scheduled",
+    }
+    assert digest_entry["evidence"]["bounded_excerpt"] == (
+        "Notification job job-123 was scheduled."
+    )
+    assert "artifact_path" not in digest_entry
 
 
 def test_trajectory_prompt_uses_bundle_first_compaction_for_large_replay_payload(

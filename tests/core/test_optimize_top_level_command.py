@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 from pathlib import Path
 
 import pytest
+
+from aworld.config.conf import ModelConfig
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
@@ -202,6 +205,8 @@ def test_optimize_command_passes_judge_agent_selector(
             "auto_verified",
             "--judge-agent",
             "agent.md",
+            "--judge-model-profile",
+            "judge",
         ]
     )
 
@@ -209,6 +214,7 @@ def test_optimize_command_passes_judge_agent_selector(
     assert calls["judge_agent"] == "agent.md"
     assert calls["judge_agent_name"] is None
     assert calls["judge_backend_ref"] is None
+    assert calls["judge_model_profile"] == "judge"
 
 
 def test_optimize_command_passes_replay_runtime_limits(
@@ -351,8 +357,36 @@ def test_render_optimize_summary_warns_when_replay_success_count_is_insufficient
     )
 
     assert "Rejected gates: held_out_verification" in summary
+    assert "Replay failures: candidate: 2 failed repetition(s): TimeoutExpired" in summary
     assert "Replay recovery:" in summary
     assert "Resume evaluator:" not in summary
+
+
+def test_render_optimize_summary_shows_target_grouping_low_support() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "selected_candidate_id": "cand-selected",
+            "trajectory_set": {
+                "auto_grouping": {
+                    "auto_grouped": True,
+                    "selected_group_id": "skill:video_script_review",
+                    "selected_case_count": 1,
+                    "largest_group_case_count": 36,
+                    "group_count": 3,
+                    "low_dataset_support": True,
+                }
+            },
+            "gate_results": [
+                {"gate_name": "score_improvement", "passed": False},
+            ],
+        }
+    )
+
+    assert (
+        "Target grouping: skill:video_script_review (1 case(s), 3 group(s)); "
+        "low dataset support, largest group has 36 case(s)"
+    ) in summary
 
 
 def test_render_optimize_summary_explains_no_candidate_rejection() -> None:
@@ -417,7 +451,7 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     assert calls["judge_timeout_seconds"] == 120
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
-    assert calls["iterations"] == 1
+    assert calls["iterations"] is None
 
 
 def test_run_optimize_cli_can_forward_progress_callback(
@@ -592,6 +626,38 @@ def test_optimize_command_task_without_target_uses_framework_inference(
     assert calls["from_trajectory"] == "trajectory.log"
 
 
+def test_optimize_command_forwards_trajectory_set_to_framework(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory-set",
+            "trajectory-set.json",
+            "--include-prior-runs",
+            "--apply",
+            "proposal",
+        ]
+    )
+
+    assert handled is True
+    assert calls["from_trajectory_set"] == "trajectory-set.json"
+    assert calls["include_prior_runs"] is True
+    assert calls["infer_target"] is True
+
+
 def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -618,6 +684,8 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         dataset="eval.jsonl",
         from_session=None,
         from_trajectory=None,
+        from_trajectory_set=None,
+        include_prior_runs=True,
         batch_config=None,
         iterations=3,
         apply="auto_verified",
@@ -626,6 +694,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         judge_agent="agent.md",
         judge_agent_name=None,
         judge_backend_ref=None,
+        judge_model_profile="judge",
     )
 
     assert report["report_path"].endswith("report.json")
@@ -633,11 +702,113 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["agent"] == "Agent"
     assert calls["target"] == "prompt:system"
     assert calls["dataset"] == "eval.jsonl"
+    assert calls["from_trajectory_set"] is None
+    assert calls["include_prior_runs"] is True
     assert calls["iterations"] == 3
     assert calls["apply_policy"] == "auto_verified"
     assert calls["infer_target"] is False
     assert calls["judge_config"].mode == "agent_md"
     assert calls["judge_config"].agent_path == "agent.md"
+    assert calls["judge_config"].model_profile == "judge"
+
+
+def test_run_optimize_cli_injects_default_mutation_model_independent_of_judge(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+    resolved_profiles: list[str | None] = []
+    mutation_model_config = ModelConfig(
+        llm_provider="openai",
+        llm_model_name="mutation-model",
+        llm_api_key="test-key",
+    )
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    def fake_resolve_model_profile(profile_name):
+        resolved_profiles.append(profile_name)
+        return mutation_model_config
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        fake_resolve_model_profile,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:workflow-helper",
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=1,
+        apply="auto_verified",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        judge_agent="judge.md",
+        judge_model_profile="judge-profile",
+    )
+
+    assert resolved_profiles == ["default"]
+    assert calls["mutation_model_config"] is mutation_model_config
+    assert calls["judge_config"].model_profile == "judge-profile"
+
+
+def test_run_optimize_cli_does_not_resolve_mutation_model_for_evaluator_rerun(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    def fail_resolve_model_profile(profile_name):
+        pytest.fail(f"evaluator-only rerun must not resolve mutation profile: {profile_name}")
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        fail_resolve_model_profile,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=None,
+        apply="auto_verified",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        from_run="cli-prior",
+        rerun_evaluator=True,
+    )
+
+    assert calls["mutation_model_config"] is None
 
 
 def test_run_optimize_cli_forwards_runtime_registry_refresher(
@@ -785,10 +956,12 @@ def test_run_optimize_cli_maps_judge_backend_ref_to_framework_config(
         judge_agent=None,
         judge_agent_name=None,
         judge_backend_ref="pkg.module:build_judge",
+        judge_model_profile="judge",
     )
 
     assert calls["judge_config"].mode == "backend_ref"
     assert calls["judge_config"].backend_ref == "pkg.module:build_judge"
+    assert calls["judge_config"].model_profile == "judge"
 
 
 def test_run_optimize_cli_leaves_target_inference_to_framework(
@@ -973,6 +1146,62 @@ def test_framework_cli_request_runs_explicit_skill_target_without_cli_owned_opti
     )
 
     assert Path(report["report_path"]).exists()
-    assert report["status"] == "succeeded"
+    assert report["status"] == "rejected"
     assert report["best_candidate_id"] is None
     assert skill_path.read_text(encoding="utf-8").endswith("Old guidance.\n")
+
+
+def test_framework_cli_request_can_include_prior_runs_as_trainable_cases(
+    tmp_path: Path,
+) -> None:
+    from aworld.self_evolve import optimize_from_cli_request
+
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
+    dataset_path = tmp_path / "eval.jsonl"
+    dataset_path.write_text('{"case_id":"case-1","input":"demo"}\n', encoding="utf-8")
+    prior_run_dir = tmp_path / ".aworld" / "self_evolve" / "prior-run"
+    prior_run_dir.mkdir(parents=True)
+    (prior_run_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "prior-run",
+                "status": "rejected",
+                "target": {"target_type": "skill", "target_id": "demo"},
+                "selected_candidate_id": "cand-old",
+                "gate_results": [
+                    {"gate_name": "score_improvement", "passed": False}
+                ],
+                "baseline_metrics": {"score": 90.0},
+                "candidate_metrics": {"score": 80.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        target="skill:demo",
+        dataset=str(dataset_path),
+        apply_policy="proposal",
+        include_prior_runs=True,
+    )
+
+    recipe = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / report["run_id"]
+            / "dataset_recipe.json"
+        ).read_text(encoding="utf-8")
+    )
+    report_payload = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
+    prior_case_id = "prior-run:prior-run:cand-old"
+    assert recipe["source"]["include_prior_runs"] is True
+    assert recipe["source"]["prior_run_case_count"] == 1
+    assert prior_case_id in recipe["trainable_case_ids"]
+    assert prior_case_id in recipe["splits"]["train"]
+    assert report_payload["trajectory_set"]["include_prior_runs"] is True
+    assert report_payload["trajectory_set"]["prior_run_case_ids"] == [prior_case_id]

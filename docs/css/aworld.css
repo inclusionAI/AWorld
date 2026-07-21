@@ -417,6 +417,25 @@ body {
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
 }
 
+/* Pages that hide the primary navigation, such as the docs home page, should
+   not reserve the left sidebar column in the custom three-column grid. */
+.md-main__inner .md-grid:has(.md-sidebar--primary[hidden]),
+.md-main__inner > .md-grid:has(.md-sidebar--primary[hidden]) {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+.md-main__inner .md-grid:has(.md-sidebar--primary[hidden]) .md-sidebar--secondary,
+.md-main__inner > .md-grid:has(.md-sidebar--primary[hidden]) .md-sidebar--secondary {
+  display: none !important;
+}
+
+.md-main__inner .md-grid:has(.md-sidebar--primary[hidden]) .md-content,
+.md-main__inner > .md-grid:has(.md-sidebar--primary[hidden]) .md-content {
+  max-width: min(72rem, 100%) !important;
+  width: 100% !important;
+  justify-self: center !important;
+}
+
 /* 左右侧栏等宽、居中于各自单元格，使左右栏间距（红框）完全一致 */
 .md-sidebar--primary,
 .md-sidebar--secondary {

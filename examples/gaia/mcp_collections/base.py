@@ -3,11 +3,24 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
+import anyio
 from mcp.server import FastMCP
 from pydantic import BaseModel, Field
 
 from aworld.logs.util import Color
 from examples.gaia.utils import color_log, setup_logger
+
+try:
+    _BASE_EXCEPTION_GROUP_TYPE: type[BaseException] | None = BaseExceptionGroup
+except NameError:  # pragma: no cover - exercised on Python < 3.11
+    try:
+        from exceptiongroup import BaseExceptionGroup as _BaseExceptionGroup
+    except ImportError:
+        _BASE_EXCEPTION_GROUP_TYPE = None
+    else:
+        _BASE_EXCEPTION_GROUP_TYPE = _BaseExceptionGroup
+
+_STDIO_DISCONNECT_ERRORS = (anyio.BrokenResourceError, anyio.ClosedResourceError)
 
 
 class ActionArguments(BaseModel):
@@ -53,7 +66,15 @@ class ActionCollection:
 
     def run(self) -> None:
         if not self.unittest:
-            self.server.run(transport=self.transport)
+            if self.transport == "stdio":
+                try:
+                    self.server.run(transport=self.transport)
+                except Exception as error:
+                    if not _is_stdio_disconnect_error(error):
+                        raise
+                    self._color_log("MCP stdio client disconnected.", Color.yellow)
+            else:
+                self.server.run(transport=self.transport)
 
     def _color_log(self, value: str, color: Color = None, level: str = "info"):
         # return color_log(self.logger, value, color, level=level)
@@ -100,3 +121,13 @@ class ActionCollection:
             )
 
         return path
+
+
+def _is_stdio_disconnect_error(error: BaseException) -> bool:
+    if isinstance(error, _STDIO_DISCONNECT_ERRORS):
+        return True
+
+    if _BASE_EXCEPTION_GROUP_TYPE is None or not isinstance(error, _BASE_EXCEPTION_GROUP_TYPE):
+        return False
+
+    return bool(error.exceptions) and all(_is_stdio_disconnect_error(exception) for exception in error.exceptions)

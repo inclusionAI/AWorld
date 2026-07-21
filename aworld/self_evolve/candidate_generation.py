@@ -1,0 +1,483 @@
+from __future__ import annotations
+
+import uuid
+from typing import Any, AsyncIterator
+
+from aworld.agents.prompt_budgeted_agent import PromptBudgetedAgent
+from aworld.config.conf import AgentConfig, ModelConfig
+from aworld.core.agent.swarm import Swarm
+from aworld.core.common import TaskStatusValue
+from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
+from aworld.core.context.base import Context
+from aworld.core.task import Task
+from aworld.logs.util import logger
+from aworld.models.model_response import ModelResponse
+from aworld.runner import Runners
+from aworld.utils.common import nest_dict_counter
+
+
+DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT = 32_768
+DEFAULT_CANDIDATE_TASK_TIMEOUT_SECONDS = 300
+
+
+class CandidateGenerationInfrastructureError(RuntimeError):
+    """Typed terminal failure for one candidate-generation population."""
+
+    code = "candidate_generation_infrastructure_error"
+
+    def __init__(self, *, stage: str, error_type: str) -> None:
+        self.stage = stage
+        self.error_type = error_type
+        super().__init__(
+            f"candidate generation infrastructure failed at {stage} ({error_type})"
+        )
+
+    def to_diagnostic(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "stage": self.stage,
+            "error_type": self.error_type,
+        }
+
+
+class _SanitizingProvider:
+    """Sanitize failures and coalesce provider chunks before AWorld event logging."""
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+    async def acompletion(self, **kwargs: Any) -> Any:
+        try:
+            return await self._delegate.acompletion(**kwargs)
+        except CandidateGenerationInfrastructureError:
+            raise
+        except Exception as exc:
+            raise CandidateGenerationInfrastructureError(
+                stage="model_provider",
+                error_type=type(exc).__name__,
+            ) from None
+
+    async def astream_completion(self, **kwargs: Any) -> AsyncIterator[Any]:
+        try:
+            response_id = ""
+            model = ""
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            tool_calls: list[Any] = []
+            usage: dict[str, Any] = {}
+            raw_usage: Any = None
+            provider_request_id: str | None = None
+            error: str | None = None
+            message: dict[str, Any] = {}
+            finish_reason: str | None = None
+            video_result: Any = None
+            structured_output: dict[str, Any] = {}
+            observed_chunk = False
+            async for chunk in self._delegate.astream_completion(**kwargs):
+                observed_chunk = True
+                response_id = getattr(chunk, "id", None) or response_id
+                model = getattr(chunk, "model", None) or model
+                chunk_content = getattr(chunk, "content", None)
+                if isinstance(chunk_content, str):
+                    content_parts.append(chunk_content)
+                chunk_reasoning = getattr(chunk, "reasoning_content", None)
+                if isinstance(chunk_reasoning, str):
+                    reasoning_parts.append(chunk_reasoning)
+                for tool_call in getattr(chunk, "tool_calls", None) or ():
+                    if (
+                        getattr(getattr(tool_call, "function", None), "name", None)
+                        == "unknown"
+                        and tool_calls
+                    ):
+                        previous = tool_calls[-1]
+                        previous.function.arguments = (
+                            previous.function.arguments or ""
+                        ) + (tool_call.function.arguments or "")
+                    else:
+                        tool_calls.append(tool_call)
+                usage = nest_dict_counter(
+                    usage,
+                    getattr(chunk, "usage", None) or {},
+                    ignore_zero=False,
+                )
+                chunk_raw_usage = getattr(chunk, "raw_usage", None)
+                if chunk_raw_usage is not None:
+                    raw_usage = chunk_raw_usage
+                provider_request_id = (
+                    getattr(chunk, "provider_request_id", None)
+                    or provider_request_id
+                )
+                error = getattr(chunk, "error", None) or error
+                chunk_message = getattr(chunk, "message", None)
+                if isinstance(chunk_message, dict):
+                    message.update(chunk_message)
+                finish_reason = (
+                    getattr(chunk, "finish_reason", None) or finish_reason
+                )
+                video_result = getattr(chunk, "video_result", None) or video_result
+                chunk_structured = getattr(chunk, "structured_output", None)
+                if isinstance(chunk_structured, dict):
+                    structured_output.update(chunk_structured)
+            if not observed_chunk:
+                return
+            content = "".join(content_parts)
+            reasoning_content = "".join(reasoning_parts) or None
+            message["role"] = message.get("role") or "assistant"
+            message["content"] = content
+            if tool_calls:
+                message["tool_calls"] = [item.to_dict() for item in tool_calls]
+            response = ModelResponse(
+                id=response_id,
+                model=model,
+                content=content,
+                tool_calls=tool_calls,
+                usage=usage,
+                raw_usage=raw_usage,
+                provider_request_id=provider_request_id,
+                error=error,
+                message=message,
+                reasoning_content=reasoning_content,
+                finish_reason=finish_reason,
+                video_result=video_result,
+            )
+            response.structured_output.update(structured_output)
+            yield response
+        except CandidateGenerationInfrastructureError:
+            raise
+        except Exception as exc:
+            raise CandidateGenerationInfrastructureError(
+                stage="model_provider",
+                error_type=type(exc).__name__,
+            ) from None
+
+
+class CandidateGenerationAgent(PromptBudgetedAgent):
+    """AWorld agent used for one bounded self-evolve candidate generation call."""
+
+    def __init__(
+        self,
+        *,
+        model_config: ModelConfig,
+        output_token_limit: int | None = None,
+        task_timeout_seconds: int = DEFAULT_CANDIDATE_TASK_TIMEOUT_SECONDS,
+    ) -> None:
+        if output_token_limit is not None and (
+            isinstance(output_token_limit, bool) or output_token_limit <= 0
+        ):
+            raise ValueError("output_token_limit must be positive")
+        if isinstance(task_timeout_seconds, bool) or task_timeout_seconds <= 0:
+            raise ValueError("task_timeout_seconds must be positive")
+        self.task_timeout_seconds = task_timeout_seconds
+        framework_output_limit = (
+            int(output_token_limit)
+            if output_token_limit is not None
+            else _model_aware_candidate_output_limit(model_config)
+        )
+        configured_max_tokens = _positive_token_limit(
+            (model_config.params or {}).get("max_tokens")
+        )
+        configured_max_completion_tokens = _positive_token_limit(
+            (model_config.params or {}).get("max_completion_tokens")
+        )
+        configured_limits = [
+            item
+            for item in (
+                configured_max_tokens,
+                configured_max_completion_tokens,
+            )
+            if item is not None
+        ]
+        self.output_token_limit = min(
+            [framework_output_limit, *configured_limits]
+        )
+        self.output_token_parameter = (
+            "max_completion_tokens"
+            if configured_max_completion_tokens is not None
+            else "max_tokens"
+        )
+        runtime_model_config = model_config.model_copy(deep=True)
+        _configure_structured_generation_reasoning(runtime_model_config)
+        super().__init__(
+            name="self-evolve-candidate-generator",
+            conf=AgentConfig(
+                llm_config=runtime_model_config,
+                max_steps=1,
+            ),
+            prompt_budget_policy=PromptBudgetPolicy(
+                reserved_output_tokens=self.output_token_limit,
+            ),
+            prompt_budget_section_hints=[
+                {
+                    "name": "candidate_output_contract",
+                    "required": True,
+                    "compressible": False,
+                },
+                {
+                    "name": "current_task",
+                    "required": True,
+                    "compressible": False,
+                },
+            ],
+            system_prompt=(
+                "You generate one self-evolve candidate package. Return only a JSON "
+                "object matching the candidate_output_contract in the task. Do not wrap "
+                "the JSON in prose. Preserve existing target behavior: use patch_intent "
+                "for a bounded change to a large target instead of reconstructing its "
+                "full content. Keep domain-specific replay behavior inside candidate-owned "
+                "files and do not invent unavailable recordings. Infer reusable protocol "
+                "behavior from bounded trace steps; do not embed dataset-specific task IDs, "
+                "case IDs, original endpoints, or environment paths. Candidate-owned replay "
+                "files may be the reusable skill-package behavior improvement even when the "
+                "primary Markdown content is inherited unchanged; fixture-only placeholders "
+                "are not behavior improvements. A replay runtime must reconstruct "
+                "fixture-derived task data for observed interactions; a control-plane handshake, "
+                "placeholder token, or empty schema alone is not a valid data-plane replay."
+            ),
+            tool_names=[],
+            llm_max_attempts=1,
+        )
+        self._task_failures: dict[str, dict[str, str]] = {}
+        # Long reasoning-model calls can exceed an intermediary's idle timeout
+        # before a non-streaming response has produced any bytes. Reuse AWorld's
+        # native streaming assembly so chunks keep the connection active while the
+        # Task/Runner lifecycle still receives one final candidate response.
+        self.conf.llm_config.llm_stream_call = True
+        Swarm.register_agent([self])
+
+    @property
+    def llm(self) -> Any:
+        model = super().llm
+        if not isinstance(model.provider, _SanitizingProvider):
+            model.provider = _SanitizingProvider(model.provider)
+        return model
+
+    async def invoke_model(
+        self,
+        messages: list[dict[str, Any]] | None = None,
+        message: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        try:
+            return await super().invoke_model(messages or [], message=message, **kwargs)
+        except CandidateGenerationInfrastructureError as exc:
+            self._record_infrastructure_failure(message, exc)
+            raise
+        except Exception as exc:
+            typed_failure = _find_infrastructure_failure(exc)
+            failure = (
+                CandidateGenerationInfrastructureError(
+                    stage=typed_failure.stage,
+                    error_type=typed_failure.error_type,
+                )
+                if typed_failure is not None
+                else CandidateGenerationInfrastructureError(
+                    stage="agent_runtime",
+                    error_type=type(exc).__name__,
+                )
+            )
+            self._record_infrastructure_failure(message, failure)
+            raise failure from None
+
+    def _record_infrastructure_failure(
+        self,
+        message: Any,
+        failure: CandidateGenerationInfrastructureError,
+    ) -> None:
+        context = getattr(message, "context", None)
+        context_info = getattr(context, "context_info", None)
+        if context_info is not None:
+            context_info["candidate_generation_failure"] = failure.to_diagnostic()
+        task_id = getattr(context, "task_id", None)
+        if isinstance(task_id, str) and task_id:
+            self._task_failures[task_id] = failure.to_diagnostic()
+
+    async def _save_failed_request_context(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        error: str,
+        attempt: int,
+        context: Context,
+    ) -> None:
+        # The self-evolve report already records a bounded typed diagnostic. Avoid
+        # creating a second persistence surface containing trajectory evidence.
+        return None
+
+    def _log_messages(
+        self,
+        messages: list[dict[str, Any]],
+        context: Context,
+        **kwargs: Any,
+    ) -> None:
+        prompt_chars = sum(len(str(item.get("content", ""))) for item in messages)
+        logger.info(
+            "self_evolve.candidate_generation.request "
+            f"message_count={len(messages)} prompt_chars={prompt_chars}"
+        )
+
+    async def generate(self, prompt: str) -> str:
+        task = self.build_task(prompt)
+        try:
+            responses = await Runners.run_task(task)
+        except CandidateGenerationInfrastructureError as exc:
+            recorded_failure = self._task_failures.pop(task.id, None)
+            if isinstance(recorded_failure, dict):
+                raise CandidateGenerationInfrastructureError(
+                    stage=str(recorded_failure.get("stage") or exc.stage),
+                    error_type=str(
+                        recorded_failure.get("error_type") or exc.error_type
+                    ),
+                ) from None
+            raise
+        except Exception as exc:
+            recorded_failure = self._task_failures.pop(task.id, None)
+            if isinstance(recorded_failure, dict):
+                raise CandidateGenerationInfrastructureError(
+                    stage=str(recorded_failure.get("stage") or "agent_runtime"),
+                    error_type=str(
+                        recorded_failure.get("error_type") or type(exc).__name__
+                    ),
+                ) from None
+            typed_failure = _find_infrastructure_failure(exc)
+            if typed_failure is not None:
+                raise CandidateGenerationInfrastructureError(
+                    stage=typed_failure.stage,
+                    error_type=typed_failure.error_type,
+                ) from None
+            raise CandidateGenerationInfrastructureError(
+                stage="agent_runtime",
+                error_type=type(exc).__name__,
+            ) from None
+
+        response = responses.get(task.id) if isinstance(responses, dict) else None
+        return self.candidate_response_from_task(task, response)
+
+    def build_task(self, prompt: str, *, task_id: str | None = None) -> Task:
+        task_id = task_id or f"self-evolve-candidate-{uuid.uuid4().hex}"
+        context = LocalIsolatedApplicationContext.create(
+            task_id=task_id,
+            session_id=task_id,
+            task_content=prompt,
+        )
+        return Task(
+            id=task_id,
+            session_id=task_id,
+            input=prompt,
+            agent=self,
+            context=context,
+            runner_cls="aworld.self_evolve.runtime.SelfEvolveCandidateTaskRunner",
+            timeout=self.task_timeout_seconds,
+        )
+
+    def pop_task_failure(
+        self,
+        task: Task,
+    ) -> CandidateGenerationInfrastructureError | None:
+        recorded_failure = self._task_failures.pop(task.id, None)
+        if recorded_failure is None:
+            recorded_failure = task.context.context_info.get(
+                "candidate_generation_failure"
+            )
+        if isinstance(recorded_failure, dict):
+            return CandidateGenerationInfrastructureError(
+                stage=str(recorded_failure.get("stage") or "agent_runtime"),
+                error_type=str(recorded_failure.get("error_type") or "RuntimeError"),
+            )
+        return None
+
+    def candidate_response_from_task(
+        self,
+        task: Task,
+        response: Any,
+    ) -> str:
+        failure = self.pop_task_failure(task)
+        if failure is not None:
+            raise failure
+        if response is None:
+            raise CandidateGenerationInfrastructureError(
+                stage="task_runner",
+                error_type="MissingTaskResponse",
+            )
+        if not response.success or response.status not in {
+            TaskStatusValue.SUCCESS,
+            "finished",
+        }:
+            raise CandidateGenerationInfrastructureError(
+                stage="task_runner",
+                error_type="CandidateTaskFailed",
+            )
+        content = response.answer
+        if not isinstance(content, str) or not content.strip():
+            raise CandidateGenerationInfrastructureError(
+                stage="agent_response",
+                error_type="EmptyCandidateResponse",
+            )
+        return content
+
+
+def _find_infrastructure_failure(
+    exc: BaseException,
+) -> CandidateGenerationInfrastructureError | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, CandidateGenerationInfrastructureError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _positive_token_limit(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _model_aware_candidate_output_limit(model_config: ModelConfig) -> int:
+    max_model_len = _positive_token_limit(model_config.max_model_len)
+    if max_model_len is None:
+        return DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT
+    return max(
+        1,
+        min(
+            DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT,
+            max_model_len // 8,
+        ),
+    )
+
+
+def _configure_structured_generation_reasoning(model_config: ModelConfig) -> None:
+    """Use direct generation for model families whose default is forced thinking.
+
+    Candidate mutation already receives a compiled evolution context and must emit a
+    bounded machine-readable package in one turn. Providers that force chain-of-
+    thought can otherwise consume the entire completion budget without producing
+    the package. Explicit profile settings always win.
+    """
+
+    provider = (model_config.llm_provider or "openai").lower()
+    model_name = (model_config.llm_model_name or "").lower()
+    supports_thinking_switch = model_name.startswith(
+        ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5")
+    )
+    if provider != "openai" or not supports_thinking_switch:
+        return
+
+    params = dict(model_config.params or {})
+    if "thinking" in params:
+        return
+    extra_body = params.get("extra_body")
+    if extra_body is None:
+        extra_body = {}
+    if not isinstance(extra_body, dict) or "thinking" in extra_body:
+        return
+    params["extra_body"] = {
+        **extra_body,
+        "thinking": {"type": "disabled"},
+    }
+    model_config.params = params

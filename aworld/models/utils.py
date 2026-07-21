@@ -284,8 +284,8 @@ def num_tokens_from_string(string: str, model: str = "openai"):
             encoding = tiktoken.encoding_for_model(model)
         except KeyError:
             logger.debug(
-                f"{model} model not found. Using cl100k_base encoding.")
-            encoding = tiktoken.get_encoding("cl100k_base")
+                f"{model} model not found. Using bundled cl100k_base encoding.")
+            encoding = openai_tokenizer
     return len(_encoding_encode(encoding, string))
 
 def num_tokens_from_messages(messages, model="openai"):
@@ -302,8 +302,8 @@ def num_tokens_from_messages(messages, model="openai"):
             encoding = tiktoken.encoding_for_model(model)
         except KeyError:
             logger.warning(
-                f"{model} model not found. Using cl100k_base encoding.")
-            encoding = tiktoken.get_encoding("cl100k_base")
+                f"{model} model not found. Using bundled cl100k_base encoding.")
+            encoding = openai_tokenizer
 
     tokens_per_message = 3
     tokens_per_name = 1
@@ -335,8 +335,8 @@ def truncate_tokens_from_messages(messages: List[Dict[str, Any]], max_tokens: in
     try:
         encoding = tiktoken.encoding_for_model(model)
     except KeyError:
-        logger.warning(f"{model} model not found. Using cl100k_base encoding.")
-        encoding = tiktoken.get_encoding("cl100k_base")
+        logger.warning(f"{model} model not found. Using bundled cl100k_base encoding.")
+        encoding = openai_tokenizer
 
     return encoding.truncate(messages, max_tokens, keep_both_sides)
 

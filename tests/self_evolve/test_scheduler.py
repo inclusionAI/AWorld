@@ -447,6 +447,72 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["replay_candidate_limit"] == 2
 
 
+def test_shadow_job_worker_forces_proposal_apply_policy(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        captured.update(kwargs)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.runner.optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+    )
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    result = scheduler.enqueue(
+        SelfEvolveRunContext(
+            agent_id="agent",
+            task_id="shadow-job",
+            workspace_root=str(tmp_path),
+            trajectory=_trajectory(),
+            self_evolve_config=SelfEvolveConfig(
+                mode="shadow",
+                apply_policy="auto_verified",
+                replay_enabled=False,
+            ),
+        )
+    )
+    assert result.job_path is not None
+
+    drained = SelfEvolveJobWorker(workspace_root=tmp_path).drain_pending_jobs()
+
+    assert drained == 1
+    assert captured["apply_policy"] == "proposal"
+
+
+def test_online_job_worker_uses_auto_verified_apply_policy(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        captured.update(kwargs)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.runner.optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+    )
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    result = scheduler.enqueue(
+        SelfEvolveRunContext(
+            agent_id="agent",
+            task_id="online-job",
+            workspace_root=str(tmp_path),
+            trajectory=_trajectory(),
+            self_evolve_config=SelfEvolveConfig(
+                mode="online",
+                apply_policy="auto_verified",
+                replay_enabled=False,
+            ),
+        )
+    )
+    assert result.job_path is not None
+
+    drained = SelfEvolveJobWorker(workspace_root=tmp_path).drain_pending_jobs()
+
+    assert drained == 1
+    assert captured["apply_policy"] == "auto_verified"
+
+
 def test_job_worker_persists_framework_result_and_replay_diagnostics(tmp_path) -> None:
     scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
     result = scheduler.enqueue(

@@ -47,10 +47,27 @@ def compact_tool_result_for_memory(
     force: bool = False,
 ) -> ToolResultCompactionResult:
     serialized_content = serialize_tool_result_content(content)
-    token_count = num_tokens_from_string(serialized_content) if serialized_content else 0
     line_count = serialized_content.count("\n") + 1 if serialized_content else 0
     tool_action_key = f"{tool_name}:{action_name}" if tool_name or action_name else None
     white_list = list(tool_action_white_list or [])
+    char_threshold = max(
+        _TOOL_RESULT_CHAR_THRESHOLD,
+        max(preview_chars or 0, 0) * 4,
+    )
+
+    # Exact tokenization is unnecessary once the cheaper character bound has
+    # already established that the result must be compacted.  Besides wasting
+    # work, tokenizer regexes can become a multi-minute fixed cost on generated
+    # logs containing one extremely long line.  Retain exact counts for normal
+    # results and explicitly mark the bounded estimate used for oversized
+    # content.
+    token_count_estimated = len(serialized_content) > char_threshold
+    if not serialized_content:
+        token_count = 0
+    elif token_count_estimated:
+        token_count = max(1, (len(serialized_content) + 3) // 4)
+    else:
+        token_count = num_tokens_from_string(serialized_content)
 
     trigger = None
     if enabled:
@@ -58,7 +75,7 @@ def compact_tool_result_for_memory(
             trigger = "metadata"
         elif tool_action_key and tool_action_key in white_list:
             trigger = "whitelist"
-        elif len(serialized_content) > max(_TOOL_RESULT_CHAR_THRESHOLD, max(preview_chars or 0, 0) * 4):
+        elif len(serialized_content) > char_threshold:
             trigger = "char_threshold"
         elif line_count > _TOOL_RESULT_LINE_THRESHOLD and len(serialized_content) > max(preview_chars or 0, 0) * 2:
             trigger = "line_threshold"
@@ -72,6 +89,7 @@ def compact_tool_result_for_memory(
             metadata={
                 "applied": False,
                 "original_token_count": token_count,
+                "original_token_count_estimated": token_count_estimated,
                 "original_char_length": len(serialized_content),
                 "original_line_count": line_count,
             },
@@ -86,7 +104,10 @@ def compact_tool_result_for_memory(
             f"Tool: {tool_name or 'unknown'} | Action: {action_name or 'unknown'}"
         )
     prompt_lines.append(
-        f"Original size: {len(serialized_content)} chars, {token_count} tokens."
+        (
+            f"Original size: {len(serialized_content)} chars, "
+            f"{'approximately ' if token_count_estimated else ''}{token_count} tokens."
+        )
     )
     if summary:
         prompt_lines.append(f"Summary: {summary}")
@@ -102,6 +123,7 @@ def compact_tool_result_for_memory(
             "trigger": trigger,
             "original_content": serialized_content,
             "original_token_count": token_count,
+            "original_token_count_estimated": token_count_estimated,
             "original_char_length": len(serialized_content),
             "original_line_count": line_count,
             "summary_content": summary,

@@ -14,6 +14,7 @@ from aworld.self_evolve.gates import (
     PromptSectionGate,
     ProtectedPathGate,
     RequiredVerificationGate,
+    ReplayAdaptationGate,
     ScoreImprovementGate,
     SkillMarkdownGate,
     StoppingConditionGate,
@@ -21,6 +22,11 @@ from aworld.self_evolve.gates import (
     TokenLimitGate,
     ToolDescriptionGate,
     TrustProvenanceGate,
+)
+from aworld.self_evolve.replay_adaptation import (
+    ReplayAdaptationBundle,
+    ReplayCaseAdaptation,
+    ReplayDependency,
 )
 from aworld.self_evolve.provenance import TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
@@ -34,6 +40,57 @@ def _candidate(content: str, *, path: str | None = "SKILL.md") -> CandidateVaria
         rationale="test",
         target_fingerprint="sha256:old",
     )
+
+
+def test_replay_adaptation_gate_requires_deterministic_ready_cases() -> None:
+    ready_case = ReplayCaseAdaptation(
+        case_id="task-ready",
+        adapted_task_input="task",
+        task_input_fingerprint="sha256:task",
+        dependencies=(),
+        bindings=(),
+        tool_names=(),
+        readiness="ready",
+    )
+    blocked_case = ReplayCaseAdaptation(
+        case_id="task-blocked",
+        adapted_task_input="task",
+        task_input_fingerprint="sha256:blocked-task",
+        dependencies=(
+            ReplayDependency(
+                kind="http_resource",
+                identifier="https://example.test/data",
+                status="runtime_required",
+                deterministic=False,
+            ),
+        ),
+        bindings=(),
+        tool_names=(),
+        readiness="runtime_required",
+    )
+    base = {
+        "schema_version": "test.v1",
+        "source_workspace_root": "/workspace",
+        "workspace_seed": "/seed",
+        "workspace_seed_fingerprint": "sha256:seed",
+        "manifest_path": "/manifest.json",
+        "environment_snapshot_path": "/environment.json",
+        "environment_fingerprint": "sha256:environment",
+        "adaptation_fingerprint": "sha256:adaptation",
+    }
+
+    passed = ReplayAdaptationGate().evaluate(
+        ReplayAdaptationBundle(cases=(ready_case,), ready=True, **base)
+    )
+    failed = ReplayAdaptationGate().evaluate(
+        ReplayAdaptationBundle(cases=(blocked_case,), ready=False, **base)
+    )
+
+    assert passed.passed is True
+    assert failed.passed is False
+    assert failed.gate_name == "replay_adaptation"
+    assert failed.details["readiness"] == "runtime_required"
+    assert failed.details["unresolved_dependency_count"] == 1
 
 
 def test_score_improvement_gate_requires_min_delta() -> None:
@@ -264,7 +321,7 @@ def test_evidence_quality_gate_accepts_valid_bundle_despite_raw_compaction() -> 
             "has_evidence": 1.0,
             "evidence_block_count": 4,
             "evidence_compacted": True,
-            "evidence_incomplete": True,
+            "evidence_incomplete": False,
             "evidence_strategy_passed": True,
             "evidence_manifest_entry_count": 2,
             "evidence_manifest_invalid_entry_count": 0,
@@ -278,9 +335,32 @@ def test_evidence_quality_gate_accepts_valid_bundle_despite_raw_compaction() -> 
     assert result.passed is True
     assert result.reason == "evaluation evidence is present via canonical evidence bundle"
     assert result.details["evidence_compacted"] is True
-    assert result.details["evidence_incomplete"] is True
+    assert result.details["evidence_incomplete"] is False
     assert result.details["evidence_bundle_valid"] is True
     assert result.details["evidence_bundle_entry_count"] == 2
+
+
+def test_evidence_quality_gate_rejects_incomplete_canonical_bundle() -> None:
+    result = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 1,
+                "evidence_compacted": True,
+                "evidence_incomplete": True,
+                "evidence_strategy_passed": True,
+                "evidence_manifest_entry_count": 1,
+                "evidence_manifest_invalid_entry_count": 0,
+                "evidence_bundle_valid": True,
+                "evidence_bundle_entry_count": 1,
+            },
+        )
+    )
+
+    assert result.passed is False
+    assert result.reason == "evaluation evidence is compacted or incomplete"
+    assert result.details["evidence_incomplete"] is True
 
 
 def test_evidence_quality_gate_rejects_unverifiable_artifact_manifest() -> None:
@@ -432,6 +512,27 @@ def test_held_out_gate_accepts_stable_single_case_replay_verification() -> None:
     assert result.details["verification_mode"] == "single_case_replay"
     assert result.details["baseline_replay_count"] == 2
     assert result.details["candidate_replay_count"] == 3
+
+
+def test_held_out_gate_accepts_trajectory_set_validation() -> None:
+    gate = HeldOutVerificationGate(min_eval_cases=30)
+
+    result = gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="verified",
+            reason="trajectory-set validation is sufficient",
+            selection_split="validation",
+            verification_split="trajectory_set_validation",
+            deterministic_signal_present=True,
+            held_out_case_count=1,
+            verification_mode="trajectory_set_validation",
+        )
+    )
+
+    assert result.passed is True
+    assert result.reason == "candidate is verified by trajectory-set validation"
+    assert result.details["verification_mode"] == "trajectory_set_validation"
+    assert result.details["held_out_case_count"] == 1
 
 
 def test_trust_provenance_gate_rejects_protected_generated_and_external_targets() -> None:
