@@ -122,6 +122,8 @@ class ReplayFailureEvent(Mapping[str, Any]):
             FailureOwner.FRAMEWORK,
         }:
             raise ValueError("shared_run failures must be infrastructure or framework owned")
+        if scope is FailureScope.SHARED_RUN and source is not FailureEventSource.NATIVE:
+            raise ValueError("shared_run scope is reserved for native failure events")
         code = _stable_code(self.code, default="replay_failure")
         if code != self.code:
             raise ValueError("failure event code must be a stable lowercase identifier")

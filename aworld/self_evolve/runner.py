@@ -62,6 +62,7 @@ from aworld.self_evolve.gates import (
 )
 from aworld.self_evolve.lifecycle import cleanup_self_evolve_artifacts
 from aworld.self_evolve.failure_events import (
+    FailureEventSource,
     FailureOwner,
     FailureScope,
     ReplayFailureEvent,
@@ -102,6 +103,7 @@ from aworld.self_evolve.replay import (
     CandidateReplayBackend,
     CandidateReplayRequest,
     CandidateReplayResult,
+    NormalizedReplayMembers,
     ReplayVariantResult,
     build_paired_replay_dataset,
     build_replay_request,
@@ -1252,8 +1254,12 @@ class SelfEvolveRunner:
                 iteration_reports.append(report_item)
                 iteration_states.append(state)
                 replay_state = state.get("replay_result")
-                if isinstance(replay_state, CandidateReplayResult) and (
-                    replay_state.member_results or replay_state.baseline.succeeded
+                if isinstance(
+                    replay_state,
+                    CandidateReplayResult,
+                ) and _replay_result_has_reusable_baseline(
+                    dataset=dataset,
+                    replay_result=replay_state,
                 ):
                     reusable_baseline_replay_dir = _baseline_replay_artifact_dir(
                         replay_state
@@ -1686,8 +1692,9 @@ class SelfEvolveRunner:
                         "repair_conformance": conformance_contract.to_dict(),
                     },
                 )
-            if replay_result is not None and (
-                replay_result.member_results or replay_result.baseline.succeeded
+            if replay_result is not None and _replay_result_has_reusable_baseline(
+                dataset=screening_dataset,
+                replay_result=replay_result,
             ):
                 screening_baseline_replay_dir = _baseline_replay_artifact_dir(
                     replay_result
@@ -2663,10 +2670,15 @@ class SelfEvolveRunner:
                 for observability in replay_history[replay_history_start:]:
                     if isinstance(observability, Mapping):
                         self.execution_telemetry.record("replay", observability)
+        normalized = normalize_replay_members(
+            dataset=dataset,
+            replay_result=replay_result,
+        )
         if not candidate_replay_is_comparable(
             dataset=dataset,
             replay_result=replay_result,
             require_adapted=True,
+            normalized=normalized,
         ):
             return (
                 replay_result,
@@ -2675,13 +2687,18 @@ class SelfEvolveRunner:
                     gate_name="candidate_replay",
                     passed=False,
                     reason="candidate replay did not produce comparable paired outcomes",
-                    details=_replay_gate_details(replay_result, dataset=dataset),
+                    details=_replay_gate_details(
+                        replay_result,
+                        dataset=dataset,
+                        normalized=normalized,
+                    ),
                 ),
             )
         replay_dataset = build_paired_replay_dataset(
             dataset=dataset,
             replay_result=replay_result,
             candidate=selected_candidate,
+            normalized=normalized,
         )
         return (
             replay_result,
@@ -2690,7 +2707,11 @@ class SelfEvolveRunner:
                 gate_name="candidate_replay",
                 passed=True,
                 reason="candidate replay produced comparable paired outcomes",
-                details=_replay_gate_details(replay_result, dataset=dataset),
+                details=_replay_gate_details(
+                    replay_result,
+                    dataset=dataset,
+                    normalized=normalized,
+                ),
             ),
         )
 
@@ -4300,11 +4321,27 @@ def _replay_artifact_path(replay_result: CandidateReplayResult) -> str:
 
 
 def _baseline_replay_artifact_dir(replay_result: CandidateReplayResult) -> str:
-    if replay_result.member_results:
+    if replay_result.member_results is not None:
+        if not replay_result.member_results:
+            raise ValueError("empty explicit replay members have no baseline artifact path")
         return str(Path(_replay_artifact_path(replay_result)) / "members")
     if replay_result.request.baseline_replay_dir:
         return replay_result.request.baseline_replay_dir
     return str(Path(_replay_artifact_path(replay_result)) / "baseline")
+
+
+def _replay_result_has_reusable_baseline(
+    *,
+    dataset: SelfEvolveDataset,
+    replay_result: CandidateReplayResult,
+) -> bool:
+    normalized = normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
+    return bool(normalized.members) and normalized.valid and all(
+        member.baseline.succeeded for member in normalized.members
+    )
 
 
 def _find_reusable_baseline_replay_dir(
@@ -5792,8 +5829,12 @@ def _replay_gate_details(
     replay_result: CandidateReplayResult,
     *,
     dataset: SelfEvolveDataset,
+    normalized: NormalizedReplayMembers | None = None,
 ) -> dict[str, object]:
-    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    normalized = normalized or normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
     def compatibility_failure(variant: ReplayVariantResult) -> object:
         return (
             variant.failure.compatibility_dict()
@@ -5819,6 +5860,7 @@ def _replay_gate_details(
         **candidate_replay_pair_coverage(
             dataset=dataset,
             replay_result=replay_result,
+            normalized=normalized,
         ),
         "adaptation_fingerprint": replay_result.request.adaptation_fingerprint,
         "workspace_seed_fingerprint": (
@@ -6157,6 +6199,7 @@ def _shared_replay_failure_blocks_population(
     return any(
         event.scope is FailureScope.SHARED_RUN
         and event.owner in {FailureOwner.INFRASTRUCTURE, FailureOwner.FRAMEWORK}
+        and event.source is FailureEventSource.NATIVE
         for event in events
     )
 

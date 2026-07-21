@@ -36,8 +36,11 @@ from aworld.self_evolve.replay import (
     build_paired_replay_dataset,
     build_replay_request,
     candidate_replay_is_comparable,
+    candidate_replay_pair_coverage,
     load_candidate_replay_result,
     normalize_replay_members,
+    _aggregate_member_variant_results,
+    _aggregate_variant_results,
     _invalid_evidence_manifest_entry_reason,
     _evidence_manifest_metrics,
     _member_artifact_name,
@@ -140,6 +143,60 @@ def test_unknown_legacy_failure_never_gains_shared_run_scope() -> None:
     assert event.code == "legacy_unclassified_failure"
 
 
+def test_non_native_failure_event_cannot_claim_shared_run_scope() -> None:
+    with pytest.raises(ValueError, match="native failure events"):
+        ReplayFailureEvent(
+            code="legacy_shared_failure",
+            owner=FailureOwner.INFRASTRUCTURE,
+            stage=FailureStage.LEGACY_IMPORT,
+            scope=FailureScope.SHARED_RUN,
+            repairable=False,
+            source=FailureEventSource.LEGACY_INFERRED,
+        )
+
+    payload = {
+        "schema_version": "aworld.self_evolve.replay_failure.v2",
+        "event_id": "legacy-shared-event",
+        "code": "legacy_shared_failure",
+        "owner": "infrastructure",
+        "stage": "legacy_import",
+        "scope": "shared_run",
+        "repairable": False,
+        "source": "legacy_inferred",
+    }
+    with pytest.raises(ValueError, match="native failure events"):
+        ReplayFailureEvent.from_dict(payload)
+
+
+def test_lifecycle_loader_rejects_non_native_shared_run_failure(tmp_path: Path) -> None:
+    variant_dir = tmp_path / "invalid-lifecycle"
+    variant_dir.mkdir()
+    (variant_dir / "lifecycle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.self_evolve.replay_lifecycle.v2",
+                "variant_id": "candidate",
+                "status": "failed",
+                "failure": {
+                    "schema_version": "aworld.self_evolve.replay_failure.v2",
+                    "event_id": "legacy-shared-event",
+                    "code": "legacy_shared_failure",
+                    "owner": "infrastructure",
+                    "stage": "legacy_import",
+                    "scope": "shared_run",
+                    "repairable": False,
+                    "source": "legacy_inferred",
+                },
+                "blocked_by": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="native failure events"):
+        _load_variant_result_from_dir(variant_dir, base_variant_id="candidate")
+
+
 def test_replay_variant_status_rejects_impossible_lifecycle_combinations() -> None:
     event = ReplayFailureEvent(
         code="execution_failed",
@@ -168,6 +225,35 @@ def test_replay_variant_status_rejects_impossible_lifecycle_combinations() -> No
             trajectory=[{"action": {}}],
             blocked_by=(event,),
         )
+    with pytest.raises(ValueError, match="executed replay variant cannot have blocked_by"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[],
+            failure=event,
+            blocked_by=(event,),
+        )
+    with pytest.raises(ValueError, match="unexecuted replay variant cannot contain execution artifacts"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[],
+            stdout_path="stale.stdout",
+            blocked_by=(event,),
+        )
+    with pytest.raises(ValueError, match="unexecuted replay variant cannot contain execution artifacts"):
+        ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.NOT_RUN,
+            trajectory=[],
+            repetition_results=(
+                ReplayVariantResult(
+                    variant_id="candidate-1",
+                    status=ReplayExecutionStatus.SUCCEEDED,
+                    trajectory=[{"action": {"content": "ran"}}],
+                ),
+            ),
+        )
 
 
 def test_not_run_lifecycle_is_materialized_and_loaded_without_failure(
@@ -191,6 +277,88 @@ def test_not_run_lifecycle_is_materialized_and_loaded_without_failure(
     assert loaded.status is ReplayExecutionStatus.NOT_RUN
     assert loaded.failure is None
     assert loaded.blocked_by == ()
+
+
+@pytest.mark.parametrize("status", (ReplayExecutionStatus.BLOCKED, ReplayExecutionStatus.NOT_RUN))
+def test_persist_unexecuted_lifecycle_removes_stale_stream_artifacts(
+    tmp_path: Path,
+    status: ReplayExecutionStatus,
+) -> None:
+    variant_dir = tmp_path / status.value
+    variant_dir.mkdir()
+    (variant_dir / "stdout.txt").write_text("stale stdout", encoding="utf-8")
+    (variant_dir / "stderr.txt").write_text("stale stderr", encoding="utf-8")
+    blocker = ReplayFailureEvent(
+        code="candidate_preflight_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+    )
+    result = ReplayVariantResult(
+        variant_id="candidate",
+        status=status,
+        trajectory=[],
+        blocked_by=(blocker,) if status is ReplayExecutionStatus.BLOCKED else (),
+    )
+
+    _persist_variant_lifecycle(variant_dir, result)
+
+    assert not (variant_dir / "stdout.txt").exists()
+    assert not (variant_dir / "stderr.txt").exists()
+
+
+def test_mixed_member_aggregate_has_consistent_unexecuted_lifecycle(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-mixed",
+        task_id="root",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="root",
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "executed"}}],
+        stdout_path=str(tmp_path / "executed.stdout"),
+    )
+    blocker = ReplayFailureEvent(
+        code="candidate_preflight_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+    )
+    blocked = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.BLOCKED,
+        trajectory=[],
+        blocked_by=(blocker,),
+    )
+    members = (
+        CandidateReplayMemberResult("one", replace(request, task_id="one"), succeeded, succeeded),
+        CandidateReplayMemberResult("two", replace(request, task_id="two"), blocked, blocked),
+    )
+
+    aggregate = _aggregate_member_variant_results(
+        base_variant_id="candidate",
+        members=members,
+        select=lambda member: member.candidate,
+        artifact_dir=tmp_path / "aggregate",
+        persist=False,
+    )
+
+    assert aggregate.status is ReplayExecutionStatus.BLOCKED
+    assert aggregate.metrics["successful_member_count"] == 1
+    assert aggregate.metrics["blocked_member_count"] == 1
+    assert aggregate.trajectory == []
+    assert aggregate.stdout_path is None
+    assert aggregate.stderr_path is None
+    assert aggregate.repetition_results == ()
 
 
 @pytest.mark.parametrize("case_count", (1, 3))
@@ -260,6 +428,167 @@ def test_normalized_replay_members_are_dataset_ordered_and_detect_contract_gaps(
         and event.scope is FailureScope.CANDIDATE
         for event in normalized_malformed.failure_events
     )
+
+
+@pytest.mark.parametrize("case_count", (1, 3))
+@pytest.mark.parametrize(
+    "contract_gap",
+    ("duplicate", "unexpected", "request_mismatch", "explicit_empty"),
+)
+def test_structurally_invalid_members_are_never_comparable_without_adaptation(
+    tmp_path: Path,
+    case_count: int,
+    contract_gap: str,
+) -> None:
+    case_ids = tuple(f"case-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"index": index})
+            for index, case_id in enumerate(case_ids)
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "normalization_adversarial"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-normalization-adversarial",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=case_count,
+        candidate_repetitions=case_count,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case_id,
+            request=replace(
+                root_request,
+                task_id=case_id,
+                task_input=dataset.cases[index].input,
+                baseline_repetitions=1,
+                candidate_repetitions=1,
+            ),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+        for index, case_id in enumerate(case_ids)
+    )
+    if contract_gap == "duplicate":
+        malformed_members = (*members, members[0])
+    elif contract_gap == "unexpected":
+        malformed_members = (
+            *members,
+            replace(
+                members[0],
+                case_id="outside-dataset",
+                request=replace(members[0].request, task_id="outside-dataset"),
+            ),
+        )
+    elif contract_gap == "request_mismatch":
+        malformed_members = (
+            replace(
+                members[0],
+                request=replace(members[0].request, run_id="different-run"),
+            ),
+            *members[1:],
+        )
+    else:
+        malformed_members = ()
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=malformed_members,
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+
+    assert root_request.adaptation_fingerprint is None
+    assert not normalized.valid
+    assert candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=replay_result,
+    ) is False
+    assert candidate_replay_pair_coverage(
+        dataset=dataset,
+        replay_result=replay_result,
+        normalized=normalized,
+    )["normalization_failure_count"] > 0
+
+
+def test_member_request_repetition_distribution_is_part_of_normalization_contract(
+    tmp_path: Path,
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="one", input="one"),
+            EvalCase(case_id="two", input="two"),
+            EvalCase(case_id="three", input="three"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "repetition_distribution_contract"},
+            split_seed="seed",
+            splits={"train": ["one", "two", "three"], "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate("---\nname: demo\n---\n# Demo\n")
+    root_request = build_replay_request(
+        run_id="run-repetition-contract",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=6,
+        candidate_repetitions=9,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "ok"}}],
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case.case_id,
+            request=replace(
+                root_request,
+                task_id=case.case_id,
+                task_input=case.input,
+                baseline_repetitions=(99 if index == 0 else 2),
+                candidate_repetitions=3,
+            ),
+            baseline=succeeded,
+            candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        )
+        for index, case in enumerate(dataset.cases)
+    )
+    replay_result = CandidateReplayResult(
+        request=root_request,
+        baseline=succeeded,
+        candidate=replace(succeeded, variant_id=candidate.candidate_id),
+        member_results=members,
+    )
+
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+
+    assert not normalized.valid
+    mismatch = next(
+        event
+        for event in normalized.failure_events
+        if event.code == "replay_request_member_mismatch"
+    )
+    assert mismatch.diagnostics["case_ids"] == ["one"]
+    assert "baseline_repetitions" in mismatch.diagnostics["fields"]
 
 
 @pytest.mark.asyncio
@@ -341,6 +670,126 @@ async def test_replay_lifecycle_v2_round_trip_materializes_blocked_members(
         ).exists()
         for item in manifest["members"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case_count", (1, 3))
+async def test_lifecycle_v2_round_trip_restores_member_repetition_children(
+    tmp_path: Path,
+    case_count: int,
+) -> None:
+    case_ids = tuple(f"repetition-member-{index}" for index in range(case_count))
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "repetition_lifecycle_round_trip"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="candidate-repetitions",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[
+                {
+                    "action": {
+                        "content": f"{request.task_id}:{request.variant_id}"
+                    }
+                }
+            ],
+        )
+
+    request = build_replay_request(
+        run_id=f"run-repetition-lifecycle-{case_count}",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=2 * case_count,
+        candidate_repetitions=3 * case_count,
+    )
+    before = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+    after = load_candidate_replay_result(replay_dir)
+
+    assert before.member_results is not None
+    assert after.member_results is not None
+    for replay_result in (before, after):
+        assert [len(member.baseline.repetition_results) for member in replay_result.member_results] == [
+            2
+        ] * case_count
+        assert [len(member.candidate.repetition_results) for member in replay_result.member_results] == [
+            3
+        ] * case_count
+    before_paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=before,
+        candidate=candidate,
+    )
+    normalized_after = normalize_replay_members(dataset=dataset, replay_result=after)
+    after_paired = build_paired_replay_dataset(
+        dataset=dataset,
+        replay_result=after,
+        candidate=candidate,
+        normalized=normalized_after,
+    )
+    assert len(before_paired.cases) == len(after_paired.cases) == 3 * case_count
+    assert [
+        case.metadata["replay"]["replay_case_count"] for case in after_paired.cases
+    ] == [3] * (3 * case_count)
+
+
+def test_all_blocked_repetition_aggregate_is_unexecuted_and_artifact_free(
+    tmp_path: Path,
+) -> None:
+    blocker = ReplayFailureEvent(
+        code="shared_preflight_failed",
+        owner=FailureOwner.INFRASTRUCTURE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.SHARED_RUN,
+        repairable=False,
+    )
+    blocked = [
+        ReplayVariantResult(
+            variant_id=f"candidate-{index}",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[],
+            blocked_by=(blocker,),
+        )
+        for index in (1, 2)
+    ]
+
+    aggregate = _aggregate_variant_results(
+        base_variant_id="candidate",
+        results=blocked,
+        artifact_dir=tmp_path / "aggregate",
+        persist=False,
+    )
+
+    assert aggregate.status is ReplayExecutionStatus.BLOCKED
+    assert aggregate.blocked_by == (blocker,)
+    assert aggregate.trajectory == []
+    assert aggregate.stdout_path is None
+    assert aggregate.stderr_path is None
+    assert aggregate.repetition_results == ()
+    assert aggregate.metrics["blocked_repetition_count"] == 2
 
 
 def _write_json(path: Path, payload) -> None:
@@ -1748,13 +2197,20 @@ def test_websocket_probe_rejects_masked_server_frame() -> None:
 
 
 def test_candidate_owned_runtime_protocol_failure_is_not_infrastructure() -> None:
-    assert _replay_failure_outcome(
-        {
+    variant = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure={
             "type": "ReplayServiceProtocolError",
             "reason": "advertised WebSocket handshake failed",
             "outcome": "candidate_failure",
-        }
-    ) == "candidate_failure"
+        },
+    )
+
+    assert isinstance(variant.failure, ReplayFailureEvent)
+    assert variant.failure.source is FailureEventSource.LEGACY_INFERRED
+    assert _replay_failure_outcome(variant.failure) == "candidate_failure"
 
 
 def test_replay_service_failure_includes_bounded_sanitized_runtime_stderr(

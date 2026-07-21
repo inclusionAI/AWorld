@@ -17,7 +17,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields as dataclass_fields, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
@@ -77,11 +77,6 @@ _MAX_METADATA_EVIDENCE_CHARS = 16_384
 _REPLAY_SERVICE_PROTOCOL_TRACE_NAME = "protocol_trace.jsonl"
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_BYTES = 64 * 1024
 _MAX_REPLAY_SERVICE_PROTOCOL_TRACE_EXCERPT_CHARS = 4_000
-_COMPARABLE_TASK_FAILURE_TYPES = {
-    "ReplayBoundaryViolation",
-    "TaskFailure",
-    "TimeoutExpired",
-}
 _LOOPBACK_HTTP_ENDPOINT_PATTERN = re.compile(
     r"(?i)https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])"
     r"(?::\d{1,5})?(?![:\d])"
@@ -157,8 +152,13 @@ class ReplayVariantResult:
         blocked_by = tuple(self.blocked_by)
         if any(not isinstance(event, ReplayFailureEvent) for event in blocked_by):
             raise ValueError("blocked_by must contain replay failure events")
-        if status is ReplayExecutionStatus.SUCCEEDED and (failure or blocked_by):
-            raise ValueError("succeeded replay variant cannot have failure or blocked_by")
+        if status in {
+            ReplayExecutionStatus.SUCCEEDED,
+            ReplayExecutionStatus.FAILED,
+        } and blocked_by:
+            raise ValueError("executed replay variant cannot have blocked_by")
+        if status is ReplayExecutionStatus.SUCCEEDED and failure is not None:
+            raise ValueError("succeeded replay variant cannot have a failure")
         if status is ReplayExecutionStatus.FAILED and failure is None:
             raise ValueError("failed replay variant requires a failure event")
         if status is ReplayExecutionStatus.BLOCKED:
@@ -172,6 +172,13 @@ class ReplayVariantResult:
             failure is not None or blocked_by or self.trajectory
         ):
             raise ValueError("not_run replay variant cannot contain execution output")
+        if status in {
+            ReplayExecutionStatus.BLOCKED,
+            ReplayExecutionStatus.NOT_RUN,
+        } and (self.stdout_path or self.stderr_path or self.repetition_results):
+            raise ValueError(
+                "unexecuted replay variant cannot contain execution artifacts"
+            )
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "failure", failure)
         object.__setattr__(self, "blocked_by", blocked_by)
@@ -248,6 +255,50 @@ class NormalizedReplayMembers:
         return not self.failure_events
 
 
+_MEMBER_SPECIFIC_REQUEST_FIELDS = frozenset(
+    {
+        "task_id",
+        "task_input",
+        "task_input_fingerprint",
+        "baseline_replay_dir",
+        "baseline_repetitions",
+        "candidate_repetitions",
+    }
+)
+
+
+def _member_request_mismatch_fields(
+    *,
+    root_request: CandidateReplayRequest,
+    member_request: CandidateReplayRequest,
+    case_id: str,
+    member_count: int,
+) -> tuple[str, ...]:
+    mismatches: list[str] = []
+    if member_request.task_id != case_id:
+        mismatches.append("task_id")
+    for request_field in dataclass_fields(CandidateReplayRequest):
+        field_name = request_field.name
+        if field_name in _MEMBER_SPECIFIC_REQUEST_FIELDS:
+            continue
+        if getattr(member_request, field_name) != getattr(root_request, field_name):
+            mismatches.append(field_name)
+    expected_repetitions = {
+        "baseline_repetitions": _distributed_member_repetitions(
+            root_request.baseline_repetitions,
+            member_count=member_count,
+        ),
+        "candidate_repetitions": _distributed_member_repetitions(
+            root_request.candidate_repetitions,
+            member_count=member_count,
+        ),
+    }
+    for field_name, expected in expected_repetitions.items():
+        if getattr(member_request, field_name) != expected:
+            mismatches.append(field_name)
+    return tuple(sorted(set(mismatches)))
+
+
 def _normalization_failure(
     *, code: str, summary: str, diagnostics: Mapping[str, Any]
 ) -> ReplayFailureEvent:
@@ -283,6 +334,7 @@ def normalize_replay_members(
     duplicates: list[str] = []
     unexpected: list[str] = []
     mismatches: list[str] = []
+    mismatch_fields: dict[str, tuple[str, ...]] = {}
     raw_members = replay_result.member_results
     if raw_members is None:
         if len(replayable_cases) == 1:
@@ -306,8 +358,15 @@ def normalize_replay_members(
         if member.case_id in members_by_id:
             duplicates.append(member.case_id)
             continue
-        if member.request.task_id != member.case_id:
+        member_mismatches = _member_request_mismatch_fields(
+            root_request=replay_result.request,
+            member_request=member.request,
+            case_id=member.case_id,
+            member_count=len(replayable_cases),
+        )
+        if member_mismatches:
             mismatches.append(member.case_id)
+            mismatch_fields[member.case_id] = member_mismatches
             continue
         members_by_id[member.case_id] = member
     normalized: list[NormalizedReplayMember] = []
@@ -325,18 +384,53 @@ def normalize_replay_members(
             )
         )
     anomaly_groups = (
-        ("missing_replay_member", missing, "backend omitted dataset replay members"),
-        ("duplicate_replay_member", duplicates, "backend returned duplicate replay members"),
-        ("unexpected_replay_member", unexpected, "backend returned members outside the dataset"),
-        ("replay_request_member_mismatch", mismatches, "member request task did not match its case"),
+        (
+            "missing_replay_member",
+            missing,
+            "backend omitted dataset replay members",
+            {},
+        ),
+        (
+            "duplicate_replay_member",
+            duplicates,
+            "backend returned duplicate replay members",
+            {},
+        ),
+        (
+            "unexpected_replay_member",
+            unexpected,
+            "backend returned members outside the dataset",
+            {},
+        ),
+        (
+            "replay_request_member_mismatch",
+            mismatches,
+            "member request violated the root/member request contract",
+            {
+                "fields": tuple(
+                    sorted(
+                        {
+                            field_name
+                            for fields_for_case in mismatch_fields.values()
+                            for field_name in fields_for_case
+                        }
+                    )
+                ),
+                "member_fields": mismatch_fields,
+            },
+        ),
     )
-    for code, case_ids, summary in anomaly_groups:
+    for code, case_ids, summary, extra_diagnostics in anomaly_groups:
         if case_ids:
             events.append(
                 _normalization_failure(
                     code=code,
                     summary=summary,
-                    diagnostics={"case_ids": tuple(case_ids), "count": len(case_ids)},
+                    diagnostics={
+                        "case_ids": tuple(case_ids),
+                        "count": len(case_ids),
+                        **extra_diagnostics,
+                    },
                 )
             )
     return NormalizedReplayMembers(
@@ -360,16 +454,25 @@ def candidate_replay_is_comparable(
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
     require_adapted: bool = False,
+    normalized: NormalizedReplayMembers | None = None,
 ) -> bool:
+    normalized = normalized or normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
+    if not normalized.valid:
+        return False
     if not _candidate_replay_provenance_is_comparable(
         dataset,
         replay_result,
         require_adapted=require_adapted,
+        normalized=normalized,
     ):
         return False
     coverage = candidate_replay_pair_coverage(
         dataset=dataset,
         replay_result=replay_result,
+        normalized=normalized,
     )
     return (
         coverage["member_count"] > 0
@@ -382,6 +485,7 @@ def _candidate_replay_provenance_is_comparable(
     replay_result: CandidateReplayResult,
     *,
     require_adapted: bool,
+    normalized: NormalizedReplayMembers,
 ) -> bool:
     if replay_result.request.adaptation_fingerprint is None:
         return not require_adapted
@@ -389,9 +493,6 @@ def _candidate_replay_provenance_is_comparable(
         replay_result.request.replay_adaptation is not None
         and not replay_result.request.replay_adaptation.ready
     ):
-        return False
-    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
-    if not normalized.valid:
         return False
     pairs = tuple(
         (member.request, member.baseline, member.candidate)
@@ -505,8 +606,12 @@ def candidate_replay_pair_coverage(
     *,
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
+    normalized: NormalizedReplayMembers | None = None,
 ) -> dict[str, int]:
-    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    normalized = normalized or normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
 
     strict_pair_count = 0
     task_failure_pair_count = 0
@@ -602,40 +707,25 @@ def candidate_replay_pair_coverage(
     }
 
 
-def _replay_failure_outcome(failure: Mapping[str, Any] | None) -> str:
-    if not isinstance(failure, Mapping):
+def _replay_failure_outcome(failure: ReplayFailureEvent | None) -> str:
+    if failure is None:
         return "infrastructure_failure"
     if _is_task_rollout_capability_failure(failure):
         return "candidate_failure"
-    explicit_outcome = failure.get("outcome")
-    if explicit_outcome in {
-        "candidate_failure",
-        "infrastructure_failure",
-        "task_failure",
-    }:
-        return str(explicit_outcome)
-    failure_type = failure.get("type")
-    if failure_type in _COMPARABLE_TASK_FAILURE_TYPES:
+    if failure.owner is FailureOwner.CANDIDATE:
+        return "candidate_failure"
+    if failure.owner is FailureOwner.TASK:
         return "task_failure"
-    nested = failure.get("failures")
-    if isinstance(nested, list) and nested:
-        outcomes = {
-            _replay_failure_outcome(item)
-            for item in nested
-            if isinstance(item, Mapping)
-        }
-        if outcomes == {"task_failure"}:
-            return "task_failure"
     return "infrastructure_failure"
 
 
 def _is_task_rollout_capability_failure(
-    failure: Mapping[str, Any] | None,
+    failure: ReplayFailureEvent | None,
 ) -> bool:
     return bool(
-        isinstance(failure, Mapping)
-        and failure.get("failure_class") == "candidate_replay_capability"
-        and failure.get("failure_stage") == "task_rollout"
+        isinstance(failure, ReplayFailureEvent)
+        and failure.owner is FailureOwner.CANDIDATE
+        and failure.stage is FailureStage.TASK_ROLLOUT
     )
 
 
@@ -5807,10 +5897,14 @@ def _persist_variant_lifecycle(
         (result.stdout_path, "stdout.txt"),
         (result.stderr_path, "stderr.txt"),
     ):
+        destination = artifact_dir / filename
+        if not result.executed:
+            if destination.exists():
+                destination.unlink()
+            continue
         if source_path is None:
             continue
         source = Path(source_path)
-        destination = artifact_dir / filename
         try:
             if source.exists() and source.resolve() != destination.resolve():
                 shutil.copyfile(source, destination)
@@ -5859,44 +5953,24 @@ def _aggregate_variant_results(
 ) -> ReplayVariantResult:
     if not results:
         raise ValueError("cannot aggregate empty replay results")
-    if len(results) == 1:
-        result = results[0]
-        failures = (
-            [result.failure.compatibility_dict()]
-            if result.failure is not None
-            else []
-        )
-        metrics = {
-            **dict(result.metrics),
-            "repetition_count": 1,
-            "successful_repetition_count": 1 if result.succeeded else 0,
-            "failed_repetition_count": 0 if result.succeeded else 1,
-        }
-        if failures:
-            metrics["repetition_failures"] = failures
-        aggregated = ReplayVariantResult(
-            variant_id=base_variant_id,
-            status=result.status,
-            trajectory=result.trajectory,
-            metrics=metrics,
-            stdout_path=result.stdout_path,
-            stderr_path=result.stderr_path,
-            failure=result.failure,
-            blocked_by=result.blocked_by,
-        )
-        if persist:
-            _persist_variant_lifecycle(artifact_dir, aggregated)
-        return aggregated
-
     successful = [result for result in results if result.succeeded]
     failed = [
         result for result in results if result.status is ReplayExecutionStatus.FAILED
     ]
-    status = (
-        ReplayExecutionStatus.SUCCEEDED
-        if successful
-        else ReplayExecutionStatus.FAILED
-    )
+    blocked = [
+        result for result in results if result.status is ReplayExecutionStatus.BLOCKED
+    ]
+    not_run = [
+        result for result in results if result.status is ReplayExecutionStatus.NOT_RUN
+    ]
+    if successful:
+        status = ReplayExecutionStatus.SUCCEEDED
+    elif failed:
+        status = ReplayExecutionStatus.FAILED
+    elif blocked:
+        status = ReplayExecutionStatus.BLOCKED
+    else:
+        status = ReplayExecutionStatus.NOT_RUN
     numeric_metrics: dict[str, list[float]] = {}
     evidence_compaction_signals: list[str] = []
     evidence_compacted_values: list[bool] = []
@@ -5929,6 +6003,8 @@ def _aggregate_variant_results(
         "repetition_count": len(results),
         "successful_repetition_count": len(successful),
         "failed_repetition_count": len(failed),
+        "blocked_repetition_count": len(blocked),
+        "not_run_repetition_count": len(not_run),
     }
     repetition_failures = [
         result.failure.compatibility_dict()
@@ -5966,8 +6042,14 @@ def _aggregate_variant_results(
             metrics[key] = sum(values) / len(values)
             metrics[f"{key}_values"] = values
 
-    selected = successful[-1] if successful else results[-1]
+    if status is ReplayExecutionStatus.SUCCEEDED:
+        selected = successful[-1]
+    elif status is ReplayExecutionStatus.FAILED:
+        selected = failed[-1]
+    else:
+        selected = results[-1]
     failure: ReplayFailureEvent | None = None
+    blocked_by: tuple[ReplayFailureEvent, ...] = ()
     if status is ReplayExecutionStatus.FAILED:
         legacy_failure = {
             "reason": "one or more replay repetitions failed",
@@ -5981,28 +6063,40 @@ def _aggregate_variant_results(
             tuple(result.failure for result in failed if result.failure is not None)
         )
         exemplar = causal[0]
-        failure = ReplayFailureEvent(
-            code="replay_repetition_failure",
-            owner=exemplar.owner,
-            stage=exemplar.stage,
-            scope=exemplar.scope,
-            repairable=any(event.repairable for event in causal),
-            category="replay_repetition",
-            summary="one or more replay repetitions failed",
-            causes=tuple(event.event_id for event in causal),
-            _compatibility=legacy_failure,
+        if len(causal) == 1:
+            failure = exemplar
+        else:
+            failure = ReplayFailureEvent(
+                code="replay_repetition_failure",
+                owner=exemplar.owner,
+                stage=exemplar.stage,
+                scope=exemplar.scope,
+                repairable=any(event.repairable for event in causal),
+                category="replay_repetition",
+                summary="one or more replay repetitions failed",
+                causes=tuple(event.event_id for event in causal),
+                _compatibility=legacy_failure,
+            )
+    elif status is ReplayExecutionStatus.BLOCKED:
+        blocked_by = causal_failure_events(
+            tuple(event for result in blocked for event in result.blocked_by)
         )
     if persist:
         _write_json(artifact_dir / "aggregate_metrics.json", metrics)
+    aggregate_executed = status in {
+        ReplayExecutionStatus.SUCCEEDED,
+        ReplayExecutionStatus.FAILED,
+    }
     aggregated = ReplayVariantResult(
         variant_id=base_variant_id,
         status=status,
-        trajectory=selected.trajectory,
+        trajectory=selected.trajectory if aggregate_executed else [],
         metrics=metrics,
-        stdout_path=selected.stdout_path,
-        stderr_path=selected.stderr_path,
+        stdout_path=selected.stdout_path if aggregate_executed else None,
+        stderr_path=selected.stderr_path if aggregate_executed else None,
         failure=failure,
-        repetition_results=tuple(results),
+        blocked_by=blocked_by,
+        repetition_results=tuple(results) if aggregate_executed else (),
     )
     if persist:
         _persist_variant_lifecycle(artifact_dir, aggregated)
@@ -6055,11 +6149,6 @@ def _aggregate_member_variant_results(
         for member, variant in member_variant_pairs
         if variant.succeeded
     ]
-    selected_variant = (
-        successful_members[-1][1]
-        if successful_members
-        else member_variants[-1]
-    )
     generated_metric_keys = {
         "member_count",
         "successful_member_count",
@@ -6148,16 +6237,30 @@ def _aggregate_member_variant_results(
         status = ReplayExecutionStatus.NOT_RUN
     else:
         status = ReplayExecutionStatus.SUCCEEDED
+    if status is ReplayExecutionStatus.SUCCEEDED:
+        selected_variant = successful_members[-1][1]
+    elif status is ReplayExecutionStatus.FAILED:
+        selected_variant = next(
+            variant
+            for _, variant in reversed(member_variant_pairs)
+            if variant.status is ReplayExecutionStatus.FAILED
+        )
+    else:
+        selected_variant = member_variants[-1]
+    aggregate_executed = status in {
+        ReplayExecutionStatus.SUCCEEDED,
+        ReplayExecutionStatus.FAILED,
+    }
     aggregated = ReplayVariantResult(
         variant_id=base_variant_id,
         status=status,
-        trajectory=(selected_variant.trajectory if status is not ReplayExecutionStatus.BLOCKED else []),
+        trajectory=selected_variant.trajectory if aggregate_executed else [],
         metrics=metrics,
         failure=failure,
         blocked_by=blocked_by,
-        stdout_path=selected_variant.stdout_path,
-        stderr_path=selected_variant.stderr_path,
-        repetition_results=tuple(repetition_results),
+        stdout_path=selected_variant.stdout_path if aggregate_executed else None,
+        stderr_path=selected_variant.stderr_path if aggregate_executed else None,
+        repetition_results=(tuple(repetition_results) if aggregate_executed else ()),
     )
     if persist:
         _write_json(artifact_dir / "aggregate_metrics.json", metrics)
@@ -6645,6 +6748,18 @@ def _load_lifecycle_variant_result(
         metrics = {**dict(metrics), **dict(aggregate_metrics)}
     stdout_path = variant_dir / "stdout.txt"
     stderr_path = variant_dir / "stderr.txt"
+    repetition_dirs = _stored_repetition_dirs(variant_dir)
+    repetition_results = tuple(
+        _load_single_variant_result(
+            _effective_repetition_dir(path),
+            variant_id=(
+                base_variant_id
+                if len(repetition_dirs) == 1
+                else f"{base_variant_id}-{index}"
+            ),
+        )
+        for index, path in enumerate(repetition_dirs, start=1)
+    )
     return ReplayVariantResult(
         variant_id=str(lifecycle.get("variant_id") or base_variant_id),
         status=str(lifecycle.get("status") or ""),
@@ -6654,6 +6769,7 @@ def _load_lifecycle_variant_result(
         stderr_path=str(stderr_path) if stderr_path.exists() else None,
         failure=failure,
         blocked_by=blocked_by,
+        repetition_results=repetition_results,
     )
 
 
@@ -6700,18 +6816,22 @@ def build_paired_replay_dataset(
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
     candidate: CandidateVariant,
+    normalized: NormalizedReplayMembers | None = None,
 ) -> SelfEvolveDataset:
+    normalized = normalized or normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay_result,
+    )
+    if not normalized.valid:
+        raise ValueError("candidate replay member result contract is invalid")
     if not replay_result.candidate.succeeded:
         raise ValueError("candidate replay did not succeed")
     if not candidate_replay_is_comparable(
         dataset=dataset,
         replay_result=replay_result,
+        normalized=normalized,
     ):
         raise ValueError("candidate replay did not produce comparable paired outcomes")
-
-    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
-    if not normalized.valid:
-        raise ValueError("candidate replay member result contract is invalid")
     member_results = {member.case_id: member for member in normalized.members}
     cases: list[EvalCase] = []
     source_to_replay_case_ids: dict[str, list[str]] = {}
