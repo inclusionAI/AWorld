@@ -213,6 +213,27 @@ contains `bundle.json`, `workspace_manifest.json`, `environment_snapshot.json`, 
 `workspace_seed/`. Each executed repetition stores its disposable workspace under the
 corresponding replay repetition directory.
 
+Replay lifecycle records are cardinality-neutral: one task produces one member and a
+trajectory set produces one member per replayable task, always in dataset order. New
+artifacts use `members/manifest.json` v2 and a `lifecycle.json` v2 for every baseline
+and candidate variant, including work that did not execute:
+
+- `succeeded`: execution started and completed with usable trajectory evidence.
+- `failed`: execution started and produced a typed failure event.
+- `blocked`: execution did not start because the event in `blocked_by` prevented it.
+- `not_run`: the framework intentionally did not schedule the variant.
+
+A failure event records `owner` (`candidate`, `task`, `infrastructure`, or
+`framework`), `stage`, `scope`, a stable code, and repairability independently from
+execution status. For example, if a candidate capability fails preflight on the first
+member of a three-member dataset, that baseline member is `failed` with
+`owner: candidate`, `stage: capability_preflight`, and `scope: candidate`; all three
+candidate variants and the remaining baseline variants are `blocked` by the same
+event. The next candidate in the population is still evaluated. Only an explicit
+`shared_run` event owned by infrastructure or the framework stops the population.
+Legacy status and failure files remain readable, but unknown legacy failures are not
+promoted to run-wide infrastructure failures.
+
 Artifact GC runs at optimize startup and terminal completion. It preserves the two
 newest runs, lineage and apply recovery dependencies, and runs with a live process
 lease. Raw replay, replay-adaptation, repair-conformance, evaluator, overlay, and

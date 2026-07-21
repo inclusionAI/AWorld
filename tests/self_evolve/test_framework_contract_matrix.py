@@ -10,7 +10,7 @@ requirement or fixture shapes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
@@ -23,6 +23,12 @@ from aworld.self_evolve.credit_assignment import (
     build_target_selection_decision,
 )
 from aworld.self_evolve.gates import TrustProvenanceGate
+from aworld.self_evolve.failure_events import (
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayExecutionStatus,
+)
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
     CandidateReplayMemberResult,
@@ -30,6 +36,8 @@ from aworld.self_evolve.replay import (
     ReplayExecutionRequest,
     ReplayExecutionResult,
     build_replay_request,
+    candidate_replay_pair_coverage,
+    normalize_replay_members,
     replay_dataset_fingerprint,
 )
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
@@ -379,3 +387,170 @@ async def test_replay_contract_preserves_every_member_in_dataset_order(
         for case_id, variant_id in calls
         if variant_id == candidate.candidate_id
     ) == contract.case_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "contract",
+    (SINGLE_CASE, THREE_DISTINCT_SHAPE_CASES),
+    ids=lambda contract: contract.name,
+)
+@pytest.mark.parametrize(
+    "scenario",
+    (
+        "all_success",
+        "candidate_preflight",
+        "candidate_task_failure",
+        "baseline_task_failure",
+        "shared_infrastructure",
+    ),
+)
+async def test_replay_lifecycle_contract_is_cardinality_neutral(
+    contract: FrameworkContractDataset,
+    scenario: str,
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="lifecycle-skill")
+    candidate = CandidateVariant(
+        candidate_id="candidate-lifecycle",
+        target=target,
+        content="---\nname: lifecycle-skill\n---\n# Lifecycle skill\n",
+        rationale="exercise typed replay lifecycle",
+        target_fingerprint="sha256:lifecycle-baseline",
+    )
+    first_case_id = contract.case_ids[0]
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        is_first = request.task_id == first_case_id
+        if scenario == "candidate_preflight" and is_first and request.variant_id == "baseline":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "type": "ReplayServiceProtocolError",
+                    "outcome": "candidate_failure",
+                    "reason": "synthetic capability preflight failure",
+                },
+            )
+        if scenario == "shared_infrastructure" and is_first and request.variant_id == "baseline":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "type": "ProcessError",
+                    "outcome": "infrastructure_failure",
+                    "reason": "synthetic shared runtime failure",
+                },
+            )
+        if scenario == "baseline_task_failure" and is_first and request.variant_id == "baseline":
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "type": "TaskFailure",
+                    "outcome": "task_failure",
+                    "reason": "synthetic baseline task failure",
+                },
+            )
+        if (
+            scenario == "candidate_task_failure"
+            and is_first
+            and request.variant_id == candidate.candidate_id
+        ):
+            return ReplayExecutionResult(
+                status="failed",
+                trajectory=[],
+                failure={
+                    "type": "TaskFailure",
+                    "outcome": "task_failure",
+                    "reason": "synthetic candidate task failure",
+                },
+            )
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id=f"run-lifecycle-{scenario}-{contract.name}",
+        workspace_root=tmp_path,
+        target=target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay-skills",
+        dataset=contract.dataset,
+    )
+    result = await AWorldCliCandidateReplayBackend(executor=fake_executor).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=contract.dataset,
+    )
+    normalized = normalize_replay_members(dataset=contract.dataset, replay_result=result)
+    coverage = candidate_replay_pair_coverage(
+        dataset=contract.dataset,
+        replay_result=result,
+    )
+
+    assert normalized.valid
+    assert tuple(member.case_id for member in normalized.members) == contract.case_ids
+    assert result.member_results is not None
+    assert len(result.member_results) == len(contract.case_ids)
+    if scenario == "all_success":
+        assert coverage["strict_pair_count"] == len(contract.case_ids)
+        assert coverage["incomparable_pair_count"] == 0
+        assert result.member_results is not None
+        reversed_result = replace(
+            result,
+            member_results=tuple(reversed(result.member_results)),
+        )
+        assert tuple(
+            member.case_id
+            for member in normalize_replay_members(
+                dataset=contract.dataset,
+                replay_result=reversed_result,
+            ).members
+        ) == contract.case_ids
+        missing = normalize_replay_members(
+            dataset=contract.dataset,
+            replay_result=replace(result, member_results=result.member_results[:-1]),
+        )
+        duplicate = normalize_replay_members(
+            dataset=contract.dataset,
+            replay_result=replace(
+                result,
+                member_results=(*result.member_results, result.member_results[0]),
+            ),
+        )
+        assert len(missing.missing_case_ids) == 1
+        assert missing.failure_events[0].owner is FailureOwner.FRAMEWORK
+        assert duplicate.duplicate_case_ids == (contract.case_ids[0],)
+    elif scenario == "candidate_preflight":
+        event = normalized.members[0].baseline.failure
+        assert event is not None
+        assert (event.owner, event.stage, event.scope) == (
+            FailureOwner.CANDIDATE,
+            FailureStage.CAPABILITY_PREFLIGHT,
+            FailureScope.CANDIDATE,
+        )
+        assert coverage["candidate_executed_count"] == 0
+        assert coverage["candidate_failure_count"] == 0
+        assert coverage["blocked_variant_count"] == (
+            1 if len(contract.case_ids) == 1 else 2 * len(contract.case_ids) - 1
+        )
+        assert all(
+            member.candidate.status is ReplayExecutionStatus.BLOCKED
+            and member.candidate.blocked_by[0].event_id == event.event_id
+            for member in normalized.members
+        )
+    elif scenario == "shared_infrastructure":
+        event = normalized.members[0].baseline.failure
+        assert event is not None
+        assert event.owner is FailureOwner.INFRASTRUCTURE
+        assert event.scope is FailureScope.SHARED_RUN
+        assert coverage["candidate_executed_count"] == 0
+    elif scenario == "candidate_task_failure":
+        assert coverage["candidate_execution_failure_count"] == 1
+        assert coverage["candidate_failure_count"] == 1
+        assert coverage["blocked_variant_count"] == 0
+    else:
+        assert coverage["task_failure_pair_count"] == 1
+        assert coverage["comparable_pair_count"] == len(contract.case_ids)

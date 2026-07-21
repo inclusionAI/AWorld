@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -35,6 +36,15 @@ from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
     is_framework_meta_trace_pack,
+)
+from aworld.self_evolve.failure_events import (
+    FailureEventSource,
+    FailureOwner,
+    FailureScope,
+    FailureStage,
+    ReplayExecutionStatus,
+    ReplayFailureEvent,
+    causal_failure_events,
 )
 from aworld.self_evolve.replay_adaptation import (
     REPLAY_ARTIFACT_PLACEHOLDER,
@@ -72,7 +82,6 @@ _COMPARABLE_TASK_FAILURE_TYPES = {
     "TaskFailure",
     "TimeoutExpired",
 }
-_COMPARABLE_TASK_FAILURE_REASONS = {"evidence_quality_failed"}
 _LOOPBACK_HTTP_ENDPOINT_PATTERN = re.compile(
     r"(?i)https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])"
     r"(?::\d{1,5})?(?![:\d])"
@@ -126,17 +135,57 @@ class CandidateReplayRequest:
 @dataclass(frozen=True)
 class ReplayVariantResult:
     variant_id: str
-    status: str
+    status: ReplayExecutionStatus | str
     trajectory: list[Mapping[str, Any]]
     metrics: Mapping[str, Any] = field(default_factory=dict)
     stdout_path: str | None = None
     stderr_path: str | None = None
-    failure: Mapping[str, Any] | None = None
+    failure: ReplayFailureEvent | Mapping[str, Any] | None = None
+    blocked_by: tuple[ReplayFailureEvent, ...] = ()
     repetition_results: tuple["ReplayVariantResult", ...] = ()
+
+    def __post_init__(self) -> None:
+        try:
+            status = ReplayExecutionStatus(self.status)
+        except ValueError as exc:
+            raise ValueError(f"unsupported replay execution status: {self.status!r}") from exc
+        failure = self.failure
+        if isinstance(failure, Mapping) and not isinstance(
+            failure, ReplayFailureEvent
+        ):
+            failure = ReplayFailureEvent.from_legacy_mapping(failure)
+        blocked_by = tuple(self.blocked_by)
+        if any(not isinstance(event, ReplayFailureEvent) for event in blocked_by):
+            raise ValueError("blocked_by must contain replay failure events")
+        if status is ReplayExecutionStatus.SUCCEEDED and (failure or blocked_by):
+            raise ValueError("succeeded replay variant cannot have failure or blocked_by")
+        if status is ReplayExecutionStatus.FAILED and failure is None:
+            raise ValueError("failed replay variant requires a failure event")
+        if status is ReplayExecutionStatus.BLOCKED:
+            if failure is not None:
+                raise ValueError("blocked replay variant cannot have an execution failure")
+            if not blocked_by:
+                raise ValueError("blocked replay variant requires blocked_by")
+            if self.trajectory:
+                raise ValueError("blocked replay variant cannot contain a trajectory")
+        if status is ReplayExecutionStatus.NOT_RUN and (
+            failure is not None or blocked_by or self.trajectory
+        ):
+            raise ValueError("not_run replay variant cannot contain execution output")
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "failure", failure)
+        object.__setattr__(self, "blocked_by", blocked_by)
 
     @property
     def succeeded(self) -> bool:
-        return self.status == "succeeded"
+        return self.status is ReplayExecutionStatus.SUCCEEDED
+
+    @property
+    def executed(self) -> bool:
+        return self.status in {
+            ReplayExecutionStatus.SUCCEEDED,
+            ReplayExecutionStatus.FAILED,
+        }
 
 
 @dataclass(frozen=True)
@@ -144,12 +193,16 @@ class CandidateReplayResult:
     request: CandidateReplayRequest
     baseline: ReplayVariantResult
     candidate: ReplayVariantResult
-    member_results: tuple["CandidateReplayMemberResult", ...] = ()
+    # None is reserved for legacy root-level single-member artifacts. New
+    # backends always write an explicit tuple, including one-member datasets.
+    member_results: tuple["CandidateReplayMemberResult", ...] | None = None
 
     @property
     def succeeded(self) -> bool:
-        if self.member_results:
-            return all(member.succeeded for member in self.member_results)
+        if self.member_results is not None:
+            return bool(self.member_results) and all(
+                member.succeeded for member in self.member_results
+            )
         return self.baseline.succeeded and self.candidate.succeeded
 
 
@@ -165,6 +218,143 @@ class CandidateReplayMemberResult:
         return self.baseline.succeeded and self.candidate.succeeded
 
 
+@dataclass(frozen=True)
+class NormalizedReplayMember:
+    case: EvalCase
+    request: CandidateReplayRequest
+    baseline: ReplayVariantResult
+    candidate: ReplayVariantResult
+
+    @property
+    def case_id(self) -> str:
+        return self.case.case_id
+
+    @property
+    def succeeded(self) -> bool:
+        return self.baseline.succeeded and self.candidate.succeeded
+
+
+@dataclass(frozen=True)
+class NormalizedReplayMembers:
+    members: tuple[NormalizedReplayMember, ...]
+    failure_events: tuple[ReplayFailureEvent, ...] = ()
+    missing_case_ids: tuple[str, ...] = ()
+    duplicate_case_ids: tuple[str, ...] = ()
+    unexpected_case_ids: tuple[str, ...] = ()
+    request_mismatch_case_ids: tuple[str, ...] = ()
+
+    @property
+    def valid(self) -> bool:
+        return not self.failure_events
+
+
+def _normalization_failure(
+    *, code: str, summary: str, diagnostics: Mapping[str, Any]
+) -> ReplayFailureEvent:
+    return ReplayFailureEvent(
+        code=code,
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.RESULT_NORMALIZATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=False,
+        category="replay_result_contract",
+        summary=summary,
+        diagnostics=diagnostics,
+    )
+
+
+def normalize_replay_members(
+    *,
+    dataset: SelfEvolveDataset,
+    replay_result: CandidateReplayResult,
+) -> NormalizedReplayMembers:
+    """Normalize legacy/new results to dataset-ordered member records.
+
+    Structural backend violations become typed framework events and therefore
+    fail closed without silently changing cardinality.
+    """
+
+    replayable_cases = tuple(
+        case for case in dataset.cases if _is_replayable_user_task_case(case)
+    )
+    cases_by_id = {case.case_id: case for case in replayable_cases}
+    events: list[ReplayFailureEvent] = []
+    missing: list[str] = []
+    duplicates: list[str] = []
+    unexpected: list[str] = []
+    mismatches: list[str] = []
+    raw_members = replay_result.member_results
+    if raw_members is None:
+        if len(replayable_cases) == 1:
+            only_case = replayable_cases[0]
+            raw_members = (
+                CandidateReplayMemberResult(
+                    case_id=only_case.case_id,
+                    request=replay_result.request,
+                    baseline=replay_result.baseline,
+                    candidate=replay_result.candidate,
+                ),
+            )
+        else:
+            raw_members = ()
+
+    members_by_id: dict[str, CandidateReplayMemberResult] = {}
+    for member in raw_members:
+        if member.case_id not in cases_by_id:
+            unexpected.append(member.case_id)
+            continue
+        if member.case_id in members_by_id:
+            duplicates.append(member.case_id)
+            continue
+        if member.request.task_id != member.case_id:
+            mismatches.append(member.case_id)
+            continue
+        members_by_id[member.case_id] = member
+    normalized: list[NormalizedReplayMember] = []
+    for case in replayable_cases:
+        member = members_by_id.get(case.case_id)
+        if member is None:
+            missing.append(case.case_id)
+            continue
+        normalized.append(
+            NormalizedReplayMember(
+                case=case,
+                request=member.request,
+                baseline=member.baseline,
+                candidate=member.candidate,
+            )
+        )
+    anomaly_groups = (
+        ("missing_replay_member", missing, "backend omitted dataset replay members"),
+        ("duplicate_replay_member", duplicates, "backend returned duplicate replay members"),
+        ("unexpected_replay_member", unexpected, "backend returned members outside the dataset"),
+        ("replay_request_member_mismatch", mismatches, "member request task did not match its case"),
+    )
+    for code, case_ids, summary in anomaly_groups:
+        if case_ids:
+            events.append(
+                _normalization_failure(
+                    code=code,
+                    summary=summary,
+                    diagnostics={"case_ids": tuple(case_ids), "count": len(case_ids)},
+                )
+            )
+    return NormalizedReplayMembers(
+        members=tuple(normalized),
+        failure_events=tuple(events),
+        missing_case_ids=tuple(missing),
+        duplicate_case_ids=tuple(duplicates),
+        unexpected_case_ids=tuple(unexpected),
+        request_mismatch_case_ids=tuple(mismatches),
+    )
+
+
+def iter_replay_members(
+    *, dataset: SelfEvolveDataset, replay_result: CandidateReplayResult
+) -> tuple[NormalizedReplayMember, ...]:
+    return normalize_replay_members(dataset=dataset, replay_result=replay_result).members
+
+
 def candidate_replay_is_comparable(
     *,
     dataset: SelfEvolveDataset,
@@ -172,6 +362,7 @@ def candidate_replay_is_comparable(
     require_adapted: bool = False,
 ) -> bool:
     if not _candidate_replay_provenance_is_comparable(
+        dataset,
         replay_result,
         require_adapted=require_adapted,
     ):
@@ -187,6 +378,7 @@ def candidate_replay_is_comparable(
 
 
 def _candidate_replay_provenance_is_comparable(
+    dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
     *,
     require_adapted: bool,
@@ -198,19 +390,13 @@ def _candidate_replay_provenance_is_comparable(
         and not replay_result.request.replay_adaptation.ready
     ):
         return False
-    if replay_result.member_results:
-        pairs = tuple(
-            (member.request, member.baseline, member.candidate)
-            for member in replay_result.member_results
-        )
-    else:
-        pairs = (
-            (
-                replay_result.request,
-                replay_result.baseline,
-                replay_result.candidate,
-            ),
-        )
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    if not normalized.valid:
+        return False
+    pairs = tuple(
+        (member.request, member.baseline, member.candidate)
+        for member in normalized.members
+    )
     for request, baseline, candidate in pairs:
         expected = {
             "adaptation_fingerprint": request.adaptation_fingerprint,
@@ -320,64 +506,99 @@ def candidate_replay_pair_coverage(
     dataset: SelfEvolveDataset,
     replay_result: CandidateReplayResult,
 ) -> dict[str, int]:
-    replayable_cases = tuple(
-        case for case in dataset.cases if _is_replayable_user_task_case(case)
-    )
-    cases_by_id = {case.case_id: case for case in replayable_cases}
-    pairs: list[tuple[EvalCase | None, ReplayVariantResult, ReplayVariantResult]]
-    if replay_result.member_results:
-        pairs = [
-            (
-                cases_by_id.get(member.case_id),
-                member.baseline,
-                member.candidate,
-            )
-            for member in replay_result.member_results
-        ]
-        missing_member_count = max(0, len(cases_by_id) - len(pairs))
-    else:
-        case = cases_by_id.get(replay_result.request.task_id)
-        if case is None and len(replayable_cases) == 1:
-            case = replayable_cases[0]
-        pairs = [(case, replay_result.baseline, replay_result.candidate)]
-        missing_member_count = 0
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
 
     strict_pair_count = 0
     task_failure_pair_count = 0
     infrastructure_failure_count = 0
     candidate_failure_count = 0
-    incomparable_pair_count = missing_member_count
-    for case, baseline, candidate in pairs:
-        if case is None or not candidate.succeeded:
+    baseline_execution_failure_count = 0
+    candidate_execution_failure_count = 0
+    blocked_variant_count = 0
+    blocked_member_count = 0
+    not_run_variant_count = 0
+    owner_counts = {owner: 0 for owner in FailureOwner}
+    incomparable_pair_count = (
+        len(normalized.missing_case_ids)
+        + len(normalized.duplicate_case_ids)
+        + len(normalized.unexpected_case_ids)
+        + len(normalized.request_mismatch_case_ids)
+    )
+    for member in normalized.members:
+        case = member.case
+        baseline = member.baseline
+        candidate = member.candidate
+        member_blocked = False
+        for variant in (baseline, candidate):
+            if variant.status is ReplayExecutionStatus.FAILED and variant.failure is not None:
+                owner_counts[variant.failure.owner] += 1
+            if variant.status is ReplayExecutionStatus.BLOCKED:
+                blocked_variant_count += 1
+                member_blocked = True
+            elif variant.status is ReplayExecutionStatus.NOT_RUN:
+                not_run_variant_count += 1
+        if member_blocked:
+            blocked_member_count += 1
+        if baseline.status is ReplayExecutionStatus.FAILED:
+            baseline_execution_failure_count += 1
+            if baseline.failure is not None and baseline.failure.owner in {
+                FailureOwner.INFRASTRUCTURE,
+                FailureOwner.FRAMEWORK,
+            }:
+                infrastructure_failure_count += 1
+        if candidate.status is ReplayExecutionStatus.FAILED:
+            candidate_execution_failure_count += 1
+            candidate_failure_count += 1
+        if not candidate.succeeded:
             incomparable_pair_count += 1
-            if not candidate.succeeded:
-                candidate_failure_count += 1
             continue
         if baseline.succeeded:
             strict_pair_count += 1
             continue
-        if (
-            _replay_failure_outcome(baseline.failure) == "task_failure"
-            or _is_task_rollout_capability_failure(baseline.failure)
+        if baseline.failure is not None and (
+            baseline.failure.owner is FailureOwner.TASK
+            or (
+                baseline.failure.owner is FailureOwner.CANDIDATE
+                and baseline.failure.stage is FailureStage.TASK_ROLLOUT
+            )
         ):
             trajectory, _ = _baseline_comparison_trajectory(case, baseline)
             if trajectory:
                 task_failure_pair_count += 1
                 continue
-        else:
-            infrastructure_failure_count += 1
         incomparable_pair_count += 1
 
-    member_count = len(pairs) + missing_member_count
+    member_count = len(normalized.members) + len(normalized.missing_case_ids)
     comparable_pair_count = strict_pair_count + task_failure_pair_count
     return {
         "member_count": member_count,
+        "returned_member_count": len(normalized.members),
         "strict_pair_count": strict_pair_count,
         "task_failure_pair_count": task_failure_pair_count,
         "comparable_pair_count": comparable_pair_count,
         "incomparable_pair_count": incomparable_pair_count,
         "infrastructure_failure_count": infrastructure_failure_count,
+        # Compatibility: only candidate variants whose execution actually
+        # started and failed are counted. Blocked candidates are excluded.
         "candidate_failure_count": candidate_failure_count,
+        "baseline_execution_failure_count": baseline_execution_failure_count,
+        "candidate_execution_failure_count": candidate_execution_failure_count,
+        "candidate_executed_count": sum(
+            1 for member in normalized.members if member.candidate.executed
+        ),
+        "blocked_variant_count": blocked_variant_count,
+        "blocked_member_count": blocked_member_count,
+        "not_run_variant_count": not_run_variant_count,
+        "missing_member_count": len(normalized.missing_case_ids),
+        "duplicate_member_count": len(normalized.duplicate_case_ids),
+        "unexpected_member_count": len(normalized.unexpected_case_ids),
+        "request_mismatch_count": len(normalized.request_mismatch_case_ids),
+        "normalization_failure_count": len(normalized.failure_events),
+        "candidate_owned_failure_count": owner_counts[FailureOwner.CANDIDATE],
+        "task_owned_failure_count": owner_counts[FailureOwner.TASK],
+        "infrastructure_owned_failure_count": owner_counts[FailureOwner.INFRASTRUCTURE],
+        "framework_owned_failure_count": owner_counts[FailureOwner.FRAMEWORK]
+        + len(normalized.failure_events),
     }
 
 
@@ -395,9 +616,6 @@ def _replay_failure_outcome(failure: Mapping[str, Any] | None) -> str:
         return str(explicit_outcome)
     failure_type = failure.get("type")
     if failure_type in _COMPARABLE_TASK_FAILURE_TYPES:
-        return "task_failure"
-    reason = failure.get("reason")
-    if reason in _COMPARABLE_TASK_FAILURE_REASONS:
         return "task_failure"
     nested = failure.get("failures")
     if isinstance(nested, list) and nested:
@@ -422,48 +640,100 @@ def _is_task_rollout_capability_failure(
 
 
 def _baseline_failure_blocks_candidate(
-    failure: Mapping[str, Any] | None,
+    failure: ReplayFailureEvent | Mapping[str, Any] | None,
 ) -> bool:
-    outcome = _replay_failure_outcome(failure)
-    return outcome == "infrastructure_failure" or (
-        outcome == "candidate_failure"
-        and not _is_task_rollout_capability_failure(failure)
+    if failure is None:
+        return True
+    event = (
+        failure
+        if isinstance(failure, ReplayFailureEvent)
+        else ReplayFailureEvent.from_legacy_mapping(failure)
+    )
+    return not (
+        event.owner is FailureOwner.TASK
+        or (
+            event.owner is FailureOwner.CANDIDATE
+            and event.stage is FailureStage.TASK_ROLLOUT
+        )
+        or (
+            event.owner is FailureOwner.FRAMEWORK
+            and event.scope is FailureScope.MEMBER
+            and event.stage is FailureStage.EVALUATION
+        )
     )
 
 
-def _baseline_preflight_skipped_candidate_result(
-    candidate_id: str,
-) -> ReplayVariantResult:
-    return ReplayVariantResult(
-        variant_id=candidate_id,
-        status="failed",
-        trajectory=[],
-        failure={
-            "reason": "baseline_preflight_failed",
-            "detail": (
-                "candidate replay skipped because baseline infrastructure replay failed"
-            ),
-        },
-    )
-
-
-def _baseline_preflight_aborted_result(
+def _blocked_variant_result(
+    variant_id: str,
     *,
-    blocked_by_case_id: str,
+    blocked_by: ReplayFailureEvent,
 ) -> ReplayVariantResult:
     return ReplayVariantResult(
-        variant_id="baseline",
-        status="failed",
+        variant_id=variant_id,
+        status=ReplayExecutionStatus.BLOCKED,
         trajectory=[],
-        failure={
-            "outcome": "infrastructure_failure",
-            "reason": "baseline_preflight_aborted",
-            "detail": (
-                "baseline replay skipped because shared replay infrastructure "
-                f"failed for {blocked_by_case_id}"
-            ),
-            "blocked_by_case_id": blocked_by_case_id,
-        },
+        blocked_by=(blocked_by,),
+    )
+
+
+def _execution_failure_event(
+    failure: Mapping[str, Any] | ReplayFailureEvent | None,
+    *,
+    default_stage: FailureStage,
+    service_preflight: bool = False,
+) -> ReplayFailureEvent:
+    if isinstance(failure, ReplayFailureEvent):
+        return failure
+    payload = dict(failure or {})
+    legacy = ReplayFailureEvent.from_legacy_mapping(payload)
+    owner = legacy.owner
+    raw_stage = str(payload.get("failure_stage") or "")
+    failure_type = str(payload.get("type") or "")
+    if service_preflight:
+        stage = FailureStage.CAPABILITY_PREFLIGHT
+    elif raw_stage == FailureStage.TASK_ROLLOUT.value:
+        stage = FailureStage.TASK_ROLLOUT
+    elif legacy.owner is FailureOwner.CANDIDATE and failure_type in {
+        "ReplayServiceProtocolError",
+        "ReplayCapabilityError",
+        "ReplayCapabilityPreflightError",
+    }:
+        stage = FailureStage.CAPABILITY_PREFLIGHT
+    elif raw_stage == FailureStage.EVALUATION.value:
+        stage = FailureStage.EVALUATION
+    else:
+        stage = default_stage
+    if owner is FailureOwner.CANDIDATE:
+        scope = (
+            FailureScope.MEMBER
+            if stage is FailureStage.TASK_ROLLOUT
+            else FailureScope.CANDIDATE
+        )
+    elif owner is FailureOwner.TASK:
+        scope = FailureScope.MEMBER
+    elif owner is FailureOwner.INFRASTRUCTURE:
+        scope = FailureScope.SHARED_RUN
+    elif stage is FailureStage.EVALUATION:
+        scope = FailureScope.MEMBER
+    else:
+        # Unknown current failures fail the candidate closed but cannot acquire
+        # run-wide stopping authority from prose alone.
+        scope = FailureScope.CANDIDATE
+    code = legacy.code
+    if code == "legacy_unclassified_failure":
+        code = "unclassified_replay_execution_failure"
+    return ReplayFailureEvent(
+        event_id=f"replay-event-{uuid.uuid4().hex}",
+        code=code,
+        owner=owner,
+        stage=stage,
+        scope=scope,
+        repairable=legacy.repairable,
+        category=legacy.category,
+        summary=legacy.summary,
+        diagnostics=legacy.diagnostics,
+        source=FailureEventSource.NATIVE,
+        _compatibility=payload,
     )
 
 
@@ -477,7 +747,18 @@ def _baseline_comparison_trajectory(
             "replay" if baseline.succeeded else "failed_replay"
         )
     if (
-        _is_task_rollout_capability_failure(baseline.failure)
+        (
+            isinstance(baseline.failure, ReplayFailureEvent)
+            and (
+                baseline.failure.owner is FailureOwner.TASK
+                or (
+                    baseline.failure.owner is FailureOwner.CANDIDATE
+                    and baseline.failure.stage is FailureStage.TASK_ROLLOUT
+                )
+            )
+            and _has_replay_execution_evidence(baseline)
+        )
+        or _is_task_rollout_capability_failure(baseline.failure)
         or (
             _replay_failure_outcome(baseline.failure) == "task_failure"
             and _has_replay_execution_evidence(baseline)
@@ -1193,124 +1474,143 @@ class AWorldCliCandidateReplayBackend:
             f"candidate_repetitions={request.candidate_repetitions}"
         )
 
-        if len(replay_cases) == 1 and len(dataset.cases) == 1:
-            member = await self._replay_member(
+        members_root = replay_dir / "members"
+        member_items: list[CandidateReplayMemberResult] = []
+        member_baseline_repetitions = _distributed_member_repetitions(
+            request.baseline_repetitions,
+            member_count=len(replay_cases),
+        )
+        member_candidate_repetitions = _distributed_member_repetitions(
+            request.candidate_repetitions,
+            member_count=len(replay_cases),
+        )
+        candidate_blocking_event: ReplayFailureEvent | None = None
+        prepared_members: list[tuple[EvalCase, CandidateReplayRequest, Path]] = []
+        for case in replay_cases:
+            adapted_task_input = _adapted_task_input(request, case)
+            member_request = replace(
                 request,
-                candidate=candidate,
-                replay_dir=replay_dir,
+                task_id=case.case_id,
+                task_input=adapted_task_input,
+                task_input_fingerprint=_adapted_task_input_fingerprint(request, case),
+                baseline_replay_dir=_member_baseline_replay_dir(
+                    request.baseline_replay_dir,
+                    case.case_id,
+                ),
+                baseline_repetitions=member_baseline_repetitions,
+                candidate_repetitions=member_candidate_repetitions,
             )
-            baseline = member.baseline
-            candidate_result = member.candidate
-            member_results: tuple[CandidateReplayMemberResult, ...] = ()
-        else:
-            members_root = replay_dir / "members"
-            member_items: list[CandidateReplayMemberResult] = []
-            prepared_members: list[
-                tuple[CandidateReplayRequest, Path, ReplayVariantResult]
-            ] = []
-            member_baseline_repetitions = _distributed_member_repetitions(
-                request.baseline_repetitions,
-                member_count=len(replay_cases),
-            )
-            member_candidate_repetitions = _distributed_member_repetitions(
-                request.candidate_repetitions,
-                member_count=len(replay_cases),
-            )
-            baseline_infrastructure_failure_case_id: str | None = None
-            for case in replay_cases:
-                adapted_task_input = _adapted_task_input(request, case)
-                member_request = replace(
-                    request,
-                    task_id=case.case_id,
-                    task_input=adapted_task_input,
-                    task_input_fingerprint=_adapted_task_input_fingerprint(
-                        request,
-                        case,
-                    ),
-                    baseline_replay_dir=_member_baseline_replay_dir(
-                        request.baseline_replay_dir,
-                        case.case_id,
-                    ),
-                    baseline_repetitions=member_baseline_repetitions,
-                    candidate_repetitions=member_candidate_repetitions,
-                )
-                member_dir = members_root / _member_artifact_name(case.case_id)
-                member_dir.mkdir(parents=True, exist_ok=True)
-                _write_json(member_dir / "request.json", member_request)
-                if baseline_infrastructure_failure_case_id is not None:
-                    baseline = _baseline_preflight_aborted_result(
-                        blocked_by_case_id=(
-                            baseline_infrastructure_failure_case_id
-                        ),
-                    )
-                else:
-                    baseline = await self._load_or_run_baseline(
-                        member_request,
-                        candidate=candidate,
-                        replay_dir=member_dir,
-                    )
-                    if (
-                        not baseline.succeeded
-                        and _replay_failure_outcome(baseline.failure)
-                        == "infrastructure_failure"
-                    ):
-                        baseline_infrastructure_failure_case_id = case.case_id
-                prepared_members.append((member_request, member_dir, baseline))
+            member_dir = members_root / _member_artifact_name(case.case_id)
+            member_dir.mkdir(parents=True, exist_ok=True)
+            _write_json(member_dir / "request.json", member_request)
+            prepared_members.append((case, member_request, member_dir))
 
-            baseline_preflight_failed = any(
-                not baseline.succeeded
-                and _replay_failure_outcome(baseline.failure)
-                == "infrastructure_failure"
-                for _, _, baseline in prepared_members
-            )
-            for member_request, member_dir, baseline in prepared_members:
-                if baseline_preflight_failed:
-                    candidate_result = _baseline_preflight_skipped_candidate_result(
-                        candidate.candidate_id
-                    )
-                else:
-                    candidate_result = await self._run_repetitions(
-                        member_request,
-                        base_variant_id=candidate.candidate_id,
-                        skill_root=member_request.overlay_skill_root,
-                        artifact_dir=member_dir / _safe_path(candidate.candidate_id),
-                        repetitions=member_request.candidate_repetitions,
-                    )
-                member_items.append(
-                    CandidateReplayMemberResult(
-                        case_id=member_request.task_id,
-                        request=member_request,
-                        baseline=baseline,
-                        candidate=candidate_result,
-                    )
+        baselines: list[ReplayVariantResult] = []
+        for _, member_request, member_dir in prepared_members:
+            if candidate_blocking_event is not None:
+                baseline = _blocked_variant_result(
+                    "baseline", blocked_by=candidate_blocking_event
                 )
-            member_results = tuple(member_items)
-            _write_json(
-                members_root / "manifest.json",
-                {
-                    "schema_version": "aworld.self_evolve.member_replay.v1",
-                    "members": [
-                        {
-                            "case_id": member.case_id,
-                            "path": _member_artifact_name(member.case_id),
-                            "succeeded": member.succeeded,
-                        }
-                        for member in member_results
-                    ],
-                },
+                _persist_variant_lifecycle(member_dir / "baseline", baseline)
+            else:
+                baseline = await self._load_or_run_baseline(
+                    member_request,
+                    candidate=candidate,
+                    replay_dir=member_dir,
+                )
+                if (
+                    baseline.status is ReplayExecutionStatus.FAILED
+                    and _baseline_failure_blocks_candidate(baseline.failure)
+                ):
+                    assert baseline.failure is not None
+                    if baseline.failure.scope in {
+                        FailureScope.CANDIDATE,
+                        FailureScope.SHARED_RUN,
+                    }:
+                        candidate_blocking_event = baseline.failure
+            baselines.append(baseline)
+
+        for (case, member_request, member_dir), baseline in zip(
+            prepared_members, baselines, strict=True
+        ):
+            blocking_event = candidate_blocking_event
+            if (
+                baseline.status is ReplayExecutionStatus.FAILED
+                and _baseline_failure_blocks_candidate(baseline.failure)
+            ):
+                assert baseline.failure is not None
+                blocking_event = baseline.failure
+            if blocking_event is not None:
+                candidate_result = _blocked_variant_result(
+                    candidate.candidate_id, blocked_by=blocking_event
+                )
+                _persist_variant_lifecycle(
+                    member_dir / _safe_path(candidate.candidate_id), candidate_result
+                )
+            else:
+                candidate_result = await self._run_repetitions(
+                    member_request,
+                    base_variant_id=candidate.candidate_id,
+                    skill_root=member_request.overlay_skill_root,
+                    artifact_dir=member_dir / _safe_path(candidate.candidate_id),
+                    repetitions=member_request.candidate_repetitions,
+                )
+                if (
+                    candidate_result.status is ReplayExecutionStatus.FAILED
+                    and candidate_result.failure is not None
+                    and candidate_result.failure.scope in {
+                        FailureScope.CANDIDATE,
+                        FailureScope.SHARED_RUN,
+                    }
+                    and candidate_result.failure.stage
+                    is not FailureStage.TASK_ROLLOUT
+                ):
+                    candidate_blocking_event = candidate_result.failure
+            member_items.append(
+                CandidateReplayMemberResult(
+                    case_id=case.case_id,
+                    request=member_request,
+                    baseline=baseline,
+                    candidate=candidate_result,
+                )
             )
-            baseline = _aggregate_member_variant_results(
-                base_variant_id="baseline",
-                members=member_results,
-                select=lambda member: member.baseline,
-                artifact_dir=replay_dir / "baseline",
-            )
-            candidate_result = _aggregate_member_variant_results(
-                base_variant_id=candidate.candidate_id,
-                members=member_results,
-                select=lambda member: member.candidate,
-                artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
-            )
+        member_results = tuple(member_items)
+        _write_json(
+            members_root / "manifest.json",
+            {
+                "schema_version": "aworld.self_evolve.member_replay.v2",
+                "members": [
+                    {
+                        "case_id": member.case_id,
+                        "path": _member_artifact_name(member.case_id),
+                        "baseline_status": member.baseline.status,
+                        "candidate_status": member.candidate.status,
+                        "blocked_by": list(
+                            dict.fromkeys(
+                                event.event_id
+                                for event in (
+                                    *member.baseline.blocked_by,
+                                    *member.candidate.blocked_by,
+                                )
+                            )
+                        ),
+                    }
+                    for member in member_results
+                ],
+            },
+        )
+        baseline = _aggregate_member_variant_results(
+            base_variant_id="baseline",
+            members=member_results,
+            select=lambda member: member.baseline,
+            artifact_dir=replay_dir / "baseline",
+        )
+        candidate_result = _aggregate_member_variant_results(
+            base_variant_id=candidate.candidate_id,
+            members=member_results,
+            select=lambda member: member.candidate,
+            artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
+        )
         logger.info(
             "self_evolve.replay.end "
             f"run_id={request.run_id} task_id={request.task_id} "
@@ -1322,39 +1622,6 @@ class AWorldCliCandidateReplayBackend:
             baseline=baseline,
             candidate=candidate_result,
             member_results=member_results,
-        )
-
-    async def _replay_member(
-        self,
-        request: CandidateReplayRequest,
-        *,
-        candidate: CandidateVariant,
-        replay_dir: Path,
-    ) -> CandidateReplayMemberResult:
-        baseline = await self._load_or_run_baseline(
-            request,
-            candidate=candidate,
-            replay_dir=replay_dir,
-        )
-        if not baseline.succeeded and _baseline_failure_blocks_candidate(
-            baseline.failure
-        ):
-            candidate_result = _baseline_preflight_skipped_candidate_result(
-                candidate.candidate_id
-            )
-        else:
-            candidate_result = await self._run_repetitions(
-                request,
-                base_variant_id=candidate.candidate_id,
-                skill_root=request.overlay_skill_root,
-                artifact_dir=replay_dir / _safe_path(candidate.candidate_id),
-                repetitions=request.candidate_repetitions,
-            )
-        return CandidateReplayMemberResult(
-            case_id=request.task_id,
-            request=request,
-            baseline=baseline,
-            candidate=candidate_result,
         )
 
     async def _load_or_run_baseline(
@@ -1785,6 +2052,9 @@ class AWorldCliCandidateReplayBackend:
         if status == "succeeded" and not execution_result.trajectory:
             status = "failed"
             failure = {
+                "code": "trajectory_capture_unavailable",
+                "outcome": "framework_failure",
+                "failure_stage": "evaluation",
                 "reason": "trajectory_capture_unavailable",
                 "detail": "replay executor succeeded but did not return trajectory evidence",
             }
@@ -1799,18 +2069,35 @@ class AWorldCliCandidateReplayBackend:
         stderr_path.write_text(execution_result.stderr, encoding="utf-8")
         _write_json(artifact_dir / "metrics.json", metrics)
         _write_json(artifact_dir / "trajectory.json", execution_result.trajectory)
-        if failure is not None:
-            _write_json(artifact_dir / "failure.json", failure)
-
-        return ReplayVariantResult(
+        if status not in {
+            ReplayExecutionStatus.SUCCEEDED.value,
+            ReplayExecutionStatus.FAILED.value,
+        }:
+            status = ReplayExecutionStatus.FAILED.value
+            failure = {
+                "type": "ReplayExecutionContractError",
+                "reason": "replay executor returned an unsupported execution status",
+            }
+        failure_event = (
+            _execution_failure_event(
+                failure,
+                default_stage=FailureStage.TASK_ROLLOUT,
+                service_preflight=service_failure is not None,
+            )
+            if status == ReplayExecutionStatus.FAILED.value
+            else None
+        )
+        result = ReplayVariantResult(
             variant_id=variant_id,
             status=status,
             trajectory=execution_result.trajectory,
             metrics=metrics,
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
-            failure=failure,
+            failure=failure_event,
         )
+        _persist_variant_lifecycle(artifact_dir, result)
+        return result
 
 
 def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
@@ -5390,6 +5677,9 @@ def _evidence_quality_failure(metrics: Mapping[str, Any]) -> dict[str, Any] | No
     if not isinstance(signals, list):
         signals = []
     return {
+        "code": "evidence_quality_failed",
+        "outcome": "task_failure",
+        "failure_stage": "evaluation",
         "reason": "evidence_quality_failed",
         "detail": "replay produced compacted, truncated, or otherwise unusable evidence",
         "evidence_compacted": compacted,
@@ -5441,7 +5731,10 @@ def _artifact_manifest_trajectory(
 
 def _is_evidence_quality_failure(result: ReplayVariantResult) -> bool:
     failure = result.failure
-    return isinstance(failure, Mapping) and failure.get("reason") == "evidence_quality_failed"
+    return (
+        isinstance(failure, ReplayFailureEvent)
+        and failure.code == "evidence_quality_failed"
+    )
 
 
 def _merge_replay_attempt_metrics(
@@ -5453,7 +5746,7 @@ def _merge_replay_attempt_metrics(
     if len(attempts) == 1:
         return result
     retry_failures = [
-        attempt.failure
+        attempt.failure.compatibility_dict()
         for attempt in attempts[:-1]
         if attempt.failure is not None
     ]
@@ -5503,6 +5796,45 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
+def _persist_variant_lifecycle(
+    artifact_dir: Path,
+    result: ReplayVariantResult,
+) -> None:
+    """Persist v2 lifecycle plus the legacy inspection files additively."""
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    for source_path, filename in (
+        (result.stdout_path, "stdout.txt"),
+        (result.stderr_path, "stderr.txt"),
+    ):
+        if source_path is None:
+            continue
+        source = Path(source_path)
+        destination = artifact_dir / filename
+        try:
+            if source.exists() and source.resolve() != destination.resolve():
+                shutil.copyfile(source, destination)
+        except OSError:
+            pass
+    _write_json(artifact_dir / "trajectory.json", result.trajectory)
+    _write_json(artifact_dir / "metrics.json", result.metrics)
+    failure_path = artifact_dir / "failure.json"
+    if result.failure is not None:
+        _write_json(failure_path, result.failure.compatibility_dict())
+    elif failure_path.exists():
+        failure_path.unlink()
+    _write_json(
+        artifact_dir / "lifecycle.json",
+        {
+            "schema_version": "aworld.self_evolve.replay_lifecycle.v2",
+            "variant_id": result.variant_id,
+            "status": result.status,
+            "failure": result.failure.to_dict() if result.failure is not None else None,
+            "blocked_by": [event.to_dict() for event in result.blocked_by],
+        },
+    )
+
+
 def _safe_path(value: str) -> str:
     safe = "".join(
         character
@@ -5529,7 +5861,11 @@ def _aggregate_variant_results(
         raise ValueError("cannot aggregate empty replay results")
     if len(results) == 1:
         result = results[0]
-        failures = [result.failure] if result.failure is not None else []
+        failures = (
+            [result.failure.compatibility_dict()]
+            if result.failure is not None
+            else []
+        )
         metrics = {
             **dict(result.metrics),
             "repetition_count": 1,
@@ -5538,7 +5874,7 @@ def _aggregate_variant_results(
         }
         if failures:
             metrics["repetition_failures"] = failures
-        return ReplayVariantResult(
+        aggregated = ReplayVariantResult(
             variant_id=base_variant_id,
             status=result.status,
             trajectory=result.trajectory,
@@ -5546,11 +5882,21 @@ def _aggregate_variant_results(
             stdout_path=result.stdout_path,
             stderr_path=result.stderr_path,
             failure=result.failure,
+            blocked_by=result.blocked_by,
         )
+        if persist:
+            _persist_variant_lifecycle(artifact_dir, aggregated)
+        return aggregated
 
     successful = [result for result in results if result.succeeded]
-    failed = [result for result in results if not result.succeeded]
-    status = "succeeded" if successful else "failed"
+    failed = [
+        result for result in results if result.status is ReplayExecutionStatus.FAILED
+    ]
+    status = (
+        ReplayExecutionStatus.SUCCEEDED
+        if successful
+        else ReplayExecutionStatus.FAILED
+    )
     numeric_metrics: dict[str, list[float]] = {}
     evidence_compaction_signals: list[str] = []
     evidence_compacted_values: list[bool] = []
@@ -5585,7 +5931,9 @@ def _aggregate_variant_results(
         "failed_repetition_count": len(failed),
     }
     repetition_failures = [
-        result.failure for result in failed if result.failure is not None
+        result.failure.compatibility_dict()
+        for result in failed
+        if result.failure is not None
     ]
     if repetition_failures:
         metrics["repetition_failures"] = repetition_failures
@@ -5619,21 +5967,34 @@ def _aggregate_variant_results(
             metrics[f"{key}_values"] = values
 
     selected = successful[-1] if successful else results[-1]
-    failure = None
-    if status != "succeeded":
-        failure = {
+    failure: ReplayFailureEvent | None = None
+    if status is ReplayExecutionStatus.FAILED:
+        legacy_failure = {
             "reason": "one or more replay repetitions failed",
             "failures": [
-                result.failure
+                result.failure.compatibility_dict()
                 for result in results
                 if result.failure is not None
             ],
         }
-        if persist:
-            _write_json(artifact_dir / "failure.json", failure)
+        causal = causal_failure_events(
+            tuple(result.failure for result in failed if result.failure is not None)
+        )
+        exemplar = causal[0]
+        failure = ReplayFailureEvent(
+            code="replay_repetition_failure",
+            owner=exemplar.owner,
+            stage=exemplar.stage,
+            scope=exemplar.scope,
+            repairable=any(event.repairable for event in causal),
+            category="replay_repetition",
+            summary="one or more replay repetitions failed",
+            causes=tuple(event.event_id for event in causal),
+            _compatibility=legacy_failure,
+        )
     if persist:
         _write_json(artifact_dir / "aggregate_metrics.json", metrics)
-    return ReplayVariantResult(
+    aggregated = ReplayVariantResult(
         variant_id=base_variant_id,
         status=status,
         trajectory=selected.trajectory,
@@ -5643,6 +6004,9 @@ def _aggregate_variant_results(
         failure=failure,
         repetition_results=tuple(results),
     )
+    if persist:
+        _persist_variant_lifecycle(artifact_dir, aggregated)
+    return aggregated
 
 
 def _aggregate_member_variant_results(
@@ -5654,6 +6018,9 @@ def _aggregate_member_variant_results(
     persist: bool = True,
 ) -> ReplayVariantResult:
     member_variants = [select(member) for member in members]
+    if not member_variants:
+        raise ValueError("cannot aggregate an empty replay member set")
+    member_variant_pairs = tuple(zip(members, member_variants))
     repetition_results = [
         repetition
         for variant in member_variants
@@ -5661,45 +6028,141 @@ def _aggregate_member_variant_results(
             variant.repetition_results if variant.repetition_results else (variant,)
         )
     ]
-    aggregated = _aggregate_variant_results(
-        base_variant_id=base_variant_id,
-        results=repetition_results,
-        artifact_dir=artifact_dir,
-        persist=persist,
-    )
     failed_members = [
         {
             "case_id": member.case_id,
-            "failure": select(member).failure,
+            "failure": (
+                variant.failure.compatibility_dict()
+                if variant.failure is not None
+                else None
+            ),
         }
-        for member in members
-        if not select(member).succeeded
+        for member, variant in member_variant_pairs
+        if variant.status is ReplayExecutionStatus.FAILED
     ]
-    all_members_succeeded = not failed_members
+    blocked_members = [
+        (member, variant)
+        for member, variant in member_variant_pairs
+        if variant.status is ReplayExecutionStatus.BLOCKED
+    ]
+    not_run_members = [
+        (member, variant)
+        for member, variant in member_variant_pairs
+        if variant.status is ReplayExecutionStatus.NOT_RUN
+    ]
+    successful_members = [
+        (member, variant)
+        for member, variant in member_variant_pairs
+        if variant.succeeded
+    ]
+    selected_variant = (
+        successful_members[-1][1]
+        if successful_members
+        else member_variants[-1]
+    )
+    generated_metric_keys = {
+        "member_count",
+        "successful_member_count",
+        "failed_member_count",
+        "blocked_member_count",
+        "not_run_member_count",
+        "repetition_count",
+        "successful_repetition_count",
+        "failed_repetition_count",
+        "member_failures",
+    }
+    common_metric_keys = set(member_variants[0].metrics)
+    for variant in member_variants[1:]:
+        common_metric_keys.intersection_update(variant.metrics)
+    common_metrics: dict[str, Any] = {}
+    for key in common_metric_keys - generated_metric_keys:
+        values = [variant.metrics[key] for variant in member_variants]
+        if all(value == values[0] for value in values[1:]):
+            common_metrics[key] = values[0]
     metrics = {
-        **dict(aggregated.metrics),
+        **common_metrics,
         "member_count": len(members),
-        "successful_member_count": len(members) - len(failed_members),
+        "successful_member_count": len(successful_members),
         "failed_member_count": len(failed_members),
+        "blocked_member_count": len(blocked_members),
+        "not_run_member_count": len(not_run_members),
+        "repetition_count": sum(
+            int(variant.metrics.get("repetition_count", 0))
+            for _, variant in member_variant_pairs
+            if variant.executed
+        ),
+        "successful_repetition_count": sum(
+            int(variant.metrics.get("successful_repetition_count", 0))
+            for _, variant in member_variant_pairs
+            if variant.executed
+        ),
+        "failed_repetition_count": sum(
+            int(variant.metrics.get("failed_repetition_count", 0))
+            for _, variant in member_variant_pairs
+            if variant.executed
+        ),
     }
     if failed_members:
         metrics["member_failures"] = failed_members
-    if persist:
-        _write_json(artifact_dir / "aggregate_metrics.json", metrics)
-    failure = None
-    if not all_members_succeeded:
-        failure = {
-            "reason": "one or more trajectory-set members failed replay",
-            "members": failed_members,
-        }
-        if persist:
-            _write_json(artifact_dir / "failure.json", failure)
-    return replace(
-        aggregated,
-        status="succeeded" if all_members_succeeded else "failed",
+    failure: ReplayFailureEvent | None = None
+    blocked_by: tuple[ReplayFailureEvent, ...] = ()
+    if failed_members:
+        causal = causal_failure_events(
+            tuple(
+                variant.failure
+                for _, variant in member_variant_pairs
+                if variant.failure is not None
+            )
+        )
+        exemplar = causal[0]
+        if len(causal) == 1:
+            failure = exemplar
+        else:
+            compatibility = {
+                **exemplar.compatibility_dict(),
+                "reason": "one or more trajectory-set members failed replay",
+                "members": failed_members,
+            }
+            failure = ReplayFailureEvent(
+                code="replay_member_failure",
+                owner=exemplar.owner,
+                stage=exemplar.stage,
+                scope=exemplar.scope,
+                repairable=any(event.repairable for event in causal),
+                category="replay_member_aggregate",
+                summary="one or more trajectory-set members failed replay",
+                causes=tuple(event.event_id for event in causal),
+                _compatibility=compatibility,
+            )
+        status = ReplayExecutionStatus.FAILED
+    elif blocked_members:
+        blocked_by = causal_failure_events(
+            tuple(
+                event
+                for _, variant in blocked_members
+                for event in variant.blocked_by
+            )
+        )
+        status = ReplayExecutionStatus.BLOCKED
+    elif not_run_members:
+        status = ReplayExecutionStatus.NOT_RUN
+    else:
+        status = ReplayExecutionStatus.SUCCEEDED
+    aggregated = ReplayVariantResult(
+        variant_id=base_variant_id,
+        status=status,
+        trajectory=(selected_variant.trajectory if status is not ReplayExecutionStatus.BLOCKED else []),
         metrics=metrics,
         failure=failure,
+        blocked_by=blocked_by,
+        stdout_path=selected_variant.stdout_path,
+        stderr_path=selected_variant.stderr_path,
+        repetition_results=tuple(repetition_results),
     )
+    if persist:
+        _write_json(artifact_dir / "aggregate_metrics.json", metrics)
+        _persist_variant_lifecycle(artifact_dir, aggregated)
+    return aggregated
 
 
 def _candidate_replay_request_from_mapping(payload: Mapping[str, Any]) -> CandidateReplayRequest:
@@ -6036,6 +6499,12 @@ def _load_variant_result_from_dir(
 ) -> ReplayVariantResult:
     if not variant_dir.exists():
         raise FileNotFoundError(f"stored replay variant not found: {variant_dir}")
+    lifecycle_path = variant_dir / "lifecycle.json"
+    if lifecycle_path.exists():
+        return _load_lifecycle_variant_result(
+            variant_dir,
+            base_variant_id=base_variant_id,
+        )
     repetition_dirs = _stored_repetition_dirs(variant_dir)
     if not repetition_dirs:
         return _load_single_variant_result(
@@ -6063,7 +6532,9 @@ def _load_variant_result_from_dir(
         failure = {
             "reason": "one or more replay repetitions failed",
             "failures": [
-                result.failure for result in results if result.failure is not None
+                result.failure.compatibility_dict()
+                for result in results
+                if result.failure is not None
             ],
         }
     metrics = dict(aggregate_metrics or {})
@@ -6104,6 +6575,11 @@ def _effective_repetition_dir(repetition_dir: Path) -> Path:
 
 
 def _load_single_variant_result(variant_dir: Path, *, variant_id: str) -> ReplayVariantResult:
+    if (variant_dir / "lifecycle.json").exists():
+        return _load_lifecycle_variant_result(
+            variant_dir,
+            base_variant_id=variant_id,
+        )
     trajectory_payload = _load_json_value(variant_dir / "trajectory.json")
     if not isinstance(trajectory_payload, list):
         raise ValueError(f"stored replay trajectory must be a list: {variant_dir}")
@@ -6130,6 +6606,54 @@ def _load_single_variant_result(variant_dir: Path, *, variant_id: str) -> Replay
         stdout_path=str(stdout_path) if stdout_path.exists() else None,
         stderr_path=str(stderr_path) if stderr_path.exists() else None,
         failure=failure,
+    )
+
+
+def _load_lifecycle_variant_result(
+    variant_dir: Path,
+    *,
+    base_variant_id: str,
+) -> ReplayVariantResult:
+    lifecycle = _load_json_object(variant_dir / "lifecycle.json")
+    if lifecycle.get("schema_version") != "aworld.self_evolve.replay_lifecycle.v2":
+        raise ValueError("unsupported stored replay lifecycle schema")
+    raw_failure = lifecycle.get("failure")
+    failure = (
+        ReplayFailureEvent.from_dict(raw_failure)
+        if isinstance(raw_failure, Mapping)
+        else None
+    )
+    raw_blocked_by = lifecycle.get("blocked_by")
+    blocked_by = tuple(
+        ReplayFailureEvent.from_dict(item)
+        for item in raw_blocked_by
+        if isinstance(item, Mapping)
+    ) if isinstance(raw_blocked_by, list) else ()
+    trajectory_payload = (
+        _load_json_value(variant_dir / "trajectory.json")
+        if (variant_dir / "trajectory.json").exists()
+        else []
+    )
+    if not isinstance(trajectory_payload, list):
+        raise ValueError(f"stored replay trajectory must be a list: {variant_dir}")
+    trajectory = [item for item in trajectory_payload if isinstance(item, Mapping)]
+    metrics = _load_optional_json_object(variant_dir / "metrics.json") or {}
+    aggregate_metrics = _load_optional_json_object(
+        variant_dir / "aggregate_metrics.json"
+    )
+    if aggregate_metrics is not None:
+        metrics = {**dict(metrics), **dict(aggregate_metrics)}
+    stdout_path = variant_dir / "stdout.txt"
+    stderr_path = variant_dir / "stderr.txt"
+    return ReplayVariantResult(
+        variant_id=str(lifecycle.get("variant_id") or base_variant_id),
+        status=str(lifecycle.get("status") or ""),
+        trajectory=trajectory,
+        metrics=metrics,
+        stdout_path=str(stdout_path) if stdout_path.exists() else None,
+        stderr_path=str(stderr_path) if stderr_path.exists() else None,
+        failure=failure,
+        blocked_by=blocked_by,
     )
 
 
@@ -6185,23 +6709,19 @@ def build_paired_replay_dataset(
     ):
         raise ValueError("candidate replay did not produce comparable paired outcomes")
 
-    member_results = {
-        member.case_id: member for member in replay_result.member_results
-    }
+    normalized = normalize_replay_members(dataset=dataset, replay_result=replay_result)
+    if not normalized.valid:
+        raise ValueError("candidate replay member result contract is invalid")
+    member_results = {member.case_id: member for member in normalized.members}
     cases: list[EvalCase] = []
     source_to_replay_case_ids: dict[str, list[str]] = {}
     for case in dataset.cases:
-        if member_results:
-            member_result = member_results.get(case.case_id)
-            if member_result is None:
-                continue
-            baseline_variant = member_result.baseline
-            candidate_variant = member_result.candidate
-            replay_request = member_result.request
-        else:
-            baseline_variant = replay_result.baseline
-            candidate_variant = replay_result.candidate
-            replay_request = replay_result.request
+        member_result = member_results.get(case.case_id)
+        if member_result is None:
+            continue
+        baseline_variant = member_result.baseline
+        candidate_variant = member_result.candidate
+        replay_request = member_result.request
         baseline_trajectory, baseline_trajectory_source = (
             _baseline_comparison_trajectory(case, baseline_variant)
         )
@@ -6253,7 +6773,16 @@ def build_paired_replay_dataset(
                         repetition_metrics=baseline_result.metrics,
                     ),
                     "aggregate_metrics": dict(baseline_variant.metrics),
-                    "failure": baseline_variant.failure,
+                    "failure": (
+                        baseline_variant.failure.compatibility_dict()
+                        if baseline_variant.failure is not None
+                        else None
+                    ),
+                    "failure_event": (
+                        baseline_variant.failure.to_dict()
+                        if baseline_variant.failure is not None
+                        else None
+                    ),
                     "variant_id": baseline_result.variant_id,
                 },
                 "candidate": {
@@ -6264,7 +6793,16 @@ def build_paired_replay_dataset(
                         repetition_metrics=candidate_result.metrics,
                     ),
                     "aggregate_metrics": dict(candidate_variant.metrics),
-                    "failure": candidate_variant.failure,
+                    "failure": (
+                        candidate_variant.failure.compatibility_dict()
+                        if candidate_variant.failure is not None
+                        else None
+                    ),
+                    "failure_event": (
+                        candidate_variant.failure.to_dict()
+                        if candidate_variant.failure is not None
+                        else None
+                    ),
                     "variant_id": candidate_result.variant_id,
                 },
                 "repetition_index": index + 1,
