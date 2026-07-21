@@ -5526,6 +5526,13 @@ async def test_repair_conformance_precedes_optional_screening_for_every_cardinal
     failed_attempt = report["conformance"]["attempts"][0]
     assert failed_attempt["stage"] == "conformance"
     assert failed_attempt["details"]["failure_event"]["owner"] == "candidate"
+    repair_feedback = _candidate_screening_repair_feedback(candidates, report)
+    assert len(repair_feedback) == 1
+    causal_events = repair_feedback[0].metrics["causal_failure_events"]
+    assert len(causal_events) == 1
+    assert causal_events[0]["code"] == "repair_branch_unchanged"
+    assert causal_events[0]["owner"] == "candidate"
+    assert causal_events[0]["stage"] == "capability_preflight"
 
 
 @pytest.mark.asyncio
