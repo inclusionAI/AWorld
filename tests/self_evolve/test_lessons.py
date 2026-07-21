@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from aworld.self_evolve.failure_events import (
@@ -367,3 +369,100 @@ def test_lesson_aggregation_and_store_fail_closed_on_semantic_id_collision(
         FilesystemSelfEvolveStore(tmp_path).write_lesson_records(
             "run-generic", (first, second)
         )
+
+
+def test_causal_lesson_unions_complete_identities_across_emissions() -> None:
+    def aggregate(*, emission: str, case_id: str, task_id: str):
+        event = ReplayFailureEvent(
+            event_id=f"event-{emission}",
+            code="generic_contract_rejected",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+        )
+        return aggregate_replay_failure_observations(
+            (
+                ReplayFailureObservation(
+                    event=event,
+                    case_id=case_id,
+                    run_id="run-shared",
+                    task_id=task_id,
+                    candidate_id="candidate-shared",
+                ),
+            )
+        )[0]
+
+    first = aggregate(emission="first", case_id="case-shared", task_id="task-shared")
+    repeated_case = aggregate(
+        emission="second", case_id="case-shared", task_id="task-shared"
+    )
+    distinct_case = aggregate(
+        emission="third", case_id="case-distinct", task_id="task-distinct"
+    )
+
+    def feedback(item) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id="candidate",
+            dataset_split="validation",
+            metrics={"causal_failure_events": [item.to_feedback_dict()]},
+        )
+
+    duplicate_union = extract_lesson_records(
+        (feedback(first), feedback(repeated_case)),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )[0]
+    assert duplicate_union.occurrence_count == 2
+    assert duplicate_union.affected_case_count == 1
+    assert duplicate_union.distinct_source_count == 1
+    assert len(duplicate_union.affected_case_identity_digests) == 1
+    assert len(duplicate_union.source_identity_digests) == 1
+
+    distinct_union = extract_lesson_records(
+        (feedback(first), feedback(distinct_case)),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )[0]
+    assert distinct_union.occurrence_count == 2
+    assert distinct_union.affected_case_count == 2
+    assert distinct_union.distinct_source_count == 2
+
+
+def test_same_lesson_emission_rejects_any_exact_provenance_tamper() -> None:
+    event = ReplayFailureEvent(
+        event_id="event-exact",
+        code="generic_contract_rejected",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+    )
+    aggregate = aggregate_replay_failure_observations(
+        (
+            ReplayFailureObservation(
+                event=event,
+                case_id="case-a",
+                run_id="run-a",
+                task_id="task-a",
+                candidate_id="candidate-a",
+            ),
+        )
+    )[0]
+    feedback = EvaluationSummary(
+        variant_id="candidate-a",
+        dataset_split="validation",
+        metrics={"causal_failure_events": [aggregate.to_feedback_dict()]},
+    )
+    lesson = extract_lesson_records(
+        (feedback,),
+        target_scope={"target_type": "skill", "target_id": "generic"},
+    )[0]
+    tampered_stats = {
+        key: {**value, "occurrence_count": value["occurrence_count"] + 1}
+        for key, value in lesson.emission_stats.items()
+    }
+    tampered = replace(lesson, occurrence_count=2, emission_stats=tampered_stats)
+
+    with pytest.raises(
+        ValueError, match="emission digest|conflicting exact provenance"
+    ):
+        aggregate_lesson_records((lesson, tampered))

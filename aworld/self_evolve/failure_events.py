@@ -21,7 +21,10 @@ from aworld.self_evolve.sanitization import sanitize_text
 
 FAILURE_EVENT_SCHEMA_VERSION = "aworld.self_evolve.replay_failure.v3"
 _LEGACY_TYPED_FAILURE_EVENT_SCHEMA_VERSION = "aworld.self_evolve.replay_failure.v2"
-AGGREGATED_FAILURE_SCHEMA_VERSION = "aworld.self_evolve.replay_failure_aggregate.v1"
+AGGREGATED_FAILURE_SCHEMA_VERSION = "aworld.self_evolve.replay_failure_aggregate.v2"
+_LEGACY_AGGREGATED_FAILURE_SCHEMA_VERSION = (
+    "aworld.self_evolve.replay_failure_aggregate.v1"
+)
 _MAX_SUMMARY_CHARS = 1_000
 _MAX_CATEGORY_CHARS = 128
 _MAX_DIAGNOSTIC_ITEMS = 32
@@ -199,6 +202,51 @@ def _identity_sample(value: str, *, max_chars: int = 160) -> str:
     suffix = f"...#{digest}"
     prefix = sanitize_text(value, max_chars=max(1, max_chars - len(suffix)))
     return f"{prefix}{suffix}"[:max_chars]
+
+
+def _identity_set(values: Any, *, field_name: str) -> tuple[str, ...]:
+    identities = tuple(sorted({str(value) for value in values if str(value)}))
+    if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in identities):
+        raise ValueError(f"{field_name} must contain full sha256 digests")
+    return identities
+
+
+def _source_identity_digest(
+    run_id: str | None,
+    task_id: str | None,
+    candidate_id: str | None,
+) -> str | None:
+    if run_id is None and task_id is None and candidate_id is None:
+        return None
+    return hashlib.sha256(
+        json.dumps(
+            [run_id, task_id, candidate_id],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _legacy_identity_set(
+    *,
+    samples: tuple[str, ...],
+    exact_count: int,
+    namespace: str,
+    seed: str,
+) -> tuple[str, ...]:
+    """Upgrade bounded v1 samples into stable opaque cardinality identities."""
+
+    values = {_identity_digest(value) for value in samples}
+    values.discard(None)
+    index = 0
+    while len(values) < exact_count:
+        values.add(
+            hashlib.sha256(
+                f"legacy:{namespace}:{seed}:{index}".encode("utf-8")
+            ).hexdigest()
+        )
+        index += 1
+    return tuple(sorted(str(value) for value in values))
 
 
 @dataclass(frozen=True, eq=False)
@@ -629,6 +677,8 @@ class AggregatedReplayFailure:
     occurrence_count: int = 1
     affected_member_count: int = 0
     distinct_source_count: int = 0
+    affected_case_identity_digests: tuple[str, ...] = ()
+    source_identity_digests: tuple[str, ...] = ()
     occurrence_ids: tuple[str, ...] = ()
     affected_case_ids: tuple[str, ...] = ()
     source_run_ids: tuple[str, ...] = ()
@@ -701,6 +751,22 @@ class AggregatedReplayFailure:
             self.distinct_source_count,
             field_name="distinct_source_count",
         )
+        affected_case_identity_digests = _identity_set(
+            self.affected_case_identity_digests,
+            field_name="affected_case_identity_digests",
+        )
+        source_identity_digests = _identity_set(
+            self.source_identity_digests,
+            field_name="source_identity_digests",
+        )
+        if affected_member_count != len(affected_case_identity_digests):
+            raise ValueError(
+                "affected_member_count must equal the complete affected identity set"
+            )
+        if distinct_source_count != len(source_identity_digests):
+            raise ValueError(
+                "distinct_source_count must equal the complete source identity set"
+            )
         occurrence_ids = _bounded_id_samples(
             self.occurrence_ids,
             limit=_MAX_OCCURRENCE_IDS,
@@ -759,6 +825,14 @@ class AggregatedReplayFailure:
         object.__setattr__(self, "occurrence_count", occurrence_count)
         object.__setattr__(self, "affected_member_count", affected_member_count)
         object.__setattr__(self, "distinct_source_count", distinct_source_count)
+        object.__setattr__(
+            self,
+            "affected_case_identity_digests",
+            affected_case_identity_digests,
+        )
+        object.__setattr__(
+            self, "source_identity_digests", source_identity_digests
+        )
         object.__setattr__(self, "occurrence_ids", occurrence_ids)
         object.__setattr__(self, "affected_case_ids", affected_case_ids)
         object.__setattr__(self, "source_run_ids", source_run_ids)
@@ -773,6 +847,8 @@ class AggregatedReplayFailure:
                 "occurrence_count": occurrence_count,
                 "affected_member_count": affected_member_count,
                 "distinct_source_count": distinct_source_count,
+                "affected_case_identity_digests": affected_case_identity_digests,
+                "source_identity_digests": source_identity_digests,
                 "occurrence_ids": occurrence_ids,
                 "affected_case_ids": affected_case_ids,
                 "source_run_ids": source_run_ids,
@@ -812,6 +888,10 @@ class AggregatedReplayFailure:
             "occurrence_count": self.occurrence_count,
             "affected_member_count": self.affected_member_count,
             "distinct_source_count": self.distinct_source_count,
+            "affected_case_identity_digests": list(
+                self.affected_case_identity_digests
+            ),
+            "source_identity_digests": list(self.source_identity_digests),
             "occurrence_ids": list(self.occurrence_ids),
             "affected_case_ids": list(self.affected_case_ids),
             "source_run_ids": list(self.source_run_ids),
@@ -845,6 +925,10 @@ class AggregatedReplayFailure:
             "source_task_ids": list(self.source_task_ids),
             "source_candidate_ids": list(self.source_candidate_ids),
             "distinct_source_count": self.distinct_source_count,
+            "affected_case_identity_digests": list(
+                self.affected_case_identity_digests
+            ),
+            "source_identity_digests": list(self.source_identity_digests),
             "artifact_refs": list(self.artifact_refs),
             "source_kinds": list(self.source_kinds),
             "batch_id": self.batch_id,
@@ -869,9 +953,10 @@ class AggregatedReplayFailure:
     def from_dict(cls, payload: Mapping[str, Any]) -> "AggregatedReplayFailure":
         serialized_schema = payload.get("schema_version")
         strict = serialized_schema == AGGREGATED_FAILURE_SCHEMA_VERSION
-        if serialized_schema is not None and not strict:
+        legacy_typed = serialized_schema == _LEGACY_AGGREGATED_FAILURE_SCHEMA_VERSION
+        if serialized_schema is not None and not strict and not legacy_typed:
             raise ValueError("unsupported aggregate replay failure schema_version")
-        if strict:
+        if strict or legacy_typed:
             required = {
                 "semantic_key",
                 "occurrence_count",
@@ -881,6 +966,13 @@ class AggregatedReplayFailure:
                 "emission_id",
                 "aggregate_digest",
             }
+            if strict:
+                required.update(
+                    {
+                        "affected_case_identity_digests",
+                        "source_identity_digests",
+                    }
+                )
             missing = sorted(
                 key for key in required if key not in payload or payload.get(key) == ""
             )
@@ -936,7 +1028,7 @@ class AggregatedReplayFailure:
             repairable=payload.get("repairable") is True,
             category=sanitize_text(category, max_chars=_MAX_CATEGORY_CHARS),
         )
-        if strict and payload.get("semantic_key") != semantic_key:
+        if (strict or legacy_typed) and payload.get("semantic_key") != semantic_key:
             raise ValueError("serialized aggregate semantic_key is invalid")
         occurrence_ids = _mapping_string_tuple(payload.get("occurrence_ids"))
         affected_case_ids = _mapping_string_tuple(payload.get("affected_case_ids"))
@@ -945,6 +1037,9 @@ class AggregatedReplayFailure:
         source_candidate_ids = _mapping_string_tuple(
             payload.get("source_candidate_ids")
         )
+        source_kinds = _mapping_string_tuple(payload.get("source_kinds"))
+        if not source_kinds:
+            source_kinds = (FailureEventSource.LEGACY_INFERRED.value,)
         occurrence_count = _payload_count(
             payload,
             "occurrence_count",
@@ -966,9 +1061,53 @@ class AggregatedReplayFailure:
                 0,
             ),
         )
-        source_kinds = _mapping_string_tuple(payload.get("source_kinds"))
-        if not source_kinds:
-            source_kinds = (FailureEventSource.LEGACY_INFERRED.value,)
+        if legacy_typed:
+            _validate_v1_aggregate_integrity(
+                payload,
+                semantic_key=semantic_key,
+                code=code,
+                owner=owner,
+                stage=stage,
+                scope=scope,
+                category=sanitize_text(category, max_chars=_MAX_CATEGORY_CHARS),
+                capability_digest=capability_digest,
+                requirement_digest=requirement_digest,
+                contract_digest=contract_digest,
+                occurrence_count=occurrence_count,
+                affected_member_count=affected_member_count,
+                distinct_source_count=distinct_source_count,
+                occurrence_ids=occurrence_ids,
+                affected_case_ids=affected_case_ids,
+                source_run_ids=source_run_ids,
+                source_task_ids=source_task_ids,
+                source_candidate_ids=source_candidate_ids,
+                source_kinds=source_kinds,
+            )
+        identity_seed = str(
+            payload.get("aggregate_digest")
+            or payload.get("batch_id")
+            or semantic_key
+        )
+        if strict:
+            affected_case_identity_digests = _mapping_string_tuple(
+                payload.get("affected_case_identity_digests")
+            )
+            source_identity_digests = _mapping_string_tuple(
+                payload.get("source_identity_digests")
+            )
+        else:
+            affected_case_identity_digests = _legacy_identity_set(
+                samples=affected_case_ids,
+                exact_count=affected_member_count,
+                namespace="affected-case",
+                seed=identity_seed,
+            )
+            source_identity_digests = _legacy_identity_set(
+                samples=(),
+                exact_count=distinct_source_count,
+                namespace="source",
+                seed=identity_seed,
+            )
         return cls(
             semantic_key=semantic_key,
             code=code,
@@ -986,6 +1125,8 @@ class AggregatedReplayFailure:
             occurrence_count=occurrence_count,
             affected_member_count=affected_member_count,
             distinct_source_count=distinct_source_count,
+            affected_case_identity_digests=affected_case_identity_digests,
+            source_identity_digests=source_identity_digests,
             occurrence_ids=occurrence_ids,
             affected_case_ids=affected_case_ids,
             source_run_ids=source_run_ids,
@@ -993,7 +1134,11 @@ class AggregatedReplayFailure:
             source_candidate_ids=source_candidate_ids,
             artifact_refs=_mapping_string_tuple(payload.get("artifact_refs")),
             source_kinds=source_kinds,
-            batch_id=(str(payload.get("batch_id") or "") if strict else ""),
+            batch_id=(
+                str(payload.get("batch_id") or "")
+                if strict or legacy_typed
+                else ""
+            ),
             emission_id=(str(payload.get("emission_id") or "") if strict else ""),
             aggregate_digest=(
                 str(payload.get("aggregate_digest") or "") if strict else ""
@@ -1005,6 +1150,68 @@ def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _validate_v1_aggregate_integrity(
+    payload: Mapping[str, Any],
+    *,
+    semantic_key: str,
+    code: str,
+    owner: FailureOwner,
+    stage: FailureStage,
+    scope: FailureScope,
+    category: str,
+    capability_digest: str | None,
+    requirement_digest: str | None,
+    contract_digest: str | None,
+    occurrence_count: int,
+    affected_member_count: int,
+    distinct_source_count: int,
+    occurrence_ids: tuple[str, ...],
+    affected_case_ids: tuple[str, ...],
+    source_run_ids: tuple[str, ...],
+    source_task_ids: tuple[str, ...],
+    source_candidate_ids: tuple[str, ...],
+    source_kinds: tuple[str, ...],
+) -> None:
+    batch_id = str(payload.get("batch_id") or "")
+    _validate_digest_id(batch_id, prefix="replay-batch")
+    expected_aggregate_digest = _stable_digest_id(
+        "replay-aggregate",
+        {
+            "semantic_key": semantic_key,
+            "code": code,
+            "owner": owner.value,
+            "stage": stage.value,
+            "scope": scope.value,
+            "repairable": payload.get("repairable") is True,
+            "category": category,
+            "capability_identity_digest": capability_digest,
+            "requirement_identity_digest": requirement_digest,
+            "contract_identity_digest": contract_digest,
+            "occurrence_count": occurrence_count,
+            "affected_member_count": affected_member_count,
+            "distinct_source_count": distinct_source_count,
+            "occurrence_ids": list(occurrence_ids),
+            "affected_case_ids": list(affected_case_ids),
+            "source_run_ids": list(source_run_ids),
+            "source_task_ids": list(source_task_ids),
+            "source_candidate_ids": list(source_candidate_ids),
+            "source_kinds": list(source_kinds),
+            "batch_id": batch_id,
+        },
+    )
+    if payload.get("aggregate_digest") != expected_aggregate_digest:
+        raise ValueError("v1 aggregate_digest does not match typed payload")
+    expected_emission_id = _stable_digest_id(
+        "replay-emission",
+        {
+            "batch_id": batch_id,
+            "aggregate_digest": expected_aggregate_digest,
+        },
+    )
+    if payload.get("emission_id") != expected_emission_id:
+        raise ValueError("v1 emission_id does not match typed payload")
 
 
 def _mapping_string_tuple(value: Any) -> tuple[str, ...]:
@@ -1139,9 +1346,30 @@ def aggregate_replay_failure_observations(
                 if ref
             }
         )
-        distinct_source_count = max(
-            len(run_ids), len(task_ids), len(candidate_ids), 0
+        affected_case_identity_digests = tuple(
+            sorted(
+                digest
+                for case_id in case_ids
+                if (digest := _identity_digest(case_id)) is not None
+            )
         )
+        source_identity_digests = tuple(
+            sorted(
+                {
+                    digest
+                    for item in items
+                    if (
+                        digest := _source_identity_digest(
+                            _semantic_identity(item.run_id),
+                            _semantic_identity(item.task_id),
+                            _semantic_identity(item.candidate_id),
+                        )
+                    )
+                    is not None
+                }
+            )
+        )
+        distinct_source_count = len(source_identity_digests)
         batch_id = _stable_digest_id(
             "replay-batch",
             {
@@ -1187,6 +1415,8 @@ def aggregate_replay_failure_observations(
                 occurrence_count=max(1, len(occurrence_ids)),
                 affected_member_count=len(case_ids),
                 distinct_source_count=distinct_source_count,
+                affected_case_identity_digests=affected_case_identity_digests,
+                source_identity_digests=source_identity_digests,
                 occurrence_ids=tuple(sorted(occurrence_ids)[:_MAX_OCCURRENCE_IDS]),
                 affected_case_ids=tuple(
                     _identity_sample(item) for item in case_ids[:_MAX_SOURCE_IDS]
