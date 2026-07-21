@@ -66,6 +66,7 @@ from aworld.self_evolve.runner import (
     _load_target_selection_report,
     _merge_validation_feedback,
     _parse_candidate_mutation_model_output,
+    _population_report,
     _next_progress_repair_extension_family,
     _rank_candidate_population,
     _rejected_candidate_ids_from_report,
@@ -86,13 +87,20 @@ from aworld.self_evolve.runner import (
     optimize_explicit_target,
     optimize_from_cli_request,
 )
-from aworld.self_evolve.replay_capability import ReplayCapabilityError
+from aworld.self_evolve.replay_capability import (
+    FrozenReplayCapability,
+    ReplayCapabilityError,
+    ReplayProtocolProbe,
+    ReplayReadinessProbe,
+    ReplayServiceSpec,
+)
 from aworld.self_evolve.provenance import (
     TargetProvenance,
     TargetProvenanceResolution,
     TargetSelectionOrigin,
 )
 from aworld.self_evolve.repair_conformance import (
+    ExactRepairProbe,
     RepairConformanceContract,
     RepairConformanceResult,
     compile_repair_conformance_contract,
@@ -5635,6 +5643,297 @@ async def test_repair_conformance_stops_population_only_for_typed_shared_infrast
     assert report["conformance"]["stopped_by_shared_infrastructure"] is True
 
 
+@pytest.mark.asyncio
+async def test_missing_candidate_capability_rejects_candidate_but_continues_population(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "generic" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Generic\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="member-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "contract_matrix"},
+            split_seed="generic",
+            splits={"train": ["member-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("member-1",),
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill", target_id="generic", path=str(skill_path)
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content="# Generic\n",
+            rationale="generic repair",
+        )
+        for index in (1, 2)
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("generic_failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"runtime.py": "sha256:base"},
+        required_branch_paths=("runtime.py",),
+        base_branch_fingerprints={"runtime.py": "sha256:branch"},
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner_module,
+        "evaluate_candidate_source_conformance",
+        lambda candidate, candidate_contract: RepairConformanceResult(
+            passed=True, code="passed", reason="passed", details={}
+        ),
+    )
+
+    async def candidate_preflight(**kwargs):
+        candidate_id = kwargs["candidate"].candidate_id
+        calls.append(candidate_id)
+        if candidate_id == "candidate-2":
+            return GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=True,
+                reason="passed",
+                details={},
+            )
+        event = ReplayFailureEvent(
+            code="candidate_replay_capability_missing",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.CAPABILITY_COMPILE,
+            scope=FailureScope.CANDIDATE,
+            repairable=True,
+            source=FailureEventSource.NATIVE,
+        )
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="candidate capability missing",
+            details={
+                "failure_class": "candidate",
+                "failure_event": event.to_dict(),
+                "causal_failure_events": [event.to_dict()],
+            },
+        )
+
+    monkeypatch.setattr(
+        runner, "_preflight_candidate_repair_conformance", candidate_preflight
+    )
+
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-missing-candidate-capability",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="proposal",
+        repair_conformance_contracts={
+            candidate.candidate_id: contract for candidate in candidates
+        },
+    )
+
+    assert calls == ["candidate-1", "candidate-2"]
+    assert screened == (candidates[1],)
+    assert report is not None
+    assert report["conformance"]["stopped_by_shared_infrastructure"] is False
+
+
+@pytest.mark.asyncio
+async def test_conformance_executes_each_projected_group_once_and_attributes_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "generic" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Generic\n", encoding="utf-8")
+    case_ids = ("member-a", "member-b", "member-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=item, input=item) for item in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "contract_matrix"},
+            split_seed="generic",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    requirements = (
+        ReplayCapabilityRequirement(
+            requirement_id="requirement-a",
+            kind="local_endpoint",
+            identifier="endpoint-a",
+            case_ids=("member-a", "member-b"),
+            evidence_refs=("evidence-a",),
+            status="runtime_required",
+        ),
+        ReplayCapabilityRequirement(
+            requirement_id="requirement-b",
+            kind="local_endpoint",
+            identifier="endpoint-b",
+            case_ids=("member-c",),
+            evidence_refs=("evidence-b",),
+            status="runtime_required",
+        ),
+    )
+    services = tuple(
+        ReplayServiceSpec(
+            service_id=f"service-{suffix}",
+            requirement_id=f"requirement-{suffix}",
+            transport="skill_runtime",
+            response_fixture=f"fixture-{suffix}.json",
+            runtime_entrypoint="runtime.py",
+            readiness=ReplayReadinessProbe(kind="http", timeout_seconds=1),
+            protocol_probes=(
+                ReplayProtocolProbe(
+                    kind="http",
+                    timeout_seconds=1,
+                    path=f"/query-{suffix}",
+                    request_text=json.dumps({"operation": f"records.{suffix}"}),
+                ),
+            ),
+        )
+        for suffix in ("a", "b")
+    )
+    capability = FrozenReplayCapability(
+        capability_id="generic-capability",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(tmp_path / "frozen"),
+        handled_requirements=("requirement-a", "requirement-b"),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={},
+        services=services,
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-repair",
+        target=SelfEvolveTargetRef(
+            target_type="skill", target_id="generic", path=str(skill_path)
+        ),
+        content="# Generic\n",
+        rationale="repair",
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("generic_failure",),
+        interaction_progress=1,
+        base_file_fingerprints={"runtime.py": "sha256:base"},
+        required_branch_paths=("runtime.py",),
+        base_branch_fingerprints={"runtime.py": "sha256:branch"},
+        exact_probe=ExactRepairProbe(
+            kind="http",
+            path="/query-b",
+            expected_response="PRIVATE_RAW_RECORDED_FIXTURE_VALUE",
+        ),
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "create_candidate_skill_overlay",
+        lambda **kwargs: SimpleNamespace(candidate_skill_path=skill_path),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **kwargs: (
+            SimpleNamespace(replay_capability=capability),
+            GateResult("replay_adaptation", True, "passed"),
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "evaluate_compiled_probe_conformance",
+        lambda *args, **kwargs: RepairConformanceResult(
+            passed=True, code="passed", reason="passed", details={}
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "frozen_replay_fixture_shape_fingerprints",
+        lambda frozen: {
+            "fixture-a.json": "sha256:shape-a",
+            "fixture-b.json": "sha256:shape-b",
+        },
+    )
+    monkeypatch.setattr(
+        runner_module, "replay_capability_fixture_leaf_values", lambda frozen: {}
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "replay_capability_fixture_response_leaf_values",
+        lambda frozen: {},
+    )
+    calls: list[str] = []
+
+    async def projected_preflight(frozen, **kwargs):
+        assert len(frozen.services) == 1
+        service_id = frozen.services[0].service_id
+        calls.append(service_id)
+        if service_id == "service-b":
+            raise RuntimeError("generic group failure")
+
+    monkeypatch.setattr(
+        runner_module,
+        "preflight_frozen_replay_capability",
+        projected_preflight,
+    )
+
+    gate = await runner._preflight_candidate_repair_conformance(
+        run_id="run-projected-groups",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidate=candidate,
+        contract=contract,
+        capability_requirements=requirements,
+    )
+
+    assert sorted(calls) == ["service-a", "service-b"]
+    assert len(calls) == 2
+    assert gate.passed is False
+    events = gate.details["causal_failure_events"]
+    assert len(events) == 1
+    assert events[0]["capability_id"] == "generic-capability"
+    assert events[0]["requirement_id"] == "requirement-b"
+    assert events[0]["contract_fingerprint"].startswith("sha256:")
+    assert events[0]["diagnostics"]["affected_case_ids"] == ["member-c"]
+    assert "PRIVATE_RAW_RECORDED_FIXTURE_VALUE" not in json.dumps(
+        gate.details, sort_keys=True
+    )
+    persisted = _candidate_validation_report_for_persistence(
+        {"conformance": {"attempts": [{"details": gate.details}]}}
+    )
+    assert "PRIVATE_RAW_RECORDED_FIXTURE_VALUE" not in json.dumps(
+        persisted, sort_keys=True
+    )
+
+
 def test_persisted_conformance_report_hashes_payload_bearing_assertions() -> None:
     persisted = _candidate_validation_report_for_persistence(
         {
@@ -5659,6 +5958,62 @@ def test_persisted_conformance_report_hashes_payload_bearing_assertions() -> Non
     assert "private-recorded-value" not in encoded
     assert "expected_response_fingerprint" in encoded
     assert "declared_response_contains_fingerprint" in encoded
+
+
+def test_population_report_separates_validation_stages_from_authoritative_replay() -> None:
+    candidates = [
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+            content="# Generic\n",
+            rationale="generic",
+        )
+        for index in (1, 2, 3)
+    ]
+    report = _population_report(
+        all_candidates=candidates,
+        iteration_reports=[
+            {"candidate_id": "candidate-1", "status": "screening_rejected"},
+            {"candidate_id": "candidate-2", "status": "screening_rejected"},
+            {
+                "candidate_id": "candidate-3",
+                "status": "rejected",
+                "lifecycle_stage": "authoritative_replay",
+            },
+        ],
+        replay_candidate_limit=3,
+        screening_reports=[
+            {
+                "conformance": {
+                    "attempts": [
+                        {"candidate_id": "candidate-1", "passed": False},
+                        {"candidate_id": "candidate-2", "passed": True},
+                    ]
+                },
+                "screening": {
+                    "attempts": [
+                        {"candidate_id": "candidate-2", "passed": False}
+                    ]
+                },
+            }
+        ],
+    )
+
+    assert report is not None
+    assert report["replayed_candidate_ids"] == ["candidate-3"]
+    assert report["lifecycle"]["generated"]["candidate_count"] == 3
+    assert report["lifecycle"]["conformance"] == {
+        "attempted_candidate_count": 2,
+        "rejected_candidate_count": 1,
+        "attempted_candidate_ids": ["candidate-1", "candidate-2"],
+        "rejected_candidate_ids": ["candidate-1"],
+    }
+    assert report["lifecycle"]["screening"]["rejected_candidate_ids"] == [
+        "candidate-2"
+    ]
+    assert report["lifecycle"]["authoritative_replay"][
+        "attempted_candidate_ids"
+    ] == ["candidate-3"]
 
 
 @pytest.mark.asyncio
@@ -5781,7 +6136,7 @@ async def test_population_screening_rejects_unchanged_repair_branch_before_rollo
         "repair_branch_unchanged"
     )
     assert report["attempts"][0]["details"]["repair_conformance"] == (
-        contract.to_dict()
+        contract.to_public_dict()
     )
     feedback = _candidate_screening_repair_feedback((candidate,), report)
     assert len(feedback) == 1
@@ -5790,7 +6145,7 @@ async def test_population_screening_rejects_unchanged_repair_branch_before_rollo
         feedback[0].metrics
     )
     assert inherited_contract is not None
-    assert inherited_contract.exact_probe == contract.exact_probe
+    assert inherited_contract.exact_probe is None
 
 
 @pytest.mark.asyncio
@@ -5937,13 +6292,14 @@ async def test_population_screening_rollout_failure_preserves_passed_conformance
     assert preflight_case_ids == ("task-a", "task-b")
     assert rollout_case_ids == ("task-a",)
     details = report["attempts"][0]["details"]
-    assert details["repair_conformance"] == contract.to_dict()
+    assert details["repair_conformance"] == contract.to_public_dict()
     feedback = _candidate_screening_repair_feedback((candidate,), report)
     inherited = compile_repair_conformance_contract(feedback[0].metrics)
     assert inherited is not None
-    assert inherited.required_fixture_probe_operations == (
-        "records.query",
-    )
+    # Persisted/public feedback is useful repair context but is deliberately
+    # not an executable contract. Exact execution state travels only through
+    # OptimizerResult.private_context.
+    assert inherited.required_fixture_probe_operations == ()
 
 
 def test_repair_conformance_failure_preserves_fixture_shape_and_trace_tail(

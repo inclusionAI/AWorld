@@ -185,6 +185,69 @@ async def test_trace_reflective_llm_mutator_proposes_candidate_and_lineage() -> 
 
 
 @pytest.mark.asyncio
+async def test_exact_repair_contract_uses_private_channel_without_prompt_or_diagnostic_leak() -> None:
+    secret = "PRIVATE_RAW_RECORDED_FIXTURE_VALUE"
+    prompts: list[str] = []
+
+    async def mutate(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {
+            "content": "# Demo\n",
+            "rationale": "repair the generic probe branch",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "def respond():\n    return {'ok': True}\n",
+                }
+            ],
+        }
+
+    feedback = EvaluationSummary(
+        variant_id="candidate-failed",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-failed",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "content": "def respond():\n    return {}\n",
+                    }
+                ],
+            },
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "verify_declared_protocol_probe_branch",
+                    "probe_kind": "http",
+                    "probe_path": "/query",
+                    "expected_preview": secret,
+                }
+            ],
+        },
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(feedback,),
+        trainable_cases=(EvalCase(case_id="train-1", input="generic task"),),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    candidate_id = result.candidates[0].candidate_id
+    assert secret not in prompts[0]
+    assert secret not in json.dumps(result.diagnostics, sort_keys=True)
+    private_contract = result.private_context[candidate_id]
+    assert private_contract.exact_probe is not None
+    assert private_contract.exact_probe.expected_response == secret
+
+
+@pytest.mark.asyncio
 async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> None:
     async def mutate(prompt: str) -> dict:
         return {

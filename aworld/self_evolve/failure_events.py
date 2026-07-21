@@ -118,6 +118,7 @@ class ReplayFailureEvent(Mapping[str, Any]):
     causes: tuple[str, ...] = ()
     capability_id: str | None = None
     requirement_id: str | None = None
+    contract_fingerprint: str | None = None
     event_id: str = field(default_factory=lambda: f"replay-event-{uuid.uuid4().hex}")
     schema_version: str = FAILURE_EVENT_SCHEMA_VERSION
     _compatibility: Mapping[str, Any] = field(default_factory=dict, repr=False)
@@ -192,6 +193,11 @@ class ReplayFailureEvent(Mapping[str, Any]):
             "requirement_id",
             _semantic_identity(self.requirement_id or compatibility_requirement_id),
         )
+        object.__setattr__(
+            self,
+            "contract_fingerprint",
+            _semantic_identity(self.contract_fingerprint),
+        )
 
     @property
     def semantic_key(self) -> str:
@@ -204,6 +210,7 @@ class ReplayFailureEvent(Mapping[str, Any]):
             "scope": self.scope.value,
             "capability_id": self.capability_id,
             "requirement_id": self.requirement_id,
+            "contract_fingerprint": self.contract_fingerprint,
             "repairable": self.repairable,
             "category": self.category,
         }
@@ -229,6 +236,7 @@ class ReplayFailureEvent(Mapping[str, Any]):
             "causes": list(self.causes),
             "capability_id": self.capability_id,
             "requirement_id": self.requirement_id,
+            "contract_fingerprint": self.contract_fingerprint,
             "semantic_key": self.semantic_key,
         }
 
@@ -281,6 +289,11 @@ class ReplayFailureEvent(Mapping[str, Any]):
             requirement_id=(
                 str(payload.get("requirement_id"))
                 if payload.get("requirement_id") is not None
+                else None
+            ),
+            contract_fingerprint=(
+                str(payload.get("contract_fingerprint"))
+                if payload.get("contract_fingerprint") is not None
                 else None
             ),
         )
@@ -349,6 +362,11 @@ class ReplayFailureEvent(Mapping[str, Any]):
             requirement_id=(
                 str(payload.get("requirement_id"))
                 if payload.get("requirement_id") is not None
+                else None
+            ),
+            contract_fingerprint=(
+                str(payload.get("contract_fingerprint"))
+                if payload.get("contract_fingerprint") is not None
                 else None
             ),
             _compatibility=dict(bounded),
@@ -427,6 +445,7 @@ class AggregatedReplayFailure:
     category: str
     capability_id: str | None = None
     requirement_id: str | None = None
+    contract_fingerprint: str | None = None
     occurrence_count: int = 1
     affected_member_count: int = 0
     occurrence_ids: tuple[str, ...] = ()
@@ -459,6 +478,7 @@ class AggregatedReplayFailure:
             "category": self.category,
             "capability_id": self.capability_id,
             "requirement_id": self.requirement_id,
+            "contract_fingerprint": self.contract_fingerprint,
             "occurrence_count": self.occurrence_count,
             "affected_member_count": self.affected_member_count,
             "occurrence_ids": list(self.occurrence_ids),
@@ -567,6 +587,7 @@ def aggregate_replay_failure_observations(
                 category=event.category,
                 capability_id=event.capability_id,
                 requirement_id=event.requirement_id,
+                contract_fingerprint=event.contract_fingerprint,
                 occurrence_count=max(1, len(occurrence_ids)),
                 affected_member_count=len(case_ids),
                 occurrence_ids=tuple(sorted(occurrence_ids)[:_MAX_OCCURRENCE_IDS]),

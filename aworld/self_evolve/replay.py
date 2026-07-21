@@ -3308,10 +3308,40 @@ async def _start_replay_services(
     artifact_dir: Path,
     required_nonempty_probe_operations: Sequence[str] = (),
     required_recorded_probe_operations: Sequence[str] = (),
+    integrity_capability: FrozenReplayCapability | None = None,
 ) -> _ReplayServiceSession:
     if not capability.ready or not capability.deterministic:
         raise ValueError("skill-owned replay capability is not ready")
-    verify_frozen_replay_capability(capability)
+    if integrity_capability is None:
+        verify_frozen_replay_capability(capability)
+    else:
+        verify_frozen_replay_capability(integrity_capability)
+        if (
+            capability.capability_id != integrity_capability.capability_id
+            or capability.capability_package_fingerprint
+            != integrity_capability.capability_package_fingerprint
+            or Path(capability.frozen_root).expanduser().resolve()
+            != Path(integrity_capability.frozen_root).expanduser().resolve()
+            or not capability.services
+            or any(
+                not any(
+                    replace(
+                        service,
+                        protocol_probes=original.protocol_probes,
+                    )
+                    == original
+                    and all(
+                        probe in original.protocol_probes
+                        for probe in service.protocol_probes
+                    )
+                    for original in integrity_capability.services
+                )
+                for service in capability.services
+            )
+        ):
+            raise ValueError(
+                "replay execution projection is not a subset of its verified capability"
+            )
     source_frozen_root = Path(capability.frozen_root).expanduser().resolve()
     if not (source_frozen_root / "runtime").is_dir() or not (
         source_frozen_root / "fixtures"
@@ -3579,6 +3609,7 @@ async def preflight_frozen_replay_capability(
     artifact_dir: str | Path,
     required_nonempty_probe_operations: Sequence[str] = (),
     required_recorded_probe_operations: Sequence[str] = (),
+    integrity_capability: FrozenReplayCapability | None = None,
 ) -> Mapping[str, str]:
     """Start a frozen capability, execute every declared probe, then stop it.
 
@@ -3594,6 +3625,7 @@ async def preflight_frozen_replay_capability(
         artifact_dir=resolved_artifact_dir,
         required_nonempty_probe_operations=required_nonempty_probe_operations,
         required_recorded_probe_operations=required_recorded_probe_operations,
+        integrity_capability=integrity_capability,
     )
     try:
         return dict(session.endpoints)

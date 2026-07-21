@@ -130,6 +130,7 @@ from aworld.self_evolve.repair_conformance import (
     build_repair_conformance_probe_plan,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
+    project_replay_capability_for_probe_group,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
@@ -409,7 +410,7 @@ def _replay_adaptation_exception_details(
     candidate_capability: bool,
 ) -> dict[str, object]:
     reason = sanitize_text(str(exc), max_chars=240)
-    if candidate_capability and isinstance(exc, ReplayCapabilityError):
+    if candidate_capability:
         diagnostic = {
             "code": "invalid_replay_capability_compile",
             "stage": "capability_compile",
@@ -462,11 +463,17 @@ def _replay_adaptation_exception_details(
         }
         return {
             "failure_class": "candidate",
+            "failure_owner": FailureOwner.CANDIDATE.value,
+            "failure_scope": FailureScope.CANDIDATE.value,
+            "failure_source": FailureEventSource.NATIVE.value,
             "repairable": True,
             "diagnostics": [diagnostic],
         }
     return {
         "failure_class": "infrastructure",
+        "failure_owner": FailureOwner.INFRASTRUCTURE.value,
+        "failure_scope": FailureScope.SHARED_RUN.value,
+        "failure_source": FailureEventSource.NATIVE.value,
         "repairable": False,
         "code": "replay_adaptation_infrastructure_error",
     }
@@ -1157,7 +1164,7 @@ class SelfEvolveRunner:
             screening_candidates = candidate_population
             repair_conformance_contracts = (
                 _candidate_repair_conformance_contracts(
-                    optimizer_result.diagnostics
+                    optimizer_result
                 )
             )
             candidate_population, screening_report = await self._screen_candidate_population(
@@ -1249,6 +1256,7 @@ class SelfEvolveRunner:
                     baseline_replay_dir=reusable_baseline_replay_dir,
                     capability_requirements=replay_preflight.requirements,
                 )
+                report_item["lifecycle_stage"] = "authoritative_replay"
                 validation_feedback = _merge_validation_feedback(
                     validation_feedback,
                     candidate_feedback,
@@ -1683,7 +1691,7 @@ class SelfEvolveRunner:
                     replay_gate,
                     details={
                         **dict(replay_gate.details or {}),
-                        "repair_conformance": conformance_contract.to_dict(),
+                        "repair_conformance": conformance_contract.to_public_dict(),
                     },
                 )
             if replay_result is not None and _replay_result_has_reusable_baseline(
@@ -1892,15 +1900,34 @@ class SelfEvolveRunner:
         )
         if adaptation is None or not adaptation_gate.passed:
             adaptation_details = dict(adaptation_gate.details or {})
-            candidate_owned = (
-                adaptation_details.get("failure_class") == "candidate"
+            # This compilation is performed against the candidate overlay.
+            # It is candidate-owned unless the adaptation layer explicitly
+            # supplies a native shared-run infrastructure/framework event.
+            declared_owner = str(
+                adaptation_details.get("failure_owner") or ""
             )
+            declared_scope = str(
+                adaptation_details.get("failure_scope") or ""
+            )
+            declared_source = str(
+                adaptation_details.get("failure_source") or ""
+            )
+            proven_shared = bool(
+                declared_owner
+                in {
+                    FailureOwner.INFRASTRUCTURE.value,
+                    FailureOwner.FRAMEWORK.value,
+                }
+                and declared_scope == FailureScope.SHARED_RUN.value
+                and declared_source == FailureEventSource.NATIVE.value
+            )
+            candidate_owned = not proven_shared
             failure_event = ReplayFailureEvent(
                 code="repair_capability_compile_failed",
                 owner=(
                     FailureOwner.CANDIDATE
                     if candidate_owned
-                    else FailureOwner.INFRASTRUCTURE
+                    else FailureOwner(declared_owner)
                 ),
                 stage=FailureStage.CAPABILITY_COMPILE,
                 scope=(
@@ -1928,7 +1955,7 @@ class SelfEvolveRunner:
                     "repairable": candidate_owned,
                     "stage": "repair_conformance_compile",
                     "code": "repair_capability_compile_failed",
-                    "repair_conformance": contract.to_dict(),
+                    "repair_conformance": contract.to_public_dict(),
                     "failure_event": failure_event.to_dict(),
                     "causal_failure_events": [failure_event.to_dict()],
                 },
@@ -1981,51 +2008,77 @@ class SelfEvolveRunner:
             / _safe_artifact_name(candidate.candidate_id)
         )
         group_results: list[dict[str, object]] = []
-        groups = probe_plan.groups or (None,)
+        groups = probe_plan.groups
         for group_index, group in enumerate(groups):
-            fingerprint = (
-                group.fingerprint
-                if group is not None
-                else _stable_json_fingerprint(
-                    {
-                        "capability_id": capability.capability_id,
-                        "kind": "default_preflight",
-                    }
-                )
-            )
+            fingerprint = group.fingerprint
             artifact_dir = artifact_root / (
                 f"group-{group_index + 1:03d}-"
                 f"{fingerprint.removeprefix('sha256:')[:12]}"
             )
             try:
-                await preflight_frozen_replay_capability(
+                projected_capability = project_replay_capability_for_probe_group(
                     capability,
-                    artifact_dir=artifact_dir,
-                    required_nonempty_probe_operations=(
-                        _repair_conformance_required_nonempty_operations(contract)
-                    ),
-                    required_recorded_probe_operations=(
+                    group,
+                )
+                required_nonempty_operations = tuple(
+                    operation
+                    for operation in _repair_conformance_required_nonempty_operations(
+                        contract
+                    )
+                    if operation == group.operation
+                )
+                required_recorded_operations = tuple(
+                    operation
+                    for operation in (
                         (
                             contract.required_fixture_probe_operations
                             or contract.late_observed_operations[-1:]
                         )
                         if contract.requires_fixture_derived_probe
                         else ()
-                    ),
+                    )
+                    if operation == group.operation
+                )
+                await preflight_frozen_replay_capability(
+                    projected_capability,
+                    artifact_dir=artifact_dir,
+                    required_nonempty_probe_operations=required_nonempty_operations,
+                    required_recorded_probe_operations=required_recorded_operations,
+                    integrity_capability=capability,
                 )
             except Exception as exc:
+                artifact_ref = sanitize_path_ref(
+                    artifact_dir.relative_to(self.store.workspace_root).as_posix()
+                    if artifact_dir.is_relative_to(self.store.workspace_root)
+                    else artifact_dir.name
+                )
+                failure_event = ReplayFailureEvent(
+                    code="repair_probe_execution_failed",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.CAPABILITY_PREFLIGHT,
+                    scope=FailureScope.CANDIDATE,
+                    repairable=True,
+                    category="repair_conformance",
+                    summary="candidate conformance probe group failed",
+                    diagnostics={
+                        "affected_case_ids": list(group.case_ids)[:100],
+                        "error_type": type(exc).__name__,
+                    },
+                    artifact_refs=(artifact_ref,),
+                    capability_id=capability.capability_id,
+                    requirement_id=group.requirement_id,
+                    contract_fingerprint=fingerprint,
+                )
                 group_results.append(
                     {
                         "fingerprint": fingerprint,
                         "passed": False,
                         "code": "repair_probe_execution_failed",
-                        "case_ids": list(group.case_ids if group is not None else ()),
-                        "artifact_ref": sanitize_path_ref(
-                            artifact_dir.relative_to(self.store.workspace_root).as_posix()
-                            if artifact_dir.is_relative_to(self.store.workspace_root)
-                            else artifact_dir.name
-                        ),
+                        "requirement_id": group.requirement_id,
+                        "case_ids": list(group.case_ids),
+                        "artifact_ref": artifact_ref,
                         "error_type": type(exc).__name__,
+                        "failure_event": failure_event.to_dict(),
                     }
                 )
                 continue
@@ -2034,7 +2087,8 @@ class SelfEvolveRunner:
                     "fingerprint": fingerprint,
                     "passed": True,
                     "code": "repair_probe_group_passed",
-                    "case_ids": list(group.case_ids if group is not None else ()),
+                    "requirement_id": group.requirement_id,
+                    "case_ids": list(group.case_ids),
                     "artifact_ref": sanitize_path_ref(
                         artifact_dir.relative_to(self.store.workspace_root).as_posix()
                         if artifact_dir.is_relative_to(self.store.workspace_root)
@@ -2066,6 +2120,11 @@ class SelfEvolveRunner:
                                 if isinstance(case_id, str)
                             )
                         )[:100],
+                        "causal_failure_events": [
+                            result["failure_event"]
+                            for result in failed_groups
+                            if isinstance(result.get("failure_event"), Mapping)
+                        ],
                     },
                 ),
                 contract=contract,
@@ -2567,6 +2626,24 @@ class SelfEvolveRunner:
                             "does not provide a skill-owned replay capability"
                         ),
                         details={
+                            "failure_class": (
+                                "candidate"
+                                if capability_skill_root is not None
+                                else "infrastructure"
+                            ),
+                            "failure_owner": (
+                                FailureOwner.CANDIDATE.value
+                                if capability_skill_root is not None
+                                else FailureOwner.INFRASTRUCTURE.value
+                            ),
+                            "failure_scope": (
+                                FailureScope.CANDIDATE.value
+                                if capability_skill_root is not None
+                                else FailureScope.SHARED_RUN.value
+                            ),
+                            "failure_source": FailureEventSource.NATIVE.value,
+                            "repairable": capability_skill_root is not None,
+                            "code": "candidate_replay_capability_missing",
                             "requirement_count": len(preflight.requirements),
                             "requirement_kinds": sorted(
                                 {item.kind for item in preflight.requirements}
@@ -2679,6 +2756,17 @@ class SelfEvolveRunner:
             base_gate,
             details={
                 **dict(base_gate.details or {}),
+                **(
+                    {
+                        "failure_class": "candidate",
+                        "failure_owner": FailureOwner.CANDIDATE.value,
+                        "failure_scope": FailureScope.CANDIDATE.value,
+                        "failure_source": FailureEventSource.NATIVE.value,
+                        "repairable": True,
+                    }
+                    if capability_skill_root is not None and not base_gate.passed
+                    else {}
+                ),
                 **_replay_adaptation_details(
                     bundle,
                     readiness=readiness,
@@ -6328,27 +6416,19 @@ def _conformance_gate_blocks_population(gate: GateResult) -> bool:
 
 
 def _candidate_repair_conformance_contracts(
-    optimizer_diagnostics: Mapping[str, object],
+    optimizer_result: OptimizerResult,
 ) -> dict[str, RepairConformanceContract]:
-    raw_strategies = optimizer_diagnostics.get("candidate_strategies")
-    if not isinstance(raw_strategies, (list, tuple)):
-        return {}
-    contracts: dict[str, RepairConformanceContract] = {}
-    for strategy in raw_strategies:
-        if not isinstance(strategy, Mapping):
-            continue
-        candidate_id = strategy.get("candidate_id")
-        raw_contract = strategy.get("repair_conformance")
-        if (
-            not isinstance(candidate_id, str)
-            or not candidate_id
-            or not isinstance(raw_contract, Mapping)
-        ):
-            continue
-        contract = RepairConformanceContract.from_dict(raw_contract)
-        if contract.focus_candidate_id and contract.required_branch_paths:
-            contracts[candidate_id] = contract
-    return contracts
+    """Read exact contracts only from the optimizer's ephemeral channel."""
+
+    candidate_ids = {candidate.candidate_id for candidate in optimizer_result.candidates}
+    return {
+        candidate_id: contract
+        for candidate_id, contract in optimizer_result.private_context.items()
+        if candidate_id in candidate_ids
+        and isinstance(contract, RepairConformanceContract)
+        and contract.focus_candidate_id
+        and contract.required_branch_paths
+    }
 
 
 def _repair_conformance_gate(
@@ -6364,29 +6444,34 @@ def _repair_conformance_gate(
         **dict(result.details),
     }
     if not result.passed:
-        failure_event = ReplayFailureEvent(
-            code=result.code,
-            owner=FailureOwner.CANDIDATE,
-            stage=FailureStage.CAPABILITY_PREFLIGHT,
-            scope=FailureScope.CANDIDATE,
-            repairable=True,
-            category="repair_conformance",
-            summary=result.reason,
-            diagnostics={
-                "focus_candidate_id": (
-                    contract.focus_candidate_id if contract is not None else None
-                ),
-            },
+        raw_causal_events = details.get("causal_failure_events")
+        causal_events = (
+            [dict(item) for item in raw_causal_events if isinstance(item, Mapping)]
+            if isinstance(raw_causal_events, (list, tuple))
+            else []
         )
-        details["failure_event"] = failure_event.to_dict()
-        # Conformance is an independent pre-replay gate, so its typed cause is
-        # not discoverable through aggregate_replay_failures().  Publish the
-        # same event through the causal channel consumed by feedback,
-        # diagnostics, and lesson extraction while retaining failure_event for
-        # lifecycle policy and artifact compatibility.
-        details["causal_failure_events"] = [failure_event.to_dict()]
+        if not causal_events:
+            failure_event = ReplayFailureEvent(
+                code=result.code,
+                owner=FailureOwner.CANDIDATE,
+                stage=FailureStage.CAPABILITY_PREFLIGHT,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+                category="repair_conformance",
+                summary=result.reason,
+                diagnostics={
+                    "focus_candidate_id": (
+                        contract.focus_candidate_id if contract is not None else None
+                    ),
+                },
+            )
+            causal_events = [failure_event.to_dict()]
+        details["failure_event"] = causal_events[0]
+        # Conformance is an independent pre-replay gate, so publish every
+        # distinct failed group through the causal feedback channel.
+        details["causal_failure_events"] = causal_events
     if contract is not None:
-        details["repair_conformance"] = contract.to_dict()
+        details["repair_conformance"] = contract.to_public_dict()
     return GateResult(
         gate_name="candidate_repair_conformance",
         passed=result.passed,
@@ -8036,6 +8121,7 @@ def _population_report(
         str(item.get("candidate_id"))
         for item in iteration_reports
         if isinstance(item.get("candidate_id"), str)
+        and item.get("lifecycle_stage") == "authoritative_replay"
     ]
     report: dict[str, object] = {
         "generated_candidate_count": len(all_candidates),
@@ -8047,6 +8133,28 @@ def _population_report(
             0,
             len(all_candidates) - len(set(replayed_candidate_ids)),
         ),
+    }
+    lifecycle: dict[str, object] = {
+        "generated": {
+            "candidate_count": len(all_candidates),
+            "candidate_ids": [candidate.candidate_id for candidate in all_candidates],
+        },
+        "conformance": {
+            "attempted_candidate_count": 0,
+            "rejected_candidate_count": 0,
+            "attempted_candidate_ids": [],
+            "rejected_candidate_ids": [],
+        },
+        "screening": {
+            "attempted_candidate_count": 0,
+            "rejected_candidate_count": 0,
+            "attempted_candidate_ids": [],
+            "rejected_candidate_ids": [],
+        },
+        "authoritative_replay": {
+            "attempted_candidate_count": len(replayed_candidate_ids),
+            "attempted_candidate_ids": replayed_candidate_ids,
+        },
     }
     strategy_records = _candidate_strategy_records(optimizer_diagnostics or ())
     if strategy_records:
@@ -8094,6 +8202,52 @@ def _population_report(
                 report["conformance_iterations"] = conformance_iterations
             if task_screening_iterations:
                 report["screening_iterations"] = task_screening_iterations
+        conformance_attempts = [
+            attempt
+            for validation in screening_reports
+            for conformance in (validation.get("conformance"),)
+            if isinstance(conformance, Mapping)
+            for attempt in conformance.get("attempts", ())
+            if isinstance(attempt, Mapping)
+        ]
+        screening_attempts = [
+            attempt
+            for validation in screening_reports
+            for screening in (validation.get("screening"),)
+            if isinstance(screening, Mapping)
+            for attempt in screening.get("attempts", ())
+            if isinstance(attempt, Mapping)
+        ]
+        for stage_name, attempts in (
+            ("conformance", conformance_attempts),
+            ("screening", screening_attempts),
+        ):
+            attempted_ids = list(
+                dict.fromkeys(
+                    str(attempt.get("candidate_id"))
+                    for attempt in attempts
+                    if isinstance(attempt.get("candidate_id"), str)
+                )
+            )
+            rejected_ids = list(
+                dict.fromkeys(
+                    str(attempt.get("candidate_id"))
+                    for attempt in attempts
+                    if isinstance(attempt.get("candidate_id"), str)
+                    and attempt.get("passed") is False
+                )
+            )
+            stage = lifecycle[stage_name]
+            assert isinstance(stage, dict)
+            stage.update(
+                {
+                    "attempted_candidate_count": len(attempted_ids),
+                    "rejected_candidate_count": len(rejected_ids),
+                    "attempted_candidate_ids": attempted_ids,
+                    "rejected_candidate_ids": rejected_ids,
+                }
+            )
+    report["lifecycle"] = lifecycle
     return report
 
 

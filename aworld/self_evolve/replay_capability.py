@@ -374,9 +374,74 @@ def frozen_replay_fixture_shape_fingerprints(
                     "size_bucket": max(1, len(raw)).bit_length(),
                 }
             else:
-                descriptor = _fixture_structure_descriptor(value)
+                descriptor = {
+                    "bounded_descriptor": _fixture_structure_descriptor(value),
+                    # The report remains bounded, but semantic grouping must
+                    # account for every structural node.  In particular, a
+                    # new 129th object field or array element cannot alias the
+                    # first 128 displayed nodes.
+                    "full_structure_sha256": _fixture_full_structure_digest(
+                        value
+                    ),
+                }
         fingerprints[relative_path] = _json_fingerprint(descriptor)
     return fingerprints
+
+
+def _fixture_full_structure_digest(value: Any) -> str:
+    digest = hashlib.sha256()
+
+    def visit(item: Any, *, depth: int = 0, decoded_depth: int = 0) -> None:
+        if depth >= 64:
+            digest.update(b"depth-limit;")
+            return
+        if isinstance(item, Mapping):
+            digest.update(b"object{")
+            for key, nested in sorted(item.items(), key=lambda pair: str(pair[0])):
+                key_digest = hashlib.sha256(str(key).encode("utf-8")).digest()
+                digest.update(key_digest)
+                visit(nested, depth=depth + 1, decoded_depth=decoded_depth)
+            digest.update(b"}")
+            return
+        if isinstance(item, list):
+            digest.update(b"array[")
+            for nested in item:
+                visit(nested, depth=depth + 1, decoded_depth=decoded_depth)
+            digest.update(b"]")
+            return
+        if isinstance(item, str):
+            stripped = item.strip()
+            if (
+                decoded_depth < 3
+                and len(stripped) <= 256 * 1024
+                and stripped[:1] in {"{", "["}
+            ):
+                try:
+                    decoded = json.loads(stripped)
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(decoded, (Mapping, list)):
+                        digest.update(b"encoded-json:")
+                        visit(
+                            decoded,
+                            depth=depth + 1,
+                            decoded_depth=decoded_depth + 1,
+                        )
+                        return
+            digest.update(b"string;")
+            return
+        if isinstance(item, bool):
+            digest.update(b"boolean;")
+        elif item is None:
+            digest.update(b"null;")
+        elif isinstance(item, (int, float)):
+            digest.update(b"number;")
+        else:
+            digest.update(b"unknown;")
+
+    visit(value)
+    return "sha256:" + digest.hexdigest()
 
 
 def _fixture_structure_descriptor(
