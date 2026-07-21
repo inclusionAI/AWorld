@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
 import socket
 import subprocess
 import sys
@@ -1181,6 +1182,179 @@ async def test_v2_lifecycle_cannot_claim_v3_per_member_authority(
     assert normalized.failure_events[0].code == (
         "legacy_repetition_semantics_non_authoritative"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tamper", "expected_code"),
+    (
+        ("delete_child", "replay_v3_repetition_children_invalid"),
+        ("delete_other_member_candidate_child", "replay_v3_repetition_children_invalid"),
+        ("delete_lifecycle", "replay_v3_lifecycle_missing"),
+        ("unexpected_child", "replay_v3_repetition_children_invalid"),
+        ("aggregate_count", "replay_v3_repetition_count_mismatch"),
+        ("root_aggregate_count", "replay_v3_root_aggregate_metrics_mismatch"),
+        ("request_count", "replay_v3_repetition_children_invalid"),
+        ("manifest_status", "replay_v3_manifest_status_mismatch"),
+        ("mixed_lifecycle", "replay_v3_lifecycle_contract_invalid"),
+    ),
+)
+async def test_v3_repetition_artifact_tamper_is_typed_and_non_authoritative(
+    tmp_path: Path,
+    tamper: str,
+    expected_code: str,
+) -> None:
+    case_ids = ("tamper-a", "tamper-b", "tamper-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "v3_repetition_tamper"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\n",
+        candidate_id="tamper-candidate",
+    )
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    request = build_replay_request(
+        run_id=f"v3-tamper-{tamper}",
+        workspace_root=tmp_path,
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=tmp_path / "overlay",
+        dataset=dataset,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    request = replace(
+        request,
+        adaptation_fingerprint="sha256:tamper-adaptation",
+        workspace_seed_fingerprint="sha256:tamper-workspace",
+        task_input_fingerprint="sha256:tamper-input",
+    )
+    original = await AWorldCliCandidateReplayBackend(
+        executor=fake_executor
+    ).replay_candidate(
+        request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / request.run_id
+        / "replay"
+        / candidate.candidate_id
+    )
+    manifest_path = replay_dir / "members" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    first_member_root = replay_dir / "members" / manifest["members"][0]["path"]
+    other_member_root = replay_dir / "members" / manifest["members"][1]["path"]
+    first_baseline = first_member_root / "baseline"
+    assert original.member_results is not None
+    direct_reuse_request = replace(
+        original.member_results[0].request,
+        baseline_replay_dir=str(first_baseline),
+    )
+    assert _stored_baseline_matches_request(direct_reuse_request)
+
+    if tamper == "delete_child":
+        shutil.rmtree(first_baseline / "2")
+    elif tamper == "delete_other_member_candidate_child":
+        shutil.rmtree(other_member_root / candidate.candidate_id / "3")
+    elif tamper == "delete_lifecycle":
+        for lifecycle_path in replay_dir.rglob("lifecycle.json"):
+            lifecycle_path.unlink()
+    elif tamper == "unexpected_child":
+        shutil.copytree(first_baseline / "1", first_baseline / "01")
+    elif tamper == "aggregate_count":
+        aggregate_path = first_baseline / "aggregate_metrics.json"
+        aggregate = json.loads(aggregate_path.read_text())
+        aggregate["repetition_count"] = 99
+        aggregate["successful_repetition_count"] = 99
+        _write_json(aggregate_path, aggregate)
+    elif tamper == "root_aggregate_count":
+        aggregate_path = replay_dir / "baseline" / "aggregate_metrics.json"
+        aggregate = json.loads(aggregate_path.read_text())
+        aggregate["repetition_count"] = 99
+        aggregate["successful_repetition_count"] = 99
+        _write_json(aggregate_path, aggregate)
+    elif tamper == "request_count":
+        root_payload = json.loads((replay_dir / "request.json").read_text())
+        root_payload["baseline_repetitions"] = 1
+        _write_json(replay_dir / "request.json", root_payload)
+        for member_request_path in (replay_dir / "members").glob("*/request.json"):
+            member_payload = json.loads(member_request_path.read_text())
+            member_payload["baseline_repetitions"] = 1
+            _write_json(member_request_path, member_payload)
+    elif tamper == "manifest_status":
+        manifest["members"][0]["baseline_status"] = "failed"
+        _write_json(manifest_path, manifest)
+    else:
+        lifecycle_path = first_baseline / "1" / "lifecycle.json"
+        lifecycle = json.loads(lifecycle_path.read_text())
+        lifecycle["schema_version"] = "aworld.self_evolve.replay_lifecycle.v2"
+        lifecycle.pop("repetition_semantics")
+        _write_json(lifecycle_path, lifecycle)
+
+    loaded = load_candidate_replay_result(replay_dir)
+    normalized = normalize_replay_members(dataset=dataset, replay_result=loaded)
+    failure_codes = {event.code for event in normalized.failure_events}
+
+    assert expected_code in failure_codes
+    assert not normalized.valid
+    assert not _has_authoritative_per_member_repetitions(loaded.request)
+    assert not _replay_result_has_reusable_baseline(
+        dataset=dataset,
+        replay_result=loaded,
+    )
+    if tamper not in {
+        "delete_other_member_candidate_child",
+        "manifest_status",
+        "root_aggregate_count",
+    }:
+        assert not _stored_baseline_matches_request(direct_reuse_request)
+    assert not candidate_replay_is_comparable(
+        dataset=dataset,
+        replay_result=loaded,
+        normalized=normalized,
+    )
+    with pytest.raises(ValueError, match="member result contract is invalid"):
+        build_paired_replay_dataset(
+            dataset=dataset,
+            replay_result=loaded,
+            candidate=candidate,
+            normalized=normalized,
+        )
+    if tamper == "delete_child":
+        assert loaded.member_results is not None
+        assert len(loaded.member_results[0].baseline.repetition_results) == 1
+        assert loaded.member_results[0].baseline.metrics["repetition_count"] == 1
+    if tamper == "aggregate_count":
+        assert loaded.member_results is not None
+        assert loaded.member_results[0].baseline.metrics["repetition_count"] == 2
+        assert (
+            loaded.member_results[0].baseline.metrics[
+                "successful_repetition_count"
+            ]
+            == 2
+        )
+    if tamper == "delete_other_member_candidate_child":
+        assert loaded.member_results is not None
+        assert len(loaded.member_results[1].candidate.repetition_results) == 2
+        assert loaded.member_results[1].candidate.metrics["repetition_count"] == 2
+    if tamper == "root_aggregate_count":
+        assert loaded.baseline.metrics["repetition_count"] == 6
+        assert loaded.baseline.metrics["successful_repetition_count"] == 6
 
 
 def test_all_blocked_repetition_aggregate_is_unexecuted_and_artifact_free(

@@ -101,6 +101,7 @@ _REPLAY_PROVENANCE_METRIC_KEYS = (
 
 _PER_MEMBER_REPETITION_SEMANTICS = "per_member_v3"
 _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS = "distributed_v2_migrated"
+_NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS = "per_member_v3_non_authoritative"
 _MEMBER_REPLAY_SCHEMA_V3 = "aworld.self_evolve.member_replay.v3"
 _LEGACY_MEMBER_REPLAY_SCHEMAS = {
     "aworld.self_evolve.member_replay.v1",
@@ -214,6 +215,16 @@ class CandidateReplayResult:
     # None is reserved for legacy root-level single-member artifacts. New
     # backends always write an explicit tuple, including one-member datasets.
     member_results: tuple["CandidateReplayMemberResult", ...] | None = None
+    artifact_failure_events: tuple[ReplayFailureEvent, ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(event, ReplayFailureEvent)
+            for event in self.artifact_failure_events
+        ):
+            raise ValueError(
+                "artifact_failure_events must contain replay failure events"
+            )
 
     @property
     def succeeded(self) -> bool:
@@ -342,12 +353,22 @@ def normalize_replay_members(
     if isinstance(root_request, CandidateReplayRequest) and not (
         _has_authoritative_per_member_repetitions(root_request)
     ):
+        legacy_migration = (
+            root_request.repetition_semantics
+            == _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
+        )
         events.append(
             _normalization_failure(
-                code="legacy_repetition_semantics_non_authoritative",
+                code=(
+                    "legacy_repetition_semantics_non_authoritative"
+                    if legacy_migration
+                    else "replay_artifact_non_authoritative"
+                ),
                 summary=(
                     "legacy distributed replay was migrated for inspection but "
                     "cannot authorize new replay or evaluation"
+                    if legacy_migration
+                    else "stored replay artifact failed the v3 authority contract"
                 ),
                 diagnostics={
                     "repetition_semantics": (
@@ -362,6 +383,10 @@ def normalize_replay_members(
                 },
             )
         )
+    # Normalization intentionally accepts backend-compatible replay objects,
+    # including older/duck-typed implementations that predate the persisted
+    # artifact failure carrier.
+    events.extend(getattr(replay_result, "artifact_failure_events", ()))
     raw_members = replay_result.member_results
     if raw_members is None:
         if len(replayable_cases) == 1:
@@ -955,21 +980,58 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
     if member_manifest_path.exists():
         member_manifest = _load_json_object(member_manifest_path)
         member_schema = str(member_manifest.get("schema_version") or "")
+        authoritative_v3_manifest = member_schema == _MEMBER_REPLAY_SCHEMA_V3
+        artifact_failures: list[ReplayFailureEvent] = []
         migration_required = (
             member_schema in _LEGACY_MEMBER_REPLAY_SCHEMAS
             or lifecycle_is_per_member_v3 is False
         )
-        if member_schema == _MEMBER_REPLAY_SCHEMA_V3:
+        if authoritative_v3_manifest:
             if (
                 member_manifest.get("repetition_semantics")
                 != _PER_MEMBER_REPETITION_SEMANTICS
                 or not _has_authoritative_per_member_repetitions(request)
             ):
-                raise ValueError(
-                    "stored v3 member replay is missing per-member repetition semantics"
+                artifact_failures.append(
+                    _replay_artifact_contract_failure(
+                        code="replay_v3_manifest_contract_invalid",
+                        summary=(
+                            "stored v3 member replay is missing per-member "
+                            "repetition semantics"
+                        ),
+                        diagnostics={
+                            "manifest_repetition_semantics": member_manifest.get(
+                                "repetition_semantics"
+                            ),
+                            "request_repetition_semantics": (
+                                request.repetition_semantics
+                            ),
+                        },
+                    )
                 )
         elif member_schema not in _LEGACY_MEMBER_REPLAY_SCHEMAS:
-            raise ValueError("unsupported stored member replay schema")
+            artifact_failures.append(
+                _replay_artifact_contract_failure(
+                    code="replay_member_manifest_schema_invalid",
+                    summary="stored member replay manifest schema is unsupported",
+                    diagnostics={"schema_version": member_schema},
+                )
+            )
+        if authoritative_v3_manifest:
+            artifact_failures.extend(
+                _v3_lifecycle_contract_failures(
+                    root / "baseline",
+                    artifact_scope="root_baseline",
+                    expected_variant_id="baseline",
+                )
+            )
+            artifact_failures.extend(
+                _v3_lifecycle_contract_failures(
+                    root / _safe_path(request.candidate_id),
+                    artifact_scope="root_candidate",
+                    expected_variant_id=request.candidate_id,
+                )
+            )
         raw_members = member_manifest.get("members")
         if not isinstance(raw_members, list):
             raise ValueError("stored member replay manifest is missing members")
@@ -981,18 +1043,42 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
             relative_path = str(raw_member.get("path") or "")
             if not case_id or not relative_path:
                 raise ValueError("stored member replay entry is missing case_id or path")
-            if relative_path != _member_artifact_name(case_id):
-                raise ValueError("stored member replay path does not match case_id")
+            expected_relative_path = _member_artifact_name(case_id)
+            if relative_path != expected_relative_path:
+                artifact_failures.append(
+                    _replay_artifact_contract_failure(
+                        code="replay_member_manifest_path_mismatch",
+                        summary="stored member replay path does not match case_id",
+                        diagnostics={
+                            "case_id": case_id,
+                            "path": relative_path,
+                            "expected_path": expected_relative_path,
+                        },
+                    )
+                )
+                relative_path = expected_relative_path
             member_root = root / "members" / relative_path
             member_request = _candidate_replay_request_from_mapping(
                 _load_json_object(member_root / "request.json")
             )
             if (
-                member_schema == _MEMBER_REPLAY_SCHEMA_V3
+                authoritative_v3_manifest
                 and not _has_authoritative_per_member_repetitions(member_request)
             ):
-                raise ValueError(
-                    "stored v3 member request is missing per-member repetition semantics"
+                artifact_failures.append(
+                    _replay_artifact_contract_failure(
+                        code="replay_v3_member_request_contract_invalid",
+                        summary=(
+                            "stored v3 member request is missing per-member "
+                            "repetition semantics"
+                        ),
+                        diagnostics={
+                            "case_id": case_id,
+                            "repetition_semantics": (
+                                member_request.repetition_semantics
+                            ),
+                        },
+                    )
                 )
             baseline_dir = (
                 Path(member_request.baseline_replay_dir)
@@ -1006,18 +1092,65 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
             )
             if any(state is False for state in member_lifecycle_states):
                 migration_required = True
+            baseline = _load_variant_result_from_dir(
+                baseline_dir,
+                base_variant_id="baseline",
+            )
+            candidate_result = _load_variant_result_from_dir(
+                candidate_dir,
+                base_variant_id=request.candidate_id,
+            )
+            if authoritative_v3_manifest:
+                baseline, failures = _validate_v3_member_variant_artifact(
+                    baseline_dir,
+                    result=baseline,
+                    requested_repetitions=member_request.baseline_repetitions,
+                    case_id=case_id,
+                    variant_role="baseline",
+                    expected_variant_id="baseline",
+                )
+                artifact_failures.extend(failures)
+                candidate_result, failures = _validate_v3_member_variant_artifact(
+                    candidate_dir,
+                    result=candidate_result,
+                    requested_repetitions=member_request.candidate_repetitions,
+                    case_id=case_id,
+                    variant_role="candidate",
+                    expected_variant_id=request.candidate_id,
+                )
+                artifact_failures.extend(failures)
+            manifest_statuses = (
+                ("baseline", raw_member.get("baseline_status"), baseline.status),
+                (
+                    "candidate",
+                    raw_member.get("candidate_status"),
+                    candidate_result.status,
+                ),
+            )
+            if authoritative_v3_manifest:
+                for variant_role, manifest_status, loaded_status in manifest_statuses:
+                    if manifest_status != loaded_status.value:
+                        artifact_failures.append(
+                            _replay_artifact_contract_failure(
+                                code="replay_v3_manifest_status_mismatch",
+                                summary=(
+                                    "stored v3 manifest status does not match "
+                                    "the member lifecycle"
+                                ),
+                                diagnostics={
+                                    "case_id": case_id,
+                                    "variant_role": variant_role,
+                                    "manifest_status": manifest_status,
+                                    "lifecycle_status": loaded_status.value,
+                                },
+                            )
+                        )
             member_results.append(
                 CandidateReplayMemberResult(
                     case_id=case_id,
                     request=member_request,
-                    baseline=_load_variant_result_from_dir(
-                        baseline_dir,
-                        base_variant_id="baseline",
-                    ),
-                    candidate=_load_variant_result_from_dir(
-                        candidate_dir,
-                        base_variant_id=request.candidate_id,
-                    ),
+                    baseline=baseline,
+                    candidate=candidate_result,
                 )
             )
         members = tuple(member_results)
@@ -1056,6 +1189,25 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
                     _MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS
                 ),
             )
+        elif artifact_failures:
+            request = replace(
+                request,
+                repetition_semantics=(
+                    _NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS
+                ),
+            )
+            members = tuple(
+                replace(
+                    member,
+                    request=replace(
+                        member.request,
+                        repetition_semantics=(
+                            _NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS
+                        ),
+                    ),
+                )
+                for member in members
+            )
         baseline = _aggregate_member_variant_results(
             base_variant_id="baseline",
             members=members,
@@ -1070,23 +1222,82 @@ def load_candidate_replay_result(replay_dir: str | Path) -> CandidateReplayResul
             artifact_dir=root / _safe_path(request.candidate_id),
             persist=False,
         )
+        if authoritative_v3_manifest:
+            artifact_failures.extend(
+                _validate_v3_root_aggregate_artifact(
+                    root / "baseline",
+                    expected=baseline,
+                    variant_role="baseline",
+                )
+            )
+            artifact_failures.extend(
+                _validate_v3_root_aggregate_artifact(
+                    root / _safe_path(request.candidate_id),
+                    expected=candidate,
+                    variant_role="candidate",
+                )
+            )
+        if (
+            artifact_failures
+            and not migration_required
+            and _has_authoritative_per_member_repetitions(request)
+        ):
+            request = replace(
+                request,
+                repetition_semantics=(
+                    _NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS
+                ),
+            )
+            members = tuple(
+                replace(
+                    member,
+                    request=replace(
+                        member.request,
+                        repetition_semantics=(
+                            _NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS
+                        ),
+                    ),
+                )
+                for member in members
+            )
         return CandidateReplayResult(
             request=request,
             baseline=baseline,
             candidate=candidate,
             member_results=members,
+            artifact_failure_events=tuple(artifact_failures),
         )
     baseline = _load_variant_result_from_dir(root / "baseline", base_variant_id="baseline")
     candidate = _load_variant_result_from_dir(
         root / _safe_path(request.candidate_id),
         base_variant_id=request.candidate_id,
     )
+    artifact_failures: tuple[ReplayFailureEvent, ...] = ()
     if lifecycle_is_per_member_v3 is False:
         request = replace(
             request,
             repetition_semantics=_MIGRATED_DISTRIBUTED_REPETITION_SEMANTICS,
         )
-    return CandidateReplayResult(request=request, baseline=baseline, candidate=candidate)
+    elif _has_authoritative_per_member_repetitions(request):
+        artifact_failures = (
+            _replay_artifact_contract_failure(
+                code="replay_v3_member_manifest_missing",
+                summary=(
+                    "authoritative v3 replay requires an explicit member manifest"
+                ),
+                diagnostics={"replay_dir": str(root)},
+            ),
+        )
+        request = replace(
+            request,
+            repetition_semantics=_NON_AUTHORITATIVE_V3_REPETITION_SEMANTICS,
+        )
+    return CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        artifact_failure_events=artifact_failures,
+    )
 
 
 def _stored_lifecycles_use_per_member_v3(root: Path) -> bool | None:
@@ -1104,6 +1315,263 @@ def _stored_lifecycles_use_per_member_v3(root: Path) -> bool | None:
         ):
             return False
     return True
+
+
+def _replay_artifact_contract_failure(
+    *,
+    code: str,
+    summary: str,
+    diagnostics: Mapping[str, Any],
+) -> ReplayFailureEvent:
+    return _normalization_failure(
+        code=code,
+        summary=summary,
+        diagnostics=diagnostics,
+    )
+
+
+def _v3_lifecycle_contract_failures(
+    variant_dir: Path,
+    *,
+    artifact_scope: str,
+    expected_variant_id: str,
+) -> tuple[ReplayFailureEvent, ...]:
+    lifecycle_path = variant_dir / "lifecycle.json"
+    diagnostics: dict[str, Any] = {
+        "artifact_scope": artifact_scope,
+        "artifact_dir": str(variant_dir),
+        "expected_variant_id": expected_variant_id,
+    }
+    if not lifecycle_path.is_file():
+        return (
+            _replay_artifact_contract_failure(
+                code="replay_v3_lifecycle_missing",
+                summary="authoritative v3 replay lifecycle is missing",
+                diagnostics=diagnostics,
+            ),
+        )
+    try:
+        lifecycle = _load_json_object(lifecycle_path)
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return (
+            _replay_artifact_contract_failure(
+                code="replay_v3_lifecycle_invalid",
+                summary="authoritative v3 replay lifecycle is unreadable",
+                diagnostics={**diagnostics, "error_type": type(exc).__name__},
+            ),
+        )
+    mismatches: dict[str, Any] = {}
+    if lifecycle.get("schema_version") != _REPLAY_LIFECYCLE_SCHEMA_V3:
+        mismatches["schema_version"] = lifecycle.get("schema_version")
+    if lifecycle.get("repetition_semantics") != _PER_MEMBER_REPETITION_SEMANTICS:
+        mismatches["repetition_semantics"] = lifecycle.get(
+            "repetition_semantics"
+        )
+    if lifecycle.get("variant_id") != expected_variant_id:
+        mismatches["variant_id"] = lifecycle.get("variant_id")
+    if not mismatches:
+        return ()
+    return (
+        _replay_artifact_contract_failure(
+            code="replay_v3_lifecycle_contract_invalid",
+            summary="stored replay lifecycle violates the v3 authority contract",
+            diagnostics={**diagnostics, "mismatches": mismatches},
+        ),
+    )
+
+
+def _validate_v3_member_variant_artifact(
+    variant_dir: Path,
+    *,
+    result: ReplayVariantResult,
+    requested_repetitions: int,
+    case_id: str,
+    variant_role: str,
+    expected_variant_id: str,
+) -> tuple[ReplayVariantResult, tuple[ReplayFailureEvent, ...]]:
+    failures: list[ReplayFailureEvent] = list(
+        _v3_lifecycle_contract_failures(
+            variant_dir,
+            artifact_scope=f"member_{variant_role}",
+            expected_variant_id=expected_variant_id,
+        )
+    )
+    repetition_dirs = tuple(_stored_repetition_dirs(variant_dir))
+    actual_child_names = tuple(path.name for path in repetition_dirs)
+    expected_child_names = (
+        tuple(str(index) for index in range(1, requested_repetitions + 1))
+        if result.executed and requested_repetitions > 1
+        else ()
+    )
+    duplicate_indexes = tuple(
+        sorted(
+            index
+            for index in {int(name) for name in actual_child_names}
+            if sum(int(name) == index for name in actual_child_names) > 1
+        )
+    )
+    if actual_child_names != expected_child_names or duplicate_indexes:
+        failures.append(
+            _replay_artifact_contract_failure(
+                code="replay_v3_repetition_children_invalid",
+                summary=(
+                    "stored v3 repetition children do not match the member request"
+                ),
+                diagnostics={
+                    "case_id": case_id,
+                    "variant_role": variant_role,
+                    "requested_repetitions": requested_repetitions,
+                    "expected_children": expected_child_names,
+                    "actual_children": actual_child_names,
+                    "duplicate_indexes": duplicate_indexes,
+                },
+            )
+        )
+    for index, child_dir in enumerate(repetition_dirs, start=1):
+        expected_child_variant_id = (
+            f"{expected_variant_id}-{index}"
+            if requested_repetitions > 1
+            else expected_variant_id
+        )
+        failures.extend(
+            _v3_lifecycle_contract_failures(
+                child_dir,
+                artifact_scope=f"member_{variant_role}_repetition",
+                expected_variant_id=expected_child_variant_id,
+            )
+        )
+
+    physical_results = (
+        result.repetition_results
+        if requested_repetitions > 1
+        else ((result,) if result.executed else ())
+    )
+    actual_counts = {
+        "repetition_count": len(physical_results),
+        "successful_repetition_count": sum(
+            item.status is ReplayExecutionStatus.SUCCEEDED
+            for item in physical_results
+        ),
+        "failed_repetition_count": sum(
+            item.status is ReplayExecutionStatus.FAILED
+            for item in physical_results
+        ),
+        "blocked_repetition_count": sum(
+            item.status is ReplayExecutionStatus.BLOCKED
+            for item in physical_results
+        ),
+        "not_run_repetition_count": sum(
+            item.status is ReplayExecutionStatus.NOT_RUN
+            for item in physical_results
+        ),
+    }
+    aggregate_mismatches = {
+        key: {"reported": result.metrics.get(key), "actual": actual}
+        for key, actual in actual_counts.items()
+        if (result.executed or key in result.metrics)
+        and result.metrics.get(key) != actual
+    }
+    expected_actual_count = requested_repetitions if result.executed else 0
+    if actual_counts["repetition_count"] != expected_actual_count:
+        aggregate_mismatches["requested_repetitions"] = {
+            "reported": requested_repetitions,
+            "actual": actual_counts["repetition_count"],
+        }
+    if aggregate_mismatches:
+        failures.append(
+            _replay_artifact_contract_failure(
+                code="replay_v3_repetition_count_mismatch",
+                summary=(
+                    "stored v3 aggregate counts do not match physical repetitions"
+                ),
+                diagnostics={
+                    "case_id": case_id,
+                    "variant_role": variant_role,
+                    "mismatches": aggregate_mismatches,
+                },
+            )
+        )
+    canonical_metrics = {**dict(result.metrics), **actual_counts}
+    return (
+        replace(result, metrics=canonical_metrics),
+        tuple(failures),
+    )
+
+
+def _validate_v3_root_aggregate_artifact(
+    variant_dir: Path,
+    *,
+    expected: ReplayVariantResult,
+    variant_role: str,
+) -> tuple[ReplayFailureEvent, ...]:
+    failures: list[ReplayFailureEvent] = []
+    try:
+        lifecycle = _load_json_object(variant_dir / "lifecycle.json")
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        # Exact lifecycle diagnostics are emitted separately.
+        return ()
+    lifecycle_status = lifecycle.get("status")
+    if lifecycle_status != expected.status.value:
+        failures.append(
+            _replay_artifact_contract_failure(
+                code="replay_v3_root_lifecycle_status_mismatch",
+                summary=(
+                    "stored v3 root lifecycle status does not match its members"
+                ),
+                diagnostics={
+                    "variant_role": variant_role,
+                    "lifecycle_status": lifecycle_status,
+                    "member_aggregate_status": expected.status.value,
+                },
+            )
+        )
+    aggregate_path = variant_dir / "aggregate_metrics.json"
+    try:
+        aggregate_metrics = _load_json_object(aggregate_path)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError) as exc:
+        return (
+            *failures,
+            _replay_artifact_contract_failure(
+                code="replay_v3_root_aggregate_metrics_missing",
+                summary="stored v3 root aggregate metrics are missing or unreadable",
+                diagnostics={
+                    "variant_role": variant_role,
+                    "error_type": type(exc).__name__,
+                },
+            ),
+        )
+    generated_keys = (
+        "member_count",
+        "successful_member_count",
+        "failed_member_count",
+        "blocked_member_count",
+        "not_run_member_count",
+        "repetition_count",
+        "successful_repetition_count",
+        "failed_repetition_count",
+    )
+    mismatches = {
+        key: {
+            "reported": aggregate_metrics.get(key),
+            "actual": expected.metrics.get(key),
+        }
+        for key in generated_keys
+        if aggregate_metrics.get(key) != expected.metrics.get(key)
+    }
+    if mismatches:
+        failures.append(
+            _replay_artifact_contract_failure(
+                code="replay_v3_root_aggregate_metrics_mismatch",
+                summary=(
+                    "stored v3 root aggregate metrics do not match member results"
+                ),
+                diagnostics={
+                    "variant_role": variant_role,
+                    "mismatches": mismatches,
+                },
+            )
+        )
+    return tuple(failures)
 
 
 @dataclass(frozen=True)
@@ -2364,6 +2832,16 @@ def _stored_baseline_matches_request(request: CandidateReplayRequest) -> bool:
             base_variant_id="baseline",
         )
     except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+        return False
+    baseline, artifact_failures = _validate_v3_member_variant_artifact(
+        Path(request.baseline_replay_dir),
+        result=baseline,
+        requested_repetitions=request.baseline_repetitions,
+        case_id=request.task_id,
+        variant_role="baseline",
+        expected_variant_id="baseline",
+    )
+    if artifact_failures:
         return False
     return (
         baseline.succeeded
