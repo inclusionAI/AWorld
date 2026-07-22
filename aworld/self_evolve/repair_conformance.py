@@ -969,6 +969,39 @@ def compile_repair_conformance_contract(
     )
 
 
+def merge_repair_conformance_constraint_context(
+    inherited: Mapping[str, object] | None,
+    *diagnostics: Mapping[str, object],
+) -> dict[str, object] | None:
+    """Merge public typed repair constraints across a causal feedback boundary.
+
+    ``inherited`` is the validation input contract, while ``diagnostics`` may
+    contain constraints discovered only after compiling or probing that input.
+    The result remains payload-free and public: fixture requirement identities
+    are retained only by digest, and schema rules are canonical typed values.
+    """
+
+    sources = tuple(
+        value
+        for value in (inherited, *diagnostics)
+        if isinstance(value, Mapping)
+    )
+    fixture_constraints = _fixture_probe_constraints(sources)
+    schema_constraints = _schema_field_constraints(sources)
+    if inherited is None and not fixture_constraints and not schema_constraints:
+        return None
+    merged = dict(inherited or {})
+    if fixture_constraints:
+        merged["fixture_probe_constraints"] = [
+            item.to_public_dict() for item in fixture_constraints
+        ]
+    if schema_constraints:
+        merged["schema_field_constraints"] = [
+            item.to_dict() for item in schema_constraints
+        ]
+    return merged
+
+
 def _compile_failure_branch_paths(
     diagnostics: Sequence[Mapping[str, object]],
     *,
