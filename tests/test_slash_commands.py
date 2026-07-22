@@ -760,6 +760,7 @@ class TestOptimizeCommand:
                 cwd=str(tmp_path),
                 user_args=(
                     f"--from-trajectory {trajectory_path} --apply auto_verified "
+                    "--new-skill-policy draft_only "
                     f"--judge-agent {judge_path} --replay-timeout 600 "
                     "--replay-max-runs 1 --judge-timeout 120"
                 ),
@@ -771,6 +772,7 @@ class TestOptimizeCommand:
         assert calls["infer_target"] is True
         assert calls["from_trajectory"] == str(trajectory_path)
         assert calls["apply"] == "auto_verified"
+        assert calls["new_skill_policy"] == "draft_only"
         assert calls["judge_agent"] == str(judge_path)
         assert calls["judge_agent_name"] is None
         assert calls["judge_backend_ref"] is None

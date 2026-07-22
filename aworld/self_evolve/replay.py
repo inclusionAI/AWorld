@@ -5886,10 +5886,18 @@ def _infer_baseline_skill_root_from_target(target: SelfEvolveTargetRef) -> str |
 
 def _is_self_evolve_draft_skill_path(path: Path) -> bool:
     normalized_parts = tuple(part.lower() for part in path.parts)
-    marker = (".aworld", "self_evolve", "drafts", "skills")
+    legacy_marker = (".aworld", "self_evolve", "drafts", "skills")
+    if any(
+        normalized_parts[index : index + len(legacy_marker)] == legacy_marker
+        for index in range(0, len(normalized_parts) - len(legacy_marker) + 1)
+    ):
+        return True
     return any(
-        normalized_parts[index : index + len(marker)] == marker
-        for index in range(0, len(normalized_parts) - len(marker) + 1)
+        normalized_parts[index : index + 2] == (".aworld", "self_evolve")
+        and index + 5 < len(normalized_parts)
+        and normalized_parts[index + 3] == "draft_target"
+        and normalized_parts[index + 5] == "skill.md"
+        for index in range(0, max(0, len(normalized_parts) - 5))
     )
 
 

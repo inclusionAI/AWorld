@@ -230,6 +230,7 @@ def _run_framework_job(
             item for item in trajectory if isinstance(item, Mapping)
         ),
         apply_policy=_effective_background_apply_policy(config),
+        inferred_new_skill_policy=config.inferred_new_skill_policy,
         infer_target=True,
         min_eval_cases=config.min_eval_cases,
         judge_repetitions=config.judge_repetitions,

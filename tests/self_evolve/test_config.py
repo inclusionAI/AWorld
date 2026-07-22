@@ -23,6 +23,7 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.judge_repetitions == 3
     assert config.self_evolve_config.judge_timeout_seconds == 300
     assert config.self_evolve_config.auto_apply_target_types == ("skill",)
+    assert config.self_evolve_config.inferred_new_skill_policy == "auto_verified"
     assert config.self_evolve_config.require_deterministic_signal_for_verified is True
     assert config.self_evolve_config.max_iterations == 1
     assert config.self_evolve_config.max_background_jobs == 1
@@ -52,6 +53,19 @@ def test_self_evolve_online_requires_auto_verified_apply_policy() -> None:
     assert config.mode == "online"
     assert config.apply_policy == "auto_verified"
     assert config.requires_post_apply_reevaluation is True
+
+
+@pytest.mark.parametrize(
+    "policy",
+    ("disabled", "draft_only", "auto_verified"),
+)
+def test_self_evolve_config_accepts_named_inferred_new_skill_policy(policy: str) -> None:
+    assert SelfEvolveConfig(inferred_new_skill_policy=policy).inferred_new_skill_policy == policy
+
+
+def test_self_evolve_config_rejects_unknown_inferred_new_skill_policy() -> None:
+    with pytest.raises(ValidationError):
+        SelfEvolveConfig(inferred_new_skill_policy="allow_all")
 
 
 def test_self_evolve_budget_fields_parse() -> None:

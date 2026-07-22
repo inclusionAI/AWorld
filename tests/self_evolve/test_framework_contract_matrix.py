@@ -383,14 +383,14 @@ def test_contract_dataset_preserves_case_order_shapes_and_fingerprint(
 
 
 @pytest.mark.parametrize("trajectory_count", [1, 3])
-def test_high_confidence_generated_target_remains_fail_closed_across_cardinality(
+def test_validated_generated_draft_scope_is_cardinality_neutral(
     tmp_path: Path,
     trajectory_count: int,
 ) -> None:
     target = SelfEvolveTargetRef(
         target_type="skill",
         target_id="generated-capability",
-        path=str(tmp_path / "drafts" / "generated-capability" / "SKILL.md"),
+        path=None,
     )
     decisions = tuple(
         build_target_selection_decision(
@@ -399,6 +399,7 @@ def test_high_confidence_generated_target_remains_fail_closed_across_cardinality
                 confidence=0.99,
                 evidence_step_ids=(f"member-{index}:step-1",),
                 failure_category="skill",
+                capability_fingerprint="sha256:" + "a" * 64,
             ),
             inventory=TargetInventory(entries=()),
             selection_origin="inferred",
@@ -409,7 +410,10 @@ def test_high_confidence_generated_target_remains_fail_closed_across_cardinality
     assert all(decision.report.selection_origin == "inferred" for decision in decisions)
     assert all(decision.provenance is not None for decision in decisions)
     assert all(
-        TrustProvenanceGate().evaluate(decision.provenance).passed is False
+        TrustProvenanceGate().evaluate(
+            decision.provenance,
+            target_intent=decision.target_intent,
+        ).passed is True
         for decision in decisions
     )
 

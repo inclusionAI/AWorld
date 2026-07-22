@@ -2,11 +2,14 @@
 
 from aworld.self_evolve.credit_assignment import (
     LLMTargetDiagnosis,
+    NewSkillIntent,
     TargetInventory,
     TargetInventoryEntry,
     TargetSelectionReport,
+    TargetSelectionDecision,
     TrajectoryCreditAssigner,
     build_default_target_inventory,
+    build_target_selection_decision,
 )
 from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
@@ -52,6 +55,7 @@ from aworld.self_evolve.gates import (
     HeldOutVerificationGate,
     JudgeOnlySignalGate,
     MalformedCandidateGate,
+    NewSkillPromotionGate,
     NoopCandidateGate,
     PromptSectionGate,
     ProtectedPathGate,
@@ -64,6 +68,10 @@ from aworld.self_evolve.gates import (
     StoppingConditionGate,
     StoppingConditionState,
     TrustProvenanceGate,
+)
+from aworld.self_evolve.provenance import (
+    InferredNewSkillPolicy,
+    TargetMutationIntent,
 )
 from aworld.self_evolve.judge import (
     AgentMdJudgeBackend,
@@ -238,6 +246,8 @@ __all__ = [
     "DSPyGEPAOptimizer",
     "DSPyMIPROOptimizer",
     "MalformedCandidateGate",
+    "NewSkillIntent",
+    "NewSkillPromotionGate",
     "NoopCandidateGate",
     "OptimizerLineage",
     "OptimizerRequest",
@@ -311,6 +321,10 @@ __all__ = [
     "TraceReflectiveLLMMutator",
     "TrajectoryQualityBackend",
     "TrustProvenanceGate",
+    "InferredNewSkillPolicy",
+    "TargetMutationIntent",
+    "TargetSelectionDecision",
+    "build_target_selection_decision",
     "TrajectoryCreditAssigner",
     "REPLAY_ADAPTATION_SCHEMA_VERSION",
     "REPLAY_CAPABILITY_PROTOCOL_VERSION",

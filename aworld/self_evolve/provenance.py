@@ -46,6 +46,21 @@ class TargetSelectionOrigin(str, Enum):
     UNKNOWN = "unknown"
 
 
+class TargetMutationIntent(str, Enum):
+    """Describe what target selection authorizes independently from its origin."""
+
+    EXISTING_TARGET_MUTATION = "existing_target_mutation"
+    INFERRED_DRAFT_CREATION = "inferred_draft_creation"
+
+
+class InferredNewSkillPolicy(str, Enum):
+    """Control draft creation and promotion for inferred capability gaps."""
+
+    DISABLED = "disabled"
+    DRAFT_ONLY = "draft_only"
+    AUTO_VERIFIED = "auto_verified"
+
+
 class TargetProvenanceStatus(str, Enum):
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"

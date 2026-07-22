@@ -18,7 +18,7 @@ from aworld_cli.top_level_commands.optimize_cmd import (
 def _usage() -> str:
     return """Usage:
   /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
-  /optimize --from-trajectory <trajectory.log> --apply auto_verified --judge-agent <agent.md>
+  /optimize --from-trajectory <trajectory.log> --apply auto_verified --new-skill-policy auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory <multi-task-trajectory.log> --include-prior-runs --apply proposal
   /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory-set <trajectory-set.json> --include-prior-runs --apply proposal
@@ -50,6 +50,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-config", dest="batch_config")
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--apply", default="proposal")
+    parser.add_argument(
+        "--new-skill-policy",
+        choices=("disabled", "draft_only", "auto_verified"),
+        default="auto_verified",
+        dest="new_skill_policy",
+    )
     parser.add_argument("--judge-agent", dest="judge_agent")
     parser.add_argument("--judge-agent-name", dest="judge_agent_name")
     parser.add_argument("--judge-backend-ref", dest="judge_backend_ref")
@@ -138,6 +144,7 @@ class OptimizeCommand(Command):
                 batch_config=args.batch_config,
                 iterations=args.iterations,
                 apply=args.apply,
+                new_skill_policy=args.new_skill_policy,
                 infer_target=args.target is None,
                 workspace_root=context.cwd,
                 judge_agent=args.judge_agent,

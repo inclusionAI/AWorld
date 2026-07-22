@@ -7,6 +7,8 @@ from typing import Any
 
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.provenance import (
+    InferredNewSkillPolicy,
+    TargetMutationIntent,
     TargetProvenance,
     TargetProvenancePolicyClass,
     target_provenance_policy_class,
@@ -651,6 +653,7 @@ class TrustProvenanceGate:
         provenance: TargetProvenance | None,
         *,
         unresolved_reason: str | None = None,
+        target_intent: TargetMutationIntent | str | None = None,
     ) -> GateResult:
         if provenance is None or unresolved_reason is not None:
             if unresolved_reason is None:
@@ -694,9 +697,26 @@ class TrustProvenanceGate:
                 passed=False,
                 reason="protected target provenance cannot be mutated",
             )
+        try:
+            typed_intent = (
+                TargetMutationIntent(target_intent)
+                if target_intent is not None
+                else None
+            )
+        except ValueError:
+            return GateResult(
+                gate_name="trust_provenance",
+                passed=False,
+                reason="target mutation intent is invalid",
+            )
+        draft_evolution = (
+            policy_class == TargetProvenancePolicyClass.GENERATED
+            and typed_intent == TargetMutationIntent.INFERRED_DRAFT_CREATION
+        )
         if (
             policy_class == TargetProvenancePolicyClass.GENERATED
             and not self.allow_generated
+            and not draft_evolution
         ):
             return GateResult(
                 gate_name="trust_provenance",
@@ -715,8 +735,145 @@ class TrustProvenanceGate:
         return GateResult(
             gate_name="trust_provenance",
             passed=True,
-            reason="target provenance satisfies trust policy",
+            reason=(
+                "generated target is authorized only for isolated draft evolution"
+                if draft_evolution
+                else "target provenance satisfies trust policy"
+            ),
+            details=(
+                {"authorized_scope": "draft_evolution"}
+                if draft_evolution
+                else None
+            ),
         )
+
+
+class NewSkillPromotionGate:
+    """Authorize draft evolution separately from publication into aworld-skills."""
+
+    def evaluate(
+        self,
+        candidate: CandidateVariant,
+        *,
+        target_intent: TargetMutationIntent | str | None,
+        policy: InferredNewSkillPolicy | str,
+        apply_policy: str,
+        workspace_root: str | Path,
+        provenance: TargetProvenance | None,
+    ) -> GateResult:
+        try:
+            typed_intent = (
+                TargetMutationIntent(target_intent)
+                if target_intent is not None
+                else None
+            )
+            typed_policy = InferredNewSkillPolicy(policy)
+        except ValueError:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason="new-skill promotion policy or target intent is invalid",
+            )
+        if typed_intent != TargetMutationIntent.INFERRED_DRAFT_CREATION:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=True,
+                reason="candidate does not create an inferred skill draft",
+                details={"applicable": False},
+            )
+        if typed_policy == InferredNewSkillPolicy.DISABLED:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason="inferred new-skill creation is disabled by policy",
+                details={"policy": typed_policy.value, "publication_allowed": False},
+            )
+        if provenance is None or provenance.target != candidate.target:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason="candidate identity does not match generated target provenance",
+                details={"policy": typed_policy.value, "publication_allowed": False},
+            )
+        path_error = _run_owned_draft_path_error(
+            candidate.target,
+            workspace_root=workspace_root,
+        )
+        if path_error is not None:
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason=path_error,
+                details={"policy": typed_policy.value, "publication_allowed": False},
+            )
+        release_path = (
+            Path(workspace_root)
+            / "aworld-skills"
+            / candidate.target.target_id
+            / "SKILL.md"
+        )
+        publication_allowed = (
+            typed_policy == InferredNewSkillPolicy.AUTO_VERIFIED
+            and apply_policy == "auto_verified"
+        )
+        if publication_allowed and (release_path.exists() or release_path.is_symlink()):
+            return GateResult(
+                gate_name="new_skill_promotion",
+                passed=False,
+                reason="new-skill release path appeared after target inference",
+                details={
+                    "policy": typed_policy.value,
+                    "publication_allowed": False,
+                    "release_path": str(release_path),
+                },
+            )
+        return GateResult(
+            gate_name="new_skill_promotion",
+            passed=True,
+            reason=(
+                "verified publication is authorized after ordinary gates pass"
+                if publication_allowed
+                else "draft evolution is authorized but publication is disabled"
+            ),
+            details={
+                "policy": typed_policy.value,
+                "publication_allowed": publication_allowed,
+                "release_path": str(release_path),
+            },
+        )
+
+
+def _run_owned_draft_path_error(
+    target: Any,
+    *,
+    workspace_root: str | Path,
+) -> str | None:
+    raw_path = getattr(target, "path", None)
+    target_id = getattr(target, "target_id", None)
+    if not isinstance(raw_path, str) or not raw_path:
+        return "inferred skill draft has no run-owned path"
+    root = Path(workspace_root).resolve()
+    path = Path(raw_path).absolute()
+    try:
+        relative = path.relative_to(root)
+        path.resolve(strict=False).relative_to(root)
+    except ValueError:
+        return "inferred skill draft escapes the workspace"
+    expected_suffix = ("draft_target", str(target_id), "SKILL.md")
+    parts = relative.parts
+    if (
+        len(parts) != 6
+        or parts[:2] != (".aworld", "self_evolve")
+        or parts[3:] != expected_suffix
+        or not parts[2]
+    ):
+        return "inferred skill draft is not owned by exactly one run"
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return "inferred skill draft path traverses a symlink"
+    return None
 
 
 class GlobalRegressionBenchmarkGate:

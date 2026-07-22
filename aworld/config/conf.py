@@ -203,6 +203,9 @@ class SelfEvolveConfig(BaseConfig):
 
     mode: Literal["off", "offline", "shadow", "online"] = "off"
     apply_policy: Literal["proposal", "auto_verified"] = "proposal"
+    inferred_new_skill_policy: Literal[
+        "disabled", "draft_only", "auto_verified"
+    ] = "auto_verified"
     # ``max_run_tokens`` remains readable for existing configs.  New callers
     # should use the explicit total-run ceiling below.
     max_run_tokens: int = 500000

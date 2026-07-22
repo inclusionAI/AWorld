@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.gates import (
@@ -12,6 +13,7 @@ from aworld.self_evolve.gates import (
     HeldOutVerificationGate,
     JudgeOnlySignalGate,
     MalformedCandidateGate,
+    NewSkillPromotionGate,
     NoopCandidateGate,
     PromptSectionGate,
     ProtectedPathGate,
@@ -30,7 +32,7 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayCaseAdaptation,
     ReplayDependency,
 )
-from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.provenance import TargetMutationIntent, TargetProvenance
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
 
 
@@ -717,6 +719,109 @@ def test_trust_provenance_gate_requires_named_policy_for_generated_target() -> N
 
     assert denied.passed is False
     assert allowed.passed is True
+
+
+def test_trust_provenance_gate_authorizes_generated_draft_scope_without_global_bypass() -> None:
+    target = SelfEvolveTargetRef("skill", "remote-recovery-1234567890")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = TrustProvenanceGate().evaluate(
+        provenance,
+        target_intent=TargetMutationIntent.INFERRED_DRAFT_CREATION,
+    )
+
+    assert result.passed is True
+    assert result.details == {"authorized_scope": "draft_evolution"}
+
+
+@pytest.mark.parametrize(
+    ("policy", "apply_policy", "publication_allowed"),
+    (
+        ("draft_only", "auto_verified", False),
+        ("auto_verified", "proposal", False),
+        ("auto_verified", "auto_verified", True),
+    ),
+)
+def test_new_skill_promotion_gate_separates_draft_evolution_from_publication(
+    tmp_path: Path,
+    policy: str,
+    apply_policy: str,
+    publication_allowed: bool,
+) -> None:
+    target = SelfEvolveTargetRef(
+        "skill",
+        "remote-recovery-1234567890",
+        str(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "cli-test"
+            / "draft_target"
+            / "remote-recovery-1234567890"
+            / "SKILL.md"
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-new-skill",
+        target=target,
+        content="---\nname: remote-recovery-1234567890\n---\n# Recovery\n",
+        rationale="trajectory-backed capability",
+    )
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = NewSkillPromotionGate().evaluate(
+        candidate,
+        target_intent="inferred_draft_creation",
+        policy=policy,
+        apply_policy=apply_policy,
+        workspace_root=tmp_path,
+        provenance=provenance,
+    )
+
+    assert result.passed is True
+    assert result.details["publication_allowed"] is publication_allowed
+
+
+def test_new_skill_promotion_gate_rejects_disabled_policy(tmp_path: Path) -> None:
+    target = SelfEvolveTargetRef(
+        "skill",
+        "remote-recovery-1234567890",
+        str(tmp_path / "draft" / "SKILL.md"),
+    )
+    candidate = CandidateVariant("cand", target, "# Draft", "test")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = NewSkillPromotionGate().evaluate(
+        candidate,
+        target_intent="inferred_draft_creation",
+        policy="disabled",
+        apply_policy="proposal",
+        workspace_root=tmp_path,
+        provenance=provenance,
+    )
+
+    assert result.passed is False
 
 
 def test_trust_provenance_gate_requires_named_policy_for_external_target() -> None:

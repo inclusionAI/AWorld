@@ -43,6 +43,7 @@ from aworld.self_evolve.replay import (
     _aggregate_member_variant_results,
     _aggregate_variant_results,
     _invalid_evidence_manifest_entry_reason,
+    _infer_baseline_skill_root_from_target,
     _evidence_manifest_metrics,
     _has_authoritative_per_member_repetitions,
     _member_artifact_name,
@@ -77,7 +78,28 @@ from aworld.self_evolve.failure_events import (
     ReplayExecutionStatus,
     ReplayFailureEvent,
 )
+from aworld.self_evolve.types import SelfEvolveTargetRef
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationCompiler
+
+
+def test_run_owned_inferred_draft_is_not_used_as_baseline_skill_root(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(
+        "skill",
+        "remote-recovery-1234567890",
+        str(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "cli-test"
+            / "draft_target"
+            / "remote-recovery-1234567890"
+            / "SKILL.md"
+        ),
+    )
+
+    assert _infer_baseline_skill_root_from_target(target) is None
 from aworld.self_evolve.replay_adaptation import ReplayAdapterBinding
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
