@@ -166,6 +166,7 @@ from aworld.self_evolve.repair_conformance import (
     build_repair_conformance_probe_plan,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
+    merge_repair_conformance_constraint_context,
     project_replay_capability_for_probe_group,
 )
 from aworld.self_evolve.replay_adaptation import (
@@ -10330,20 +10331,37 @@ def _typed_gate_feedback_metrics(
                     raise ValueError(
                         "causal emission id was reused with a different typed payload"
                     )
-                repair_conformance = details.get("repair_conformance")
-                if (
-                    typed_event.owner is FailureOwner.CANDIDATE
-                    and isinstance(repair_conformance, Mapping)
-                ):
-                    bounded_contract = public_diagnostic_projection(
-                        repair_conformance,
-                        max_chars=400,
+                if typed_event.owner is FailureOwner.CANDIDATE:
+                    raw_contract = details.get("repair_conformance")
+                    inherited_context = candidate_causal_contexts.get(
+                        typed_event.semantic_key
                     )
-                    if isinstance(bounded_contract, Mapping):
-                        candidate_causal_contexts.setdefault(
-                            typed_event.semantic_key,
-                            dict(bounded_contract),
+                    base_context = (
+                        raw_contract
+                        if isinstance(raw_contract, Mapping)
+                        else inherited_context
+                    )
+                    merged_context = (
+                        merge_repair_conformance_constraint_context(
+                            base_context,
+                            *(
+                                (inherited_context,)
+                                if inherited_context is not None
+                                and inherited_context is not base_context
+                                else ()
+                            ),
+                            details,
                         )
+                    )
+                    if merged_context is not None:
+                        bounded_contract = public_diagnostic_projection(
+                            merged_context,
+                            max_chars=2_048,
+                        )
+                        if isinstance(bounded_contract, Mapping):
+                            candidate_causal_contexts[
+                                typed_event.semantic_key
+                            ] = dict(bounded_contract)
         raw_diagnostics = details.get("diagnostics")
         if isinstance(raw_diagnostics, list):
             diagnostics.extend(

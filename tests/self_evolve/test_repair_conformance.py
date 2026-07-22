@@ -13,6 +13,7 @@ from aworld.self_evolve.repair_conformance import (
     compile_repair_conformance_contract,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
+    merge_repair_conformance_constraint_context,
     project_replay_capability_for_probe_group,
 )
 from aworld.self_evolve.replay_capability import (
@@ -1766,6 +1767,88 @@ def test_compile_contract_preserves_schema_field_constraints_across_repairs() ->
     assert inherited is not None
     assert inherited.schema_field_constraints == (constraint,)
     assert inherited.required_branch_paths == ("replay/compiler.py",)
+
+
+def test_constraint_context_merges_multi_member_schema_and_fixture_rules() -> None:
+    inherited_fixture = FixtureDerivedProbeConstraint(
+        requirement_id="member-a-requirement",
+        kind="http",
+        path="/member-a",
+        max_response_chars=4096,
+    )
+    additional_fixture = FixtureDerivedProbeConstraint(
+        requirement_id="member-b-requirement",
+        kind="websocket",
+        path="/member-b",
+        max_response_chars=2048,
+    )
+    transport_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].transport",
+        rule="enum",
+        expected=("http_fixture", "skill_runtime", "tcp_fixture"),
+    )
+    response_bound = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].response_contains",
+        rule="max_chars",
+        expected=("4096",),
+    )
+    inherited = {
+        "projection_schema_version": (
+            "aworld.self_evolve.repair_conformance.public.v1"
+        ),
+        "focus_candidate_id": "candidate-parent",
+        "failure_codes": ["repair_branch_unchanged"],
+        "required_branch_paths": ["replay/runtime.py"],
+        "fixture_probe_constraints": [inherited_fixture.to_public_dict()],
+        "schema_field_constraints": [transport_constraint.to_dict()],
+    }
+
+    merged = merge_repair_conformance_constraint_context(
+        inherited,
+        {
+            "fixture_probe_constraints": [
+                inherited_fixture.to_dict(),
+                additional_fixture.to_dict(),
+            ],
+            "schema_field_constraints": [
+                transport_constraint.to_dict(),
+                response_bound.to_dict(),
+            ],
+        },
+    )
+
+    assert merged is not None
+    assert len(merged["fixture_probe_constraints"]) == 2
+    assert all(
+        "requirement_id" not in item
+        for item in merged["fixture_probe_constraints"]
+    )
+    assert {
+        SchemaFieldRepairConstraint.from_dict(item)
+        for item in merged["schema_field_constraints"]
+    } == {transport_constraint, response_bound}
+    compiled = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(
+                "def respond():\n    return {'changed': True}\n"
+            ),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "schema_field_validation_failed",
+                    "repair_conformance": merged,
+                }
+            ],
+        }
+    )
+    assert compiled is not None
+    assert set(compiled.schema_field_constraints) == {
+        transport_constraint,
+        response_bound,
+    }
+    assert len(compiled.fixture_probe_constraints) == 2
+    assert compiled.required_branch_paths == ("replay/compiler.py",)
 
 
 def test_fixture_probe_constraints_validate_every_distinct_fixture_shape() -> None:

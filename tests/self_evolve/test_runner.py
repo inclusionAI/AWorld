@@ -3387,6 +3387,142 @@ def test_typed_gate_feedback_preserves_exact_aggregate_scalars_without_raw_paylo
     assert events[0]["capability_identity_digest"] is not None
 
 
+def test_typed_causal_feedback_merges_post_failure_constraints_before_return() -> None:
+    inherited_contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("repair_branch_unchanged",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={"replay/runtime.py": "sha256:branch"},
+        manifest_path="replay/capability.json",
+    )
+    schema_constraints = [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].transport",
+            "rule": "enum",
+            "expected": ["http_fixture", "skill_runtime", "tcp_fixture"],
+        },
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].protocol_probes[*].response_contains",
+            "rule": "max_chars",
+            "expected": ["4096"],
+        },
+    ]
+    fixture_constraints = [
+        {
+            "requirement_id": "trajectory-member-a",
+            "kind": "http",
+            "path": "/member-a",
+            "max_response_chars": 4096,
+        },
+        {
+            "requirement_id": "trajectory-member-b",
+            "kind": "websocket",
+            "path": "/member-b",
+            "max_response_chars": 2048,
+        },
+    ]
+    events = tuple(
+        ReplayFailureEvent(
+            event_id=f"schema-event-{index}",
+            code="schema_field_validation_failed",
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.CAPABILITY_COMPILE,
+            scope=FailureScope.CANDIDATE,
+            repairable=True,
+            category="repair_conformance",
+            contract_fingerprint="schema-contract",
+        )
+        for index in range(2)
+    )
+    gates = tuple(
+        GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="replay adaptation compilation failed",
+            details={
+                "failure_class": "candidate",
+                "repairable": True,
+                "repair_conformance": inherited_contract.to_public_dict(),
+                "schema_field_constraints": [schema_constraints[index]],
+                "fixture_probe_constraints": [fixture_constraints[index]],
+                # Repeat each rule through nested diagnostics to verify
+                # identity-based deduplication instead of list concatenation.
+                "diagnostics": [
+                    {
+                        "schema_field_constraints": [schema_constraints[index]],
+                        "fixture_probe_constraints": [
+                            fixture_constraints[index]
+                        ],
+                    }
+                ],
+                "causal_failure_events": [events[index].to_dict()],
+            },
+        )
+        for index in range(2)
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-schema-repair",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        content="# Generic\n",
+        rationale="repair typed schema constraints",
+        files=(
+            CandidateFileDelta(
+                path="replay/capability.json",
+                content=json.dumps(
+                    {
+                        "schema_version": "aworld.skill.replay_capability.v1",
+                        "capability_id": "generic.replay",
+                        "protocol": "aworld.replay.subprocess.v1",
+                        "entrypoint": "replay/compiler.py",
+                        "handles": ["local_endpoint"],
+                        "runtime_files": ["replay/runtime.py"],
+                    }
+                ),
+            ),
+            CandidateFileDelta(
+                path="replay/compiler.py",
+                content="def compile_request():\n    return None\n",
+            ),
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def respond():\n    return {'changed': True}\n",
+            ),
+        ),
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=gates,
+    )[0]
+    diagnostics = feedback.metrics["candidate_validation_diagnostics"]
+    projected_contract = diagnostics[0]["repair_conformance"]
+
+    assert len(diagnostics) == 2
+    assert all(
+        len(item["repair_conformance"]["schema_field_constraints"]) == 2
+        and len(item["repair_conformance"]["fixture_probe_constraints"]) == 2
+        for item in diagnostics
+    )
+    assert len(projected_contract["schema_field_constraints"]) == 2
+    assert len(projected_contract["fixture_probe_constraints"]) == 2
+    assert all(
+        "requirement_id" not in item
+        for item in projected_contract["fixture_probe_constraints"]
+    )
+    compiled = compile_repair_conformance_contract(feedback.metrics)
+    assert compiled is not None
+    assert len(compiled.schema_field_constraints) == 2
+    assert len(compiled.fixture_probe_constraints) == 2
+    assert compiled.required_branch_paths == ("replay/compiler.py",)
+
+
 def test_merge_validation_feedback_accumulates_and_deduplicates_current_run_history() -> None:
     first = EvaluationSummary(
         variant_id="candidate-1",
