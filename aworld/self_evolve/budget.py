@@ -2358,6 +2358,8 @@ class SchedulerState:
     initial_exploration_scheduled: bool = False
     untyped_frontier_exploration_scheduled: bool = False
     frontier_progress: Mapping[str, int] = field(default_factory=dict)
+    frontier_stalls: Mapping[str, int] = field(default_factory=dict)
+    last_focused_frontier: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.initial_exploration_scheduled, bool):
@@ -2370,6 +2372,21 @@ class SchedulerState:
                 _non_negative_int(progress, field_name="frontier progress")
             )
         object.__setattr__(self, "frontier_progress", normalized)
+        normalized_stalls: dict[str, int] = {}
+        for semantic_key, stalls in self.frontier_stalls.items():
+            normalized_stalls[
+                _identity(semantic_key, field_name="semantic_key")
+            ] = _non_negative_int(stalls, field_name="frontier stalls")
+        object.__setattr__(self, "frontier_stalls", normalized_stalls)
+        if self.last_focused_frontier is not None:
+            object.__setattr__(
+                self,
+                "last_focused_frontier",
+                _identity(
+                    self.last_focused_frontier,
+                    field_name="last focused frontier",
+                ),
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -2378,13 +2395,18 @@ class SchedulerState:
                 self.untyped_frontier_exploration_scheduled
             ),
             "frontier_progress": dict(sorted(self.frontier_progress.items())),
+            "frontier_stalls": dict(sorted(self.frontier_stalls.items())),
+            "last_focused_frontier": self.last_focused_frontier,
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "SchedulerState":
         raw_progress = value.get("frontier_progress", {})
+        raw_stalls = value.get("frontier_stalls", {})
         if not isinstance(raw_progress, Mapping):
             raise ValueError("scheduler frontier_progress must be a mapping")
+        if not isinstance(raw_stalls, Mapping):
+            raise ValueError("scheduler frontier_stalls must be a mapping")
         return cls(
             initial_exploration_scheduled=(
                 value.get("initial_exploration_scheduled") is True
@@ -2399,6 +2421,21 @@ class SchedulerState:
                 )
                 for key, progress in raw_progress.items()
             },
+            frontier_stalls={
+                _identity(key, field_name="semantic_key"): _non_negative_int(
+                    stalls,
+                    field_name="frontier stalls",
+                )
+                for key, stalls in raw_stalls.items()
+            },
+            last_focused_frontier=(
+                _identity(
+                    value.get("last_focused_frontier"),
+                    field_name="last focused frontier",
+                )
+                if value.get("last_focused_frontier") is not None
+                else None
+            ),
         )
 
 
@@ -2508,6 +2545,7 @@ class SchedulerDecision:
 @dataclass(frozen=True)
 class StageAwareCandidateScheduler:
     exploration_population: int
+    max_stalled_frontier_schedules: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -2516,6 +2554,14 @@ class StageAwareCandidateScheduler:
             _positive_int(
                 self.exploration_population,
                 field_name="exploration_population",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_stalled_frontier_schedules",
+            _non_negative_int(
+                self.max_stalled_frontier_schedules,
+                field_name="max_stalled_frontier_schedules",
             ),
         )
 
@@ -2551,6 +2597,8 @@ class StageAwareCandidateScheduler:
                     state.untyped_frontier_exploration_scheduled
                 ),
                 frontier_progress=state.frontier_progress,
+                frontier_stalls=state.frontier_stalls,
+                last_focused_frontier=state.last_focused_frontier,
             )
             return SchedulerDecision(
                 reason_code="initial_exploration",
@@ -2583,6 +2631,8 @@ class StageAwareCandidateScheduler:
                     initial_exploration_scheduled=True,
                     untyped_frontier_exploration_scheduled=True,
                     frontier_progress=state.frontier_progress,
+                    frontier_stalls=state.frontier_stalls,
+                    last_focused_frontier=state.last_focused_frontier,
                 ),
             )
         if not repairable:
@@ -2593,19 +2643,40 @@ class StageAwareCandidateScheduler:
                 state=state,
             )
         updated_progress = dict(state.frontier_progress)
+        updated_stalls = dict(state.frontier_stalls)
         new_frontier = False
         for frontier in repairable:
             previous = updated_progress.get(frontier.semantic_key, -1)
             if frontier.progress > previous:
                 new_frontier = True
                 updated_progress[frontier.semantic_key] = frontier.progress
+                updated_stalls[frontier.semantic_key] = 0
+            elif frontier.semantic_key == state.last_focused_frontier:
+                updated_stalls[frontier.semantic_key] = (
+                    updated_stalls.get(frontier.semantic_key, 0) + 1
+                )
         next_state = SchedulerState(
             initial_exploration_scheduled=True,
             untyped_frontier_exploration_scheduled=(
                 state.untyped_frontier_exploration_scheduled
             ),
             frontier_progress=updated_progress,
+            frontier_stalls=updated_stalls,
+            last_focused_frontier=state.last_focused_frontier,
         )
+        eligible_frontiers = tuple(
+            frontier
+            for frontier in repairable
+            if updated_stalls.get(frontier.semantic_key, 0)
+            <= self.max_stalled_frontier_schedules
+        )
+        if not eligible_frontiers:
+            return SchedulerDecision(
+                reason_code="repair_frontier_stalled",
+                slots=(),
+                stop=True,
+                state=next_state,
+            )
         if not focused_budget_available:
             return SchedulerDecision(
                 reason_code="focused_budget_denied",
@@ -2614,9 +2685,18 @@ class StageAwareCandidateScheduler:
                 state=next_state,
             )
         focused = sorted(
-            repairable,
+            eligible_frontiers,
             key=lambda item: (item.progress, item.semantic_key),
         )[-1]
+        next_state = SchedulerState(
+            initial_exploration_scheduled=next_state.initial_exploration_scheduled,
+            untyped_frontier_exploration_scheduled=(
+                next_state.untyped_frontier_exploration_scheduled
+            ),
+            frontier_progress=next_state.frontier_progress,
+            frontier_stalls=next_state.frontier_stalls,
+            last_focused_frontier=focused.semantic_key,
+        )
         slots = [
             ScheduledCandidateSlot(
                 slot=0,

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import re
 from typing import Callable
 
 from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.candidate_package import (
+    candidate_content_semantic_fingerprint,
+)
 from aworld.self_evolve.types import CandidateVariant, OptimizerLineage
 
 
@@ -99,7 +101,9 @@ def _delegate_dspy_optimizer(
                 optimizer_version=optimizer_version,
                 trainable_case_ids=tuple(case.case_id for case in request.trainable_cases),
                 content_fingerprint=_content_fingerprint(content),
-                semantic_fingerprint=_semantic_fingerprint(content),
+                semantic_fingerprint=candidate_content_semantic_fingerprint(
+                    content
+                ),
                 rationale=rationale,
             ),
         ),
@@ -109,12 +113,3 @@ def _delegate_dspy_optimizer(
 def _content_fingerprint(content: str) -> str:
     normalized = "\n".join(line.rstrip() for line in content.strip().splitlines())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _semantic_fingerprint(content: str) -> str:
-    semantic_lines = [
-        re.sub(r"\s+", " ", line.strip().lower())
-        for line in content.splitlines()
-        if line.strip() and line.strip() != "---"
-    ]
-    return hashlib.sha256("\n".join(semantic_lines).encode("utf-8")).hexdigest()

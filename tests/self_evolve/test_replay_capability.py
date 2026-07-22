@@ -728,6 +728,146 @@ def test_skill_runtime_rejects_data_plane_expectation_not_in_fixture(
     assert "expected_sha256=" in message
     assert "expected_bytes=17" in message
     assert "invented response" not in message
+    assert error.value.code == "protocol_probe_not_fixture_derived"
+    assert error.value.details["fixture_probe_violation_count"] == 1
+    assert error.value.details["fixture_probe_constraints"] == [
+        {
+            "requirement_id": "requirement-local",
+            "kind": "websocket",
+            "path": "/events",
+            "max_response_chars": 4096,
+        }
+    ]
+
+
+def test_fixture_probe_compile_error_aggregates_all_requirement_shapes(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "compiled"
+    fixtures = ("fixtures/object.json", "fixtures/list.json")
+    for fixture, payload in zip(
+        fixtures,
+        ('{"value":"recorded-a"}', '["recorded-b"]'),
+        strict=True,
+    ):
+        path = output_root / fixture
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding="utf-8")
+    raw_services = [
+        {
+            "service_id": f"service-{index}",
+            "requirement_id": f"requirement-{index}",
+            "transport": "skill_runtime",
+            "response_fixture": fixture,
+            "runtime_entrypoint": "replay/runtime.py",
+            "readiness": {"kind": "http", "path": "/healthz"},
+            "protocol_probes": [
+                {
+                    "kind": "http",
+                    "path": "/data",
+                    "response_contains": f"metadata-wrapper-{index}",
+                }
+            ],
+        }
+        for index, fixture in enumerate(fixtures, start=1)
+    ]
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._parse_services(
+            raw_services,
+            output_root=output_root,
+            fixtures=fixtures,
+            runtime_files=("replay/runtime.py",),
+            handled_requirements={"requirement-1", "requirement-2"},
+            fixture_evidence_refs={
+                fixture: (f"evidence-{index}",)
+                for index, fixture in enumerate(fixtures, start=1)
+            },
+            requirement_evidence_refs={
+                f"requirement-{index}": (f"evidence-{index}",)
+                for index in (1, 2)
+            },
+        )
+
+    assert error.value.code == "protocol_probe_not_fixture_derived"
+    assert error.value.details["fixture_probe_violation_count"] == 2
+    constraints = error.value.details["fixture_probe_constraints"]
+    assert [item["requirement_id"] for item in constraints] == [
+        "requirement-1",
+        "requirement-2",
+    ]
+
+
+def test_service_schema_error_aggregates_all_invalid_field_instances(
+    tmp_path: Path,
+) -> None:
+    raw_services = [
+        {
+            "service_id": f"service-{index}",
+            "requirement_id": f"requirement-{index}",
+            "transport": f"private-invalid-{index}",
+            "response_fixture": f"fixtures/{index}.json",
+            "readiness": {"kind": "http", "path": "/healthz"},
+        }
+        for index in (1, 2)
+    ]
+
+    with pytest.raises(
+        ReplayCapabilityError,
+        match="unsupported replay service transport",
+    ) as error:
+        replay_capability_module._parse_services(
+            raw_services,
+            output_root=tmp_path,
+            fixtures=("fixtures/1.json", "fixtures/2.json"),
+            runtime_files=(),
+            handled_requirements={"requirement-1", "requirement-2"},
+            fixture_evidence_refs={
+                "fixtures/1.json": ("evidence-1",),
+                "fixtures/2.json": ("evidence-2",),
+            },
+            requirement_evidence_refs={
+                "requirement-1": ("evidence-1",),
+                "requirement-2": ("evidence-2",),
+            },
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_violation_count"] == 2
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].transport",
+            "rule": "enum",
+            "expected": ["http_fixture", "skill_runtime", "tcp_fixture"],
+        }
+    ]
+    encoded = json.dumps(error.value.details)
+    assert "private-invalid-1" not in encoded
+    assert "private-invalid-2" not in encoded
+
+
+def test_manifest_schema_enum_error_is_a_typed_field_constraint() -> None:
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._parse_manifest(
+            {
+                "schema_version": "invalid-schema",
+                "capability_id": "generic.replay",
+                "protocol": "invalid-protocol",
+                "entrypoint": "replay/compiler.py",
+                "handles": ["local_endpoint"],
+            }
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "manifest",
+            "field_path": "schema_version",
+            "rule": "enum",
+            "expected": ["aworld.skill.replay_capability.v1"],
+        }
+    ]
 
 
 @pytest.mark.replay_sandbox

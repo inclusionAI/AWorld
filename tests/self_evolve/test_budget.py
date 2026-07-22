@@ -739,6 +739,94 @@ def test_scheduler_initial_then_stable_frontier_uses_one_focused_slot() -> None:
         ScheduledSlotRole.FOCUSED_REPAIR
     ]
     assert SchedulerDecision.from_dict(stable.to_dict()) == stable
+    stalled = scheduler.schedule(
+        state=stable.state,
+        frontiers=(_frontier("semantic-a"),),
+        diverse_budget_available=True,
+    )
+    assert stalled.stop is True
+    assert stalled.slots == ()
+    assert stalled.reason_code == "repair_frontier_stalled"
+    assert stalled.state.frontier_stalls == {"semantic-a": 2}
+
+
+def test_scheduler_progress_resets_stall_and_keeps_other_frontiers_independent(
+) -> None:
+    scheduler = StageAwareCandidateScheduler(exploration_population=2)
+    state = SchedulerState(
+        initial_exploration_scheduled=True,
+        frontier_progress={"semantic-a": 1, "semantic-b": 1},
+        frontier_stalls={"semantic-a": 1, "semantic-b": 1},
+        last_focused_frontier="semantic-b",
+    )
+
+    decision = scheduler.schedule(
+        state=state,
+        frontiers=(
+            _frontier("semantic-a", progress=2),
+            _frontier("semantic-b", progress=1),
+        ),
+    )
+
+    assert decision.stop is False
+    assert decision.slots[0].semantic_key == "semantic-a"
+    assert decision.state.frontier_stalls == {
+        "semantic-a": 0,
+        "semantic-b": 2,
+    }
+
+
+def test_scheduler_exhausts_each_stable_frontier_only_after_it_was_focused() -> None:
+    scheduler = StageAwareCandidateScheduler(exploration_population=2)
+    state = SchedulerState(
+        initial_exploration_scheduled=True,
+        frontier_progress={"semantic-a": 1, "semantic-b": 1},
+        frontier_stalls={"semantic-a": 0, "semantic-b": 1},
+        last_focused_frontier="semantic-b",
+    )
+
+    switched = scheduler.schedule(
+        state=state,
+        frontiers=(_frontier("semantic-a"), _frontier("semantic-b")),
+    )
+    assert switched.stop is False
+    assert switched.slots[0].semantic_key == "semantic-a"
+    assert switched.state.frontier_stalls == {
+        "semantic-a": 0,
+        "semantic-b": 2,
+    }
+    assert switched.state.last_focused_frontier == "semantic-a"
+
+    retried = scheduler.schedule(
+        state=switched.state,
+        frontiers=(_frontier("semantic-a"), _frontier("semantic-b")),
+    )
+    assert retried.stop is False
+    assert retried.slots[0].semantic_key == "semantic-a"
+    assert retried.state.frontier_stalls == {
+        "semantic-a": 1,
+        "semantic-b": 2,
+    }
+
+    exhausted = scheduler.schedule(
+        state=retried.state,
+        frontiers=(_frontier("semantic-a"), _frontier("semantic-b")),
+    )
+    assert exhausted.stop is True
+    assert exhausted.reason_code == "repair_frontier_stalled"
+
+
+def test_scheduler_state_reads_pre_stall_tracking_payload() -> None:
+    state = SchedulerState.from_dict(
+        {
+            "initial_exploration_scheduled": True,
+            "untyped_frontier_exploration_scheduled": False,
+            "frontier_progress": {"semantic-a": 1},
+        }
+    )
+
+    assert state.frontier_stalls == {}
+    assert state.last_focused_frontier is None
 
 
 @pytest.mark.parametrize(

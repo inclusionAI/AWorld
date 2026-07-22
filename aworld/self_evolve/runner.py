@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from typing import Callable, Any
 from pathlib import Path
-from typing import Mapping, Iterable
+from typing import Iterable, Mapping, Sequence
 
 from aworld.config.conf import ModelConfig, SelfEvolveJudgeConfig
 from aworld.logs.util import logger
@@ -75,7 +75,11 @@ from aworld.self_evolve.failure_events import (
     ReplayFailureEvent,
 )
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
-from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.candidate_package import (
+    candidate_content_semantic_fingerprint,
+    candidate_package_fingerprint,
+    candidate_semantic_package_fingerprint,
+)
 from aworld.self_evolve.candidate_protocol import (
     CANDIDATE_OUTPUT_CONTRACT,
     CandidateProtocolError,
@@ -203,6 +207,7 @@ from aworld.self_evolve.types import (
     DatasetRecipe,
     EvaluationSummary,
     GateResult,
+    OptimizerLineage,
     SelfEvolveRun,
     SelfEvolveRunStatus,
     SelfEvolveTargetRef,
@@ -214,6 +219,15 @@ from aworld.skills.release import normalize_verified_skill_release
 
 _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
+_SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
+_VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v1"
+
+
+@dataclass(frozen=True)
+class _SemanticLessonFingerprint:
+    semantic_package_fingerprint: str
+    lesson_set_fingerprint: str
+    verification_contract_fingerprint: str
 
 
 @dataclass
@@ -1248,7 +1262,11 @@ def _replay_adaptation_exception_details(
                 ),
             ],
         }
-        return {
+        if isinstance(exc, ReplayCapabilityError):
+            if exc.code:
+                diagnostic["capability_error_code"] = exc.code
+            diagnostic.update(exc.details)
+        details: dict[str, object] = {
             "failure_class": "candidate",
             "failure_owner": FailureOwner.CANDIDATE.value,
             "failure_scope": FailureScope.CANDIDATE.value,
@@ -1256,6 +1274,27 @@ def _replay_adaptation_exception_details(
             "repairable": True,
             "diagnostics": [diagnostic],
         }
+        if isinstance(exc, ReplayCapabilityError):
+            if exc.code:
+                details["capability_error_code"] = exc.code
+            details.update(exc.details)
+        failure_event = ReplayFailureEvent(
+            code=(
+                exc.code
+                if isinstance(exc, ReplayCapabilityError) and exc.code
+                else "invalid_replay_capability_compile"
+            ),
+            owner=FailureOwner.CANDIDATE,
+            stage=FailureStage.CAPABILITY_COMPILE,
+            scope=FailureScope.CANDIDATE,
+            repairable=True,
+            category="replay_capability",
+            summary=reason,
+            contract_fingerprint=_schema_field_contract_fingerprint(details),
+        )
+        details["failure_event"] = failure_event.to_dict()
+        details["causal_failure_events"] = [failure_event.to_dict()]
+        return details
     return {
         "failure_class": "infrastructure",
         "failure_owner": FailureOwner.INFRASTRUCTURE.value,
@@ -1264,6 +1303,37 @@ def _replay_adaptation_exception_details(
         "repairable": False,
         "code": "replay_adaptation_infrastructure_error",
     }
+
+
+def _schema_field_contract_fingerprint(
+    details: Mapping[str, object],
+) -> str | None:
+    raw_constraints = details.get("schema_field_constraints")
+    if not isinstance(raw_constraints, (list, tuple)):
+        return None
+    constraints = [
+        {
+            "schema_layer": item.get("schema_layer"),
+            "field_path": item.get("field_path"),
+            "rule": item.get("rule"),
+            "expected": item.get("expected"),
+        }
+        for item in raw_constraints[:100]
+        if isinstance(item, Mapping)
+    ]
+    if not constraints:
+        return None
+    encoded = json.dumps(
+        sorted(
+            constraints,
+            key=lambda item: json.dumps(item, sort_keys=True, default=str),
+        ),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+    return "schema-fields:sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _terminal_cause(
@@ -1314,6 +1384,50 @@ def _terminal_cause(
         "stage": "self_evolve",
         "code": "infrastructure_error",
     }
+
+
+def _rejection_attribution(
+    *,
+    final_status: SelfEvolveRunStatus,
+    selected_candidate_id: str | None,
+    gate_results: Iterable[GateResult],
+    scheduler_decisions: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    if final_status is not SelfEvolveRunStatus.REJECTED:
+        return None
+    failed = [gate for gate in gate_results if not gate.passed]
+    if not failed:
+        return None
+    substantive = [
+        gate
+        for gate in failed
+        if gate.gate_name
+        not in {
+            "duplicate_accepted_candidate",
+            "duplicate_rejected_candidate",
+            "candidate_generation_exhausted_by_semantic_dedup",
+        }
+    ]
+    primary = substantive[0] if substantive else failed[0]
+    details = primary.details if isinstance(primary.details, Mapping) else {}
+    attribution: dict[str, object] = {
+        "candidate_id": selected_candidate_id,
+        "primary_gate": primary.gate_name,
+        "primary_reason": sanitize_text(primary.reason, max_chars=400),
+        "failure_class": str(details.get("failure_class") or "candidate"),
+        "code": str(details.get("code") or primary.gate_name),
+        "duplicate_only": not substantive,
+    }
+    capability_error_code = details.get("capability_error_code")
+    if isinstance(capability_error_code, str) and capability_error_code:
+        attribution["capability_error_code"] = capability_error_code
+    if scheduler_decisions:
+        terminal_decision = scheduler_decisions[-1]
+        attribution["scheduler_reason_code"] = str(
+            terminal_decision.get("reason_code") or "unknown"
+        )
+        attribution["scheduler_stop"] = terminal_decision.get("stop") is True
+    return attribution
 
 
 class SelfEvolveRunner:
@@ -1964,12 +2078,23 @@ class SelfEvolveRunner:
         )
         self.store.write_replay_requirements(run_id, replay_preflight)
         target_package_inventory = _target_package_inventory(target)
+        verification_settings: dict[str, object] = {
+            "min_score_delta": self.min_score_delta,
+            "min_eval_cases": self.min_eval_cases,
+            "judge_repetitions": self.judge_repetitions,
+            "replay_enabled": self.replay_enabled,
+            "baseline_replay_repetitions": self.baseline_replay_repetitions,
+            "candidate_replay_repetitions": self.candidate_replay_repetitions,
+            "replay_stability_margin": self.replay_stability_margin,
+        }
 
         baseline_preflight_blocked = False
         infrastructure_blocked = False
         progress_repair_families: set[str] = set()
         duplicate_population_stalls = 0
         candidate_generation_infrastructure_retries = 0
+        raw_generation_attempt_count = 0
+        semantic_lesson_duplicate_attempt_count = 0
         iteration_budget = (
             self.max_iterations + _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
         )
@@ -2106,6 +2231,14 @@ class SelfEvolveRunner:
                 )
                 infrastructure_blocked = True
                 break
+            optimizer_result = _with_versioned_semantic_lineage(
+                optimizer_result,
+                target_fingerprint=optimizer_request.target_fingerprint,
+                replay_preflight_fingerprint=replay_preflight.fingerprint,
+                apply_policy=apply_policy,
+                verification_settings=verification_settings,
+            )
+            raw_generation_attempt_count += len(optimizer_result.candidates)
             population_execution = optimizer_result.diagnostics.get(
                 "candidate_population_execution"
             )
@@ -2369,6 +2502,18 @@ class SelfEvolveRunner:
                                 status="rejected",
                             )
                         )
+                    elif semantic_lesson_duplicate:
+                        semantic_fingerprint = current_lineage_fingerprints.get(
+                            generated_candidate.candidate_id
+                        )
+                        if semantic_fingerprint is not None:
+                            semantic_lesson_duplicate_attempt_count += 1
+                            generation_duplicate_feedback.append(
+                                _semantic_lesson_duplicate_feedback(
+                                    generated_candidate,
+                                    fingerprint=semantic_fingerprint,
+                                )
+                            )
                     continue
                 canonical_candidate_id_by_package[package_fingerprint] = (
                     generated_candidate.candidate_id
@@ -2754,6 +2899,10 @@ class SelfEvolveRunner:
                             ),
                         )
                 break
+            screening_failures = _candidate_screening_repair_failures(
+                screening_candidates,
+                screening_report,
+            )
             screening_feedback = _candidate_screening_repair_feedback(
                 screening_candidates,
                 screening_report,
@@ -2798,6 +2947,30 @@ class SelfEvolveRunner:
                             failure_event_id=failure_event_id,
                             semantic_failure_key=semantic_key,
                         )
+                feedback_by_candidate = {
+                    item.variant_id: item for item in screening_feedback
+                }
+                for failed_candidate, failed_gate in screening_failures:
+                    candidate_feedback = feedback_by_candidate.get(
+                        failed_candidate.candidate_id
+                    )
+                    iteration_states.append(
+                        _iteration_state(
+                            candidate=failed_candidate,
+                            baseline_summary=None,
+                            candidate_summary=None,
+                            held_out_summary=None,
+                            replay_result=None,
+                            replay_dataset=None,
+                            gate_results=[failed_gate],
+                            feedback=(
+                                (candidate_feedback,)
+                                if candidate_feedback is not None
+                                else ()
+                            ),
+                            status="rejected",
+                        )
+                    )
             if screening_feedback and not candidate_population:
                 continue
 
@@ -2953,21 +3126,56 @@ class SelfEvolveRunner:
             ):
                 selected_candidate = selected_state["candidate"]  # type: ignore[assignment]
         else:
+            semantic_dedup_exhausted = (
+                semantic_lesson_duplicate_attempt_count > 0
+                and semantic_lesson_duplicate_attempt_count
+                == raw_generation_attempt_count
+                and not all_candidates
+            )
             gate_results.append(
                 GateResult(
                     gate_name=(
-                        "candidate_generation"
+                        "candidate_generation_exhausted_by_semantic_dedup"
+                        if semantic_dedup_exhausted
+                        else "candidate_generation"
                         if apply_policy == "auto_verified"
                         else "no_candidate"
                     ),
                     passed=False,
                     reason=(
-                        "optimizer did not produce a replayable candidate"
+                        (
+                            "all generated candidates repeated historically rejected "
+                            "complete semantic packages under the active verification "
+                            "contract"
+                        )
+                        if semantic_dedup_exhausted
+                        else "optimizer did not produce a replayable candidate"
                         if apply_policy == "auto_verified"
                         else "optimizer did not produce a candidate"
                     ),
                     details=(
                         {
+                            "failure_class": "candidate",
+                            "code": "candidate_generation_exhausted_by_semantic_dedup",
+                            "generation_attempt_count": (
+                                raw_generation_attempt_count
+                            ),
+                            "canonical_unique_candidate_count": len(
+                                all_candidates
+                            ),
+                            "semantic_lesson_duplicate_attempt_count": (
+                                semantic_lesson_duplicate_attempt_count
+                            ),
+                            "semantic_identity_version": (
+                                _SEMANTIC_DEDUP_IDENTITY_VERSION
+                            ),
+                            "verification_contract_version": (
+                                _VERIFICATION_CONTRACT_VERSION
+                            ),
+                            "iterations": len(optimizer_diagnostics),
+                        }
+                        if semantic_dedup_exhausted
+                        else {
                             "generated_candidate_count": len(all_candidates),
                             "iterations": len(optimizer_diagnostics),
                         }
@@ -3200,6 +3408,18 @@ class SelfEvolveRunner:
         )
         if terminal_cause is not None:
             report["terminal_cause"] = terminal_cause
+        rejection_attribution = _rejection_attribution(
+            final_status=final_status,
+            selected_candidate_id=(
+                selected_candidate.candidate_id
+                if selected_candidate is not None
+                else None
+            ),
+            gate_results=gate_results,
+            scheduler_decisions=scheduler_decisions,
+        )
+        if rejection_attribution is not None:
+            report["rejection_attribution"] = rejection_attribution
         trajectory_set_report = _trajectory_set_report(dataset)
         if trajectory_set_report is not None:
             report["trajectory_set"] = trajectory_set_report
@@ -3985,8 +4205,14 @@ class SelfEvolveRunner:
                 and declared_source == FailureEventSource.NATIVE.value
             )
             candidate_owned = not proven_shared
+            capability_error_code = str(
+                adaptation_details.get("capability_error_code") or ""
+            ).strip()
             failure_event = ReplayFailureEvent(
-                code="repair_capability_compile_failed",
+                code=(
+                    capability_error_code
+                    or "repair_capability_compile_failed"
+                ),
                 owner=(
                     FailureOwner.CANDIDATE
                     if candidate_owned
@@ -4000,10 +4226,14 @@ class SelfEvolveRunner:
                 ),
                 repairable=candidate_owned,
                 category="repair_conformance",
+                contract_fingerprint=_schema_field_contract_fingerprint(
+                    adaptation_details
+                ),
                 summary=adaptation_gate.reason,
                 diagnostics={
                     "gate_name": adaptation_gate.gate_name,
-                    "code": adaptation_details.get("code"),
+                    "outer_code": adaptation_details.get("code"),
+                    "capability_error_code": capability_error_code or None,
                 },
             )
             return GateResult(
@@ -4018,6 +4248,7 @@ class SelfEvolveRunner:
                     "repairable": candidate_owned,
                     "stage": "repair_conformance_compile",
                     "code": "repair_capability_compile_failed",
+                    "capability_error_code": capability_error_code or None,
                     "repair_conformance": contract.to_public_dict(),
                     "failure_event": failure_event.to_dict(),
                     "causal_failure_events": [failure_event.to_dict()],
@@ -6549,6 +6780,9 @@ def optimize_from_cli_request(
         promotion = report_payload.get("promotion")
         if isinstance(promotion, Mapping):
             summary["promotion"] = dict(promotion)
+        rejection_attribution = report_payload.get("rejection_attribution")
+        if isinstance(rejection_attribution, Mapping):
+            summary["rejection_attribution"] = dict(rejection_attribution)
     return summary
 
 
@@ -7827,11 +8061,11 @@ def _load_prior_rejected_semantic_lesson_fingerprints(
     *,
     current_run_id: str,
     limit: int = 64,
-) -> set[tuple[str, str]]:
+) -> set[_SemanticLessonFingerprint]:
     root = store.artifact_root
     if not root.exists():
         return set()
-    fingerprints: set[tuple[str, str]] = set()
+    fingerprints: set[_SemanticLessonFingerprint] = set()
     report_paths = sorted(
         root.glob("*/report.json"),
         key=lambda path: path.stat().st_mtime,
@@ -7857,10 +8091,34 @@ def _load_prior_rejected_semantic_lesson_fingerprints(
             candidate_id = lineage.get("candidate_id")
             if rejected_ids and candidate_id not in rejected_ids:
                 continue
-            semantic = lineage.get("semantic_fingerprint")
+            identity_version = lineage.get("semantic_identity_version")
+            semantic_package = lineage.get("semantic_package_fingerprint")
             lesson_set = lineage.get("lesson_set_fingerprint")
-            if isinstance(semantic, str) and isinstance(lesson_set, str):
-                fingerprints.add((semantic, lesson_set))
+            verification_contract = lineage.get(
+                "verification_contract_fingerprint"
+            )
+            # Legacy two-field lineage remains importable for audit and lesson
+            # extraction, but it cannot prove that candidate-owned files or the
+            # active verifier contract are equivalent and therefore cannot hard
+            # filter a new candidate.
+            if (
+                identity_version == _SEMANTIC_DEDUP_IDENTITY_VERSION
+                and isinstance(semantic_package, str)
+                and semantic_package
+                and isinstance(lesson_set, str)
+                and lesson_set
+                and isinstance(verification_contract, str)
+                and verification_contract
+            ):
+                fingerprints.add(
+                    _SemanticLessonFingerprint(
+                        semantic_package_fingerprint=semantic_package,
+                        lesson_set_fingerprint=lesson_set,
+                        verification_contract_fingerprint=(
+                            verification_contract
+                        ),
+                    )
+                )
                 if len(fingerprints) >= limit:
                     return fingerprints
     return fingerprints
@@ -9498,6 +9756,25 @@ def _candidate_screening_repair_feedback(
     candidates: Iterable[CandidateVariant],
     report: Mapping[str, object] | None,
 ) -> tuple[EvaluationSummary, ...]:
+    failures = _candidate_screening_repair_failures(candidates, report)
+    feedback: list[EvaluationSummary] = []
+    for candidate, gate in failures:
+        feedback.extend(
+            _iteration_validation_feedback(
+                candidate=candidate,
+                baseline_summary=None,
+                candidate_summary=None,
+                held_out_summary=None,
+                failed_gates=[gate],
+            )
+        )
+    return tuple(feedback)
+
+
+def _candidate_screening_repair_failures(
+    candidates: Iterable[CandidateVariant],
+    report: Mapping[str, object] | None,
+) -> tuple[tuple[CandidateVariant, GateResult], ...]:
     if not isinstance(report, Mapping):
         return ()
     attempts = report.get("attempts")
@@ -9506,7 +9783,7 @@ def _candidate_screening_repair_feedback(
     candidates_by_id = {
         candidate.candidate_id: candidate for candidate in candidates
     }
-    feedback: list[EvaluationSummary] = []
+    failures: list[tuple[CandidateVariant, GateResult]] = []
     for attempt in attempts:
         if not isinstance(attempt, Mapping):
             continue
@@ -9530,16 +9807,8 @@ def _candidate_screening_repair_feedback(
             ),
             details=(dict(details) if isinstance(details, Mapping) else None),
         )
-        feedback.extend(
-            _iteration_validation_feedback(
-                candidate=candidate,
-                baseline_summary=None,
-                candidate_summary=None,
-                held_out_summary=None,
-                failed_gates=[gate],
-            )
-        )
-    return tuple(feedback)
+        failures.append((candidate, gate))
+    return tuple(failures)
 
 
 def _replay_adaptation_details(
@@ -11569,15 +11838,112 @@ def _known_duplicate_candidate_count(
     )
 
 
+def _verification_contract_fingerprint(
+    *,
+    target_fingerprint: str,
+    replay_preflight_fingerprint: str,
+    apply_policy: str,
+    verification_settings: Mapping[str, object],
+    repair_contract: RepairConformanceContract | None,
+) -> str:
+    payload = {
+        "schema_version": _VERIFICATION_CONTRACT_VERSION,
+        "target_fingerprint": target_fingerprint,
+        "replay_preflight_fingerprint": replay_preflight_fingerprint,
+        "apply_policy": apply_policy,
+        "verification_settings": dict(verification_settings),
+        "repair_conformance": (
+            repair_contract.to_public_dict()
+            if repair_contract is not None
+            else None
+        ),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _with_versioned_semantic_lineage(
+    optimizer_result: OptimizerResult,
+    *,
+    target_fingerprint: str,
+    replay_preflight_fingerprint: str,
+    apply_policy: str,
+    verification_settings: Mapping[str, object],
+) -> OptimizerResult:
+    """Attach the complete, versioned identity used for historical filtering."""
+
+    candidates = {
+        candidate.candidate_id: candidate
+        for candidate in optimizer_result.candidates
+    }
+    contracts = {
+        candidate_id: contract
+        for candidate_id, contract in optimizer_result.private_context.items()
+        if isinstance(contract, RepairConformanceContract)
+    }
+    enriched: list[OptimizerLineage] = []
+    for lineage in optimizer_result.lineage:
+        candidate = candidates.get(lineage.candidate_id)
+        if candidate is None:
+            enriched.append(lineage)
+            continue
+        semantic_content = (
+            lineage.semantic_fingerprint
+            or candidate_content_semantic_fingerprint(candidate.content)
+        )
+        enriched.append(
+            replace(
+                lineage,
+                semantic_fingerprint=semantic_content,
+                semantic_identity_version=_SEMANTIC_DEDUP_IDENTITY_VERSION,
+                semantic_package_fingerprint=(
+                    candidate_semantic_package_fingerprint(
+                        candidate,
+                        content_semantic_fingerprint=semantic_content,
+                    )
+                ),
+                verification_contract_fingerprint=(
+                    _verification_contract_fingerprint(
+                        target_fingerprint=target_fingerprint,
+                        replay_preflight_fingerprint=(
+                            replay_preflight_fingerprint
+                        ),
+                        apply_policy=apply_policy,
+                        verification_settings=verification_settings,
+                        repair_contract=contracts.get(lineage.candidate_id),
+                    )
+                ),
+            )
+        )
+    return replace(optimizer_result, lineage=tuple(enriched))
+
+
 def _lineage_semantic_lesson_fingerprints(
     lineage_items: tuple[OptimizerLineage, ...],
-) -> dict[str, tuple[str, str]]:
-    fingerprints: dict[str, tuple[str, str]] = {}
+) -> dict[str, _SemanticLessonFingerprint]:
+    fingerprints: dict[str, _SemanticLessonFingerprint] = {}
     for lineage in lineage_items:
-        if lineage.semantic_fingerprint and lineage.lesson_set_fingerprint:
-            fingerprints[lineage.candidate_id] = (
-                lineage.semantic_fingerprint,
-                lineage.lesson_set_fingerprint,
+        if (
+            lineage.semantic_identity_version
+            == _SEMANTIC_DEDUP_IDENTITY_VERSION
+            and lineage.semantic_package_fingerprint
+            and lineage.lesson_set_fingerprint
+            and lineage.verification_contract_fingerprint
+        ):
+            fingerprints[lineage.candidate_id] = _SemanticLessonFingerprint(
+                semantic_package_fingerprint=(
+                    lineage.semantic_package_fingerprint
+                ),
+                lesson_set_fingerprint=lineage.lesson_set_fingerprint,
+                verification_contract_fingerprint=(
+                    lineage.verification_contract_fingerprint
+                ),
             )
     return fingerprints
 
@@ -11585,8 +11951,8 @@ def _lineage_semantic_lesson_fingerprints(
 def _semantic_lesson_duplicate_count(
     candidates: tuple[CandidateVariant, ...],
     *,
-    lineage_fingerprints: Mapping[str, tuple[str, str]],
-    rejected_semantic_lesson_fingerprints: set[tuple[str, str]],
+    lineage_fingerprints: Mapping[str, _SemanticLessonFingerprint],
+    rejected_semantic_lesson_fingerprints: set[_SemanticLessonFingerprint],
 ) -> int:
     return sum(
         1
@@ -11602,11 +11968,69 @@ def _semantic_lesson_duplicate_count(
 def _is_semantic_lesson_duplicate(
     candidate_id: str,
     *,
-    lineage_fingerprints: Mapping[str, tuple[str, str]],
-    rejected_semantic_lesson_fingerprints: set[tuple[str, str]],
+    lineage_fingerprints: Mapping[str, _SemanticLessonFingerprint],
+    rejected_semantic_lesson_fingerprints: set[_SemanticLessonFingerprint],
 ) -> bool:
     fingerprint = lineage_fingerprints.get(candidate_id)
     return fingerprint is not None and fingerprint in rejected_semantic_lesson_fingerprints
+
+
+def _semantic_lesson_duplicate_feedback(
+    candidate: CandidateVariant,
+    *,
+    fingerprint: _SemanticLessonFingerprint,
+) -> EvaluationSummary:
+    event = ReplayFailureEvent(
+        code="duplicate_semantic_lesson",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.ADAPTATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="candidate_generation_dedup",
+        summary=(
+            "candidate repeats a historically rejected complete semantic package "
+            "under the same lesson set and verification contract"
+        ),
+        contract_fingerprint=fingerprint.verification_contract_fingerprint,
+        diagnostics={
+            "semantic_identity_version": _SEMANTIC_DEDUP_IDENTITY_VERSION,
+            "semantic_package_fingerprint": (
+                fingerprint.semantic_package_fingerprint
+            ),
+            "lesson_set_fingerprint": fingerprint.lesson_set_fingerprint,
+            "required_delta": (
+                "change target behavior or candidate-owned files materially; "
+                "renaming, reformatting, or repeating the same package is insufficient"
+            ),
+        },
+    )
+    event_payload = event.to_dict()
+    return EvaluationSummary(
+        variant_id=candidate.candidate_id,
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["duplicate_semantic_lesson"],
+            "candidate_status": "rejected",
+            "failure_class": "candidate",
+            "failure_owner": FailureOwner.CANDIDATE.value,
+            "failure_scope": FailureScope.CANDIDATE.value,
+            "repairable": True,
+            "code": "duplicate_semantic_lesson",
+            "semantic_identity_version": _SEMANTIC_DEDUP_IDENTITY_VERSION,
+            "semantic_package_fingerprint": (
+                fingerprint.semantic_package_fingerprint
+            ),
+            "lesson_set_fingerprint": fingerprint.lesson_set_fingerprint,
+            "verification_contract_fingerprint": (
+                fingerprint.verification_contract_fingerprint
+            ),
+            "required_behaviors": [
+                "produce a materially different complete candidate package"
+            ],
+            "failure_event": event_payload,
+            "causal_failure_events": [event_payload],
+        },
+    )
 
 
 def _feedback_required_behaviors_from_mutation_prompt(prompt: str | None) -> set[str]:

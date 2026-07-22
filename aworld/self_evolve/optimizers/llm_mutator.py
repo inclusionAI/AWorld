@@ -8,6 +8,7 @@ import time
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from aworld.self_evolve.candidate_package import (
+    candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
     validate_candidate_files,
 )
@@ -227,7 +228,9 @@ class TraceReflectiveLLMMutator:
                     optimizer_version=self.optimizer_version,
                     trainable_case_ids=tuple(case.case_id for case in request.trainable_cases),
                     content_fingerprint=content_fingerprint,
-                    semantic_fingerprint=_semantic_fingerprint(content),
+                    semantic_fingerprint=candidate_content_semantic_fingerprint(
+                        content
+                    ),
                     lesson_set_fingerprint=_lesson_set_fingerprint(request),
                     addressed_lesson_ids=_addressed_lesson_ids(request),
                     rationale=rationale,
@@ -328,6 +331,12 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "expected_preview as diagnostic evidence rather than a value to hard-code. "
         "When validation_feedback contains repair_candidate_package, edit that bounded "
         "source as a delta and preserve its verified behavior. "
+        "When validation_feedback reports duplicate_semantic_lesson, produce a materially "
+        "different complete candidate package by changing reusable target behavior or "
+        "candidate-owned files. Renaming, reformatting, changing rationale, or copying the "
+        "same files does not satisfy that typed repair frontier. Apply the distinction "
+        "generically across every trajectory member represented by the active capability "
+        "and verification contracts. "
         "Replay files must accompany a reusable target behavior delta, not replace it. "
         "Return the value of expected_output as exactly one JSON object, without a wrapper; "
         "use at most one of content or patch_intent, and omit both only when candidate-owned "
@@ -348,6 +357,32 @@ def _focused_repair_prompt_instructions(
     }
     requires_fixture_reconstruction = (
         contract_mapping.get("requires_fixture_derived_probe") is True
+    )
+    raw_fixture_probe_constraints = contract_mapping.get(
+        "fixture_probe_constraints",
+        (),
+    )
+    fixture_probe_constraints = (
+        tuple(
+            item
+            for item in raw_fixture_probe_constraints
+            if isinstance(item, Mapping)
+        )
+        if isinstance(raw_fixture_probe_constraints, (list, tuple))
+        else ()
+    )
+    raw_schema_field_constraints = contract_mapping.get(
+        "schema_field_constraints",
+        (),
+    )
+    schema_field_constraints = (
+        tuple(
+            item
+            for item in raw_schema_field_constraints
+            if isinstance(item, Mapping)
+        )
+        if isinstance(raw_schema_field_constraints, (list, tuple))
+        else ()
     )
     validation_feedback = payload.get("validation_feedback", ())
     focused_feedback = (
@@ -428,6 +463,34 @@ def _focused_repair_prompt_instructions(
             "the declared result schema to output/result.json. The framework creates "
             "only the output root; create every declared subdirectory and its parents "
             "before copying or writing fixtures or runtime artifacts. "
+        )
+    if fixture_probe_constraints:
+        instructions += (
+            "The fixture_probe_constraints list is a shape-complete compiler "
+            "contract, not a representative example. For every listed requirement, "
+            "probe kind, and path, recursively decode that service's own declared "
+            "fixture and select a deterministic non-empty scalar value from mapping "
+            "values or sequence items. Emit only that scalar (or a bounded substring "
+            "within max_response_chars) as response_contains. Do not serialize a "
+            "metadata wrapper containing fixture hashes, byte counts, shapes, keys, "
+            "or previews; those values are not descendants of the fixture payload. "
+            "Use one generic selector for all listed constraints and all fixture "
+            "shapes, including when multiple trajectory members contribute distinct "
+            "fixtures. "
+        )
+    if schema_field_constraints:
+        instructions += (
+            "The schema_field_constraints list is an executable, shape-complete "
+            "contract over the generated schema document. Apply every rule to "
+            "every instance selected by its field_path, including services or "
+            "probes produced for different trajectory members. enum rules permit "
+            "only their expected values; type rules permit only their expected "
+            "JSON types; required, non_empty, unique, max_chars, and max_items "
+            "rules retain their literal schema meanings. Keep schema_layer "
+            "boundaries intact: a valid manifest value is not automatically valid "
+            "in a compile-result service field. Repair the compiler or manifest "
+            "that owns the field rather than suppressing validation, changing the "
+            "diagnostic, or special-casing a recorded case. "
         )
     if (
         "response_contains" in feedback_text
@@ -814,15 +877,6 @@ def _candidate_id(
 def _content_fingerprint(content: str) -> str:
     normalized = "\n".join(line.rstrip() for line in content.strip().splitlines())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _semantic_fingerprint(content: str) -> str:
-    semantic_lines = [
-        re.sub(r"\s+", " ", line.strip().lower())
-        for line in content.splitlines()
-        if line.strip() and line.strip() != "---"
-    ]
-    return hashlib.sha256("\n".join(semantic_lines).encode("utf-8")).hexdigest()
 
 
 def _violates_transport_completion_invariant(content: str) -> bool:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -456,7 +457,33 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
                                 "session.open",
                                 "records.query",
                             ],
-                        }
+                        },
+                        {
+                            "code": "invalid_replay_capability_compile",
+                            "capability_error_code": (
+                                "protocol_probe_not_fixture_derived"
+                            ),
+                            "fixture_probe_constraints": [
+                                {
+                                    "requirement_id": "requirement-1",
+                                    "kind": "http",
+                                    "path": "/data",
+                                    "max_response_chars": 4096,
+                                }
+                            ],
+                            "schema_field_constraints": [
+                                {
+                                    "schema_layer": "compile_result",
+                                    "field_path": "services[*].transport",
+                                    "rule": "enum",
+                                    "expected": [
+                                        "http_fixture",
+                                        "skill_runtime",
+                                        "tcp_fixture",
+                                    ],
+                                }
+                            ],
+                        },
                     ],
                     "repair_candidate_package": {
                         "candidate_id": "candidate-failed",
@@ -502,6 +529,28 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
     assert "response_contains must remain a recorded scalar leaf" in prompts[0]
     assert "runtime response must carry the surrounding decoded container" in prompts[0]
     assert "Never remove or relocate the contract's exact_probe" in prompts[0]
+    assert "shape-complete compiler contract" in prompts[0]
+    assert "Do not serialize a metadata wrapper" in prompts[0]
+    assert "executable, shape-complete contract" in prompts[0]
+    assert "Keep schema_layer boundaries intact" in prompts[0]
+    assert strategy["repair_conformance"]["fixture_probe_constraints"] == [
+        {
+            "requirement_identity_digest": hashlib.sha256(
+                b"requirement-1"
+            ).hexdigest(),
+            "kind": "http",
+            "path": "/data",
+            "max_response_chars": 4096,
+        }
+    ]
+    assert strategy["repair_conformance"]["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].transport",
+            "rule": "enum",
+            "expected": ["http_fixture", "skill_runtime", "tcp_fixture"],
+        }
+    ]
     assert result.candidates[0].files == (
         CandidateFileDelta(
             path="replay/compiler.py",

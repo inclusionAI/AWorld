@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import PurePosixPath
 from typing import Any, Iterable
 
@@ -78,6 +79,67 @@ def candidate_package_payload(candidate: CandidateVariant) -> dict[str, Any]:
 
 def candidate_package_fingerprint(candidate: CandidateVariant) -> str:
     payload = candidate_package_payload(candidate)
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def candidate_content_semantic_fingerprint(content: str) -> str:
+    """Return the normalized semantic identity of candidate target content."""
+
+    semantic_lines = [
+        re.sub(r"\s+", " ", line.strip().casefold())
+        for line in content.splitlines()
+        if line.strip() and line.strip() != "---"
+    ]
+    return "sha256:" + hashlib.sha256(
+        "\n".join(semantic_lines).encode("utf-8")
+    ).hexdigest()
+
+
+def candidate_semantic_package_fingerprint(
+    candidate: CandidateVariant,
+    *,
+    content_semantic_fingerprint: str | None = None,
+) -> str:
+    """Fingerprint target semantics together with every candidate-owned file.
+
+    Target markdown keeps the historical whitespace/case normalization, while file
+    deltas remain byte-exact because formatting and casing can change executable or
+    schema behavior.  This prevents a files-only repair from being collapsed merely
+    because its target markdown is unchanged.
+    """
+
+    files = validate_candidate_files(candidate.files)
+    payload = {
+        "schema_version": "aworld.self_evolve.candidate_semantic_package.v1",
+        "target": {
+            "target_type": candidate.target.target_type,
+            "target_id": candidate.target.target_id,
+        },
+        "content_semantic_fingerprint": (
+            content_semantic_fingerprint
+            or candidate_content_semantic_fingerprint(candidate.content)
+        ),
+        "files": [
+            {
+                "path": item.path,
+                "operation": item.operation,
+                "content_fingerprint": (
+                    "sha256:"
+                    + hashlib.sha256(item.content.encode("utf-8")).hexdigest()
+                    if item.content is not None
+                    else None
+                ),
+                "executable": item.executable,
+            }
+            for item in files
+        ],
+    }
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
