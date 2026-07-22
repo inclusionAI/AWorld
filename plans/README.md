@@ -1,0 +1,104 @@
+# Implementation Plans
+
+Generated and reconciled by the improve skill on 2026-07-21 for branch
+`codex/self-evolve-docs`, planned at commit `70cb5c9a`. Execute in the order
+below unless dependencies say otherwise. Every executor must read its plan in
+full, honor STOP conditions, and update the status row when done.
+
+The new plans are deliberately framework-level. Equivalent behavior is required
+for one trajectory and multiple trajectories; trajectory cardinality may change
+cost and aggregation counts, but must not select a different semantic path.
+
+## Execution order & status
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|---|---|---|---|---|---|
+| 001 | [Bound auto_verified self-evolve runtime](https://github.com/inclusionAI/AWorld/issues/931) | P1 | M | — | REJECTED — partially landed and drifted; remaining work is superseded by 007 |
+| 002 | [Establish a self-evolve contract matrix in CI](002-establish-self-evolve-contract-matrix.md) | P1 | M | — | DONE — commit `89e1814f` |
+| 003 | [Enforce target provenance policy for every verified mutation](003-enforce-target-provenance-policy.md) | P1 | M | 002 | DONE — finalized at `9b554d3f` after three fail-closed review cycles |
+| 004 | [Unify replay lifecycle and failure ownership semantics](004-unify-replay-lifecycle-semantics.md) | P1 | L | 002 | DONE — finalized at `83f5e0c0` after three architecture review cycles |
+| 005 | [Make candidate conformance cardinality-independent](005-make-conformance-cardinality-independent.md) | P1 | M | 004 | DONE — finalized at `957943e9`; integrated causal/public boundary at `af6934b7` |
+| 006 | [Propagate causal failure events into diagnostics and lesson memory](006-propagate-causal-failure-memory.md) | P1 | M | 004 | DONE — finalized at `41ae5be2` after three architecture review cycles |
+| 007 | [Add a stage-aware budget ledger and candidate scheduler](007-add-stage-aware-budget-scheduler.md) | P1 | L | 004, 005, 006 | DONE — finalized at `517e0cd0` after three architecture review cycles |
+
+Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
+REJECTED (with one-line rationale)
+
+## Dependency graph
+
+```text
+002 verification baseline
+├── 003 target provenance/trust policy
+└── 004 replay lifecycle + failure ownership
+    ├── 005 always-on, shape-complete conformance
+    ├── 006 causal diagnostics + aggregated lessons
+    └── 007 budget ledger + scheduler + lifecycle funnel
+        └── requires 005 and 006 as semantic inputs
+```
+
+## Dependency notes
+
+- 002 lands first because all subsequent changes need a CI-enforced matrix for
+  one and multiple trajectories. It separates platform-neutral tests from the
+  macOS-native replay sandbox instead of disabling sandbox verification.
+- 003 is independent of replay internals after 002. It should land early because
+  mutation authorization must not depend on behavioral replay succeeding.
+- 004 defines execution status, failure owner/stage/scope, and normalized member
+  aggregation. Plans 005–007 must consume that model rather than inventing
+  their own reason strings or cardinality branches.
+- 005 uses normalized members from 004 and proves all distinct capability/
+  fixture shapes before optional representative task screening.
+- 006 uses typed events from 004 to preserve root cause and aggregate repeated
+  memories across trajectories.
+- 007 schedules work using the conformance shape plan from 005 and semantic
+  failure frontiers from 006. Starting it earlier would recreate the current
+  ambiguous counters and retry heuristics.
+- 001 was written at commit `98d769f5`. Current code already contains bounded
+  concurrency and execution telemetry from later work, so executing 001 as
+  written would overlap and conflict with 007. Its GitHub issue is retained as
+  history; issue status is not changed by this plan set.
+
+## Cross-plan framework invariants
+
+Every executor and reviewer must preserve these invariants:
+
+1. **Cardinality-neutral semantics**: a one-case dataset is one normalized
+   member; a multi-case dataset is N normalized members. No feature may be
+   enabled or disabled solely by `len(cases)`.
+2. **Shape-complete validation**: conformance covers every distinct requirement
+   and fixture shape. Equivalent shapes may be deduplicated; distinct shapes may
+   not be replaced by one representative trajectory.
+3. **Orthogonal state**: execution status, failure owner, failure stage, failure
+   scope, and comparability are separate fields.
+4. **Causal memory**: diagnostics and lessons aggregate typed semantic events,
+   not prose strings or gate names. Repetition changes occurrence metadata, not
+   event identity.
+5. **Monotonic cost**: adding distinct work cannot lower estimated cost.
+   Deduplicating equivalent conformance shapes cannot remove authoritative
+   behavioral replay cases.
+6. **Fail-closed trust**: behavioral verification never substitutes for target
+   provenance or mutation authorization.
+7. **No run-specific repair**: production code and tests may not branch on a
+   run ID, target ID, case ID, fixture excerpt, or exact failure sentence from a
+   historical artifact.
+
+## Findings considered and rejected
+
+- Lower `auto_verified` replay repetitions globally: rejected because it
+  silently weakens verified semantics. Budget denial should decline work rather
+  than reduce user-explicit verification.
+- Increase replay timeout or retry the failed protocol call: rejected because a
+  deterministic candidate capability defect is not repaired by more time or
+  repetitions.
+- Add a single-trajectory exception around candidate screening: rejected
+  because conformance is a capability contract and must apply to all dataset
+  cardinalities.
+- Validate only one representative trajectory in multi-case datasets: rejected
+  because one representative cannot prove distinct fixture or protocol shapes.
+- Copy the rejected run's response projection rule directly into the framework:
+  rejected because that would be case-by-case repair. The framework should
+  compile generic structure-preserving probe contracts from capability and
+  fixture metadata.
+- Add an unsafe Linux no-sandbox fallback to make CI green: rejected. Plan 002
+  uses platform-aware jobs; a future Linux sandbox implementation requires its
+  own security design and plan.
