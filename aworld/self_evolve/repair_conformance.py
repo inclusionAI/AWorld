@@ -15,6 +15,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayServiceSpec,
 )
 from aworld.self_evolve.sanitization import sanitize_path_ref, sanitize_text
+from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 from aworld.self_evolve.types import CandidateVariant
 
 
@@ -35,6 +36,112 @@ class ExactRepairProbe:
 
 
 @dataclass(frozen=True)
+class FixtureDerivedProbeConstraint:
+    """Content-free location contract for a fixture-derived probe assertion."""
+
+    requirement_id: str | None = field(compare=False)
+    kind: str
+    path: str
+    max_response_chars: int = 4_096
+    requirement_identity_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.requirement_id is not None and (
+            not self.requirement_id.strip() or len(self.requirement_id) > 240
+        ):
+            raise ValueError(
+                "fixture probe constraint requires a bounded requirement id"
+            )
+        identity_digest = self.requirement_identity_digest
+        if identity_digest is not None and re.fullmatch(
+            r"[0-9a-f]{64}",
+            identity_digest,
+        ) is None:
+            raise ValueError("fixture probe requirement identity digest is invalid")
+        if self.requirement_id is None and identity_digest is None:
+            raise ValueError("fixture probe constraint requires a requirement identity")
+        if self.requirement_id is not None:
+            computed_digest = self._digest_requirement_id(self.requirement_id)
+            if identity_digest is not None and identity_digest != computed_digest:
+                raise ValueError(
+                    "fixture probe requirement identity digest conflicts with raw "
+                    "identity"
+                )
+            object.__setattr__(
+                self,
+                "requirement_identity_digest",
+                computed_digest,
+            )
+        if self.kind not in {"http", "tcp", "websocket"}:
+            raise ValueError("fixture probe constraint kind is unsupported")
+        if not self.path.startswith("/") or len(self.path) > 2_048:
+            raise ValueError(
+                "fixture probe constraint path must be bounded and absolute"
+            )
+        if (
+            not isinstance(self.max_response_chars, int)
+            or isinstance(self.max_response_chars, bool)
+            or self.max_response_chars <= 0
+            or self.max_response_chars > 16_384
+        ):
+            raise ValueError("fixture probe response bound is invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "requirement_identity_digest": self.requirement_identity_digest,
+            "kind": self.kind,
+            "path": self.path,
+            "max_response_chars": self.max_response_chars,
+        }
+        if self.requirement_id is not None:
+            result["requirement_id"] = self.requirement_id
+        return result
+
+    def to_public_dict(self) -> dict[str, object]:
+        """Return the stable identity needed to inherit the constraint safely."""
+
+        return {
+            "requirement_identity_digest": self.requirement_identity_digest,
+            "kind": self.kind,
+            "path": self.path,
+            "max_response_chars": self.max_response_chars,
+        }
+
+    def matches_requirement_id(self, requirement_id: str) -> bool:
+        return self.requirement_identity_digest == self._digest_requirement_id(
+            requirement_id
+        )
+
+    @staticmethod
+    def _digest_requirement_id(requirement_id: str) -> str:
+        return hashlib.sha256(requirement_id.strip().encode("utf-8")).hexdigest()
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "FixtureDerivedProbeConstraint":
+        raw_max = value.get("max_response_chars", 4_096)
+        if not isinstance(raw_max, int) or isinstance(raw_max, bool):
+            raise ValueError("fixture probe response bound is invalid")
+        return cls(
+            requirement_id=(
+                str(value.get("requirement_id"))
+                if isinstance(value.get("requirement_id"), str)
+                else None
+            ),
+            kind=str(value.get("kind") or ""),
+            path=str(value.get("path") or ""),
+            max_response_chars=raw_max,
+            requirement_identity_digest=(
+                str(value.get("requirement_identity_digest"))
+                if isinstance(value.get("requirement_identity_digest"), str)
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class RepairConformanceContract:
     focus_candidate_id: str
     failure_codes: tuple[str, ...]
@@ -50,6 +157,8 @@ class RepairConformanceContract:
     late_observed_operations: tuple[str, ...] = ()
     requires_fixture_derived_probe: bool = False
     required_fixture_probe_operations: tuple[str, ...] = ()
+    fixture_probe_constraints: tuple[FixtureDerivedProbeConstraint, ...] = ()
+    schema_field_constraints: tuple[SchemaFieldRepairConstraint, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the private execution contract.
@@ -83,6 +192,12 @@ class RepairConformanceContract:
             "required_fixture_probe_operations": list(
                 self.required_fixture_probe_operations
             ),
+            "fixture_probe_constraints": [
+                item.to_dict() for item in self.fixture_probe_constraints
+            ],
+            "schema_field_constraints": [
+                item.to_dict() for item in self.schema_field_constraints
+            ],
         }
 
     def to_public_dict(self) -> dict[str, object]:
@@ -136,6 +251,12 @@ class RepairConformanceContract:
             "required_fixture_probe_operations": list(
                 self.required_fixture_probe_operations
             ),
+            "fixture_probe_constraints": [
+                item.to_public_dict() for item in self.fixture_probe_constraints
+            ],
+            "schema_field_constraints": [
+                item.to_dict() for item in self.schema_field_constraints
+            ],
         }
 
     @classmethod
@@ -186,6 +307,26 @@ class RepairConformanceContract:
             if isinstance(raw_selector_fingerprints, Mapping)
             else {}
         )
+        raw_probe_constraints = value.get("fixture_probe_constraints", ())
+        if not isinstance(raw_probe_constraints, (list, tuple)):
+            raise ValueError("fixture probe constraints must be an array")
+        probe_constraints = tuple(
+            FixtureDerivedProbeConstraint.from_dict(item)
+            for item in raw_probe_constraints
+            if isinstance(item, Mapping)
+        )
+        if len(probe_constraints) != len(raw_probe_constraints):
+            raise ValueError("fixture probe constraints contain invalid entries")
+        raw_schema_constraints = value.get("schema_field_constraints", ())
+        if not isinstance(raw_schema_constraints, (list, tuple)):
+            raise ValueError("schema field constraints must be an array")
+        schema_constraints = tuple(
+            SchemaFieldRepairConstraint.from_dict(item)
+            for item in raw_schema_constraints
+            if isinstance(item, Mapping)
+        )
+        if len(schema_constraints) != len(raw_schema_constraints):
+            raise ValueError("schema field constraints contain invalid entries")
         return cls(
             focus_candidate_id=str(value.get("focus_candidate_id") or ""),
             failure_codes=_string_tuple(value.get("failure_codes")),
@@ -209,6 +350,8 @@ class RepairConformanceContract:
             required_fixture_probe_operations=_string_tuple(
                 value.get("required_fixture_probe_operations")
             ),
+            fixture_probe_constraints=probe_constraints,
+            schema_field_constraints=schema_constraints,
         )
 
 
@@ -410,7 +553,7 @@ def build_repair_conformance_probe_plan(
             else None
         )
     )
-    required_nonempty = bool(
+    task_plane_required_nonempty = bool(
         contract.late_observed_operations
         and (
             contract.requires_fixture_derived_probe
@@ -444,6 +587,14 @@ def build_repair_conformance_probe_plan(
         for probe_index, probe in enumerate(probes):
             operation = _repair_probe_operation(
                 probe.request_text if probe is not None else None
+            )
+            matching_fixture_constraints = tuple(
+                constraint
+                for constraint in contract.fixture_probe_constraints
+                if constraint.matches_requirement_id(service.requirement_id)
+                and probe is not None
+                and constraint.kind == probe.kind
+                and constraint.path == probe.path
             )
             semantic = {
                 "capability_id": capability_id,
@@ -482,9 +633,23 @@ def build_repair_conformance_probe_plan(
                     "sha256:missing",
                 ),
                 "exact_probe_fingerprint": exact_probe_fingerprint,
+                "fixture_probe_constraints_fingerprint": (
+                    _conformance_sensitive_fingerprint(
+                        [
+                            item.to_public_dict()
+                            for item in matching_fixture_constraints
+                        ]
+                    )
+                ),
                 "assertions": {
-                    "requires_nonempty": required_nonempty,
-                    "requires_recorded": operation in required_recorded_operations,
+                    "requires_nonempty": (
+                        task_plane_required_nonempty
+                        or bool(matching_fixture_constraints)
+                    ),
+                    "requires_recorded": (
+                        operation in required_recorded_operations
+                        or bool(matching_fixture_constraints)
+                    ),
                 },
             }
             fingerprint = _conformance_sensitive_fingerprint(semantic)
@@ -675,6 +840,53 @@ def compile_repair_conformance_contract(
         if inherited_contract is not None
         else None
     )
+    direct_probe_constraints = _fixture_probe_constraints(diagnostics)
+    inherited_probe_constraints = (
+        inherited_contract.fixture_probe_constraints
+        if inherited_contract is not None
+        else ()
+    )
+    fixture_probe_constraints = tuple(
+        {
+            (
+                item.requirement_identity_digest,
+                item.kind,
+                item.path,
+                item.max_response_chars,
+            ): item
+            for item in (
+                *inherited_probe_constraints,
+                *direct_probe_constraints,
+            )
+        }.values()
+    )
+    direct_schema_constraints = _schema_field_constraints(diagnostics)
+    inherited_schema_constraints = (
+        inherited_contract.schema_field_constraints
+        if inherited_contract is not None
+        else ()
+    )
+    schema_field_constraints = tuple(
+        {
+            item.identity_digest: item
+            for item in (
+                *inherited_schema_constraints,
+                *direct_schema_constraints,
+            )
+        }.values()
+    )
+    schema_constraint_paths: list[str] = []
+    schema_layers = {
+        constraint.schema_layer for constraint in schema_field_constraints
+    }
+    if "manifest" in schema_layers and manifest_path is not None:
+        schema_constraint_paths.append(manifest_path)
+    if "compile_result" in schema_layers and compiler_path is not None:
+        schema_constraint_paths.append(compiler_path)
+    if "runtime" in schema_layers:
+        schema_constraint_paths.extend(branch_paths)
+    if schema_constraint_paths:
+        branch_paths = tuple(dict.fromkeys(schema_constraint_paths))
     directly_observed_operations = _observed_operations(diagnostics)
     observed_operations = directly_observed_operations or (
         inherited_contract.late_observed_operations
@@ -744,7 +956,7 @@ def compile_repair_conformance_contract(
                 branch_paths=branch_paths,
                 markers=observed_operations,
             )
-            if requires_fixture_probe
+            if requires_fixture_probe or fixture_probe_constraints
             else {}
         ),
         manifest_path=manifest_path,
@@ -752,6 +964,8 @@ def compile_repair_conformance_contract(
         late_observed_operations=observed_operations,
         requires_fixture_derived_probe=requires_fixture_probe,
         required_fixture_probe_operations=required_fixture_probe_operations,
+        fixture_probe_constraints=fixture_probe_constraints,
+        schema_field_constraints=schema_field_constraints,
     )
 
 
@@ -774,6 +988,19 @@ def _compile_failure_branch_paths(
     ]
     if not compile_diagnostics:
         return ()
+    schema_layers = {
+        constraint.schema_layer
+        for constraint in _schema_field_constraints(compile_diagnostics)
+    }
+    typed_paths: list[str] = []
+    if "manifest" in schema_layers and manifest_path is not None:
+        typed_paths.append(manifest_path)
+    if "compile_result" in schema_layers and compiler_path is not None:
+        typed_paths.append(compiler_path)
+    if "runtime" in schema_layers:
+        typed_paths.extend(runtime_paths)
+    if typed_paths:
+        return tuple(dict.fromkeys(typed_paths))
     reason_text = " ".join(
         str(diagnostic.get("reason") or "").casefold()
         for diagnostic in compile_diagnostics
@@ -875,7 +1102,10 @@ def evaluate_candidate_source_conformance(
             return structural_failure
         violations = _fixture_probe_derivation_violations(
             candidate_sources,
-            required=contract.requires_fixture_derived_probe,
+            required=(
+                contract.requires_fixture_derived_probe
+                or bool(contract.fixture_probe_constraints)
+            ),
             operation_names=(
                 contract.required_fixture_probe_operations
                 or contract.late_observed_operations
@@ -1319,15 +1549,85 @@ def _diagnostic_failure_codes(
         current = pending.pop()
         visited += 1
         if isinstance(current, Mapping):
-            code = current.get("code")
-            if isinstance(code, str) and code and code != "failed_gate":
-                normalized = sanitize_text(code, max_chars=120)
-                if normalized not in codes:
-                    codes.append(normalized)
+            for field_name in ("code", "capability_error_code"):
+                code = current.get(field_name)
+                if isinstance(code, str) and code and code != "failed_gate":
+                    normalized = sanitize_text(code, max_chars=120)
+                    if normalized not in codes:
+                        codes.append(normalized)
             pending.extend(current.values())
         elif isinstance(current, (list, tuple)):
             pending.extend(current)
     return tuple(codes)
+
+
+def _fixture_probe_constraints(
+    diagnostics: Sequence[Mapping[str, object]],
+) -> tuple[FixtureDerivedProbeConstraint, ...]:
+    """Collect content-free probe constraints from direct and inherited feedback."""
+
+    collected: dict[
+        tuple[str, str, str, int],
+        FixtureDerivedProbeConstraint,
+    ] = {}
+    pending: list[object] = list(diagnostics)
+    visited = 0
+    while pending and visited < 512 and len(collected) < 64:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            raw_constraints = current.get("fixture_probe_constraints")
+            if isinstance(raw_constraints, (list, tuple)):
+                for raw_constraint in raw_constraints[:64]:
+                    if not isinstance(raw_constraint, Mapping):
+                        continue
+                    try:
+                        constraint = FixtureDerivedProbeConstraint.from_dict(
+                            raw_constraint
+                        )
+                    except ValueError:
+                        continue
+                    key = (
+                        str(constraint.requirement_identity_digest),
+                        constraint.kind,
+                        constraint.path,
+                        constraint.max_response_chars,
+                    )
+                    collected[key] = constraint
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    return tuple(collected[key] for key in sorted(collected))
+
+
+def _schema_field_constraints(
+    diagnostics: Sequence[Mapping[str, object]],
+) -> tuple[SchemaFieldRepairConstraint, ...]:
+    """Collect typed schema rules from direct and projected repair feedback."""
+
+    collected: dict[str, SchemaFieldRepairConstraint] = {}
+    pending: list[object] = list(diagnostics)
+    visited = 0
+    while pending and visited < 512 and len(collected) < 100:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            raw_constraints = current.get("schema_field_constraints")
+            if isinstance(raw_constraints, (list, tuple)):
+                for raw_constraint in raw_constraints[:100]:
+                    if not isinstance(raw_constraint, Mapping):
+                        continue
+                    try:
+                        constraint = SchemaFieldRepairConstraint.from_dict(
+                            raw_constraint
+                        )
+                    except ValueError:
+                        continue
+                    collected[constraint.identity_digest] = constraint
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    return tuple(collected[key] for key in sorted(collected))
 
 
 def _fixture_probe_structure_failure(
@@ -1335,7 +1635,10 @@ def _fixture_probe_structure_failure(
     *,
     contract: RepairConformanceContract,
 ) -> RepairConformanceResult | None:
-    if not contract.requires_fixture_derived_probe:
+    if (
+        not contract.requires_fixture_derived_probe
+        and not contract.fixture_probe_constraints
+    ):
         return None
     literals: set[str] = set()
     for path, source in sources.items():
@@ -2091,6 +2394,111 @@ def _narrow_scalar_length_filter(compare: ast.Compare) -> bool:
     return False
 
 
+def _fixture_probe_constraint_failure(
+    services: Sequence[ReplayServiceSpec],
+    contract: RepairConformanceContract,
+    *,
+    fixture_leaf_values: Mapping[str, Sequence[str]] | None,
+) -> RepairConformanceResult | None:
+    constraints = contract.fixture_probe_constraints
+    if not constraints:
+        return None
+    if fixture_leaf_values is None:
+        return RepairConformanceResult(
+            passed=False,
+            code="fixture_probe_evidence_unavailable",
+            reason=(
+                "fixture-derived probe constraints require frozen fixture leaf "
+                "evidence for conformance validation"
+            ),
+            details={"constraint_count": len(constraints)},
+        )
+
+    missing: list[dict[str, object]] = []
+    violations: list[dict[str, object]] = []
+    for constraint in constraints:
+        matching = [
+            (service, probe)
+            for service in services
+            if constraint.matches_requirement_id(service.requirement_id)
+            for probe in service.protocol_probes
+            if probe.kind == constraint.kind
+            and probe.path == constraint.path
+            and not (
+                probe.kind == "http"
+                and probe.validate_advertised_websockets
+            )
+        ]
+        if not matching:
+            missing.append(constraint.to_public_dict())
+            continue
+        for service, probe in matching:
+            response_contains = probe.response_contains
+            recorded_values = fixture_leaf_values.get(
+                service.response_fixture,
+                (),
+            )
+            violation_code: str | None = None
+            if not isinstance(response_contains, str) or not response_contains:
+                violation_code = "empty_response_contains"
+            elif len(response_contains) > constraint.max_response_chars:
+                violation_code = "response_contains_exceeds_bound"
+            elif not any(
+                _fixture_value_matches(response_contains, value)
+                for value in recorded_values
+                if isinstance(value, str) and value
+            ):
+                violation_code = "response_contains_not_fixture_scalar"
+            if violation_code is None:
+                continue
+            response_fingerprint = (
+                _conformance_sensitive_fingerprint(response_contains)
+                if isinstance(response_contains, str)
+                else _conformance_sensitive_fingerprint(None)
+            )
+            violations.append(
+                {
+                    "requirement_identity_digest": (
+                        constraint.requirement_identity_digest
+                    ),
+                    "service_id": service.service_id,
+                    "probe_kind": constraint.kind,
+                    "probe_path": constraint.path,
+                    "recorded_leaf_count": len(recorded_values),
+                    "declared_response_fingerprint": response_fingerprint,
+                    "violation_code": violation_code,
+                }
+            )
+    if missing:
+        return RepairConformanceResult(
+            passed=False,
+            code="fixture_derived_probe_missing",
+            reason=(
+                "compiled candidate omits a probe location required to repair "
+                "fixture-derived response assertions"
+            ),
+            details={
+                "missing_constraints": missing,
+                "constraint_count": len(constraints),
+            },
+        )
+    if violations:
+        return RepairConformanceResult(
+            passed=False,
+            code="fixture_derived_probe_not_recorded",
+            reason=(
+                "every constrained protocol probe must use a bounded non-empty "
+                "scalar derived from its own declared fixture"
+            ),
+            details={
+                "violation_count": len(violations),
+                "violations": violations[:64],
+                "constraint_count": len(constraints),
+            },
+        )
+    return None
+
+
 def evaluate_compiled_probe_conformance(
     services: Sequence[ReplayServiceSpec],
     contract: RepairConformanceContract,
@@ -2105,6 +2513,13 @@ def evaluate_compiled_probe_conformance(
         for probe in service.protocol_probes
     )
     probes = tuple(probe for _, probe in service_probes)
+    constraint_failure = _fixture_probe_constraint_failure(
+        services,
+        contract,
+        fixture_leaf_values=fixture_leaf_values,
+    )
+    if constraint_failure is not None:
+        return constraint_failure
     if contract.exact_probe is not None:
         exact = contract.exact_probe
         location_matching = [

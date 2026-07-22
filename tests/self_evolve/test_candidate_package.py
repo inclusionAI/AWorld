@@ -5,7 +5,9 @@ from dataclasses import replace
 import pytest
 
 from aworld.self_evolve.candidate_package import (
+    candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
+    candidate_semantic_package_fingerprint,
     validate_candidate_files,
 )
 from aworld.self_evolve.types import (
@@ -102,3 +104,40 @@ def test_candidate_package_fingerprint_is_file_order_independent() -> None:
     second = replace(first, files=tuple(reversed(first.files)))
 
     assert candidate_package_fingerprint(first) == candidate_package_fingerprint(second)
+
+
+def test_candidate_semantic_package_identity_covers_candidate_owned_files() -> None:
+    first = _candidate(
+        files=(
+            CandidateFileDelta(path="replay/compiler.py", content="print('one')"),
+            CandidateFileDelta(path="replay/runtime.py", content="print('shared')"),
+        )
+    )
+    second = replace(
+        first,
+        files=(
+            CandidateFileDelta(path="replay/compiler.py", content="print('two')"),
+            CandidateFileDelta(path="replay/runtime.py", content="print('shared')"),
+        ),
+    )
+
+    assert candidate_semantic_package_fingerprint(
+        first
+    ) != candidate_semantic_package_fingerprint(second)
+
+
+def test_candidate_semantic_package_normalizes_target_content_not_file_code() -> None:
+    first = _candidate(
+        files=(CandidateFileDelta(path="replay/runtime.py", content="VALUE = 'A'"),)
+    )
+    equivalent_target = replace(
+        first,
+        content="---\nname: DEMO-SKILL\n---\n#   DEMO\n",
+    )
+
+    assert candidate_content_semantic_fingerprint(
+        first.content
+    ) == candidate_content_semantic_fingerprint(equivalent_target.content)
+    assert candidate_semantic_package_fingerprint(
+        first
+    ) == candidate_semantic_package_fingerprint(equivalent_target)

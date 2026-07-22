@@ -897,6 +897,231 @@ def test_candidate_replay_capability_compile_error_is_typed_repair_feedback() ->
     ][2]
 
 
+def test_candidate_replay_capability_preserves_fixture_probe_constraints() -> None:
+    details = _replay_adaptation_exception_details(
+        ReplayCapabilityError(
+            "protocol probe response_contains must be fixture-derived",
+            code="protocol_probe_not_fixture_derived",
+            details={
+                "fixture_probe_constraints": [
+                    {
+                        "requirement_id": "requirement-1",
+                        "kind": "http",
+                        "path": "/data",
+                        "max_response_chars": 4096,
+                    }
+                ],
+                "fixture_probe_violation_count": 1,
+            },
+        ),
+        candidate_capability=True,
+    )
+
+    diagnostic = details["diagnostics"][0]
+    assert diagnostic["capability_error_code"] == (
+        "protocol_probe_not_fixture_derived"
+    )
+    assert diagnostic["fixture_probe_constraints"] == [
+        {
+            "requirement_id": "requirement-1",
+            "kind": "http",
+            "path": "/data",
+            "max_response_chars": 4096,
+        }
+    ]
+
+
+def test_candidate_replay_capability_preserves_schema_field_constraints() -> None:
+    constraint = {
+        "schema_layer": "compile_result",
+        "field_path": "services[*].transport",
+        "rule": "enum",
+        "expected": ["http_fixture", "skill_runtime", "tcp_fixture"],
+    }
+    details = _replay_adaptation_exception_details(
+        ReplayCapabilityError(
+            "compile result violates a schema field",
+            code="schema_field_validation_failed",
+            details={
+                "schema_field_constraints": [constraint],
+                "schema_field_violation_count": 3,
+            },
+        ),
+        candidate_capability=True,
+    )
+
+    assert details["capability_error_code"] == "schema_field_validation_failed"
+    assert details["schema_field_constraints"] == [constraint]
+    assert details["diagnostics"][0]["schema_field_constraints"] == [constraint]
+    fingerprint = runner_module._schema_field_contract_fingerprint(details)
+    assert fingerprint is not None
+    failure_event = details["causal_failure_events"][0]
+    assert failure_event["code"] == "schema_field_validation_failed"
+    assert failure_event["contract_fingerprint"] == fingerprint
+    distinct = {
+        **details,
+        "schema_field_constraints": [
+            {
+                **constraint,
+                "field_path": "services[*].readiness.kind",
+            }
+        ],
+    }
+    assert runner_module._schema_field_contract_fingerprint(distinct) != fingerprint
+
+
+def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate-repeated",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        content="# Generic\n",
+        rationale="repair",
+    )
+    substantive_gate = GateResult(
+        gate_name="candidate_repair_conformance",
+        passed=False,
+        reason="replay adaptation compilation failed",
+        details={
+            "failure_class": "candidate",
+            "code": "repair_capability_compile_failed",
+            "capability_error_code": "schema_field_validation_failed",
+        },
+    )
+    duplicate_gate = GateResult(
+        gate_name="duplicate_rejected_candidate",
+        passed=False,
+        reason="candidate repeats a prior terminal candidate",
+        details={"failure_class": "candidate", "code": "duplicate_prior_candidate"},
+    )
+    substantive = runner_module._iteration_state(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        replay_result=None,
+        replay_dataset=None,
+        gate_results=[substantive_gate],
+        feedback=(),
+        status="rejected",
+    )
+    duplicate = runner_module._iteration_state(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        replay_result=None,
+        replay_dataset=None,
+        gate_results=[duplicate_gate],
+        feedback=(),
+        status="rejected",
+    )
+
+    selected = _select_iteration_state([substantive, duplicate])
+
+    assert selected is substantive
+    attribution = runner_module._rejection_attribution(
+        final_status=SelfEvolveRunStatus.REJECTED,
+        selected_candidate_id=candidate.candidate_id,
+        gate_results=selected["gate_results"],
+        scheduler_decisions=(
+            {"reason_code": "repair_frontier_stalled", "stop": True},
+        ),
+    )
+    assert attribution == {
+        "candidate_id": "candidate-repeated",
+        "primary_gate": "candidate_repair_conformance",
+        "primary_reason": "replay adaptation compilation failed",
+        "failure_class": "candidate",
+        "code": "repair_capability_compile_failed",
+        "duplicate_only": False,
+        "capability_error_code": "schema_field_validation_failed",
+        "scheduler_reason_code": "repair_frontier_stalled",
+        "scheduler_stop": True,
+    }
+
+
+def test_verification_contract_fingerprint_covers_active_trajectory_contract(
+    monkeypatch,
+) -> None:
+    settings = {
+        "min_eval_cases": 0,
+        "replay_enabled": True,
+    }
+    first = runner_module._verification_contract_fingerprint(
+        target_fingerprint="target-v1",
+        replay_preflight_fingerprint="trajectory-set-one",
+        apply_policy="auto_verified",
+        verification_settings=settings,
+        repair_contract=None,
+    )
+    second = runner_module._verification_contract_fingerprint(
+        target_fingerprint="target-v1",
+        replay_preflight_fingerprint="trajectory-set-two",
+        apply_policy="auto_verified",
+        verification_settings=settings,
+        repair_contract=None,
+    )
+    assert first != second
+
+    monkeypatch.setattr(
+        runner_module,
+        "_VERIFICATION_CONTRACT_VERSION",
+        "aworld.self_evolve.verification_contract.next",
+    )
+    upgraded = runner_module._verification_contract_fingerprint(
+        target_fingerprint="target-v1",
+        replay_preflight_fingerprint="trajectory-set-one",
+        apply_policy="auto_verified",
+        verification_settings=settings,
+        repair_contract=None,
+    )
+    assert upgraded != first
+
+
+def test_semantic_duplicate_feedback_creates_typed_repair_frontier() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate-semantic-duplicate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        content="# Generic\n",
+        rationale="duplicate",
+    )
+    fingerprint = runner_module._SemanticLessonFingerprint(
+        semantic_package_fingerprint="sha256:package",
+        lesson_set_fingerprint="sha256:lessons",
+        verification_contract_fingerprint="sha256:verification",
+    )
+
+    feedback = runner_module._semantic_lesson_duplicate_feedback(
+        candidate,
+        fingerprint=fingerprint,
+    )
+    frontiers = runner_module._typed_repair_frontiers((feedback,))
+
+    assert feedback.metrics["code"] == "duplicate_semantic_lesson"
+    assert len(frontiers) == 1
+    assert frontiers[0].owner is FailureOwner.CANDIDATE
+    assert frontiers[0].repairable is True
+
+
+def test_semantic_duplicate_identity_requires_same_verification_contract() -> None:
+    current = runner_module._SemanticLessonFingerprint(
+        semantic_package_fingerprint="sha256:package",
+        lesson_set_fingerprint="sha256:lessons",
+        verification_contract_fingerprint="sha256:verification-current",
+    )
+    historical = runner_module._SemanticLessonFingerprint(
+        semantic_package_fingerprint="sha256:package",
+        lesson_set_fingerprint="sha256:lessons",
+        verification_contract_fingerprint="sha256:verification-old",
+    )
+
+    assert not runner_module._is_semantic_lesson_duplicate(
+        "candidate",
+        lineage_fingerprints={"candidate": current},
+        rejected_semantic_lesson_fingerprints={historical},
+    )
+
+
 def test_candidate_generation_does_not_prepay_for_historical_duplicates() -> None:
     assert _candidate_generation_limit(replay_candidate_limit=2) == 2
 
@@ -8216,7 +8441,15 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
 
 
 @pytest.mark.asyncio
-async def test_runner_filters_prior_semantic_lesson_duplicate_candidates_before_replay(tmp_path) -> None:
+async def test_runner_filters_prior_semantic_lesson_duplicate_candidates_before_replay(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "_verification_contract_fingerprint",
+        lambda **_: "verification-same",
+    )
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
@@ -8292,6 +8525,28 @@ async def test_runner_filters_prior_semantic_lesson_duplicate_candidates_before_
         content="---\nname: demo\n---\n# Demo\n\nFresh semantic candidate.\n",
         rationale="fresh",
         target_fingerprint="fingerprint",
+    )
+    historical_lineage_path = lineage_dir / "candidate-old-semantic.json"
+    historical_lineage = json.loads(
+        historical_lineage_path.read_text(encoding="utf-8")
+    )
+    historical_lineage.update(
+        {
+            "semantic_identity_version": (
+                runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+            ),
+            "semantic_package_fingerprint": (
+                runner_module.candidate_semantic_package_fingerprint(
+                    semantic_duplicate,
+                    content_semantic_fingerprint="semantic-same",
+                )
+            ),
+            "verification_contract_fingerprint": "verification-same",
+        }
+    )
+    historical_lineage_path.write_text(
+        json.dumps(historical_lineage),
+        encoding="utf-8",
     )
 
     class SemanticOptimizer:
@@ -8383,11 +8638,226 @@ async def test_runner_filters_prior_semantic_lesson_duplicate_candidates_before_
         ).read_text(encoding="utf-8")
     )
     assert report["optimizer_diagnostics"]["filtered_semantic_lesson_duplicate_candidates"] == 1
-    assert report["iterations"][0]["candidate_id"] == "candidate-fresh-semantic"
+    assert report["iterations"][0]["candidate_id"] == "candidate-new-semantic"
+    assert report["iterations"][0]["failed_gates"] == [
+        "duplicate_semantic_lesson"
+    ]
+    assert any(
+        item.get("candidate_id") == "candidate-fresh-semantic"
+        for item in report["iterations"]
+    )
 
 
 @pytest.mark.asyncio
-async def test_runner_lazily_imports_prior_report_lineage_for_semantic_filter(tmp_path) -> None:
+async def test_semantic_dedup_exhaustion_retries_typed_frontier_and_reports_root_cause(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "_verification_contract_fingerprint",
+        lambda **_: "verification-same",
+    )
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = (
+        CandidateVariant(
+            candidate_id="candidate-new-semantic-a",
+            target=target_ref,
+            content="---\nname: demo\n---\n# Demo\n\nCandidate A.\n",
+            rationale="semantic duplicate A",
+            target_fingerprint="fingerprint",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content="print('candidate-a')\n",
+                ),
+            ),
+        ),
+        CandidateVariant(
+            candidate_id="candidate-new-semantic-b",
+            target=target_ref,
+            content="---\nname: demo\n---\n# Demo\n\nCandidate B.\n",
+            rationale="semantic duplicate B",
+            target_fingerprint="fingerprint",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content="print('candidate-b')\n",
+                ),
+            ),
+        ),
+    )
+    semantic_values = ("semantic-a", "semantic-b")
+    historical_dir = tmp_path / ".aworld" / "self_evolve" / "old-complete-semantic"
+    lineage_dir = historical_dir / "optimizer_lineage"
+    lineage_dir.mkdir(parents=True)
+    historical_ids = ("candidate-old-semantic-a", "candidate-old-semantic-b")
+    lineage_paths: list[str] = []
+    for historical_id, candidate, semantic in zip(
+        historical_ids,
+        candidates,
+        semantic_values,
+    ):
+        lineage_path = lineage_dir / f"{historical_id}.json"
+        lineage_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": historical_id,
+                    "optimizer_name": "test",
+                    "optimizer_version": "1",
+                    "semantic_fingerprint": semantic,
+                    "lesson_set_fingerprint": "lesson-set-same",
+                    "semantic_identity_version": (
+                        runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+                    ),
+                    "semantic_package_fingerprint": (
+                        runner_module.candidate_semantic_package_fingerprint(
+                            candidate,
+                            content_semantic_fingerprint=semantic,
+                        )
+                    ),
+                    "verification_contract_fingerprint": "verification-same",
+                }
+            ),
+            encoding="utf-8",
+        )
+        lineage_paths.append(str(lineage_path))
+    (historical_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "old-complete-semantic",
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "iterations": [
+                    {
+                        "iteration": index + 1,
+                        "candidate_id": candidate_id,
+                        "status": "rejected",
+                        "failed_gates": ["score_improvement"],
+                    }
+                    for index, candidate_id in enumerate(historical_ids)
+                ],
+                "optimizer_lineage": {
+                    "count": len(lineage_paths),
+                    "paths": lineage_paths,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve candidate generation."}},
+            "action": {"content": "Prior complete packages repeated."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="semantic-exhaustion-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="semantic-exhaustion-task",
+    )
+
+    class RepeatingSemanticOptimizer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.calls += 1
+            selected = candidates[: request.max_candidates]
+            return OptimizerResult(
+                candidates=selected,
+                lineage=tuple(
+                    OptimizerLineage(
+                        candidate_id=candidate.candidate_id,
+                        optimizer_name="test",
+                        optimizer_version="1",
+                        semantic_fingerprint=semantic,
+                        lesson_set_fingerprint="lesson-set-same",
+                    )
+                    for candidate, semantic in zip(selected, semantic_values)
+                ),
+            )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.calls += 1
+            raise AssertionError("semantic duplicates must not reach replay")
+
+    optimizer = RepeatingSemanticOptimizer()
+    replay_backend = ReplayBackend()
+    result = await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        evaluation_backend=None,
+        replay_enabled=True,
+        candidate_replay_backend=replay_backend,
+        replay_candidate_limit=2,
+        max_iterations=4,
+        min_eval_cases=0,
+    ).run_explicit_target(
+        run_id="run-semantic-exhaustion",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert optimizer.calls > 1
+    assert replay_backend.calls == 0
+    assert [gate.gate_name for gate in result.run.gate_results] == [
+        "candidate_generation_exhausted_by_semantic_dedup"
+    ]
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-semantic-exhaustion"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["rejection_attribution"]["code"] == (
+        "candidate_generation_exhausted_by_semantic_dedup"
+    )
+    assert report["rejection_attribution"]["duplicate_only"] is True
+    assert report["rejection_attribution"]["scheduler_reason_code"] == (
+        "repair_frontier_stalled"
+    )
+    assert report["gate_results"][0]["details"]["generation_attempt_count"] > 2
+    assert report["population"]["lifecycle"]["terminal_reason_counts"] == {
+        "duplicate_semantic_lesson": report["gate_results"][0]["details"][
+            "generation_attempt_count"
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_runner_lazily_imports_legacy_lineage_without_hard_filter(tmp_path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld guidance.\n", encoding="utf-8")
@@ -8529,13 +8999,14 @@ async def test_runner_lazily_imports_prior_report_lineage_for_semantic_filter(tm
         apply_policy="proposal",
     )
 
-    assert replay_backend.candidate_ids == ["candidate-fresh-legacy"]
+    assert "candidate-new-legacy" in replay_backend.candidate_ids
     imported_path = historical_dir / "optimizer_lineage" / "candidate-old-legacy.json"
     assert imported_path.exists()
     imported = json.loads(imported_path.read_text(encoding="utf-8"))
     assert imported["optimizer_name"] == "prior-report-import"
     assert imported["semantic_fingerprint"] == "semantic-legacy"
     assert imported["lesson_set_fingerprint"] == "lesson-set-legacy"
+    assert "semantic_identity_version" not in imported
 
 
 @pytest.mark.asyncio
@@ -8680,6 +9151,13 @@ async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candi
     assert strong_lineage["lifecycle_status"] == "accepted"
     assert strong_lineage["replayed"] is True
     assert strong_lineage["post_apply_status"] == "accepted"
+    assert strong_lineage["semantic_identity_version"] == (
+        runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+    )
+    assert strong_lineage["semantic_package_fingerprint"].startswith("sha256:")
+    assert strong_lineage["verification_contract_fingerprint"].startswith(
+        "sha256:"
+    )
 
 
 @pytest.mark.asyncio
@@ -9509,6 +9987,123 @@ async def test_runner_skips_duplicate_rejected_candidate_before_replay(
     )
     assert "replay" not in report
     assert report["iterations"][0]["failed_gates"] == ["duplicate_rejected_candidate"]
+
+
+@pytest.mark.asyncio
+async def test_runner_reports_screening_root_cause_before_later_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n\nOld.\n", encoding="utf-8")
+    candidate = CandidateVariant(
+        candidate_id="candidate-schema-repeat",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content="---\nname: demo\n---\n# Demo\n\nImproved.\n",
+        rationale="repair schema output",
+    )
+
+    class RepeatingOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=RepeatingOptimizer(),
+        max_iterations=2,
+        min_eval_cases=0,
+    )
+    failure_event = ReplayFailureEvent(
+        code="schema_field_validation_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_COMPILE,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="repair_conformance",
+        contract_fingerprint="schema-fields:transport",
+    )
+
+    async def reject_screening(**kwargs):
+        return (), {
+            "attempts": [
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "stage": "conformance",
+                    "passed": False,
+                    "reason": "replay adaptation compilation failed",
+                    "details": {
+                        "failure_class": "candidate",
+                        "repairable": True,
+                        "code": "repair_capability_compile_failed",
+                        "capability_error_code": (
+                            "schema_field_validation_failed"
+                        ),
+                        "failure_event": failure_event.to_dict(),
+                        "causal_failure_events": [failure_event.to_dict()],
+                    },
+                }
+            ]
+        }
+
+    monkeypatch.setattr(runner, "_screen_candidate_population", reject_screening)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve demo."}},
+            "action": {"content": "Demo failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="schema-root-cause",
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-schema-root-cause",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(
+            build_trace_pack(
+                trajectory,
+                source_kind="current_trajectory",
+                task_id="schema-root-cause",
+            ),
+        ),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert [gate.gate_name for gate in result.run.gate_results if not gate.passed] == [
+        "candidate_repair_conformance"
+    ]
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-schema-root-cause"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["rejection_attribution"] == {
+        "candidate_id": candidate.candidate_id,
+        "primary_gate": "candidate_repair_conformance",
+        "primary_reason": "replay adaptation compilation failed",
+        "failure_class": "candidate",
+        "code": "repair_capability_compile_failed",
+        "duplicate_only": False,
+        "capability_error_code": "schema_field_validation_failed",
+        "scheduler_reason_code": "focused_repair_with_diversity",
+        "scheduler_stop": False,
+    }
+    assert report["population"]["duplicate_attempt_count"] == 1
 
 
 @pytest.mark.asyncio

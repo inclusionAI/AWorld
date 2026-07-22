@@ -24,6 +24,11 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayDependency,
     validate_replay_binding_concurrency,
 )
+from aworld.self_evolve.schema_diagnostics import (
+    SchemaFieldRepairConstraint,
+    SchemaFieldViolation,
+    schema_field_diagnostic_details,
+)
 from aworld.self_evolve.sanitization import sanitize_text
 
 
@@ -57,6 +62,7 @@ _MAX_FIXTURE_FILE_BYTES = 16 * 1024 * 1024
 _MAX_FIXTURE_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_READINESS_TIMEOUT_SECONDS = 30.0
 REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES = 16
+REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS = 4_096
 REPLAY_RESPONSE_INDEX_ENV = "AWORLD_REPLAY_RESPONSE_INDEX"
 
 REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS = tuple(
@@ -137,6 +143,51 @@ def _darwin_process_memory_bytes(process_id: int) -> int | None:
 
 class ReplayCapabilityError(RuntimeError):
     """Raised when a skill-owned replay capability violates the protocol."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
+
+
+def _raise_schema_field_error(
+    message: str,
+    violations: Sequence[SchemaFieldViolation],
+) -> None:
+    if not violations:
+        raise ValueError("schema field error requires at least one violation")
+    raise ReplayCapabilityError(
+        message,
+        code="schema_field_validation_failed",
+        details=schema_field_diagnostic_details(violations),
+    )
+
+
+def _schema_field_violation(
+    *,
+    schema_layer: str,
+    field_path: str,
+    rule: str,
+    expected: Sequence[str],
+    value: Any,
+    occurrence_count: int = 1,
+) -> SchemaFieldViolation:
+    return SchemaFieldViolation.create(
+        SchemaFieldRepairConstraint(
+            schema_layer=schema_layer,
+            field_path=field_path,
+            rule=rule,
+            expected=tuple(expected),
+        ),
+        value,
+        occurrence_count=occurrence_count,
+    )
 
 
 def fingerprint_skill_package(skill_root: str | Path) -> str:
@@ -970,12 +1021,32 @@ def _runtime_consumes_recorded_response_index(source: str) -> bool:
 def _parse_manifest(raw: Mapping[str, Any]) -> ReplayCapabilityManifest:
     schema_version = _required_string(raw, "schema_version", "manifest")
     if schema_version != REPLAY_CAPABILITY_SCHEMA_VERSION:
-        raise ReplayCapabilityError(
-            f"unsupported replay capability schema: {schema_version}"
+        _raise_schema_field_error(
+            f"unsupported replay capability schema: {schema_version}",
+            (
+                _schema_field_violation(
+                    schema_layer="manifest",
+                    field_path="schema_version",
+                    rule="enum",
+                    expected=(REPLAY_CAPABILITY_SCHEMA_VERSION,),
+                    value=schema_version,
+                ),
+            ),
         )
     protocol = _required_string(raw, "protocol", "manifest")
     if protocol != REPLAY_CAPABILITY_PROTOCOL_VERSION:
-        raise ReplayCapabilityError(f"unsupported replay capability protocol: {protocol}")
+        _raise_schema_field_error(
+            f"unsupported replay capability protocol: {protocol}",
+            (
+                _schema_field_violation(
+                    schema_layer="manifest",
+                    field_path="protocol",
+                    rule="enum",
+                    expected=(REPLAY_CAPABILITY_PROTOCOL_VERSION,),
+                    value=protocol,
+                ),
+            ),
+        )
     capability_id = _required_identifier(raw, "capability_id", "manifest")
     entrypoint = _normalized_relative_path(
         _required_string(raw, "entrypoint", "manifest"),
@@ -986,8 +1057,18 @@ def _parse_manifest(raw: Mapping[str, Any]) -> ReplayCapabilityManifest:
         raise ReplayCapabilityError("replay capability handles must not be empty")
     unsupported = sorted(set(handles) - _SUPPORTED_REQUIREMENT_KINDS)
     if unsupported:
-        raise ReplayCapabilityError(
-            f"unsupported replay capability requirement kinds: {unsupported}"
+        _raise_schema_field_error(
+            f"unsupported replay capability requirement kinds: {unsupported}",
+            tuple(
+                _schema_field_violation(
+                    schema_layer="manifest",
+                    field_path="handles[*]",
+                    rule="enum",
+                    expected=REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS,
+                    value=value,
+                )
+                for value in unsupported
+            ),
         )
     runtime_files = tuple(
         _normalized_relative_path(item, label="runtime file")
@@ -1044,15 +1125,35 @@ def _parse_compile_result(
     raw = _read_json_object(result_path, label="replay capability result")
     schema_version = _required_string(raw, "schema_version", "result")
     if schema_version != REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION:
-        raise ReplayCapabilityError(
-            f"unsupported replay capability result schema: {schema_version}"
+        _raise_schema_field_error(
+            f"unsupported replay capability result schema: {schema_version}",
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="schema_version",
+                    rule="enum",
+                    expected=(REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,),
+                    value=schema_version,
+                ),
+            ),
         )
     capability_id = _required_identifier(raw, "capability_id", "result")
     if capability_id != capability.manifest.capability_id:
         raise ReplayCapabilityError("replay capability result capability_id mismatch")
     deterministic = raw.get("deterministic")
     if not isinstance(deterministic, bool):
-        raise ReplayCapabilityError("result deterministic must be a boolean")
+        _raise_schema_field_error(
+            "result deterministic must be a boolean",
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="deterministic",
+                    rule="type",
+                    expected=("boolean",),
+                    value=deterministic,
+                ),
+            ),
+        )
     handled = _string_tuple(
         raw.get("handled_requirements", ()), label="handled_requirements"
     )
@@ -1938,6 +2039,189 @@ def _fixture_non_empty(value: Any) -> bool:
     return value is not None
 
 
+def _validate_compile_result_service_schema(raw: Any) -> None:
+    """Validate shape-complete service fields before semantic compilation."""
+
+    if not isinstance(raw, list):
+        _raise_schema_field_error(
+            "result services must be an array",
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="services",
+                    rule="type",
+                    expected=("array",),
+                    value=raw,
+                ),
+            ),
+        )
+    violations: list[SchemaFieldViolation] = []
+    first_invalid_transport: object | None = None
+    for service in raw:
+        if not isinstance(service, Mapping):
+            violations.append(
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="services[*]",
+                    rule="type",
+                    expected=("object",),
+                    value=service,
+                )
+            )
+            continue
+        if "transport" not in service:
+            violations.append(
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="services[*].transport",
+                    rule="required",
+                    expected=(),
+                    value=None,
+                )
+            )
+        elif service.get("transport") not in _SUPPORTED_SERVICE_TRANSPORTS:
+            transport = service.get("transport")
+            if first_invalid_transport is None:
+                first_invalid_transport = transport
+            violations.append(
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="services[*].transport",
+                    rule="enum",
+                    expected=REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS,
+                    value=transport,
+                )
+            )
+        readiness = service.get("readiness", {})
+        if not isinstance(readiness, Mapping):
+            violations.append(
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="services[*].readiness",
+                    rule="type",
+                    expected=("object",),
+                    value=readiness,
+                )
+            )
+        elif readiness.get("kind") not in _SUPPORTED_READINESS_KINDS:
+            violations.append(
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="services[*].readiness.kind",
+                    rule=(
+                        "required" if "kind" not in readiness else "enum"
+                    ),
+                    expected=(
+                        ()
+                        if "kind" not in readiness
+                        else REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS
+                    ),
+                    value=readiness.get("kind"),
+                )
+            )
+        raw_probes = service.get("protocol_probes")
+        if raw_probes is None:
+            continue
+        if not isinstance(raw_probes, list):
+            violations.append(
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="services[*].protocol_probes",
+                    rule="type",
+                    expected=("array",),
+                    value=raw_probes,
+                )
+            )
+            continue
+        for probe in raw_probes:
+            if not isinstance(probe, Mapping):
+                violations.append(
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path="services[*].protocol_probes[*]",
+                        rule="type",
+                        expected=("object",),
+                        value=probe,
+                    )
+                )
+                continue
+            if probe.get("kind") not in _SUPPORTED_PROTOCOL_PROBE_KINDS:
+                violations.append(
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path="services[*].protocol_probes[*].kind",
+                        rule=("required" if "kind" not in probe else "enum"),
+                        expected=(
+                            ()
+                            if "kind" not in probe
+                            else REPLAY_CAPABILITY_SUPPORTED_PROTOCOL_PROBE_KINDS
+                        ),
+                        value=probe.get("kind"),
+                    )
+                )
+            for field_name, max_chars in (
+                ("request_text", 16_384),
+                (
+                    "response_contains",
+                    REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS,
+                ),
+            ):
+                if field_name not in probe or probe.get(field_name) is None:
+                    continue
+                field_value = probe.get(field_name)
+                field_path = (
+                    "services[*].protocol_probes[*]." + field_name
+                )
+                if not isinstance(field_value, str):
+                    violations.append(
+                        _schema_field_violation(
+                            schema_layer="compile_result",
+                            field_path=field_path,
+                            rule="type",
+                            expected=("string",),
+                            value=field_value,
+                        )
+                    )
+                elif not field_value:
+                    violations.append(
+                        _schema_field_violation(
+                            schema_layer="compile_result",
+                            field_path=field_path,
+                            rule="non_empty",
+                            expected=(),
+                            value=field_value,
+                        )
+                    )
+                elif len(field_value) > max_chars:
+                    violations.append(
+                        _schema_field_violation(
+                            schema_layer="compile_result",
+                            field_path=field_path,
+                            rule="max_chars",
+                            expected=(str(max_chars),),
+                            value=field_value,
+                        )
+                    )
+    if not violations:
+        return
+    message = "replay capability result violates schema field constraints"
+    if first_invalid_transport is not None:
+        message = (
+            "unsupported replay service transport: "
+            + sanitize_text(first_invalid_transport, max_chars=120)
+        )
+    elif any(
+        violation.constraint.field_path.endswith(".response_contains")
+        and violation.constraint.rule in {"max_chars", "non_empty", "type"}
+        for violation in violations
+    ):
+        message = (
+            "protocol probe response_contains must be non-empty and at most "
+            f"{REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS} characters"
+        )
+    _raise_schema_field_error(message, tuple(violations))
+
+
 def _parse_services(
     raw: Any,
     *,
@@ -1948,10 +2232,12 @@ def _parse_services(
     fixture_evidence_refs: Mapping[str, tuple[str, ...]],
     requirement_evidence_refs: Mapping[str, tuple[str, ...]],
 ) -> tuple[ReplayServiceSpec, ...]:
+    _validate_compile_result_service_schema(raw)
     if not isinstance(raw, list):
-        raise ReplayCapabilityError("result services must be an array")
+        raise AssertionError("schema validation did not reject invalid services")
     services: list[ReplayServiceSpec] = []
     seen: set[str] = set()
+    fixture_probe_violations: list[dict[str, object]] = []
     for value in raw:
         if not isinstance(value, dict):
             raise ReplayCapabilityError("replay service must be an object")
@@ -2037,12 +2323,19 @@ def _parse_services(
                 ):
                     expected = probe.response_contains
                     expected_bytes = expected.encode("utf-8")
-                    raise ReplayCapabilityError(
-                        "protocol probe response_contains must be derived from the "
-                        f"declared fixture: {service_id} "
-                        f"kind={probe.kind} path={probe.path} "
-                        f"expected_sha256={hashlib.sha256(expected_bytes).hexdigest()} "
-                        f"expected_bytes={len(expected_bytes)} expected_shape=utf8_text"
+                    fixture_probe_violations.append(
+                        {
+                            "service_id": service_id,
+                            "requirement_id": requirement_id,
+                            "kind": probe.kind,
+                            "path": probe.path,
+                            "declared_response_fingerprint": (
+                                "sha256:"
+                                + hashlib.sha256(expected_bytes).hexdigest()
+                            ),
+                            "declared_response_bytes": len(expected_bytes),
+                            "declared_response_shape": "utf8_text",
+                        }
                     )
         elif runtime_entrypoint_raw is not None:
             raise ReplayCapabilityError(
@@ -2084,6 +2377,45 @@ def _parse_services(
                 ),
                 protocol_probes=protocol_probes,
             )
+        )
+    if fixture_probe_violations:
+        first = fixture_probe_violations[0]
+        constraints = [
+            {
+                "requirement_id": str(item["requirement_id"]),
+                "kind": str(item["kind"]),
+                "path": str(item["path"]),
+                "max_response_chars": (
+                    REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS
+                ),
+            }
+            for item in fixture_probe_violations
+        ]
+        unique_constraints = list(
+            {
+                (
+                    item["requirement_id"],
+                    item["kind"],
+                    item["path"],
+                    item["max_response_chars"],
+                ): item
+                for item in constraints
+            }.values()
+        )
+        raise ReplayCapabilityError(
+            "protocol probe response_contains must be derived from the "
+            f"declared fixture: {first['service_id']} "
+            f"kind={first['kind']} path={first['path']} "
+            "expected_sha256="
+            f"{str(first['declared_response_fingerprint']).removeprefix('sha256:')} "
+            f"expected_bytes={first['declared_response_bytes']} "
+            f"expected_shape={first['declared_response_shape']}",
+            code="protocol_probe_not_fixture_derived",
+            details={
+                "fixture_probe_constraints": unique_constraints,
+                "fixture_probe_violation_count": len(fixture_probe_violations),
+                "fixture_probe_violations": fixture_probe_violations,
+            },
         )
     return tuple(sorted(services, key=lambda item: item.service_id))
 
@@ -2140,7 +2472,7 @@ def _parse_protocol_probes(
         response_contains = _optional_bounded_probe_text(
             value.get("response_contains"),
             field="response_contains",
-            max_chars=4_096,
+            max_chars=REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS,
         )
         if kind in {"tcp", "websocket"} and (
             request_text is None or response_contains is None
