@@ -429,6 +429,7 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
             self_evolve_config=SelfEvolveConfig(
                 mode="online",
                 apply_policy="auto_verified",
+                inferred_new_skill_policy="draft_only",
                 judge_config={"mode": "agent_md", "agent_path": str(judge_agent)},
                 total_run_token_budget=90_000,
                 per_attempt_replay_token_limit=9_000,
@@ -450,6 +451,7 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["judge_config"].mode == "agent_md"
     assert captured["judge_config"].agent_path == str(judge_agent)
     assert captured["replay_enabled"] is True
+    assert captured["inferred_new_skill_policy"] == "draft_only"
     assert captured["replay_timeout_seconds"] == 600
     assert captured["replay_max_steps"] == 1
     assert captured["replay_candidate_limit"] == 2

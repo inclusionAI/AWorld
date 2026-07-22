@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 
 SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified"}
+SUPPORTED_NEW_SKILL_POLICIES = {"disabled", "draft_only", "auto_verified"}
 AUTO_VERIFIED_JUDGE_REPETITIONS = 1
 AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS = 120
 AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS = 2
@@ -75,6 +76,14 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--batch-config", type=str, dest="batch_config")
         parser.add_argument("--iterations", type=int)
         parser.add_argument("--apply", type=str, default="proposal")
+        parser.add_argument(
+            "--new-skill-policy",
+            type=str,
+            choices=sorted(SUPPORTED_NEW_SKILL_POLICIES),
+            default="auto_verified",
+            dest="new_skill_policy",
+            help="Policy for inferred missing capabilities: disabled, draft_only, or auto_verified.",
+        )
         parser.add_argument("--judge-agent", type=str, dest="judge_agent")
         parser.add_argument("--judge-agent-name", type=str, dest="judge_agent_name")
         parser.add_argument("--judge-backend-ref", type=str, dest="judge_backend_ref")
@@ -157,6 +166,7 @@ class OptimizeTopLevelCommand:
                 batch_config=getattr(args, "batch_config", None),
                 iterations=getattr(args, "iterations", None),
                 apply=apply_policy,
+                new_skill_policy=getattr(args, "new_skill_policy", "auto_verified"),
                 infer_target=target is None,
                 workspace_root=context.cwd,
                 judge_agent=getattr(args, "judge_agent", None),
@@ -191,6 +201,7 @@ def render_optimize_summary(report: Any) -> str:
     run_id = _read_report_value(report, "run_id")
     grouping_summary = _target_grouping_summary(report)
     replay_failure_summary = _replay_failure_summary(report)
+    promotion = _read_report_value(report, "promotion")
 
     lines = ["Optimize run submitted."]
     if status:
@@ -211,6 +222,8 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Selected candidate: {selected_candidate_id}")
     if grouping_summary:
         lines.append(f"Target grouping: {grouping_summary}")
+    if isinstance(promotion, Mapping) and promotion.get("status"):
+        lines.append(f"New skill: {promotion['status']}")
     if status == "rejected" and failed_gate_names:
         lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
     if status == "rejected" and replay_failure_summary:
@@ -252,6 +265,7 @@ def run_optimize_cli(
     apply: str,
     infer_target: bool,
     workspace_root: str,
+    new_skill_policy: str = "auto_verified",
     include_prior_runs: bool = False,
     judge_agent: str | None = None,
     judge_agent_name: str | None = None,
@@ -317,6 +331,7 @@ def run_optimize_cli(
         batch_config=batch_config,
         iterations=iterations,
         apply_policy=apply,
+        inferred_new_skill_policy=new_skill_policy,
         infer_target=infer_target,
         workspace_root=workspace_root,
         judge_config=judge_config,

@@ -50,6 +50,7 @@ from aworld.self_evolve.gates import (
     HeldOutVerificationGate,
     JudgeOnlySignalGate,
     MalformedCandidateGate,
+    NewSkillPromotionGate,
     NoopCandidateGate,
     ProtectedPathGate,
     RequiredVerificationGate,
@@ -120,6 +121,8 @@ from aworld.self_evolve.optimizers.base import (
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.overlay import create_candidate_skill_overlay
 from aworld.self_evolve.provenance import (
+    InferredNewSkillPolicy,
+    TargetMutationIntent,
     TargetProvenance,
     TargetProvenanceResolution,
     TargetProvenanceStatus,
@@ -1347,6 +1350,7 @@ class SelfEvolveRunner:
         auto_apply_target_types: tuple[str, ...] = ("skill",),
         allow_generated_target_mutation: bool = False,
         allow_external_target_mutation: bool = False,
+        inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
         replay_enabled: bool = False,
         candidate_replay_backend: CandidateReplayBackend | None = None,
         replay_timeout_seconds: int = 600,
@@ -1551,6 +1555,10 @@ class SelfEvolveRunner:
         self.auto_apply_target_types = tuple(auto_apply_target_types)
         self.allow_generated_target_mutation = allow_generated_target_mutation
         self.allow_external_target_mutation = allow_external_target_mutation
+        self.inferred_new_skill_policy = InferredNewSkillPolicy(
+            inferred_new_skill_policy
+        )
+        self._active_target_intent: TargetMutationIntent | None = None
         self.replay_enabled = replay_enabled
         self.candidate_replay_backend = candidate_replay_backend
         self.replay_timeout_seconds = replay_timeout_seconds
@@ -1703,6 +1711,7 @@ class SelfEvolveRunner:
                     ),
                     provenance_resolution=provenance_resolution,
                     selection_origin=selection_origin,
+                    target_intent=target_selection_report.target_intent,
                 )
             else:
                 target_selection_decision = build_target_selection_decision(
@@ -1774,6 +1783,11 @@ class SelfEvolveRunner:
         )
         target_provenance_unresolved_reason = (
             None if provenance_resolution.resolved else provenance_resolution.reason
+        )
+        self._active_target_intent = (
+            target_selection_decision.target_intent
+            if target_selection_decision is not None
+            else None
         )
         if target_selection_report is not None and (
             target_selection_report.provenance_status != provenance_resolution.status
@@ -2630,6 +2644,9 @@ class SelfEvolveRunner:
                         allow_external_target_mutation=(
                             self.allow_external_target_mutation
                         ),
+                        target_intent=self._active_target_intent,
+                        inferred_new_skill_policy=self.inferred_new_skill_policy,
+                        apply_policy=apply_policy,
                     )
                 )
                 local_gate_results_by_candidate[candidate.candidate_id] = local_results
@@ -2961,7 +2978,12 @@ class SelfEvolveRunner:
             )
 
         post_apply: dict[str, object] | None = None
+        promotion: dict[str, object] | None = None
         final_status = SelfEvolveRunStatus.SUCCEEDED
+        inferred_draft_creation = (
+            self._active_target_intent
+            == TargetMutationIntent.INFERRED_DRAFT_CREATION
+        )
         if selected_candidate is None:
             failed_gates = [gate for gate in gate_results if not gate.passed]
             final_status = (
@@ -2986,6 +3008,17 @@ class SelfEvolveRunner:
                     )
                     else SelfEvolveRunStatus.REJECTED
                 )
+            elif (
+                inferred_draft_creation
+                and self.inferred_new_skill_policy
+                == InferredNewSkillPolicy.DRAFT_ONLY
+            ):
+                promotion = {
+                    "policy": self.inferred_new_skill_policy.value,
+                    "status": "draft_retained",
+                    "publication_allowed": False,
+                    "reason": "new-skill policy permits verified draft evolution only",
+                }
             else:
                 post_apply = await self._apply_auto_verified(
                     run_id,
@@ -3004,6 +3037,104 @@ class SelfEvolveRunner:
                 )
                 if post_apply["status"] != "accepted":
                     final_status = SelfEvolveRunStatus.REJECTED
+
+        if inferred_draft_creation:
+            published = post_apply is not None and post_apply.get("status") == "accepted"
+            draft_path = target.identity.path
+            post_apply_metrics = (
+                post_apply.get("metrics")
+                if isinstance(post_apply, Mapping)
+                and isinstance(post_apply.get("metrics"), Mapping)
+                else {}
+            )
+            registry_refresh_failed = (
+                post_apply_metrics.get("registry_refresh_passed") is False
+            )
+            if selected_candidate is not None and not published:
+                try:
+                    if isinstance(target, DraftSkillTextTarget):
+                        target.preserve_selected_draft(selected_candidate.content)
+                except (FileExistsError, OSError, ValueError) as exc:
+                    gate_results.append(
+                        GateResult(
+                            gate_name="draft_persistence",
+                            passed=False,
+                            reason="selected inferred skill draft could not be persisted",
+                            details={
+                                "failure_class": "infrastructure",
+                                "code": "draft_persistence_failed",
+                                "type": type(exc).__name__,
+                                "reason": str(exc),
+                            },
+                        )
+                    )
+                    final_status = SelfEvolveRunStatus.FAILED
+            if promotion is None:
+                promotion = {
+                    "policy": self.inferred_new_skill_policy.value,
+                    "status": (
+                        "published"
+                        if published
+                        else "draft_retained"
+                        if selected_candidate is not None
+                        else "not_selected"
+                    ),
+                    "publication_allowed": (
+                        self.inferred_new_skill_policy
+                        == InferredNewSkillPolicy.AUTO_VERIFIED
+                        and apply_policy == "auto_verified"
+                    ),
+                    "reason": (
+                        "verified skill was published"
+                        if published
+                        else "publication rolled back after registry refresh failure"
+                        if registry_refresh_failed
+                        else "candidate remains isolated in the run-owned draft"
+                    ),
+                }
+            runtime_skill_path = _target_runtime_skill_path(target)
+            promotion.update(
+                {
+                    "draft_path": draft_path,
+                    "release_path": (
+                        str(runtime_skill_path)
+                        if runtime_skill_path is not None
+                        else None
+                    ),
+                    "registry_refresh_status": (
+                        "passed"
+                        if published
+                        and self.runtime_registry_refresher is not None
+                        else "failed"
+                        if registry_refresh_failed
+                        else "not_published"
+                    ),
+                }
+            )
+            if registry_refresh_failed:
+                promotion["registry_refresh_error"] = post_apply_metrics.get(
+                    "registry_refresh_error"
+                )
+            if target_selection_report is not None:
+                selection_diagnostics = dict(
+                    target_selection_report.diagnostics or {}
+                )
+                selection_diagnostics.update(
+                    {
+                        "draft_status": promotion["status"],
+                        "promotion_policy": promotion["policy"],
+                        "promotion_status": promotion["status"],
+                        "promotion_reason": promotion["reason"],
+                    }
+                )
+                target_selection_report = replace(
+                    target_selection_report,
+                    diagnostics=selection_diagnostics,
+                )
+                self.store.write_target_selection_report(
+                    run_id,
+                    target_selection_report,
+                )
 
         if optimizer_lineage_paths_by_candidate:
             _persist_lineage_lifecycle(
@@ -3099,6 +3230,8 @@ class SelfEvolveRunner:
             release_normalization = _release_normalization_report(post_apply)
             if release_normalization is not None:
                 report["release_normalization"] = release_normalization
+        if promotion is not None:
+            report["promotion"] = promotion
         if baseline_summary is not None:
             report["baseline_metrics"] = public_diagnostic_projection(
                 dict(baseline_summary.metrics)
@@ -4172,6 +4305,9 @@ class SelfEvolveRunner:
                     allow_external_target_mutation=(
                         self.allow_external_target_mutation
                     ),
+                    target_intent=self._active_target_intent,
+                    inferred_new_skill_policy=self.inferred_new_skill_policy,
+                    apply_policy=apply_policy,
                 )
             )
             if attempt_tracker is not None and attempt_key is not None:
@@ -5876,6 +6012,7 @@ def optimize_from_cli_request(
     iterations: int | None = None,
     apply_policy: str = "proposal",
     infer_target: bool = False,
+    inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
     evaluation_backend: EvaluationBackend | None = None,
     post_apply_evaluator: Callable[[CandidateVariant], Any] | None = None,
     min_eval_cases: int = 30,
@@ -5920,6 +6057,7 @@ def optimize_from_cli_request(
     concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
 ) -> Mapping[str, Any]:
     effective_concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
+    typed_new_skill_policy = InferredNewSkillPolicy(inferred_new_skill_policy)
     if apply_policy not in {"proposal", "auto_verified"}:
         raise ValueError(f"unsupported apply policy: {apply_policy}")
     effective_iteration_budget = _default_iteration_budget(
@@ -5935,6 +6073,7 @@ def optimize_from_cli_request(
             agent=agent,
             task=task,
             apply_policy=apply_policy,
+            inferred_new_skill_policy=typed_new_skill_policy,
             evaluation_backend=evaluation_backend,
             post_apply_evaluator=post_apply_evaluator,
             min_eval_cases=min_eval_cases,
@@ -6065,8 +6204,61 @@ def optimize_from_cli_request(
                 target_selection_report=target_selection_report,
                 apply_policy=apply_policy,
             )
-        if apply_policy == "auto_verified" and not _inferred_target_confident_for_auto_apply(
-            target_selection_report
+        if (
+            target_selection_decision.target_intent
+            == TargetMutationIntent.INFERRED_DRAFT_CREATION
+            and typed_new_skill_policy == InferredNewSkillPolicy.DISABLED
+        ):
+            target_selection_decision = _blocked_inferred_target_selection_decision(
+                target_selection_decision,
+                reason="inferred new-skill creation is disabled by policy",
+                signal="inferred_new_skill_policy_disabled",
+            )
+            target_selection_report = target_selection_decision.report
+            return _persist_no_target_cli_result(
+                store=store,
+                run_id=run_id,
+                dataset=built_dataset,
+                target_selection_report=target_selection_report,
+                apply_policy=apply_policy,
+            )
+        if (
+            target_selection_decision.target_intent
+            == TargetMutationIntent.INFERRED_DRAFT_CREATION
+        ):
+            target_selection_decision = _materialize_run_owned_draft_decision(
+                target_selection_decision,
+                store=store,
+                run_id=run_id,
+                workspace_root=workspace_root,
+                policy=typed_new_skill_policy,
+            )
+            target_selection_report = target_selection_decision.report
+            target_provenance = target_selection_decision.provenance
+            if target_selection_report.selected_target is None:
+                return _persist_no_target_cli_result(
+                    store=store,
+                    run_id=run_id,
+                    dataset=built_dataset,
+                    target_selection_report=target_selection_report,
+                    apply_policy=apply_policy,
+                )
+        if not target_selection_decision.provenance_resolution.resolved:
+            target_selection_decision = _blocked_inferred_target_selection_decision(
+                target_selection_decision,
+                reason=target_selection_decision.provenance_resolution.reason,
+                signal="target_authorization_unresolved",
+            )
+            target_selection_report = target_selection_decision.report
+            return _persist_no_target_cli_result(
+                store=store,
+                run_id=run_id,
+                dataset=built_dataset,
+                target_selection_report=target_selection_report,
+                apply_policy=apply_policy,
+            )
+        if apply_policy == "auto_verified" and not _inferred_target_admitted_for_auto_apply(
+            target_selection_decision
         ):
             target_selection_report = _blocked_low_confidence_target_selection_report(
                 target_selection_report
@@ -6191,6 +6383,17 @@ def optimize_from_cli_request(
         )
     if apply_policy == "auto_verified" and post_apply_evaluator is None:
         post_apply_evaluator = _default_post_apply_evaluator(target_adapter)
+    if (
+        apply_policy == "auto_verified"
+        and typed_new_skill_policy == InferredNewSkillPolicy.AUTO_VERIFIED
+        and target_selection_decision is not None
+        and target_selection_decision.target_intent
+        == TargetMutationIntent.INFERRED_DRAFT_CREATION
+        and runtime_registry_refresher is None
+    ):
+        runtime_registry_refresher = _default_new_skill_registry_refresher(
+            target_adapter
+        )
     if replay_enabled and candidate_replay_backend is None:
         candidate_replay_backend = AWorldCliCandidateReplayBackend()
         if hasattr(candidate_replay_backend, "concurrency_policy"):
@@ -6248,6 +6451,7 @@ def optimize_from_cli_request(
         auto_apply_target_types=auto_apply_target_types,
         allow_generated_target_mutation=allow_generated_target_mutation,
         allow_external_target_mutation=allow_external_target_mutation,
+        inferred_new_skill_policy=typed_new_skill_policy,
         replay_enabled=replay_enabled,
         candidate_replay_backend=candidate_replay_backend,
         replay_timeout_seconds=replay_timeout_seconds,
@@ -6342,6 +6546,9 @@ def optimize_from_cli_request(
             summary["gate_results"] = [
                 item for item in gate_results if isinstance(item, Mapping)
             ]
+        promotion = report_payload.get("promotion")
+        if isinstance(promotion, Mapping):
+            summary["promotion"] = dict(promotion)
     return summary
 
 
@@ -6514,6 +6721,35 @@ def _default_post_apply_evaluator(
     return evaluate
 
 
+def _default_new_skill_registry_refresher(
+    target: SelfEvolveTarget,
+) -> Callable[[CandidateVariant], Mapping[str, Any]]:
+    def refresh(candidate: CandidateVariant) -> Mapping[str, Any]:
+        target_path = _target_runtime_skill_path(target)
+        if target_path is None or not target_path.is_file():
+            raise ValueError("published skill is unavailable for registry refresh")
+        registry = build_compat_registry(target_path.parent.parent)
+        descriptor = next(
+            (
+                item
+                for item in registry.list_descriptors()
+                if item.skill_name == candidate.target.target_id
+            ),
+            None,
+        )
+        if descriptor is None:
+            raise ValueError("published skill is absent from refreshed registry")
+        if Path(descriptor.skill_file).resolve() != target_path.resolve():
+            raise ValueError("refreshed registry resolved the published skill elsewhere")
+        return {
+            "refreshed": True,
+            "strategy": "compat_registry_rebuild",
+            "skill_id": candidate.target.target_id,
+        }
+
+    return refresh
+
+
 def _target_runtime_skill_path(target: SelfEvolveTarget) -> Path | None:
     runtime_path = getattr(target, "runtime_skill_path", None)
     if runtime_path is not None:
@@ -6652,6 +6888,7 @@ def _rerun_evaluator_from_stored_run(
     agent: str | None,
     task: str | None,
     apply_policy: str,
+    inferred_new_skill_policy: InferredNewSkillPolicy,
     evaluation_backend: EvaluationBackend | None,
     post_apply_evaluator: Callable[[CandidateVariant], Any] | None,
     min_eval_cases: int,
@@ -6704,6 +6941,18 @@ def _rerun_evaluator_from_stored_run(
     trace_packs = tuple(
         case.trace_pack for case in built_dataset.cases if case.trace_pack is not None
     )
+    stored_target_selection_report = _load_target_selection_report(
+        source_run_path / "target_selection.json"
+    )
+    if (
+        stored_target_selection_report is not None
+        and stored_target_selection_report.target_intent
+        == TargetMutationIntent.INFERRED_DRAFT_CREATION
+    ):
+        raise ValueError(
+            "evaluator-only rerun cannot rebind a verified candidate package to a "
+            "different run-owned draft path; rerun the full optimize flow"
+        )
     target_adapter = _target_from_ref(
         candidate.target,
         workspace_root=workspace_root,
@@ -6712,9 +6961,7 @@ def _rerun_evaluator_from_stored_run(
             and candidate.target.target_type in auto_apply_target_types
         ),
     )
-    target_selection_report = _load_target_selection_report(
-        source_run_path / "target_selection.json"
-    )
+    target_selection_report = stored_target_selection_report
     stored_provenance_resolution = _load_target_provenance(
         source_run_path / "target_provenance.json"
     )
@@ -6765,6 +7012,7 @@ def _rerun_evaluator_from_stored_run(
         report=target_selection_report,
         provenance_resolution=authoritative_resolution,
         selection_origin=selection_origin,
+        target_intent=target_selection_report.target_intent,
     )
     target_provenance = (
         authoritative_resolution.provenance
@@ -6804,6 +7052,7 @@ def _rerun_evaluator_from_stored_run(
         auto_apply_target_types=auto_apply_target_types,
         allow_generated_target_mutation=allow_generated_target_mutation,
         allow_external_target_mutation=allow_external_target_mutation,
+        inferred_new_skill_policy=inferred_new_skill_policy,
         replay_enabled=True,
         candidate_replay_backend=_StoredCandidateReplayBackend(
             replay_result=replay_result,
@@ -7026,6 +7275,24 @@ def _load_target_selection_report(path: Path) -> TargetSelectionReport | None:
         )
     except ValueError:
         selection_origin = None
+    target_intent_payload = payload.get("target_intent")
+    invalid_target_intent = False
+    try:
+        target_intent = (
+            TargetMutationIntent(target_intent_payload)
+            if isinstance(target_intent_payload, str)
+            else None
+        )
+    except ValueError:
+        target_intent = None
+        invalid_target_intent = True
+    diagnostics = (
+        dict(payload.get("diagnostics"))
+        if isinstance(payload.get("diagnostics"), Mapping)
+        else {}
+    )
+    if invalid_target_intent:
+        diagnostics["invalid_target_intent"] = target_intent_payload
     return TargetSelectionReport(
         selected_target=selected_target,
         confidence=float(payload.get("confidence") or 0.0),
@@ -7045,11 +7312,7 @@ def _load_target_selection_report(path: Path) -> TargetSelectionReport | None:
             if payload.get("no_target_reason") is not None
             else None
         ),
-        diagnostics=(
-            dict(payload.get("diagnostics"))
-            if isinstance(payload.get("diagnostics"), Mapping)
-            else None
-        ),
+        diagnostics=diagnostics or None,
         provenance_status=(
             str(payload.get("provenance_status"))
             if payload.get("provenance_status") is not None
@@ -7061,6 +7324,12 @@ def _load_target_selection_report(path: Path) -> TargetSelectionReport | None:
             else None
         ),
         selection_origin=selection_origin,
+        target_intent=target_intent,
+        capability_fingerprint=(
+            str(payload.get("capability_fingerprint"))
+            if payload.get("capability_fingerprint") is not None
+            else None
+        ),
     )
 
 
@@ -11766,6 +12035,9 @@ def _candidate_gate_results(
     target_provenance_unresolved_reason: str | None = None,
     allow_generated_target_mutation: bool = False,
     allow_external_target_mutation: bool = False,
+    target_intent: TargetMutationIntent | str | None = None,
+    inferred_new_skill_policy: InferredNewSkillPolicy | str = InferredNewSkillPolicy.AUTO_VERIFIED,
+    apply_policy: str = "proposal",
 ) -> list[GateResult]:
     results = [
         NoopCandidateGate().evaluate(current_content=current_content, candidate=candidate),
@@ -11784,6 +12056,17 @@ def _candidate_gate_results(
         ).evaluate(
             target_provenance,
             unresolved_reason=target_provenance_unresolved_reason,
+            target_intent=target_intent,
+        )
+    )
+    results.append(
+        NewSkillPromotionGate().evaluate(
+            candidate,
+            target_intent=target_intent,
+            policy=inferred_new_skill_policy,
+            apply_policy=apply_policy,
+            workspace_root=workspace_root,
+            provenance=target_provenance,
         )
     )
     return results
@@ -11823,15 +12106,14 @@ def _skill_target_adapter(
                 target_id=target_ref.target_id,
                 allow_auto_apply=allow_auto_apply,
             )
+        path, release_path = _validated_run_owned_draft_paths(
+            target_ref,
+            workspace_root=workspace_root,
+        )
         return DraftSkillTextTarget(
             path,
             target_id=target_ref.target_id,
-            release_path=(
-                Path(workspace_root)
-                / "aworld-skills"
-                / target_ref.target_id
-                / "SKILL.md"
-            ),
+            release_path=release_path,
             allow_auto_apply=allow_auto_apply,
         )
     return _skill_target_from_id(
@@ -11839,6 +12121,40 @@ def _skill_target_adapter(
         workspace_root=workspace_root,
         allow_auto_apply=allow_auto_apply,
     )
+
+
+def _validated_run_owned_draft_paths(
+    target_ref: SelfEvolveTargetRef,
+    *,
+    workspace_root: str | Path,
+) -> tuple[Path, Path]:
+    if not target_ref.path:
+        raise ValueError("inferred skill draft requires a path")
+    workspace = Path(workspace_root).resolve()
+    path = Path(target_ref.path).absolute()
+    try:
+        relative = path.relative_to(workspace)
+        path.resolve(strict=False).relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("inferred skill draft escapes the workspace") from exc
+    expected = ("draft_target", target_ref.target_id, "SKILL.md")
+    if (
+        len(relative.parts) != 6
+        or relative.parts[:2] != (".aworld", "self_evolve")
+        or relative.parts[3:] != expected
+        or not relative.parts[2]
+    ):
+        raise ValueError("inferred skill draft is not owned by exactly one run")
+    if _path_has_symlink_component(workspace, path):
+        raise ValueError("inferred skill draft path traverses a symlink")
+    if path.exists() or path.is_symlink():
+        raise FileExistsError("stale inferred skill draft cannot be reused")
+    release_path = (
+        workspace / "aworld-skills" / target_ref.target_id / "SKILL.md"
+    )
+    if release_path.parent.exists() or release_path.parent.is_symlink():
+        raise FileExistsError("new-skill release path already exists")
+    return path, release_path
 
 
 def _skill_target_from_id(
@@ -11887,6 +12203,55 @@ def _aggregate_target_selection_decisions(
 ) -> TargetSelectionDecision:
     if not decisions:
         raise ValueError("target decision aggregation requires at least one decision")
+    selected_decisions = tuple(
+        decision for decision in decisions if decision.report.selected_target is not None
+    )
+    selected_keys = {
+        (
+            decision.report.selected_target.target_type,
+            decision.report.selected_target.target_id,
+            decision.target_intent,
+            decision.report.capability_fingerprint,
+        )
+        for decision in selected_decisions
+        if decision.report.selected_target is not None
+    }
+    if len(selected_keys) > 1:
+        evidence_step_ids = tuple(
+            dict.fromkeys(
+                evidence_id
+                for decision in decisions
+                for evidence_id in decision.report.evidence_step_ids
+            )
+        )
+        report = TargetSelectionReport(
+            selected_target=None,
+            confidence=0.0,
+            evidence_step_ids=evidence_step_ids,
+            failure_category="no_target",
+            signals=("conflicting_target_intents",),
+            no_target_reason="trajectory members disagree on target capability intent",
+            diagnostics={
+                "conflicting_target_count": len(selected_keys),
+                "pack_ids": [
+                    pack_id
+                    for decision in decisions
+                    for pack_id in _target_selection_pack_ids(decision.report)
+                ],
+            },
+            selection_origin=TargetSelectionOrigin.INFERRED,
+        )
+        resolution = TargetProvenanceResolution(
+            status=TargetProvenanceStatus.UNRESOLVED,
+            provenance=None,
+            reason=report.no_target_reason or "conflicting target intents",
+        )
+        return TargetSelectionDecision(
+            report=report,
+            provenance_resolution=resolution,
+            selection_origin=TargetSelectionOrigin.INFERRED,
+            target_intent=None,
+        )
     best_decision = max(
         decisions,
         key=lambda item: (
@@ -11902,6 +12267,8 @@ def _aggregate_target_selection_decisions(
     selected_key = (
         best_report.selected_target.target_type,
         best_report.selected_target.target_id,
+        best_decision.target_intent,
+        best_report.capability_fingerprint,
     )
     contributing_reports = tuple(
         decision.report
@@ -11910,6 +12277,8 @@ def _aggregate_target_selection_decisions(
         and (
             decision.report.selected_target.target_type,
             decision.report.selected_target.target_id,
+            decision.target_intent,
+            decision.report.capability_fingerprint,
         )
         == selected_key
     )
@@ -11944,6 +12313,7 @@ def _aggregate_target_selection_decisions(
     )
     consistent_authorization = all(
         decision.selection_origin == best_decision.selection_origin
+        and decision.target_intent == best_decision.target_intent
         and decision.provenance_resolution == best_decision.provenance_resolution
         for decision in contributing_decisions
     )
@@ -11967,6 +12337,9 @@ def _aggregate_target_selection_decisions(
         report=aggregated_report,
         provenance_resolution=provenance_resolution,
         selection_origin=selection_origin,
+        target_intent=(
+            best_decision.target_intent if consistent_authorization else None
+        ),
     )
 
 
@@ -12090,7 +12463,12 @@ def _auto_group_trajectory_log_dataset(
 def _target_group_id(report: TargetSelectionReport, *, fallback: str) -> str:
     if report.selected_target is None:
         return f"no_target:{fallback}"
-    return f"{report.selected_target.target_type}:{report.selected_target.target_id}"
+    intent = report.target_intent.value if report.target_intent is not None else "unknown"
+    fingerprint = report.capability_fingerprint or "none"
+    return (
+        f"{report.selected_target.target_type}:{report.selected_target.target_id}:"
+        f"{intent}:{fingerprint}"
+    )
 
 
 def _group_average_confidence(group: Mapping[str, object]) -> float:
@@ -12194,8 +12572,158 @@ def _no_evidence_target_selection_report(source_kind: str) -> TargetSelectionRep
     )
 
 
-def _inferred_target_confident_for_auto_apply(report: TargetSelectionReport) -> bool:
+def _inferred_target_admitted_for_auto_apply(
+    decision: TargetSelectionDecision,
+) -> bool:
+    if not decision.provenance_resolution.resolved:
+        return False
+    if decision.target_intent == TargetMutationIntent.INFERRED_DRAFT_CREATION:
+        report = decision.report
+        return bool(
+            report.evidence_step_ids
+            and isinstance(report.capability_fingerprint, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", report.capability_fingerprint)
+        )
+    report = decision.report
     return report.confidence >= 0.9 and "low_confidence" not in report.signals
+
+
+def _materialize_run_owned_draft_decision(
+    decision: TargetSelectionDecision,
+    *,
+    store: FilesystemSelfEvolveStore,
+    run_id: str,
+    workspace_root: str | Path,
+    policy: InferredNewSkillPolicy,
+) -> TargetSelectionDecision:
+    report = decision.report
+    target = report.selected_target
+    if (
+        decision.target_intent != TargetMutationIntent.INFERRED_DRAFT_CREATION
+        or target is None
+    ):
+        return decision
+    if target.path is not None:
+        return _blocked_inferred_target_selection_decision(
+            decision,
+            reason="inferred new-skill intent must remain path-free until the run exists",
+            signal="inferred_draft_preowned_path_blocked",
+        )
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?", target.target_id):
+        return _blocked_inferred_target_selection_decision(
+            decision,
+            reason="inferred new-skill id is invalid",
+            signal="inferred_draft_invalid_id",
+        )
+    inventory = build_default_target_inventory(workspace_root)
+    if inventory.find_all("skill", target.target_id):
+        return _blocked_inferred_target_selection_decision(
+            decision,
+            reason="an inventory target appeared after capability-gap inference",
+            signal="inferred_draft_inventory_collision",
+        )
+    workspace = Path(workspace_root).resolve()
+    run_root = store.run_path(run_id).absolute()
+    draft_path = run_root / "draft_target" / target.target_id / "SKILL.md"
+    release_root = workspace / "aworld-skills" / target.target_id
+    if _path_has_symlink_component(workspace, draft_path):
+        return _blocked_inferred_target_selection_decision(
+            decision,
+            reason="inferred skill draft path traverses a symlink",
+            signal="inferred_draft_symlink_blocked",
+        )
+    try:
+        run_root.relative_to(workspace)
+        draft_path.resolve(strict=False).relative_to(run_root)
+    except ValueError:
+        return _blocked_inferred_target_selection_decision(
+            decision,
+            reason="inferred skill draft path escapes the current run",
+            signal="inferred_draft_path_escape",
+        )
+    if draft_path.exists() or draft_path.is_symlink():
+        return _blocked_inferred_target_selection_decision(
+            decision,
+            reason="a stale draft already exists for this run",
+            signal="inferred_draft_stale_collision",
+        )
+    if release_root.exists() or release_root.is_symlink():
+        return _blocked_inferred_target_selection_decision(
+            decision,
+            reason="new-skill release path already exists",
+            signal="inferred_draft_release_collision",
+        )
+    materialized_target = replace(target, path=str(draft_path))
+    diagnostics = dict(report.diagnostics or {})
+    diagnostics.update(
+        {
+            "draft_path": str(draft_path),
+            "draft_status": "run_owned",
+            "promotion_policy": policy.value,
+            "promotion_status": "pending",
+            "release_path": str(release_root / "SKILL.md"),
+        }
+    )
+    materialized_report = replace(
+        report,
+        selected_target=materialized_target,
+        diagnostics=diagnostics,
+    )
+    return build_target_selection_decision(
+        materialized_report,
+        inventory=inventory,
+        selection_origin=TargetSelectionOrigin.INFERRED,
+        workspace_root=workspace,
+        target_intent=TargetMutationIntent.INFERRED_DRAFT_CREATION,
+    )
+
+
+def _path_has_symlink_component(root: Path, path: Path) -> bool:
+    lexical_root = root.absolute()
+    lexical_path = path.absolute()
+    try:
+        relative = lexical_path.relative_to(lexical_root)
+    except ValueError:
+        return True
+    current = lexical_root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _blocked_inferred_target_selection_decision(
+    decision: TargetSelectionDecision,
+    *,
+    reason: str,
+    signal: str,
+) -> TargetSelectionDecision:
+    diagnostics = dict(decision.report.diagnostics or {})
+    if decision.report.selected_target is not None:
+        diagnostics["blocked_selected_target"] = to_json_dict(
+            decision.report.selected_target
+        )
+    blocked_report = replace(
+        decision.report,
+        selected_target=None,
+        signals=tuple(dict.fromkeys((*decision.report.signals, signal))),
+        no_target_reason=reason,
+        diagnostics=diagnostics,
+        provenance_status=TargetProvenanceStatus.UNRESOLVED,
+        provenance_reason=reason,
+    )
+    resolution = TargetProvenanceResolution(
+        status=TargetProvenanceStatus.UNRESOLVED,
+        provenance=None,
+        reason=reason,
+    )
+    return TargetSelectionDecision(
+        report=blocked_report,
+        provenance_resolution=resolution,
+        selection_origin=decision.selection_origin,
+        target_intent=None,
+    )
 
 
 def _blocked_low_confidence_target_selection_report(
@@ -12217,6 +12745,8 @@ def _blocked_low_confidence_target_selection_report(
         provenance_status=report.provenance_status,
         provenance_reason=report.provenance_reason,
         selection_origin=report.selection_origin,
+        target_intent=report.target_intent,
+        capability_fingerprint=report.capability_fingerprint,
     )
 
 

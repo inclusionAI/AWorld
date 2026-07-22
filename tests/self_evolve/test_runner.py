@@ -119,6 +119,7 @@ from aworld.self_evolve.replay_capability import (
     ReplayServiceSpec,
 )
 from aworld.self_evolve.provenance import (
+    InferredNewSkillPolicy,
     TargetProvenance,
     TargetProvenanceResolution,
     TargetSelectionOrigin,
@@ -137,6 +138,7 @@ from aworld.self_evolve.credit_assignment import (
     TargetSelectionDecision,
     TargetSelectionReport,
     build_target_selection_decision,
+    build_default_target_inventory,
 )
 from aworld.self_evolve.types import (
     CandidateFileDelta,
@@ -1329,7 +1331,7 @@ def test_auto_groups_multi_task_trajectory_log_by_inferred_target(tmp_path) -> N
         "task-alpha",
         "task-alpha-2",
     ]
-    assert grouping["selected_group_id"] == "skill:alpha"
+    assert grouping["selected_group_id"].startswith("skill:alpha:")
     assert grouping["group_count"] == 2
     assert grouping["auto_grouped"] is True
     assert grouping["low_dataset_support"] is False
@@ -1411,7 +1413,7 @@ def test_auto_group_prefers_larger_group_when_confidence_ties_by_bucket(tmp_path
         infer_target=fake_infer,
     )
 
-    assert grouping["selected_group_id"] == "skill:cluster"
+    assert grouping["selected_group_id"].startswith("skill:cluster:")
     assert grouping["low_dataset_support"] is False
     assert grouping["selected_case_count"] == 2
     assert [case.case_id for case in grouped_dataset.cases] == [
@@ -1493,7 +1495,7 @@ def test_candidate_gate_results_require_named_generated_mutation_policy(tmp_path
     target = SelfEvolveTargetRef(
         target_type="skill",
         target_id="generated-capability",
-        path=str(tmp_path / "drafts" / "generated-capability" / "SKILL.md"),
+        path=None,
     )
     candidate = CandidateVariant(
         candidate_id="candidate-generated",
@@ -1550,6 +1552,7 @@ def test_generated_target_aggregation_keeps_one_fail_closed_provenance_decision(
                 failure_category="skill",
                 signals=("new_skill_candidate", "low_confidence"),
                 diagnostics={"pack_id": f"pack-{index}"},
+                capability_fingerprint="sha256:" + "a" * 64,
             ),
             inventory=TargetInventory(entries=()),
             selection_origin="inferred",
@@ -1565,6 +1568,39 @@ def test_generated_target_aggregation_keeps_one_fail_closed_provenance_decision(
     assert len(aggregated.report.evidence_step_ids) == trajectory_count
     assert aggregated.report.provenance_status == "resolved"
     assert aggregated.report.selection_origin == "inferred"
+
+
+def test_generated_target_aggregation_rejects_conflicting_capability_fingerprints(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef("skill", "generated-capability")
+    decisions = tuple(
+        build_target_selection_decision(
+            TargetSelectionReport(
+                selected_target=target,
+                confidence=0.85,
+                evidence_step_ids=(f"member-{index}:step-1",),
+                failure_category="skill",
+                capability_fingerprint="sha256:" + character * 64,
+                diagnostics={"pack_id": f"pack-{index}"},
+            ),
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
+        )
+        for index, character in enumerate(("a", "b"))
+    )
+
+    aggregated = _aggregate_target_selection_decisions(decisions)
+
+    assert aggregated.report.selected_target is None
+    assert aggregated.target_intent is None
+    assert aggregated.report.no_target_reason == (
+        "trajectory members disagree on target capability intent"
+    )
+    assert set(aggregated.report.evidence_step_ids) == {
+        "member-0:step-1",
+        "member-1:step-1",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1672,6 +1708,41 @@ def test_load_target_selection_report_preserves_typed_selection_origin(tmp_path)
 
     assert report is not None
     assert report.selection_origin == "inferred"
+
+
+def test_load_target_selection_report_rejects_invalid_target_intent(tmp_path) -> None:
+    sidecar = tmp_path / "target_selection.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "selected_target": {
+                    "target_type": "skill",
+                    "target_id": "generated-capability",
+                    "path": None,
+                },
+                "confidence": 0.95,
+                "evidence_step_ids": ["member-1:step-1"],
+                "failure_category": "skill",
+                "selection_origin": "inferred",
+                "target_intent": "unknown_intent",
+                "capability_fingerprint": "sha256:" + "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = _load_target_selection_report(sidecar)
+
+    assert report is not None
+    assert report.target_intent is None
+    assert report.diagnostics == {"invalid_target_intent": "unknown_intent"}
+    decision = build_target_selection_decision(
+        report,
+        inventory=TargetInventory(entries=()),
+        selection_origin=TargetSelectionOrigin.INFERRED,
+    )
+    assert decision.provenance_resolution.status == "unresolved"
+    assert decision.unresolved_reason == "target mutation intent is invalid"
 
 
 @pytest.mark.asyncio
@@ -12361,9 +12432,29 @@ def test_default_cli_skill_candidate_turns_compacted_tool_arguments_into_recover
     assert "podcast" not in candidate_content.lower()
 
 
-def test_proposal_inferred_target_can_preserve_generated_skill_draft(
+@pytest.mark.parametrize(
+    (
+        "apply_policy",
+        "new_skill_policy",
+        "expected_promotion",
+        "expected_run_status",
+        "fail_registry_refresh",
+    ),
+    (
+        ("proposal", "auto_verified", "draft_retained", "succeeded", False),
+        ("auto_verified", "draft_only", "draft_retained", "succeeded", False),
+        ("auto_verified", "auto_verified", "published", "succeeded", False),
+        ("auto_verified", "auto_verified", "draft_retained", "rejected", True),
+    ),
+)
+def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    apply_policy: str,
+    new_skill_policy: str,
+    expected_promotion: str,
+    expected_run_status: str,
+    fail_registry_refresh: bool,
 ) -> None:
     import aworld.self_evolve.runner as runner_module
 
@@ -12377,29 +12468,20 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
             "state": {
                 "input": {
                     "content": (
-                        "Summarize this podcast page with grounded evidence: "
-                        "https://www.xiaoyuzhoufm.com/episode/6a26b911b30e1571aea2c09d"
+                        "Summarize this remote resource with grounded evidence: "
+                        "https://api.example.test/resources/demo"
                     )
                 }
             },
-            "action": {"content": "The final answer drifted away from the podcast evidence."},
+            "action": {"content": "The final answer drifted away from source evidence."},
             "reward": {"status": "failed"},
         }
     ]
-    draft_skill_path = (
-        tmp_path
-        / ".aworld"
-        / "self_evolve"
-        / "drafts"
-        / "skills"
-        / "generated-capability"
-        / "SKILL.md"
-    )
     new_skill_path = tmp_path / "aworld-skills" / "generated-capability" / "SKILL.md"
     inferred_target = SelfEvolveTargetRef(
         target_type="skill",
         target_id="generated-capability",
-        path=str(draft_skill_path),
+        path=None,
     )
 
     def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
@@ -12411,6 +12493,7 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
                 failure_category="skill",
                 signals=("low_confidence", "new_skill_candidate"),
                 diagnostics={"rationale": "task needs a dedicated grounded web-summary skill"},
+                capability_fingerprint="sha256:" + "b" * 64,
             ),
             inventory=TargetInventory(entries=()),
             selection_origin="inferred",
@@ -12491,6 +12574,9 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
             metrics={"post_apply_passed": True},
         )
 
+    def reject_registry_refresh(candidate):
+        raise RuntimeError("registry refresh unavailable")
+
     monkeypatch.setattr(
         runner_module,
         "_infer_target_from_trace_packs",
@@ -12517,11 +12603,15 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
         current_trajectory=trajectory,
         task="weak-task",
         target=None,
-        apply_policy="proposal",
+        apply_policy=apply_policy,
+        inferred_new_skill_policy=new_skill_policy,
         infer_target=True,
         candidate_replay_backend=replay_backend,
         evaluation_backend=evaluation_backend,
         post_apply_evaluator=post_apply,
+        runtime_registry_refresher=(
+            reject_registry_refresh if fail_registry_refresh else None
+        ),
         min_eval_cases=0,
         replay_enabled=True,
         baseline_replay_repetitions=2,
@@ -12531,8 +12621,20 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
         ),
     )
 
-    assert report_summary["status"] == "succeeded"
-    assert report_summary["best_candidate_id"] is None
+    assert report_summary["status"] == expected_run_status
+    draft_skill_path = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / report_summary["run_id"]
+        / "draft_target"
+        / "generated-capability"
+        / "SKILL.md"
+    )
+    if apply_policy == "proposal" or fail_registry_refresh:
+        assert report_summary["best_candidate_id"] is None
+    else:
+        assert report_summary["best_candidate_id"] is not None
     assert replay_backend.requests
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
@@ -12547,7 +12649,7 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
         "validation",
         "validation",
     ]
-    assert not new_skill_path.exists()
+    assert new_skill_path.exists() is (expected_promotion == "published")
     assert Path(report_summary["target_provenance_path"]).exists()
     provenance = json.loads(
         Path(report_summary["target_provenance_path"]).read_text(encoding="utf-8")
@@ -12555,7 +12657,7 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
     assert provenance["trust_level"] == "generated"
     assert provenance["write_origin"] == "target_inference"
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
-    assert report["apply_policy"] == "proposal"
+    assert report["apply_policy"] == apply_policy
     assert report["target"]["target_id"] == "generated-capability"
     assert report["target"]["path"] == str(draft_skill_path)
     assert report["candidate_ids"]
@@ -12568,13 +12670,34 @@ def test_proposal_inferred_target_can_preserve_generated_skill_draft(
     assert report["replay"]["baseline"]["status"] == "succeeded"
     assert report["replay"]["candidate"]["status"] == "succeeded"
     assert any(
-        gate["gate_name"] == "trust_provenance" and gate["passed"] is False
+        gate["gate_name"] == "trust_provenance" and gate["passed"] is True
         for gate in report["gate_results"]
     )
-    assert "post_apply" not in report
+    assert report["promotion"]["status"] == expected_promotion
+    assert report["promotion"]["release_path"] == str(new_skill_path)
+    assert draft_skill_path.exists() is (expected_promotion == "draft_retained")
+    if expected_promotion == "published":
+        assert report["post_apply"]["status"] == "accepted"
+        assert report["post_apply"]["refresh"] == {
+            "refreshed": True,
+            "strategy": "compat_registry_rebuild",
+            "skill_id": "generated-capability",
+        }
+    elif fail_registry_refresh:
+        assert report["post_apply"]["status"] == "rolled_back"
+        assert report["post_apply"]["metrics"]["registry_refresh_passed"] is False
+        assert report["promotion"]["registry_refresh_status"] == "failed"
+        assert report["promotion"]["registry_refresh_error"] == (
+            "registry refresh unavailable"
+        )
+        assert report["promotion"]["reason"] == (
+            "publication rolled back after registry refresh failure"
+        )
+    else:
+        assert "post_apply" not in report
 
 
-def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
+def test_auto_verified_inferred_existing_target_blocks_low_confidence_auto_apply(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -12593,16 +12716,8 @@ def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
     ]
     inferred_target = SelfEvolveTargetRef(
         target_type="skill",
-        target_id="generated-capability",
-        path=str(
-            tmp_path
-            / ".aworld"
-            / "self_evolve"
-            / "drafts"
-            / "skills"
-            / "generated-capability"
-            / "SKILL.md"
-        ),
+        target_id="agent-browser",
+        path=str(skill_path),
     )
 
     def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
@@ -12612,10 +12727,10 @@ def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
                 confidence=0.85,
                 evidence_step_ids=("weak-task:step-1",),
                 failure_category="skill",
-                signals=("low_confidence", "new_skill_candidate"),
-                diagnostics={"draft_skill_reason": "reusable capability gap"},
+                signals=("low_confidence",),
+                diagnostics={"matched_aliases": ["agent-browser"]},
             ),
-            inventory=TargetInventory(entries=()),
+            inventory=build_default_target_inventory(workspace_root=tmp_path),
             selection_origin="inferred",
         )
 
@@ -12649,7 +12764,154 @@ def test_auto_verified_inferred_target_blocks_low_confidence_auto_apply(
     assert "auto_verified_low_confidence_blocked" in report["target_selection"]["signals"]
     assert report["target_selection"]["diagnostics"]["blocked_selected_target"][
         "target_id"
-    ] == "generated-capability"
+    ] == "agent-browser"
+
+
+def test_inferred_new_skill_disabled_policy_rejects_before_draft_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve.runner as runner_module
+
+    trajectory = [
+        {
+            "meta": {"step": 1},
+            "state": {"input": {"content": "Use a remote operation."}},
+            "action": {
+                "content": "The remote operation failed.",
+                "tool_calls": [{"function": {"name": "remote.execute", "arguments": "{}"}}],
+            },
+            "reward": {"status": "failed"},
+        }
+    ]
+    inferred_target = SelfEvolveTargetRef("skill", "remote-recovery-1234567890")
+
+    def fake_infer_target_from_trace_packs(trace_packs, *, workspace_root):
+        return build_target_selection_decision(
+            TargetSelectionReport(
+                selected_target=inferred_target,
+                confidence=0.85,
+                evidence_step_ids=("remote-task:step-1",),
+                failure_category="skill",
+                signals=("new_skill_candidate",),
+                capability_fingerprint="sha256:" + "c" * 64,
+            ),
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "_infer_target_from_trace_packs",
+        fake_infer_target_from_trace_packs,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_target_from_ref",
+        lambda *args, **kwargs: pytest.fail("disabled policy must not load a target"),
+    )
+
+    summary = optimize_from_cli_request(
+        workspace_root=tmp_path,
+        current_trajectory=trajectory,
+        task="remote-task",
+        infer_target=True,
+        apply_policy="proposal",
+        inferred_new_skill_policy="disabled",
+    )
+
+    report = json.loads(Path(summary["report_path"]).read_text(encoding="utf-8"))
+    assert summary["status"] == "rejected"
+    assert report["target_selection"]["selected_target"] is None
+    assert report["target_selection"]["no_target_reason"] == (
+        "inferred new-skill creation is disabled by policy"
+    )
+    assert "inferred_new_skill_policy_disabled" in report["target_selection"]["signals"]
+    assert not tuple((tmp_path / ".aworld" / "self_evolve").glob("*/draft_target"))
+
+
+def test_explicit_missing_skill_never_falls_back_to_inferred_draft(tmp_path: Path) -> None:
+    trajectory = [
+        {
+            "meta": {"step": 1},
+            "state": {"input": {"content": "Use a remote operation."}},
+            "action": {
+                "content": "The operation needs reusable recovery.",
+                "tool_calls": [{"function": {"name": "remote.execute", "arguments": "{}"}}],
+            },
+            "reward": {"status": "failed"},
+        }
+    ]
+
+    with pytest.raises(FileNotFoundError, match="skill target not found"):
+        optimize_from_cli_request(
+            workspace_root=tmp_path,
+            current_trajectory=trajectory,
+            task="explicit-missing-task",
+            target="skill:does-not-exist",
+            infer_target=False,
+            apply_policy="proposal",
+        )
+
+    assert not tuple((tmp_path / ".aworld" / "self_evolve").glob("*/draft_target"))
+
+
+@pytest.mark.parametrize(
+    ("collision", "expected_signal"),
+    (
+        ("stale_draft", "inferred_draft_stale_collision"),
+        ("release", "inferred_draft_release_collision"),
+        ("symlink", "inferred_draft_symlink_blocked"),
+    ),
+)
+def test_run_owned_draft_materialization_fails_closed_on_unsafe_paths(
+    tmp_path: Path,
+    collision: str,
+    expected_signal: str,
+) -> None:
+    target_id = "remote-recovery-1234567890"
+    run_id = "cli-safe-draft"
+    decision = build_target_selection_decision(
+        TargetSelectionReport(
+            selected_target=SelfEvolveTargetRef("skill", target_id),
+            confidence=0.85,
+            evidence_step_ids=("member:step-1",),
+            failure_category="skill",
+            capability_fingerprint="sha256:" + "d" * 64,
+        ),
+        inventory=TargetInventory(entries=()),
+        selection_origin="inferred",
+    )
+    if collision == "stale_draft":
+        stale = (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / run_id
+            / "draft_target"
+            / target_id
+            / "SKILL.md"
+        )
+        stale.parent.mkdir(parents=True)
+        stale.write_text("stale", encoding="utf-8")
+    elif collision == "release":
+        (tmp_path / "aworld-skills" / target_id).mkdir(parents=True)
+    else:
+        linked_root = tmp_path / "linked-artifacts"
+        linked_root.mkdir()
+        (tmp_path / ".aworld").symlink_to(linked_root, target_is_directory=True)
+
+    materialized = runner_module._materialize_run_owned_draft_decision(
+        decision,
+        store=FilesystemSelfEvolveStore(tmp_path),
+        run_id=run_id,
+        workspace_root=tmp_path,
+        policy=InferredNewSkillPolicy.AUTO_VERIFIED,
+    )
+
+    assert materialized.report.selected_target is None
+    assert expected_signal in materialized.report.signals
+    assert materialized.provenance is None
 
 
 def test_optimize_cli_request_filters_unsupported_inferred_target_before_adapter(

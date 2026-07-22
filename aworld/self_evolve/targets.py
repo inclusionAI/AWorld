@@ -329,12 +329,25 @@ class DraftSkillTextTarget(SkillTextTarget):
 
     def load_current_content(self) -> str:
         if self.path.exists():
-            return self.path.read_text(encoding="utf-8")
+            raise FileExistsError(
+                "run-owned skill draft already exists and cannot be reused as a baseline"
+            )
         return _draft_skill_skeleton(self._target_id)
+
+    def preserve_selected_draft(self, candidate_content: str) -> Path:
+        if self.path.exists() or self.path.is_symlink():
+            raise FileExistsError("run-owned skill draft already exists")
+        self.path.parent.mkdir(parents=True, exist_ok=False)
+        self.path.write_text(candidate_content, encoding="utf-8")
+        return self.path
 
     def apply_candidate(self, candidate_content: str) -> None:
         if not self.allow_auto_apply:
             raise PermissionError(f"target {self._target_id!r} is not allowlisted for auto apply")
+        if self.release_path.exists() or self.release_path.is_symlink():
+            raise FileExistsError(
+                "new-skill release path appeared after target inference"
+            )
         self._rollback_existed = self.release_path.exists()
         self._rollback_content = (
             self.release_path.read_text(encoding="utf-8") if self._rollback_existed else None
@@ -369,6 +382,10 @@ class DraftSkillTextTarget(SkillTextTarget):
         return self.release_path
 
     def _prepare_package_rollback(self) -> None:
+        if self.release_path.parent.exists() or self.release_path.parent.is_symlink():
+            raise FileExistsError(
+                "new-skill release path appeared after target inference"
+            )
         self._rollback_existed = self.release_path.exists()
         self._rollback_content = (
             self.release_path.read_text(encoding="utf-8")

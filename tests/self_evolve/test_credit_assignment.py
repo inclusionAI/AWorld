@@ -185,6 +185,7 @@ def test_credit_assignment_decision_marks_new_draft_as_generated(tmp_path) -> No
         evidence_step_ids=("generated-target:step-1",),
         failure_category="skill",
         signals=("new_skill_candidate",),
+        capability_fingerprint="sha256:" + "a" * 64,
     )
 
     decision = build_target_selection_decision(
@@ -199,6 +200,39 @@ def test_credit_assignment_decision_marks_new_draft_as_generated(tmp_path) -> No
     assert decision.provenance.trust_level == "generated"
     assert decision.provenance.write_origin == "target_inference"
     assert decision.report.provenance_status == "resolved"
+
+
+@pytest.mark.parametrize(
+    ("target_id", "evidence_ids", "fingerprint", "origin", "intent"),
+    (
+        ("self-evolve", ("step-1",), "sha256:" + "a" * 64, "inferred", "inferred_draft_creation"),
+        ("valid-capability", (), "sha256:" + "a" * 64, "inferred", "inferred_draft_creation"),
+        ("valid-capability", ("step-1",), None, "inferred", "inferred_draft_creation"),
+        ("valid-capability", ("step-1",), "sha256:" + "a" * 64, "operator_explicit", "inferred_draft_creation"),
+    ),
+)
+def test_draft_creation_intent_rejects_contradictory_or_incomplete_identity(
+    target_id: str,
+    evidence_ids: tuple[str, ...],
+    fingerprint: str | None,
+    origin: str,
+    intent: str,
+) -> None:
+    decision = build_target_selection_decision(
+        TargetSelectionReport(
+            selected_target=SelfEvolveTargetRef("skill", target_id),
+            confidence=0.9,
+            evidence_step_ids=evidence_ids,
+            failure_category="skill",
+            capability_fingerprint=fingerprint,
+        ),
+        inventory=TargetInventory(entries=()),
+        selection_origin=origin,
+        target_intent=intent,
+    )
+
+    assert decision.provenance is None
+    assert decision.provenance_resolution.status == "unresolved"
 
 
 def test_explicit_selection_cannot_erase_inventory_protection(tmp_path) -> None:
@@ -486,7 +520,7 @@ def test_credit_assigner_selects_installed_skill_by_generic_trajectory_evidence(
     assert "skill_alias_match:web-navigator" in report.signals
 
 
-def test_credit_assigner_does_not_select_skill_from_description_tokens_only(
+def test_credit_assigner_creates_generic_draft_instead_of_matching_description_tokens(
     tmp_path,
 ) -> None:
     _write_skill(
@@ -534,12 +568,15 @@ def test_credit_assigner_does_not_select_skill_from_description_tokens_only(
 
     report = assigner.assign(pack)
 
-    assert report.selected_target is None
-    assert report.failure_category == "no_target"
+    assert report.selected_target is not None
+    assert report.selected_target.target_type == "skill"
+    assert report.selected_target.path is None
+    assert report.target_intent == "inferred_draft_creation"
+    assert report.capability_fingerprint is not None
     assert "skill_alias_match:video_script_writting" not in report.signals
 
 
-def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> None:
+def test_credit_assigner_compiles_path_free_draft_for_structured_http_gap(tmp_path) -> None:
     _write_skill(
         tmp_path,
         "agent-browser",
@@ -552,8 +589,8 @@ def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> 
                 "state": {
                     "input": {
                         "content": (
-                            "https://www.xiaoyuzhoufm.com/episode/demo，"
-                            "这个播客的核心内容与关键洞察是什么？"
+                            "Extract verified records from "
+                            "https://api.example.test/resources/demo."
                         )
                     },
                     "messages": [],
@@ -577,14 +614,13 @@ def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> 
                 "state": {
                     "input": {
                         "content": (
-                            "Rendered podcast page has metadata, shownotes, and audio, "
-                            "but no transcript."
+                            "The remote resource returned metadata but no structured records."
                         )
                     },
                     "messages": [],
                 },
                 "action": {
-                    "content": "The final answer needs stronger web-page evidence grounding.",
+                    "content": "The final answer needs stronger source evidence grounding.",
                     "tool_calls": [],
                     "is_agent_finished": True,
                 },
@@ -592,7 +628,7 @@ def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> 
             },
         ],
         source_kind="current_trajectory",
-        task_id="podcast-task",
+        task_id="http-resource-task",
     )
     assigner = TrajectoryCreditAssigner(
         inventory=build_default_target_inventory(workspace_root=tmp_path)
@@ -602,23 +638,17 @@ def test_credit_assigner_creates_draft_skill_for_web_grounding_gap(tmp_path) -> 
 
     assert report.selected_target is not None
     assert report.selected_target.target_type == "skill"
-    assert report.selected_target.target_id == "web-content-grounding"
-    assert report.selected_target.path == str(
-        tmp_path
-        / ".aworld"
-        / "self_evolve"
-        / "drafts"
-        / "skills"
-        / "web-content-grounding"
-        / "SKILL.md"
-    )
+    assert report.selected_target.target_id.startswith("http-recovery-")
+    assert report.selected_target.path is None
     assert report.failure_category == "skill"
     assert report.confidence == 0.85
     assert "new_skill_candidate" in report.signals
     assert "skill_alias_match:agent-browser" not in report.signals
+    assert report.target_intent == "inferred_draft_creation"
+    assert report.capability_fingerprint.startswith("sha256:")
 
 
-def test_credit_assigner_reuses_verified_web_grounding_skill_before_browser_alias(
+def test_credit_assigner_reuses_skill_with_same_capability_fingerprint_identity(
     tmp_path,
 ) -> None:
     _write_skill(
@@ -626,11 +656,6 @@ def test_credit_assigner_reuses_verified_web_grounding_skill_before_browser_alia
         "agent-browser",
         description="Fast browser automation CLI for AI agents.",
     )
-    _write_skill(
-        tmp_path,
-        "web-content-grounding",
-        description="Verified self-evolve skill for artifact-backed web evidence grounding.",
-    )
     pack = build_trace_pack(
         [
             {
@@ -638,8 +663,8 @@ def test_credit_assigner_reuses_verified_web_grounding_skill_before_browser_alia
                 "state": {
                     "input": {
                         "content": (
-                            "https://www.xiaoyuzhoufm.com/episode/demo，"
-                            "这个播客的核心内容与关键洞察是什么？"
+                            "Extract verified records from "
+                            "https://api.example.test/resources/demo."
                         )
                     },
                     "messages": [],
@@ -663,14 +688,13 @@ def test_credit_assigner_reuses_verified_web_grounding_skill_before_browser_alia
                 "state": {
                     "input": {
                         "content": (
-                            "Rendered podcast page has metadata, shownotes, and audio, "
-                            "but no transcript."
+                            "The remote resource returned metadata but no structured records."
                         )
                     },
                     "messages": [],
                 },
                 "action": {
-                    "content": "The final answer needs stronger web-page evidence grounding.",
+                    "content": "The final answer needs stronger source evidence grounding.",
                     "tool_calls": [],
                     "is_agent_finished": True,
                 },
@@ -678,7 +702,17 @@ def test_credit_assigner_reuses_verified_web_grounding_skill_before_browser_alia
             },
         ],
         source_kind="current_trajectory",
-        task_id="podcast-task",
+        task_id="http-resource-task",
+    )
+    initial_report = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    ).assign(pack)
+    assert initial_report.selected_target is not None
+    inferred_id = initial_report.selected_target.target_id
+    _write_skill(
+        tmp_path,
+        inferred_id,
+        description="Verified capability for this structured operation fingerprint.",
     )
     assigner = TrajectoryCreditAssigner(
         inventory=build_default_target_inventory(workspace_root=tmp_path)
@@ -688,14 +722,15 @@ def test_credit_assigner_reuses_verified_web_grounding_skill_before_browser_alia
 
     assert report.selected_target is not None
     assert report.selected_target.target_type == "skill"
-    assert report.selected_target.target_id == "web-content-grounding"
+    assert report.selected_target.target_id == inferred_id
     assert report.selected_target.path == str(
-        tmp_path / "aworld-skills" / "web-content-grounding" / "SKILL.md"
+        tmp_path / "aworld-skills" / inferred_id / "SKILL.md"
     )
     assert report.confidence >= 0.9
-    assert "verified_skill_target:web-content-grounding" in report.signals
+    assert "capability_fingerprint_inventory_match" in report.signals
     assert "new_skill_candidate" not in report.signals
     assert "skill_alias_match:agent-browser" not in report.signals
+    assert report.target_intent == "existing_target_mutation"
 
 
 def test_credit_assigner_ignores_skill_catalog_mentions_in_system_messages(tmp_path) -> None:
@@ -711,8 +746,8 @@ def test_credit_assigner_ignores_skill_catalog_mentions_in_system_messages(tmp_p
                 "state": {
                     "input": {
                         "content": (
-                            "https://www.xiaoyuzhoufm.com/episode/demo，"
-                            "这个播客的核心内容与关键洞察是什么？"
+                            "Extract verified records from "
+                            "https://api.example.test/resources/demo."
                         )
                     },
                     "messages": [
@@ -726,8 +761,8 @@ def test_credit_assigner_ignores_skill_catalog_mentions_in_system_messages(tmp_p
                         {
                             "role": "user",
                             "content": (
-                                "https://www.xiaoyuzhoufm.com/episode/demo，"
-                                "这个播客的核心内容与关键洞察是什么？"
+                                "Extract verified records from "
+                                "https://api.example.test/resources/demo."
                             ),
                         },
                     ],
@@ -761,7 +796,7 @@ def test_credit_assigner_ignores_skill_catalog_mentions_in_system_messages(tmp_p
                     "messages": [],
                 },
                 "action": {
-                    "content": "The page has podcast metadata but no transcript.",
+                    "content": "The page has metadata but no structured records.",
                     "tool_calls": [],
                     "is_agent_finished": True,
                 },
@@ -769,7 +804,7 @@ def test_credit_assigner_ignores_skill_catalog_mentions_in_system_messages(tmp_p
             }
         ],
         source_kind="current_trajectory",
-        task_id="podcast-task",
+        task_id="http-resource-task",
     )
     assigner = TrajectoryCreditAssigner(
         inventory=build_default_target_inventory(workspace_root=tmp_path)
@@ -778,7 +813,7 @@ def test_credit_assigner_ignores_skill_catalog_mentions_in_system_messages(tmp_p
     report = assigner.assign(pack)
 
     assert report.selected_target is not None
-    assert report.selected_target.target_id == "web-content-grounding"
+    assert report.selected_target.target_id.startswith("http-recovery-")
     assert report.failure_category == "skill"
     assert "new_skill_candidate" in report.signals
     assert "skill_alias_match:media_comprehension" not in report.signals
@@ -928,3 +963,47 @@ def test_credit_assigner_declines_low_confidence_llm_diagnosis(tmp_path) -> None
     assert report.evidence_step_ids == ("low-confidence-task:step-1",)
     assert report.no_target_reason == "llm diagnosis confidence is below policy"
     assert "llm_assisted_diagnosis" in report.signals
+
+
+def test_credit_assigner_accepts_explicit_llm_new_skill_intent_without_a_path(
+    tmp_path: Path,
+) -> None:
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1},
+                "state": {"input": {"content": "Run the remote operation."}},
+                "action": {
+                    "content": "The remote operation needs reusable recovery guidance.",
+                    "tool_calls": [
+                        {"function": {"name": "remote.execute", "arguments": "{}"}}
+                    ],
+                },
+                "reward": {"status": "failed", "code": "remote_unavailable"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="new-capability-task",
+    )
+    diagnosis = LLMTargetDiagnosis(
+        target_type="skill",
+        target_id="remote-operation-recovery",
+        confidence=0.93,
+        evidence_step_ids=("new-capability-task:step-1",),
+        failure_category="skill",
+        rationale="The trace demonstrates a reusable remote-operation recovery gap.",
+        selection_kind="new_skill",
+    )
+
+    decision = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(tmp_path),
+        llm_diagnoser=lambda _pack, _inventory: diagnosis,
+    ).assign_decision(pack)
+
+    assert decision.report.selected_target == SelfEvolveTargetRef(
+        "skill", "remote-operation-recovery"
+    )
+    assert decision.target_intent == "inferred_draft_creation"
+    assert decision.report.capability_fingerprint.startswith("sha256:")
+    assert decision.provenance is not None
+    assert decision.provenance.trust_level == "generated"

@@ -32,6 +32,7 @@ Verified apply for an allowlisted skill target:
 aworld-cli optimize \
   --from-trajectory ~/Documents/trajectory1.log \
   --apply auto_verified \
+  --new-skill-policy auto_verified \
   --judge-agent ~/Documents/agent.md \
   --judge-timeout 600 \
   --judge-model-profile gpt-5.5
@@ -51,6 +52,11 @@ Resume evaluator/gates from a previous run:
 aworld-cli optimize --from-run <run_id> --rerun-evaluator
 ```
 
+Evaluator-only reruns preserve the original candidate package fingerprint and therefore
+cannot rebind an inferred new-skill candidate to another run-owned draft path. Rerun the
+full optimize command for an inferred draft; existing-target runs can use
+`--rerun-evaluator` normally.
+
 ## Data Sources
 
 Exactly one evaluation source is normally provided:
@@ -62,14 +68,29 @@ Exactly one evaluation source is normally provided:
 - `--batch-config <path>`: batch config for a larger request.
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.
 
-When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target; low-confidence inferred targets are blocked for `auto_verified` apply.
+When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target. Low-confidence inference remains blocked when it would mutate an existing skill. A validated capability gap may instead create an isolated run-owned draft because draft evolution does not authorize mutation of an existing target.
 
 Target confidence and target provenance are independent gates. Confidence answers
 whether the trajectory evidence identifies the right capability; provenance answers
-whether that capability is authorized for mutation. An inferred generated target that
-is absent from the local inventory defaults to proposal-only, even when candidate replay
-passes. Programmatic callers must supply the named generated-target trust policy to
-authorize it; adding its type to `auto_apply_target_types` is not authorization.
+whether that capability is authorized for mutation. Target intent independently records
+whether the run mutates an inventory target or creates a new draft. Inferred drafts are
+stored under `.aworld/self_evolve/<run_id>/draft_target/<skill_id>/SKILL.md`; they never
+use another run's draft as a baseline.
+
+`--new-skill-policy` controls inferred capability gaps:
+
+- `disabled`: return a typed no-target result without creating a draft.
+- `draft_only`: generate, replay, and evaluate a run-owned draft, but never publish it.
+- `auto_verified` (default): permit publication to `aworld-skills/<skill_id>/SKILL.md`
+  only after the ordinary verified gates, collision checks, and post-apply checks pass.
+
+The apply policy is still authoritative: `--apply proposal` never publishes, regardless
+of the new-skill policy. `allow_generated_target_mutation` retains its separate SDK
+meaning and does not authorize new-skill publication. Adding `skill` to
+`auto_apply_target_types` is also insufficient by itself.
+
+Supplying `--target skill:<name>` is strict operator selection. If that skill does not
+exist, optimize fails instead of falling back to inferred creation.
 
 Aggregating multiple trajectories can strengthen target evidence and add evidence IDs,
 but it produces one provenance decision for the selected target. Aggregation cannot
@@ -127,6 +148,7 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
 - `--target`: explicit target reference. Phase 1 CLI runs support `skill:<name>` end to end. Automatic inference uses the same adapter registry and therefore considers skills only. Other target forms remain framework/SDK types until general CLI adapters are implemented.
 - `--iterations`: maximum candidate optimization iterations.
 - `--apply`: `proposal` or `auto_verified`. The default is `proposal`.
+- `--new-skill-policy`: `disabled`, `draft_only`, or `auto_verified`. The default is `auto_verified`; it affects inferred missing capabilities only.
 - `--judge-agent`: markdown judge agent path.
 - `--judge-agent-name`: configured custom judge agent id/name.
 - `--judge-backend-ref`: evaluator backend reference.

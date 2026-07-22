@@ -50,6 +50,8 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
             "eval.jsonl",
             "--apply",
             "proposal",
+            "--new-skill-policy",
+            "draft_only",
         ]
     )
 
@@ -58,6 +60,7 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert calls["target"] == "skill:demo"
     assert calls["dataset"] == "eval.jsonl"
     assert calls["apply"] == "proposal"
+    assert calls["new_skill_policy"] == "draft_only"
     assert callable(calls["progress_callback"])
     assert calls["from_trajectory"] is None
     assert calls["task"] is None
@@ -332,6 +335,18 @@ def test_render_optimize_summary_suggests_rerun_evaluator_after_judge_timeout() 
     )
 
 
+def test_render_optimize_summary_reports_new_skill_promotion_status() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "succeeded",
+            "report_path": ".aworld/self_evolve/cli-123/report.json",
+            "promotion": {"status": "draft_retained"},
+        }
+    )
+
+    assert "New skill: draft_retained" in summary
+
+
 def test_render_optimize_summary_warns_when_replay_success_count_is_insufficient() -> None:
     summary = render_optimize_summary(
         {
@@ -442,6 +457,7 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
         batch_config=None,
         iterations=None,
         apply="auto_verified",
+        new_skill_policy="disabled",
         infer_target=True,
         workspace_root=str(tmp_path),
         judge_agent="agent.md",
@@ -689,6 +705,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         batch_config=None,
         iterations=3,
         apply="auto_verified",
+        new_skill_policy="disabled",
         infer_target=False,
         workspace_root=str(tmp_path),
         judge_agent="agent.md",
@@ -706,6 +723,7 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["include_prior_runs"] is True
     assert calls["iterations"] == 3
     assert calls["apply_policy"] == "auto_verified"
+    assert calls["inferred_new_skill_policy"] == "disabled"
     assert calls["infer_target"] is False
     assert calls["judge_config"].mode == "agent_md"
     assert calls["judge_config"].agent_path == "agent.md"
@@ -888,7 +906,7 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
     run_optimize_cli(
         agent=None,
         task=None,
-        target="skill:web-content-grounding",
+        target="skill:generated-capability",
         dataset="eval.jsonl",
         from_session=None,
         from_trajectory=None,
@@ -907,7 +925,7 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
             {
                 "target": SelfEvolveTargetRef(
                     target_type="skill",
-                    target_id="web-content-grounding",
+                    target_id="generated-capability",
                     path=str(tmp_path / "SKILL.md"),
                 )
             },
@@ -916,7 +934,7 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
 
     assert result == {
         "status": "enabled",
-        "skill_name": "web-content-grounding",
+        "skill_name": "generated-capability",
         "was_enabled": False,
         "enabled": True,
     }
