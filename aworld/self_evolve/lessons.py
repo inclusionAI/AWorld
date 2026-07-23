@@ -12,6 +12,7 @@ from aworld.self_evolve.failure_events import (
     ReplayFailureObservation,
     aggregate_replay_failure_observations,
 )
+from aworld.self_evolve.recovery_trace import trace_pack_recovery_summary
 from aworld.self_evolve.sanitization import sanitize_metric_value, sanitize_path_ref, sanitize_text
 from aworld.self_evolve.trace_pack import TracePack
 from aworld.self_evolve.types import EvaluationSummary
@@ -961,7 +962,28 @@ def _trace_lesson_records(
         source_task_ids = _source_ids(pack.task_id)
         evidence_refs = tuple(step.evidence_id for step in pack.steps[:8])
         metrics = _trace_metrics(pack)
-        if _trace_failed(pack):
+        recovery_trace = trace_pack_recovery_summary(pack)
+        if recovery_trace.get("recovered") is True:
+            records.append(
+                _record(
+                    lesson_type="trajectory_recovery_memory",
+                    title="Preserve bounded failure recovery pattern",
+                    summary=_trace_summary(
+                        pack,
+                        prefix=(
+                            "Trajectory recovered after an intermediate failure; "
+                            "preserve the successful bounded strategy transition"
+                        ),
+                    ),
+                    evidence_refs=evidence_refs,
+                    target_scope=target_scope,
+                    confidence="high",
+                    source_run_ids=(),
+                    source_task_ids=source_task_ids,
+                    metrics=metrics,
+                )
+            )
+        elif _trace_failed(pack):
             records.append(
                 _record(
                     lesson_type="trajectory_failure_memory",
@@ -1035,6 +1057,7 @@ def _trace_metrics(pack: TracePack) -> dict[str, Any]:
         "omitted_step_count": pack.omitted_step_count,
         "statuses": [sanitize_text(status, max_chars=40) for status in statuses[:8]],
         "tool_names": [sanitize_text(tool_name, max_chars=80) for tool_name in tool_names[:8]],
+        "recovery_trace": trace_pack_recovery_summary(pack),
     }
 
 

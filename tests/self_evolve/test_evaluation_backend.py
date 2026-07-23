@@ -1593,6 +1593,220 @@ def test_candidate_confidence_counts_multi_member_single_case_replay_metadata() 
     assert decision.candidate_replay_count == 12
 
 
+def test_candidate_confidence_accepts_stable_native_negative_baseline() -> None:
+    stable_failure = {
+        "outcome": "task_failure",
+        "failure_event": {
+            "owner": "task",
+            "stage": "task_rollout",
+            "source_kinds": ["native"],
+        },
+        "metrics": {
+            "repetition_count": 2,
+            "successful_repetition_count": 0,
+            "failed_repetition_count": 2,
+            "blocked_repetition_count": 0,
+            "not_run_repetition_count": 0,
+            "repetition_failures": [
+                {"type": "TimeoutExpired", "reason": "replay timed out"},
+                {"type": "TimeoutExpired", "reason": "replay timed out"},
+            ],
+        },
+    }
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": stable_failure,
+                        "candidate": {
+                            "metrics": {
+                                "repetition_count": 3,
+                                "successful_repetition_count": 3,
+                            }
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "original_case_count": 1,
+                "paired_replay": True,
+            },
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=(),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=None,
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.verification_mode == "single_case_replay"
+    assert decision.baseline_replay_count == 2
+    assert decision.candidate_replay_count == 3
+
+
+def test_candidate_confidence_accepts_stable_candidate_owned_task_rollout_control() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": {
+                            "outcome": "candidate_failure",
+                            "failure_event": {
+                                "owner": "candidate",
+                                "stage": "task_rollout",
+                                "source_kinds": ["native"],
+                            },
+                            "metrics": {
+                                "repetition_count": 2,
+                                "successful_repetition_count": 0,
+                                "failed_repetition_count": 2,
+                                "blocked_repetition_count": 0,
+                                "not_run_repetition_count": 0,
+                                "repetition_failures": [
+                                    {"type": "TimeoutExpired", "reason": "timed out"},
+                                    {"type": "TimeoutExpired", "reason": "timed out"},
+                                ],
+                            },
+                        },
+                        "candidate": {
+                            "metrics": {
+                                "repetition_count": 3,
+                                "successful_repetition_count": 3,
+                            }
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"original_case_count": 1, "paired_replay": True},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=(),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=None,
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.baseline_replay_count == 2
+    assert decision.candidate_replay_count == 3
+
+
+@pytest.mark.parametrize(
+    ("outcome", "owner", "stage", "reasons"),
+    [
+        (
+            "task_failure",
+            "infrastructure",
+            "task_rollout",
+            ("same failure", "same failure"),
+        ),
+        (
+            "task_failure",
+            "task",
+            "task_rollout",
+            ("first failure", "different failure"),
+        ),
+        (
+            "candidate_failure",
+            "candidate",
+            "capability_preflight",
+            ("same failure", "same failure"),
+        ),
+    ],
+)
+def test_candidate_confidence_rejects_nonconclusive_negative_baseline(
+    outcome: str,
+    owner: str,
+    stage: str,
+    reasons: tuple[str, str],
+) -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-1",
+                input="demo",
+                metadata={
+                    "replay": {
+                        "baseline": {
+                            "outcome": outcome,
+                            "failure_event": {
+                                "owner": owner,
+                                "stage": stage,
+                                "source_kinds": ["native"],
+                            },
+                            "metrics": {
+                                "repetition_count": 2,
+                                "successful_repetition_count": 0,
+                                "failed_repetition_count": 2,
+                                "repetition_failures": [
+                                    {"type": "Failure", "reason": reasons[0]},
+                                    {"type": "Failure", "reason": reasons[1]},
+                                ],
+                            },
+                        },
+                        "candidate": {
+                            "metrics": {
+                                "repetition_count": 3,
+                                "successful_repetition_count": 3,
+                            }
+                        },
+                    }
+                },
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"original_case_count": 1, "paired_replay": True},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            held_out_case_ids=(),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=None,
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "limited"
+    assert decision.baseline_replay_count == 0
+
+
 def test_candidate_confidence_accepts_trajectory_set_validation_with_small_held_out_pool() -> None:
     trajectory_set_dataset = SelfEvolveDataset(
         cases=(

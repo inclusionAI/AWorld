@@ -160,6 +160,14 @@ from aworld.self_evolve.replay import (
     _is_replayable_user_task_case,
     _select_replay_case,
 )
+from aworld.self_evolve.recovery_trace import (
+    RECOVERY_TRACE_SCHEMA_VERSION,
+    replay_recovery_trace,
+    update_constraint_recovery_trace,
+    validate_public_constraint_recovery_trace,
+    validate_public_recovery_trace,
+)
+from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
     RepairConformanceResult,
@@ -221,7 +229,7 @@ from aworld.skills.release import normalize_verified_skill_release
 _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS = 6
 _MAX_CONSECUTIVE_DUPLICATE_POPULATION_STALLS = 1
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
-_VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v1"
+_VERIFICATION_CONTRACT_VERSION = "aworld.self_evolve.verification_contract.v2"
 
 
 @dataclass(frozen=True)
@@ -530,18 +538,18 @@ def _configured_budget_usage(
     cost_ceiling: Decimal | None,
     wall_ceiling: Decimal | None,
 ) -> BudgetUsage | None:
-    """Resolve only unbounded unknown dimensions to accounting-neutral zero."""
+    """Resolve a complete configured estimate without confusing zero with unknown."""
 
     if (
         (
             token_ceiling is not None
-            and (tokens is None or tokens <= 0)
+            and tokens is None
         )
         or (cost_usd is None and cost_ceiling is not None)
         or (wall_seconds is None and wall_ceiling is not None)
     ):
         return None
-    return BudgetUsage(
+    usage = BudgetUsage(
         tokens=0 if tokens is None else tokens,
         cost_usd=(Decimal("0") if cost_usd is None else Decimal(str(cost_usd))),
         wall_seconds=(
@@ -550,6 +558,10 @@ def _configured_budget_usage(
             else Decimal(str(wall_seconds))
         ),
     )
+    # A wholly zero configured estimate still requires an explicit backend
+    # proof. A mixed estimate (for example local conformance: zero model
+    # tokens/cost but bounded wall time) is complete and safe to reserve.
+    return None if usage == BudgetUsage() else usage
 
 
 def _candidate_attempt_placeholder(iteration: int, slot: int) -> str:
@@ -1358,6 +1370,7 @@ def _terminal_cause(
                 failure.get("code")
                 or "candidate_generation_infrastructure_error"
             ),
+            "retryable": _retryable_candidate_generation_failure(failure),
         }
         error_type = failure.get("error_type")
         if isinstance(error_type, str) and error_type:
@@ -1375,6 +1388,7 @@ def _terminal_cause(
             "failure_class": "infrastructure",
             "stage": gate.gate_name,
             "code": str(details.get("code") or "infrastructure_error"),
+            "retryable": _retryable_infrastructure_details(details),
         }
         error_type = details.get("type")
         if isinstance(error_type, str) and error_type:
@@ -1384,6 +1398,23 @@ def _terminal_cause(
         "failure_class": "infrastructure",
         "stage": "self_evolve",
         "code": "infrastructure_error",
+        "retryable": False,
+    }
+
+
+def _retryable_infrastructure_details(details: Mapping[str, object]) -> bool:
+    if details.get("retryable") is True or details.get("repairable") is True:
+        return True
+    error_type = str(
+        details.get("error_type") or details.get("type") or ""
+    ).strip().casefold()
+    return error_type in {
+        "apiconnectionerror",
+        "apitimeouterror",
+        "connectionerror",
+        "llmresponseerror",
+        "ratelimiterror",
+        "timeouterror",
     }
 
 
@@ -1711,6 +1742,7 @@ class SelfEvolveRunner:
         target_selection_report: TargetSelectionReport | None = None,
         target_provenance: TargetProvenance | None = None,
         target_selection_decision: TargetSelectionDecision | None = None,
+        campaign_prior_run_ids: tuple[str, ...] | None = None,
     ) -> SelfEvolveRunnerResult:
         failure_cleanup = _RunFailureCleanup()
         try:
@@ -1723,6 +1755,7 @@ class SelfEvolveRunner:
                 target_selection_report=target_selection_report,
                 target_provenance=target_provenance,
                 target_selection_decision=target_selection_decision,
+                campaign_prior_run_ids=campaign_prior_run_ids,
                 failure_cleanup=failure_cleanup,
             )
         except BaseException:
@@ -1740,6 +1773,7 @@ class SelfEvolveRunner:
         target_selection_report: TargetSelectionReport | None = None,
         target_provenance: TargetProvenance | None = None,
         target_selection_decision: TargetSelectionDecision | None = None,
+        campaign_prior_run_ids: tuple[str, ...] | None = None,
         failure_cleanup: _RunFailureCleanup,
     ) -> SelfEvolveRunnerResult:
         self.execution_telemetry = SelfEvolveExecutionTelemetry()
@@ -2033,6 +2067,7 @@ class SelfEvolveRunner:
             self.store,
             target.identity,
             current_run_id=run_id,
+            allowed_run_ids=campaign_prior_run_ids,
         )
         generation_lesson_records = extract_lesson_records(
             prior_feedback,
@@ -2062,6 +2097,7 @@ class SelfEvolveRunner:
             target.identity,
             current_run_id=run_id,
             candidate_ids=(rejected_candidate_ids | accepted_candidate_ids),
+            allowed_run_ids=campaign_prior_run_ids,
         )
         current_run_candidate_id_by_package: dict[str, str] = {}
         current_run_package_fingerprint_by_candidate_id: dict[str, str] = {}
@@ -2071,6 +2107,7 @@ class SelfEvolveRunner:
                 self.store,
                 target.identity,
                 current_run_id=run_id,
+                allowed_run_ids=campaign_prior_run_ids,
             )
         )
         replay_preflight = self.replay_adaptation_compiler.preflight(
@@ -4369,8 +4406,30 @@ class SelfEvolveRunner:
                     if artifact_dir.is_relative_to(self.store.workspace_root)
                     else artifact_dir.name
                 )
+                error_reason = sanitize_text(str(exc), max_chars=512)
+                raw_error_code = getattr(exc, "code", None)
+                error_code = (
+                    raw_error_code
+                    if isinstance(raw_error_code, str) and raw_error_code
+                    else "repair_probe_execution_failed"
+                )
+                raw_error_details = getattr(exc, "details", None)
+                typed_error_details = {
+                    key: value
+                    for key, value in (
+                        dict(raw_error_details).items()
+                        if isinstance(raw_error_details, Mapping)
+                        else ()
+                    )
+                    if key
+                    in {
+                        "schema_field_constraints",
+                        "schema_field_violations",
+                        "schema_field_violation_count",
+                    }
+                }
                 failure_event = ReplayFailureEvent(
-                    code="repair_probe_execution_failed",
+                    code=error_code,
                     owner=FailureOwner.CANDIDATE,
                     stage=FailureStage.CAPABILITY_PREFLIGHT,
                     scope=FailureScope.CANDIDATE,
@@ -4380,11 +4439,16 @@ class SelfEvolveRunner:
                     diagnostics={
                         "affected_case_ids": list(group.case_ids)[:100],
                         "error_type": type(exc).__name__,
+                        "reason": error_reason,
+                        **typed_error_details,
                     },
                     artifact_refs=(artifact_ref,),
                     capability_id=capability.capability_id,
                     requirement_id=group.requirement_id,
-                    contract_fingerprint=fingerprint,
+                    contract_fingerprint=(
+                        _schema_field_contract_fingerprint(typed_error_details)
+                        or fingerprint
+                    ),
                 )
                 group_observations = tuple(
                     ReplayFailureObservation(
@@ -4408,11 +4472,13 @@ class SelfEvolveRunner:
                     {
                         "fingerprint": fingerprint,
                         "passed": False,
-                        "code": "repair_probe_execution_failed",
+                        "code": error_code,
                         "requirement_id": group.requirement_id,
                         "case_ids": list(group.case_ids),
                         "artifact_ref": artifact_ref,
                         "error_type": type(exc).__name__,
+                        "reason": error_reason,
+                        **typed_error_details,
                         "failure_event": failure_aggregate.to_dict(),
                     }
                 )
@@ -4465,6 +4531,7 @@ class SelfEvolveRunner:
                             for result in failed_groups
                             if isinstance(result.get("failure_event"), Mapping)
                         ],
+                        **_failed_probe_typed_feedback(failed_groups),
                     },
                 ),
                 contract=contract,
@@ -5608,6 +5675,9 @@ class SelfEvolveRunner:
     ) -> tuple[CandidateReplayResult | None, SelfEvolveDataset | None, GateResult | None]:
         if not self.replay_enabled or selected_candidate.target.target_type != "skill":
             return None, None, None
+        candidate_requires_intervention_exposure = (
+            _candidate_requires_task_plane_intervention(selected_candidate)
+        )
         if self.candidate_replay_backend is None:
             if apply_policy != "auto_verified":
                 return None, None, None
@@ -5706,6 +5776,9 @@ class SelfEvolveRunner:
                     replay_result,
                     dataset=dataset,
                     normalized=normalized,
+                    candidate_requires_intervention_exposure=(
+                        candidate_requires_intervention_exposure
+                    ),
                 ),
             }
             if not comparable:
@@ -5904,6 +5977,9 @@ class SelfEvolveRunner:
                         replay_result,
                         dataset=dataset,
                         normalized=normalized,
+                        candidate_requires_intervention_exposure=(
+                            candidate_requires_intervention_exposure
+                        ),
                     ),
                 ),
             )
@@ -5935,6 +6011,9 @@ class SelfEvolveRunner:
                     replay_result,
                     dataset=dataset,
                     normalized=normalized,
+                    candidate_requires_intervention_exposure=(
+                        candidate_requires_intervention_exposure
+                    ),
                 ),
             ),
         )
@@ -6287,6 +6366,10 @@ def optimize_from_cli_request(
     runtime_skill_activator: Callable[[CandidateVariant], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
     concurrency_policy: SelfEvolveConcurrencyPolicy | None = None,
+    campaign_id: str | None = None,
+    campaign_cycle: int | None = None,
+    campaign_prior_run_ids: Iterable[str] | None = None,
+    campaign_expected_target: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     effective_concurrency_policy = concurrency_policy or SelfEvolveConcurrencyPolicy()
     typed_new_skill_policy = InferredNewSkillPolicy(inferred_new_skill_policy)
@@ -6399,6 +6482,8 @@ def optimize_from_cli_request(
                 from_trajectory_set,
                 batch_config,
                 iterations,
+                campaign_id=campaign_id,
+                campaign_cycle=campaign_cycle,
             )
             return _persist_no_target_cli_result(
                 store=store,
@@ -6427,6 +6512,8 @@ def optimize_from_cli_request(
             from_trajectory_set,
             batch_config,
             iterations,
+            campaign_id=campaign_id,
+            campaign_cycle=campaign_cycle,
         )
         if target_selection_report.selected_target is None:
             return _persist_no_target_cli_result(
@@ -6434,6 +6521,22 @@ def optimize_from_cli_request(
                 run_id=run_id,
                 dataset=built_dataset,
                 target_selection_report=target_selection_report,
+                apply_policy=apply_policy,
+            )
+        if not _campaign_target_matches(
+            target_selection_report.selected_target,
+            campaign_expected_target,
+        ):
+            target_selection_decision = _blocked_inferred_target_selection_decision(
+                target_selection_decision,
+                reason="campaign target identity changed across improvement cycles",
+                signal="campaign_target_identity_changed",
+            )
+            return _persist_no_target_cli_result(
+                store=store,
+                run_id=run_id,
+                dataset=built_dataset,
+                target_selection_report=target_selection_decision.report,
                 apply_policy=apply_policy,
             )
         if (
@@ -6533,6 +6636,8 @@ def optimize_from_cli_request(
             from_trajectory_set,
             batch_config,
             iterations,
+            campaign_id=campaign_id,
+            campaign_cycle=campaign_cycle,
         )
         target_type, _, _target_id = target.partition(":")
         target_adapter = _target_from_cli_ref(
@@ -6556,6 +6661,12 @@ def optimize_from_cli_request(
         target_selection_report = explicit_decision.report
         target_provenance = explicit_decision.provenance
         target_selection_decision = explicit_decision
+
+    if not _campaign_target_matches(
+        target_adapter.identity,
+        campaign_expected_target,
+    ):
+        raise ValueError("campaign target identity changed across improvement cycles")
 
     if include_prior_runs:
         built_dataset = _include_prior_run_cases(
@@ -6716,6 +6827,7 @@ def optimize_from_cli_request(
                 "target_selection_report": target_selection_report,
                 "target_provenance": target_provenance,
                 "target_selection_decision": target_selection_decision,
+                "campaign_prior_run_ids": tuple(campaign_prior_run_ids or ()),
             },
         ),
         task_id=f"{run_id}-self-evolve",
@@ -7991,15 +8103,16 @@ def _load_prior_rejected_feedback(
     *,
     current_run_id: str,
     limit: int = 12,
+    allowed_run_ids: Iterable[str] | None = None,
 ) -> tuple[EvaluationSummary, ...]:
     root = store.artifact_root
     if not root.exists():
         return ()
     feedback: list[EvaluationSummary] = []
-    report_paths = sorted(
-        root.glob("*/report.json"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
+    report_paths = _prior_report_paths(
+        store,
+        current_run_id=current_run_id,
+        allowed_run_ids=allowed_run_ids,
     )
     for report_path in report_paths:
         if report_path.parent.name == current_run_id:
@@ -8008,7 +8121,11 @@ def _load_prior_rejected_feedback(
             report = _load_json_mapping(report_path)
         except Exception:
             continue
-        if not _report_matches_target(report, target):
+        if not _report_matches_target(
+            report,
+            target,
+            require_path=allowed_run_ids is None,
+        ):
             continue
         for item in _feedback_from_report(report, report_path=report_path):
             feedback.append(item)
@@ -8023,6 +8140,7 @@ def _load_prior_candidate_package_index(
     *,
     current_run_id: str,
     candidate_ids: set[str],
+    allowed_run_ids: Iterable[str] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Index canonical prior packages without mutating any prior artifact."""
 
@@ -8030,14 +8148,22 @@ def _load_prior_candidate_package_index(
     package_by_candidate: dict[str, str] = {}
     if not store.artifact_root.exists() or not candidate_ids:
         return package_to_candidate, package_by_candidate
-    for report_path in sorted(store.artifact_root.glob("*/report.json")):
+    for report_path in _prior_report_paths(
+        store,
+        current_run_id=current_run_id,
+        allowed_run_ids=allowed_run_ids,
+    ):
         if report_path.parent.name == current_run_id:
             continue
         try:
             report = _load_json_mapping(report_path)
         except Exception:
             continue
-        if not _report_matches_target(report, target):
+        if not _report_matches_target(
+            report,
+            target,
+            require_path=allowed_run_ids is None,
+        ):
             continue
         candidate_root = report_path.parent / "candidates"
         for candidate_id in sorted(candidate_ids):
@@ -8048,7 +8174,16 @@ def _load_prior_candidate_package_index(
                 candidate = _load_candidate_variant(candidate_path)
             except Exception:
                 continue
-            if candidate.target != target:
+            if (
+                candidate.target.target_type != target.target_type
+                or candidate.target.target_id != target.target_id
+                or (
+                    allowed_run_ids is None
+                    and candidate.target.path is not None
+                    and target.path is not None
+                    and str(candidate.target.path) != str(target.path)
+                )
+            ):
                 continue
             fingerprint = candidate_package_fingerprint(candidate)
             package_to_candidate.setdefault(fingerprint, candidate_id)
@@ -8062,15 +8197,16 @@ def _load_prior_rejected_semantic_lesson_fingerprints(
     *,
     current_run_id: str,
     limit: int = 64,
+    allowed_run_ids: Iterable[str] | None = None,
 ) -> set[_SemanticLessonFingerprint]:
     root = store.artifact_root
     if not root.exists():
         return set()
     fingerprints: set[_SemanticLessonFingerprint] = set()
-    report_paths = sorted(
-        root.glob("*/report.json"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
+    report_paths = _prior_report_paths(
+        store,
+        current_run_id=current_run_id,
+        allowed_run_ids=allowed_run_ids,
     )
     for report_path in report_paths:
         if report_path.parent.name == current_run_id:
@@ -8079,7 +8215,11 @@ def _load_prior_rejected_semantic_lesson_fingerprints(
             report = _load_json_mapping(report_path)
         except Exception:
             continue
-        if not _report_matches_target(report, target):
+        if not _report_matches_target(
+            report,
+            target,
+            require_path=allowed_run_ids is None,
+        ):
             continue
         rejected_ids = _rejected_candidate_ids_from_report(report)
         if not rejected_ids and str(report.get("status")) != "rejected":
@@ -8600,6 +8740,8 @@ def _prior_run_metric_summary(value: Any) -> Mapping[str, Any]:
 def _report_matches_target(
     report: Mapping[str, Any],
     target: SelfEvolveTargetRef,
+    *,
+    require_path: bool = True,
 ) -> bool:
     payload = report.get("target")
     if not isinstance(payload, Mapping):
@@ -8608,11 +8750,50 @@ def _report_matches_target(
         payload.get("target_type") == target.target_type
         and payload.get("target_id") == target.target_id
         and (
+            not require_path
+            or
             target.path is None
             or payload.get("path") is None
             or str(payload.get("path")) == str(target.path)
         )
     )
+
+
+def _campaign_target_matches(
+    target: SelfEvolveTargetRef,
+    expected: Mapping[str, Any] | None,
+) -> bool:
+    if expected is None:
+        return True
+    return (
+        expected.get("target_type") == target.target_type
+        and expected.get("target_id") == target.target_id
+    )
+
+
+def _prior_report_paths(
+    store: FilesystemSelfEvolveStore,
+    *,
+    current_run_id: str,
+    allowed_run_ids: Iterable[str] | None,
+) -> list[Path]:
+    if allowed_run_ids is None:
+        return sorted(
+            store.artifact_root.glob("*/report.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    paths: list[Path] = []
+    for run_id in reversed(tuple(dict.fromkeys(str(item) for item in allowed_run_ids))):
+        if run_id == current_run_id:
+            continue
+        try:
+            path = store.run_path(run_id) / "report.json"
+        except ValueError:
+            continue
+        if path.is_file() and not path.is_symlink():
+            paths.append(path)
+    return paths
 
 
 def _feedback_from_report(
@@ -9345,6 +9526,7 @@ def _replay_gate_details(
     *,
     dataset: SelfEvolveDataset,
     normalized: NormalizedReplayMembers | None = None,
+    candidate_requires_intervention_exposure: bool = False,
 ) -> dict[str, object]:
     normalized = normalized or normalize_replay_members(
         dataset=dataset,
@@ -9401,6 +9583,42 @@ def _replay_gate_details(
         details["causal_failure_events"] = [
             event.to_dict() for event in causal_failures
         ]
+    recovery_trace = replay_recovery_trace(normalized.members)
+    if recovery_trace is not None:
+        intervention_observed = (
+            not candidate_requires_intervention_exposure
+            or _candidate_task_plane_intervention_observed(normalized)
+        )
+        recovery_trace["candidate_intervention_required"] = (
+            candidate_requires_intervention_exposure
+        )
+        recovery_trace["candidate_intervention_observed"] = intervention_observed
+        if not intervention_observed:
+            guidance = recovery_trace.get("guidance")
+            recovery_trace["guidance"] = list(guidance or []) + [
+                "repair_target_selection_or_replay_context_before_candidate"
+            ]
+        details["recovery_trace"] = recovery_trace
+        recovery_failure = (
+            _candidate_recovery_failure_event(recovery_trace)
+            if intervention_observed
+            else _candidate_intervention_unobserved_failure_event(recovery_trace)
+        )
+        if recovery_failure is not None:
+            raw_events = details.get("causal_failure_events")
+            event_payloads = (
+                list(raw_events) if isinstance(raw_events, list) else []
+            )
+            event_payloads.append(recovery_failure.to_dict())
+            details["causal_failure_events"] = event_payloads
+            if recovery_failure.owner is FailureOwner.CANDIDATE:
+                details["failure_class"] = "candidate"
+                details["repairable"] = True
+                details["failure_stage"] = "task_rollout"
+            else:
+                details["failure_class"] = "framework"
+                details["repairable"] = False
+                details["failure_stage"] = "adaptation"
     if normalized.members:
         details["failed_members"] = [
             {
@@ -9428,6 +9646,113 @@ def _replay_gate_details(
         details["repairable"] = True
         details["failure_stage"] = "replay_capability"
     return details
+
+
+def _candidate_recovery_failure_event(
+    recovery_trace: Mapping[str, object],
+) -> ReplayFailureEvent | None:
+    candidate_repetitions = recovery_trace.get("candidate_repetition_count")
+    candidate_success_rate = recovery_trace.get("candidate_success_rate")
+    if (
+        isinstance(candidate_repetitions, bool)
+        or not isinstance(candidate_repetitions, (int, float))
+        or int(candidate_repetitions) <= 0
+        or isinstance(candidate_success_rate, bool)
+        or not isinstance(candidate_success_rate, (int, float))
+        or float(candidate_success_rate) >= 1.0
+    ):
+        return None
+    return ReplayFailureEvent(
+        code="candidate_recovery_incomplete",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="recovery_trace",
+        summary=(
+            "candidate did not produce stable recovery across all executed "
+            "trajectory members and repetitions"
+        ),
+        diagnostics={
+            "member_count": recovery_trace.get("member_count"),
+            "candidate_repetition_count": candidate_repetitions,
+            "candidate_success_rate": candidate_success_rate,
+            "recovered_member_count": recovery_trace.get(
+                "recovered_member_count"
+            ),
+            "stable_recovery_member_count": recovery_trace.get(
+                "stable_recovery_member_count"
+            ),
+        },
+    )
+
+
+def _candidate_intervention_unobserved_failure_event(
+    recovery_trace: Mapping[str, object],
+) -> ReplayFailureEvent:
+    return ReplayFailureEvent(
+        code="candidate_intervention_unobserved",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.ADAPTATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=False,
+        category="recovery_trace",
+        summary=(
+            "task rollout did not exercise the candidate-owned replay intervention; "
+            "repair target selection or replay context before generating another candidate"
+        ),
+        diagnostics={
+            "member_count": recovery_trace.get("member_count"),
+            "candidate_repetition_count": recovery_trace.get(
+                "candidate_repetition_count"
+            ),
+            "candidate_intervention_required": True,
+            "candidate_intervention_observed": False,
+        },
+    )
+
+
+def _candidate_requires_task_plane_intervention(
+    candidate: CandidateVariant,
+) -> bool:
+    changed_paths = tuple(
+        item.path
+        for item in candidate.files
+        if item.operation in {"upsert", "delete"}
+    )
+    return bool(changed_paths) and all(
+        path == "replay/capability.json" or path.startswith("replay/")
+        for path in changed_paths
+    )
+
+
+def _candidate_task_plane_intervention_observed(
+    normalized: NormalizedReplayMembers,
+) -> bool:
+    for member in normalized.members:
+        variant = member.candidate
+        results = variant.repetition_results or (variant,)
+        for result in results:
+            count = result.metrics.get("replay_service_protocol_trace_count")
+            if isinstance(count, (int, float)) and not isinstance(count, bool):
+                if count > 0:
+                    return True
+            failure = result.failure
+            diagnostics = (
+                failure.diagnostics
+                if isinstance(failure, ReplayFailureEvent)
+                else failure.get("diagnostics")
+                if isinstance(failure, Mapping)
+                else None
+            )
+            traces = (
+                diagnostics.get("replay_service_protocol_traces")
+                if isinstance(diagnostics, Mapping)
+                else None
+            )
+            if isinstance(traces, list) and traces:
+                return True
+    return False
 
 
 def _candidate_replay_has_repairable_capability_failure(
@@ -9608,6 +9933,64 @@ def _candidate_repair_conformance_contracts(
         and contract.focus_candidate_id
         and contract.required_branch_paths
     }
+
+
+def _failed_probe_typed_feedback(
+    failed_groups: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    """Merge payload-free exception diagnostics across every failed probe shape."""
+
+    constraints: dict[str, dict[str, object]] = {}
+    violations: list[dict[str, object]] = []
+    diagnostics: list[dict[str, object]] = []
+    violation_count = 0
+    for result in failed_groups:
+        diagnostic: dict[str, object] = {
+            "code": str(result.get("code") or "repair_probe_execution_failed"),
+            "error_type": str(result.get("error_type") or "Exception"),
+            "reason": str(result.get("reason") or "candidate probe failed"),
+        }
+        raw_constraints = result.get("schema_field_constraints")
+        if isinstance(raw_constraints, (list, tuple)):
+            projected: list[dict[str, object]] = []
+            for item in raw_constraints:
+                if not isinstance(item, Mapping):
+                    continue
+                value = dict(item)
+                identity = json.dumps(
+                    value,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                    default=str,
+                )
+                constraints[identity] = value
+                projected.append(value)
+            if projected:
+                diagnostic["schema_field_constraints"] = projected
+        raw_violations = result.get("schema_field_violations")
+        if isinstance(raw_violations, (list, tuple)):
+            projected_violations = [
+                dict(item) for item in raw_violations if isinstance(item, Mapping)
+            ][:100]
+            violations.extend(projected_violations)
+            if projected_violations:
+                diagnostic["schema_field_violations"] = projected_violations
+        raw_count = result.get("schema_field_violation_count")
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+            violation_count += max(0, raw_count)
+        diagnostics.append(diagnostic)
+    feedback: dict[str, object] = {"diagnostics": diagnostics[:32]}
+    if constraints:
+        feedback["schema_field_constraints"] = [
+            constraints[key] for key in sorted(constraints)
+        ]
+    if violations:
+        feedback["schema_field_violations"] = violations[:100]
+        feedback["schema_field_violation_count"] = (
+            violation_count if violation_count else len(violations)
+        )
+    return feedback
 
 
 def _repair_conformance_gate(
@@ -10080,9 +10463,43 @@ def _merge_validation_feedback(
     existing: Iterable[EvaluationSummary],
     new: Iterable[EvaluationSummary],
 ) -> tuple[EvaluationSummary, ...]:
+    existing_items = tuple(existing)
+    previous_constraint_trace = max(
+        (
+            trace
+            for item in existing_items
+            if (
+                trace := validate_public_constraint_recovery_trace(
+                    item.metrics.get("constraint_recovery_trace")
+                )
+            )
+            is not None
+        ),
+        key=lambda trace: int(trace.get("attempt_count") or 0),
+        default=None,
+    )
+    enriched_new: list[EvaluationSummary] = []
+    for item in new:
+        violated_ids = _feedback_violated_schema_constraint_ids(item)
+        contract_ids = _feedback_contract_schema_constraint_ids(item)
+        advanced_trace = update_constraint_recovery_trace(
+            previous_constraint_trace,
+            violated_constraint_ids=violated_ids,
+            contract_constraint_ids=contract_ids,
+        )
+        if advanced_trace is not None:
+            item = replace(
+                item,
+                metrics={
+                    **dict(item.metrics),
+                    "constraint_recovery_trace": advanced_trace,
+                },
+            )
+            previous_constraint_trace = advanced_trace
+        enriched_new.append(item)
     merged: list[EvaluationSummary] = []
     seen: set[str] = set()
-    for item in (*tuple(existing), *tuple(new)):
+    for item in (*existing_items, *tuple(enriched_new)):
         fingerprint = hashlib.sha256(
             json.dumps(
                 to_json_dict(item),
@@ -10096,13 +10513,19 @@ def _merge_validation_feedback(
         seen.add(fingerprint)
         merged.append(item)
     best_family_index: dict[str, int] = {}
-    best_family_progress: dict[str, int] = {}
+    best_family_progress: dict[str, tuple[int, ...]] = {}
     for index, item in enumerate(merged):
         family = _validation_feedback_failure_family(item)
         if family is not None:
             progress = _feedback_interaction_progress(item)
-            if progress >= best_family_progress.get(family, -1):
-                best_family_progress[family] = progress
+            recovery_frontier = _feedback_recovery_frontier(item)
+            constraint_frontier = _feedback_constraint_recovery_frontier(item)
+            frontier = (*recovery_frontier, *constraint_frontier, progress)
+            if frontier >= best_family_progress.get(
+                family,
+                tuple(-1 for _ in frontier),
+            ):
+                best_family_progress[family] = frontier
                 best_family_index[family] = index
     compacted = [
         item
@@ -10120,6 +10543,141 @@ def _feedback_interaction_progress(feedback: EvaluationSummary) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
     return max(0, int(value))
+
+
+def _feedback_recovery_frontier(
+    feedback: EvaluationSummary,
+) -> tuple[int, ...]:
+    trace = validate_public_recovery_trace(
+        feedback.metrics.get("recovery_trace")
+    )
+    return (
+        _recovery_trace_frontier(trace)
+        if trace is not None
+        else (0, 0, 0, 0, 0, 0, 0, 0)
+    )
+
+
+def _feedback_constraint_recovery_frontier(
+    feedback: EvaluationSummary,
+) -> tuple[int, ...]:
+    trace = validate_public_constraint_recovery_trace(
+        feedback.metrics.get("constraint_recovery_trace")
+    )
+    if trace is None:
+        return (0, 0, 0, 0)
+    return (
+        int(trace.get("recovered_constraint_count") or 0),
+        -int(trace.get("regressed_constraint_count") or 0),
+        -int(trace.get("active_violation_count") or 0),
+        int(trace.get("attempt_count") or 0),
+    )
+
+
+def _feedback_violated_schema_constraint_ids(
+    feedback: EvaluationSummary,
+) -> tuple[str, ...]:
+    raw = feedback.metrics.get("violated_schema_constraint_ids")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(
+        item
+        for item in raw[:100]
+        if isinstance(item, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", item)
+    )
+
+
+def _feedback_contract_schema_constraint_ids(
+    feedback: EvaluationSummary,
+) -> tuple[str, ...]:
+    identities: set[str] = set(_feedback_violated_schema_constraint_ids(feedback))
+    pending: list[object] = [
+        feedback.metrics.get("candidate_validation_diagnostics")
+    ]
+    visited = 0
+    while pending and visited < 512 and len(identities) < 100:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            raw_constraints = current.get("schema_field_constraints")
+            if isinstance(raw_constraints, (list, tuple)):
+                for raw_constraint in raw_constraints[:100]:
+                    if not isinstance(raw_constraint, Mapping):
+                        continue
+                    try:
+                        constraint = SchemaFieldRepairConstraint.from_dict(
+                            raw_constraint
+                        )
+                    except ValueError:
+                        continue
+                    identities.add(f"sha256:{constraint.identity_digest}")
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+    return tuple(sorted(identities))
+
+
+def _recovery_trace_frontier(
+    trace: Mapping[str, object],
+) -> tuple[int, ...]:
+    def integer(key: str) -> int:
+        value = trace.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value)
+        return 0
+
+    success_rate = trace.get("candidate_success_rate")
+    success_millis = (
+        int(float(success_rate) * 1_000)
+        if isinstance(success_rate, (int, float))
+        and not isinstance(success_rate, bool)
+        else 0
+    )
+    loop_free_members = 0
+    switched_members = 0
+    repeated_action_quality = 0
+    failed_progress = 0
+    members = trace.get("members")
+    if isinstance(members, list):
+        for member in members[:64]:
+            if not isinstance(member, Mapping):
+                continue
+            if member.get("failure_loop_detected") is not True:
+                loop_free_members += 1
+            failed_path = member.get("failed_path")
+            if isinstance(failed_path, Mapping):
+                switches = failed_path.get("strategy_switch_count_max")
+                if (
+                    isinstance(switches, (int, float))
+                    and not isinstance(switches, bool)
+                    and switches > 0
+                ):
+                    switched_members += 1
+                repeated_rate = failed_path.get("repeated_action_rate_max")
+                if (
+                    isinstance(repeated_rate, (int, float))
+                    and not isinstance(repeated_rate, bool)
+                ):
+                    repeated_action_quality += int(
+                        (1.0 - min(1.0, max(0.0, float(repeated_rate))))
+                        * 1_000
+                    )
+            raw_progress = member.get("failed_progress_max")
+            if isinstance(raw_progress, (int, float)) and not isinstance(
+                raw_progress, bool
+            ):
+                failed_progress += min(100_000, max(0, int(raw_progress)))
+    return (
+        integer("recovered_member_count"),
+        success_millis,
+        integer("stable_recovery_member_count"),
+        -integer("regressed_member_count"),
+        loop_free_members,
+        switched_members,
+        repeated_action_quality,
+        -failed_progress,
+    )
 
 
 def _next_progress_repair_extension_family(
@@ -10247,11 +10805,17 @@ def _candidate_repair_diagnostic_view(
             if isinstance(event, Mapping) and event.get("owner") == "candidate"
         ]
         if candidate_causes:
-            return {
+            view: dict[str, object] = {
                 "failure_class": "candidate",
                 "repairable": all(event.get("repairable") is True for event in candidate_causes),
                 "causal_failure_events": candidate_causes,
             }
+            recovery_trace = validate_public_recovery_trace(
+                details.get("recovery_trace")
+            )
+            if recovery_trace is not None:
+                view["recovery_trace"] = recovery_trace
+            return view
         # Typed non-candidate causes must not be reclassified from prose stored
         # elsewhere in the gate details.
         return {"causal_failure_events": []}
@@ -10288,6 +10852,8 @@ def _typed_gate_feedback_metrics(
     repairable_values: list[bool] = []
     causal_events: dict[tuple[str, str], Mapping[str, object]] = {}
     candidate_causal_contexts: dict[str, Mapping[str, object]] = {}
+    recovery_traces: list[dict[str, object]] = []
+    violated_schema_constraint_ids: set[str] = set()
     for gate in failed_gate_items:
         details = gate.details
         gate_diagnostic: dict[str, object] = {
@@ -10298,8 +10864,27 @@ def _typed_gate_feedback_metrics(
         if not isinstance(details, Mapping):
             diagnostics.append(gate_diagnostic)
             continue
+        raw_schema_constraints = details.get("schema_field_constraints")
+        if isinstance(raw_schema_constraints, (list, tuple)):
+            for raw_constraint in raw_schema_constraints[:100]:
+                if not isinstance(raw_constraint, Mapping):
+                    continue
+                try:
+                    constraint = SchemaFieldRepairConstraint.from_dict(
+                        raw_constraint
+                    )
+                except ValueError:
+                    continue
+                violated_schema_constraint_ids.add(
+                    f"sha256:{constraint.identity_digest}"
+                )
         classification_view = _candidate_repair_diagnostic_view(details)
         classification_views.append(classification_view)
+        recovery_trace = validate_public_recovery_trace(
+            classification_view.get("recovery_trace")
+        )
+        if recovery_trace is not None and recovery_trace not in recovery_traces:
+            recovery_traces.append(recovery_trace)
         classification_fragments.append(
             _diagnostic_classification_text(classification_view)
         )
@@ -10370,6 +10955,11 @@ def _typed_gate_feedback_metrics(
                 if isinstance(item, Mapping)
             )
     result: dict[str, object] = {}
+    if recovery_traces:
+        result["recovery_trace"] = max(
+            recovery_traces,
+            key=_recovery_trace_frontier,
+        )
     if causal_events:
         ordered_events = [causal_events[key] for key in sorted(causal_events)]
         result["causal_failure_events"] = ordered_events
@@ -10415,6 +11005,10 @@ def _typed_gate_feedback_metrics(
                         )
                 candidate_diagnostics.append(diagnostic)
             result["candidate_validation_diagnostics"] = candidate_diagnostics
+            if violated_schema_constraint_ids:
+                result["violated_schema_constraint_ids"] = sorted(
+                    violated_schema_constraint_ids
+                )
         # Typed ownership is authoritative.  Do not add generic confidence or
         # free-form classification noise when a concrete causal event exists.
         return result
@@ -11866,6 +12460,7 @@ def _verification_contract_fingerprint(
 ) -> str:
     payload = {
         "schema_version": _VERIFICATION_CONTRACT_VERSION,
+        "recovery_trace_schema_version": RECOVERY_TRACE_SCHEMA_VERSION,
         "target_fingerprint": target_fingerprint,
         "replay_preflight_fingerprint": replay_preflight_fingerprint,
         "apply_policy": apply_policy,
@@ -13317,7 +13912,20 @@ def _cli_run_id(
     from_trajectory_set: str | None,
     batch_config: str | None,
     iterations: int | None,
+    *,
+    campaign_id: str | None = None,
+    campaign_cycle: int | None = None,
 ) -> str:
+    if campaign_id is not None or campaign_cycle is not None:
+        if (
+            not isinstance(campaign_id, str)
+            or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}", campaign_id)
+            or isinstance(campaign_cycle, bool)
+            or not isinstance(campaign_cycle, int)
+            or campaign_cycle <= 0
+        ):
+            raise ValueError("campaign run identity is invalid")
+        return f"{campaign_id}-cycle-{campaign_cycle:03d}"
     return (
         "cli-"
         f"{abs(hash((target_key, dataset, from_session, from_trajectory, from_trajectory_set, batch_config, iterations))) % 10**12:012d}"

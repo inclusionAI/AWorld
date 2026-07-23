@@ -40,6 +40,41 @@ aworld-cli optimize \
 
 `--judge-model-profile` is the name of a configured CLI model profile. It does not directly set a provider model id. Add `--target skill:<name>` when you want to bypass target inference.
 
+### Bounded self-improvement campaigns
+
+`--apply auto_verified` starts a bounded self-improvement Campaign. A Campaign
+keeps the original source, target-selection policy, verification contract,
+cumulative budget, and exact run lineage. Its default maximum is three
+cross-run cycles; override it with `--max-improvement-cycles N`. Set the value
+to `1` to preserve single-run behavior. `--iterations` remains the separate
+within-run candidate-population budget.
+
+When the caller does not configure a token ceiling, the CLI preserves the
+existing 500,000-token allowance for each permitted cycle and derives the
+Campaign hard ceiling as that allowance multiplied by the cycle cap. Each run
+is still capped at 500,000 tokens. An explicitly supplied
+`total_run_token_budget` or legacy `max_run_tokens` remains a Campaign-total
+ceiling and is reduced by every completed run's usage.
+
+After a rejected run, the framework continues only when typed causal evidence
+identifies either a newly progressed candidate-owned repair frontier or a
+retryable infrastructure failure. It stops on an unchanged frontier,
+non-retryable failure, policy/permission/evidence denial, or cumulative budget
+exhaustion. A framework-owned or shared blocker creates a validated Goal
+handoff instead of allowing a candidate to modify protected framework code.
+
+Resume an active or paused Campaign without replacing its source, target, or
+verification contract:
+
+```bash
+aworld-cli optimize --resume-campaign <campaign-id>
+```
+
+`--resume-campaign` is distinct from `--from-run --rerun-evaluator`: Campaign
+resume may start the next bounded improvement run, while evaluator resume only
+reuses already verified replay artifacts from one run. Complete,
+budget-limited, and exhausted Campaigns cannot be resumed.
+
 Drain pending post-run jobs:
 
 ```bash
@@ -69,6 +104,11 @@ Exactly one evaluation source is normally provided:
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.
 
 When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target. Low-confidence inference remains blocked when it would mutate an existing skill. A validated capability gap may instead create an isolated run-owned draft because draft evolution does not authorize mutation of an existing target.
+
+Skill matching ignores generic action tokens such as `search`, `read`, `open`, and
+`write` when they appear only in tool names. Such tokens do not prove that an
+installed skill owns the failed behavior; target selection requires a specific skill
+identity, a non-generic anchored alias, or a validated capability fingerprint.
 
 Target confidence and target provenance are independent gates. Confidence answers
 whether the trajectory evidence identifies the right capability; provenance answers
@@ -111,6 +151,13 @@ metadata, records external prerequisites, and creates one content-addressed work
 seed. Baseline and candidate repetitions each start from a separate copy of that same
 seed. This isolates skill changes from workspace mutations and host drift.
 
+Multi-record trajectory logs preserve their conversation boundary by session id.
+When a later record is a natural follow-up, replay receives a bounded chain of prior
+user/assistant turns, with early user-provided URLs and artifact anchors protected
+from eviction by long recent answers. A follow-up with no recoverable same-session
+context fails adaptation as `context_incomplete` rather than entering a misleading
+candidate replay.
+
 Stateful external resources require a deterministic registered adapter. An unbound
 live URL, local endpoint, stateful browser/tool name observed in the source trace,
 missing continuation context, secret-like file, or unknown external path fails the
@@ -148,6 +195,10 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
 - `--target`: explicit target reference. Phase 1 CLI runs support `skill:<name>` end to end. Automatic inference uses the same adapter registry and therefore considers skills only. Other target forms remain framework/SDK types until general CLI adapters are implemented.
 - `--iterations`: maximum candidate optimization iterations.
 - `--apply`: `proposal` or `auto_verified`. The default is `proposal`.
+- `--max-improvement-cycles`: hard cross-run Campaign cap for `auto_verified`;
+  defaults to `3`.
+- `--resume-campaign`: resume a persisted active or paused Campaign using its
+  immutable source/target/verification contract and remaining cumulative budget.
 - `--new-skill-policy`: `disabled`, `draft_only`, or `auto_verified`. The default is `auto_verified`; it affects inferred missing capabilities only.
 - `--judge-agent`: markdown judge agent path.
 - `--judge-agent-name`: configured custom judge agent id/name.
@@ -179,6 +230,14 @@ When `--apply auto_verified` is used and the caller does not override values, th
 Proposal runs default to one iteration. `auto_verified` uses the larger budget because each verified runtime repair can expose a new protocol frontier. The runner stops early when verification succeeds or progress stalls, and it may grant up to six bounded extension iterations only for newly observed repairable failure families. Duplicate candidates and repeated failure families do not consume unbounded retries.
 
 The CLI also enables framework replay for `auto_verified`. Skill candidates must have candidate replay evidence, evaluator evidence, deterministic or objective verification signals, passing gates, and a post-apply runtime-loader check before they can remain applied.
+
+For a single original trajectory, the default two baseline and three candidate repetitions
+form a strict sparse-data verification path. A stable native task/candidate failure across
+all baseline repetitions is a conclusive negative control when the candidate succeeds in
+all three repetitions and evaluation supplies a deterministic signal. Infrastructure,
+blocked, not-run, mixed, and inconsistent baseline outcomes remain inconclusive. A
+multi-trajectory set is validated by its distinct members; repetition counts never replace
+independent member coverage.
 
 ## Stage-Aware Budgets and Candidate Lifecycle
 
@@ -240,6 +299,10 @@ The command prints the stable artifact paths returned by the framework:
 ```text
 Optimize run submitted.
 Status: succeeded
+Campaign: campaign-...
+Campaign status: complete
+Campaign cycle: 2/3
+Self-improvement: complete (verified_run_succeeded)
 Report: .aworld/self_evolve/<run_id>/report.json
 Target selection: .aworld/self_evolve/<run_id>/target_selection.json
 Replay: .aworld/self_evolve/<run_id>/replay.json
@@ -252,6 +315,16 @@ For rejected runs, the summary includes rejected gate names. If no candidate was
 ```text
 Resume evaluator: aworld-cli optimize --from-run <run_id> --rerun-evaluator
 ```
+
+For Campaign runs, `Status` is the latest ordinary run result and
+`Campaign status` is the authoritative cross-run outcome. `active` means
+another bounded generation is eligible, `paused` requires an operator or Goal
+handoff, `budget_limited` means a cycle/resource/telemetry ceiling stopped the
+Campaign, `exhausted` means its typed repair frontier stopped progressing, and
+`complete` means the latest run passed the unchanged verified-apply gates. All
+three terminal states are non-resumable. Worker execution success is
+reported separately and never converts a rejected framework result into
+success.
 
 If replay repetitions are missing, rerun full optimize with a larger `--replay-timeout`; evaluator-only resume cannot add new replay rollouts.
 

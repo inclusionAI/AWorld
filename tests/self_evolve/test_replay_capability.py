@@ -417,12 +417,24 @@ def test_runtime_required_requirement_rejects_fixture_only_transport(
     with pytest.raises(
         ReplayCapabilityError,
         match="runtime_required requirement must use skill_runtime",
-    ):
+    ) as error:
         compile_and_freeze_capability(
             capability,
             _request(skill, requirement_status="runtime_required"),
             tmp_path / "compile",
         )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": (
+                "services[*@request.requirement.status:runtime_required].transport"
+            ),
+            "rule": "enum",
+            "expected": ["skill_runtime"],
+        }
+    ]
 
 
 @pytest.mark.replay_sandbox
@@ -526,12 +538,134 @@ def test_skill_runtime_with_recorded_responses_must_consume_response_index(
     with pytest.raises(
         ReplayCapabilityError,
         match="must consume AWORLD_REPLAY_RESPONSE_INDEX",
-    ):
+    ) as error:
         compile_and_freeze_capability(
             capability,
             _request(skill, recorded_value=_nested_recorded_fixture_value()),
             tmp_path / "compile",
         )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "runtime",
+            "field_path": (
+                "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+            ),
+            "rule": "enum",
+            "expected": ["json_sidecar_record_value_projector"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "read_environment_binding_as_path",
+                "bind_environment_path_to_json_file_reader",
+                "access_records_array",
+                "project_record_value_field_directly",
+            ],
+            "forbidden_operations": [
+                "coerce_environment_binding_to_numeric_index",
+                "hide_environment_read_behind_zero_arg_return_helper",
+                "substitute_raw_fixture_recursive_scan",
+            ],
+        }
+    ]
+    assert error.value.details["schema_field_violations"][0]["actual_type"] == (
+        "string"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "accepted"),
+    [
+        (
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "index_path = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "index = json.loads(Path(index_path).read_text())\n"
+            "for record in index.get('records', []):\n"
+            "    response = record.get('value')\n",
+            True,
+        ),
+        (
+            "import json, os\n"
+            "def load_index():\n"
+            "    index_path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "    with open(index_path, encoding='utf-8') as stream:\n"
+            "        return json.load(stream)\n"
+            "def project(index):\n"
+            "    for record in index['records']:\n"
+            "        yield record['value']\n",
+            True,
+        ),
+        (
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "def load_json(path):\n"
+            "    return json.loads(Path(path).read_text())\n"
+            "def project_sidecar(path):\n"
+            "    index = load_json(path)\n"
+            "    return [record.get('value') for record in index.get('records', [])]\n"
+            "def build_response():\n"
+            "    index_path = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "    return project_sidecar(index_path)\n",
+            True,
+        ),
+        (
+            "import json, os\n"
+            "index_text = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "index = json.loads(index_text)\n"
+            "with open('unrelated.json') as stream:\n"
+            "    unrelated = stream.read()\n"
+            "for record in index.get('records', []):\n"
+            "    response = record.get('value')\n",
+            False,
+        ),
+        (
+            "import json, os\n"
+            "def mention_binding():\n"
+            "    return os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "def read_unrelated():\n"
+            "    with open('unrelated.json') as stream:\n"
+            "        index = json.load(stream)\n"
+            "    return index.get('records')[0].get('value')\n",
+            False,
+        ),
+        (
+            "import json, os\n"
+            "def read_environment_binding_as_path():\n"
+            "    return os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "def parse_json_object(path):\n"
+            "    with open(path, encoding='utf-8') as stream:\n"
+            "        return json.load(stream)\n"
+            "def project_record_value(record):\n"
+            "    return record.get('value')\n"
+            "def build_response():\n"
+            "    path = read_environment_binding_as_path()\n"
+            "    index = parse_json_object(path)\n"
+            "    return [project_record_value(record) "
+            "for record in index.get('records', [])]\n",
+            False,
+        ),
+        (
+            "import json, os\n"
+            "def ignore_path(path):\n"
+            "    with open('unrelated.json') as stream:\n"
+            "        return json.load(stream)\n"
+            "def build_response():\n"
+            "    index_path = os.environ.get('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "    index = ignore_path(index_path)\n"
+            "    return index.get('records')[0].get('value')\n",
+            False,
+        ),
+    ],
+)
+def test_response_index_source_behavior_requires_bound_file_reader_dataflow(
+    source: str,
+    accepted: bool,
+) -> None:
+    assert (
+        replay_capability_module._runtime_consumes_recorded_response_index(source)
+        is accepted
+    )
 
 
 @pytest.mark.replay_sandbox
@@ -866,6 +1000,42 @@ def test_manifest_schema_enum_error_is_a_typed_field_constraint() -> None:
             "field_path": "schema_version",
             "rule": "enum",
             "expected": ["aworld.skill.replay_capability.v1"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("raw", "field_path", "rule", "expected"),
+    [
+        ([], "fixture_evidence_refs", "type", ["object"]),
+        ({}, "fixtures[*].evidence_refs", "required", []),
+    ],
+)
+def test_fixture_provenance_shape_errors_are_typed_schema_constraints(
+    tmp_path: Path,
+    raw: object,
+    field_path: str,
+    rule: str,
+    expected: list[str],
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._validate_fixture_provenance(
+            raw,
+            fixtures=("fixture.json",),
+            requirement_evidence_refs={"requirement-1": ("evidence-1",)},
+            request=_request(skill),
+            output_root=tmp_path / "output",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": field_path,
+            "rule": rule,
+            "expected": expected,
         }
     ]
 
@@ -1385,12 +1555,22 @@ def test_compile_rejects_undeclared_output_files(tmp_path: Path) -> None:
     capability = discover_replay_capability(skill)
     assert capability is not None
 
-    with pytest.raises(ReplayCapabilityError, match="undeclared output"):
+    with pytest.raises(ReplayCapabilityError, match="undeclared output") as error:
         compile_and_freeze_capability(
             capability,
             _request(skill),
             tmp_path / "artifacts",
         )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compiler_output",
+            "field_path": "files[*]",
+            "rule": "enum",
+            "expected": ["result.json", "declared_fixture"],
+        }
+    ]
 
 
 @pytest.mark.replay_sandbox

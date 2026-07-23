@@ -181,6 +181,18 @@ class ReplayCapabilityContractProvider:
                     "path": "<output-directory>/result.json",
                     "stdout_is_result": False,
                 },
+                "output_file_policy": {
+                    "allowed": ["result.json", "declared evidence fixtures"],
+                    "forbidden": [
+                        "compiler-owned response index",
+                        "undeclared sidecar",
+                        "undeclared runtime artifact",
+                    ],
+                    "recorded_response_index_owner": "framework",
+                    "recorded_response_index_runtime_env": (
+                        "AWORLD_REPLAY_RESPONSE_INDEX"
+                    ),
+                },
                 "request_fields": [
                     "schema_version",
                     "requirements",
@@ -191,6 +203,49 @@ class ReplayCapabilityContractProvider:
                     "capability_package_fingerprint",
                     "context_fingerprint",
                     "request_fingerprint",
+                ],
+                "request_shape": {
+                    "requirements": {
+                        "type": "array",
+                        "items": {
+                            "requirement_id": "string",
+                            "kind": {
+                                "enum": list(
+                                    REPLAY_CAPABILITY_SUPPORTED_REQUIREMENT_KINDS
+                                )
+                            },
+                            "identifier": "string",
+                            "case_ids": {
+                                "type": "array",
+                                "items": "string",
+                            },
+                            "evidence_refs": {
+                                "type": "array",
+                                "items": "string evidence_ref key",
+                            },
+                            "status": "string readiness classification",
+                            "detail": "optional string",
+                        },
+                    },
+                    "evidence_derivations": {
+                        "type": "object keyed by evidence_ref string",
+                        "values": "array of source objects",
+                    },
+                },
+                "execution_constraints": [
+                    (
+                        "compiler is a deterministic artifact transform: read only the "
+                        "request and its declared sources, then write below the supplied "
+                        "output directory"
+                    ),
+                    (
+                        "compiler must not bind or connect sockets, probe loopback, start "
+                        "a listener, launch the runtime, or make outbound network calls"
+                    ),
+                    (
+                        "declare skill_runtime and its entrypoint in result.json; the "
+                        "framework starts that runtime later with an allocated loopback port"
+                    ),
                 ],
                 "evidence_derivations": {
                     "type": "object",
@@ -295,7 +350,14 @@ class ReplayCapabilityContractProvider:
                             "transport": {
                                 "enum": list(
                                     REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS
-                                )
+                                ),
+                                "conditional_const": {
+                                    "when_request_requirement_status": (
+                                        "runtime_required"
+                                    ),
+                                    "value": "skill_runtime",
+                                    "correlate_by": "requirement_id",
+                                },
                             },
                             "response_fixture": "declared fixture_path",
                             "runtime_entrypoint": (

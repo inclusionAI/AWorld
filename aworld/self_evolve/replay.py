@@ -70,6 +70,11 @@ from aworld.self_evolve.replay_capability import (
     verify_frozen_replay_capability,
 )
 from aworld.self_evolve.sanitization import sanitize_text
+from aworld.self_evolve.schema_diagnostics import (
+    SchemaFieldRepairConstraint,
+    SchemaFieldViolation,
+    schema_field_diagnostic_details,
+)
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
 
 _EVIDENCE_RETRY_LIMIT = 1
@@ -1839,6 +1844,22 @@ def _preserve_replay_service_protocol_trace(
     return True
 
 
+def _reset_replay_service_protocol_trace(source: Path) -> None:
+    """Separate framework preflight traffic from task-rollout exposure.
+
+    Protocol probes prove that a candidate runtime is valid, but they are not
+    evidence that the replayed task exercised that intervention. Clearing the
+    bounded trace after preflight lets later causal attribution distinguish the
+    two without retaining payloads or changing the runtime protocol.
+    """
+
+    if source.is_symlink():
+        raise ReplayServiceProtocolError(
+            "skill runtime protocol_trace.jsonl cannot be a symlink"
+        )
+    source.write_text("", encoding="utf-8")
+
+
 def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
     """Validate the candidate-owned, protocol-neutral replay trace contract."""
 
@@ -1891,14 +1912,53 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
         if missing:
             raise ReplayServiceProtocolError(
                 "skill runtime protocol_trace.jsonl record is missing required "
-                f"summary fields: {', '.join(missing)}"
+                f"summary fields: {', '.join(missing)}",
+                code="protocol_trace_schema_field_validation_failed",
+                details=schema_field_diagnostic_details(
+                    tuple(
+                        SchemaFieldViolation.create(
+                            SchemaFieldRepairConstraint(
+                                schema_layer="protocol_trace",
+                                field_path=f"records[*].{field_name}",
+                                rule="required",
+                            ),
+                            None,
+                        )
+                        for field_name in missing
+                    )
+                ),
             )
-        if not isinstance(record.get("fields"), list) or not isinstance(
-            record.get("correlation"), Mapping
-        ):
+        type_violations: list[SchemaFieldViolation] = []
+        if not isinstance(record.get("fields"), list):
+            type_violations.append(
+                SchemaFieldViolation.create(
+                    SchemaFieldRepairConstraint(
+                        schema_layer="protocol_trace",
+                        field_path="records[*].fields",
+                        rule="type",
+                        expected=("array",),
+                    ),
+                    record.get("fields"),
+                )
+            )
+        if not isinstance(record.get("correlation"), Mapping):
+            type_violations.append(
+                SchemaFieldViolation.create(
+                    SchemaFieldRepairConstraint(
+                        schema_layer="protocol_trace",
+                        field_path="records[*].correlation",
+                        rule="type",
+                        expected=("object",),
+                    ),
+                    record.get("correlation"),
+                )
+            )
+        if type_violations:
             raise ReplayServiceProtocolError(
                 "skill runtime protocol_trace.jsonl fields must be a list and "
-                "correlation must be an object"
+                "correlation must be an object",
+                code="protocol_trace_schema_field_validation_failed",
+                details=schema_field_diagnostic_details(type_violations),
             )
         direction = str(record.get("direction") or "").strip().lower()
         if direction in {"in", "inbound", "received", "receive", "recv"}:
@@ -1908,7 +1968,33 @@ def _validate_replay_service_protocol_trace(trace_path: Path) -> None:
         else:
             raise ReplayServiceProtocolError(
                 "skill runtime protocol_trace.jsonl direction must describe a "
-                "received or emitted interaction"
+                "received or emitted interaction",
+                code="protocol_trace_schema_field_validation_failed",
+                details=schema_field_diagnostic_details(
+                    (
+                        SchemaFieldViolation.create(
+                            SchemaFieldRepairConstraint(
+                                schema_layer="protocol_trace",
+                                field_path="records[*].direction",
+                                rule="enum",
+                                expected=(
+                                    "in",
+                                    "inbound",
+                                    "received",
+                                    "receive",
+                                    "recv",
+                                    "out",
+                                    "outbound",
+                                    "emitted",
+                                    "emit",
+                                    "send",
+                                    "sent",
+                                ),
+                            ),
+                            record.get("direction"),
+                        ),
+                    )
+                ),
             )
         record_count += 1
     if record_count == 0:
@@ -1961,13 +2047,13 @@ def _attach_replay_service_protocol_diagnostics(
     *,
     artifact_dir: Path,
 ) -> ReplayExecutionResult:
-    if result.failure is None:
-        return result
     traces = _replay_service_protocol_diagnostics(artifact_dir)
     if not traces:
         return result
-    failure = dict(result.failure)
-    current_diagnostics = failure.get("diagnostics")
+    failure = dict(result.failure) if result.failure is not None else None
+    current_diagnostics = (
+        failure.get("diagnostics") if failure is not None else None
+    )
     diagnostics = (
         dict(current_diagnostics)
         if isinstance(current_diagnostics, Mapping)
@@ -1982,8 +2068,9 @@ def _attach_replay_service_protocol_diagnostics(
     for trace in traces:
         if trace not in combined:
             combined.append(trace)
-    diagnostics["replay_service_protocol_traces"] = combined[:4]
-    failure["diagnostics"] = diagnostics
+    if failure is not None:
+        diagnostics["replay_service_protocol_traces"] = combined[:4]
+        failure["diagnostics"] = diagnostics
     return replace(
         result,
         failure=failure,
@@ -4241,9 +4328,11 @@ async def _start_replay_services(
                         ),
                     )
                 if service.transport == "skill_runtime":
-                    _validate_replay_service_protocol_trace(
+                    protocol_trace = (
                         service_scratch / _REPLAY_SERVICE_PROTOCOL_TRACE_NAME
                     )
+                    _validate_replay_service_protocol_trace(protocol_trace)
+                    _reset_replay_service_protocol_trace(protocol_trace)
             except Exception as exc:
                 raise _replay_service_failure_with_stderr(
                     exc,
@@ -4840,7 +4929,15 @@ def _replay_service_failure_with_stderr(
         return exc
     message = f"{exc}; service stderr: {stderr}"
     if isinstance(exc, ReplayServiceProtocolError):
-        return ReplayServiceProtocolError(message)
+        # Stderr enrichment is a presentation concern and must not erase the
+        # validator's executable diagnostic contract.  Preflight consumes the
+        # structured code/details to merge newly observed schema constraints
+        # into causal feedback for the next repair candidate.
+        return ReplayServiceProtocolError(
+            message,
+            code=exc.code,
+            details=exc.details,
+        )
     if isinstance(exc, TimeoutError):
         return TimeoutError(message)
     if isinstance(exc, RuntimeError):
@@ -4948,7 +5045,18 @@ async def _wait_for_replay_service(
 
 
 class ReplayServiceProtocolError(OSError):
-    pass
+    """Candidate-owned protocol error with optional payload-free diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
 
 
 def _probe_replay_service(

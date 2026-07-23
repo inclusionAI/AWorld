@@ -1030,8 +1030,7 @@ def determine_candidate_confidence(
 
     if held_out_case_count < min_eval_cases or held_out_summary is None:
         if (
-            held_out_summary is not None
-            and deterministic_signal_present
+            deterministic_signal_present
             and _has_sufficient_single_case_replay(
                 baseline_replay_count=baseline_replay_count,
                 candidate_replay_count=candidate_replay_count,
@@ -1106,9 +1105,61 @@ def _single_case_replay_counts(dataset: SelfEvolveDataset) -> tuple[int, int]:
     if not isinstance(replay, Mapping):
         return 0, 0
     return (
-        _successful_replay_count(replay.get("baseline")),
+        _conclusive_baseline_replay_count(replay.get("baseline")),
         _successful_replay_count(replay.get("candidate")),
     )
+
+
+def _conclusive_baseline_replay_count(payload: Any) -> int:
+    """Count a stable native failure as a valid negative replay control."""
+
+    successful = _successful_replay_count(payload)
+    if successful:
+        return successful
+    if not isinstance(payload, Mapping) or payload.get("outcome") not in {
+        "task_failure",
+        "candidate_failure",
+    }:
+        return 0
+    metrics = payload.get("metrics")
+    failure_event = payload.get("failure_event")
+    if not isinstance(metrics, Mapping) or not isinstance(failure_event, Mapping):
+        return 0
+    if failure_event.get("owner") not in {"task", "candidate"}:
+        return 0
+    if failure_event.get("stage") != "task_rollout":
+        return 0
+    if (
+        payload.get("outcome") == "candidate_failure"
+        and failure_event.get("owner") != "candidate"
+    ):
+        return 0
+    source_kinds = failure_event.get("source_kinds")
+    if not isinstance(source_kinds, (list, tuple)) or "native" not in source_kinds:
+        return 0
+    repetition_count = _int_metric(metrics, "repetition_count")
+    failed_count = _int_metric(metrics, "failed_repetition_count")
+    blocked_count = _int_metric(metrics, "blocked_repetition_count") or 0
+    not_run_count = _int_metric(metrics, "not_run_repetition_count") or 0
+    if (
+        repetition_count is None
+        or repetition_count < 2
+        or failed_count != repetition_count
+        or blocked_count
+        or not_run_count
+    ):
+        return 0
+    raw_failures = metrics.get("repetition_failures")
+    if not isinstance(raw_failures, (list, tuple)) or len(raw_failures) != repetition_count:
+        return 0
+    signatures = {
+        (str(item.get("type") or ""), str(item.get("reason") or ""))
+        for item in raw_failures
+        if isinstance(item, Mapping)
+    }
+    if len(signatures) != 1 or any(not value for value in next(iter(signatures), ())):
+        return 0
+    return repetition_count
 
 
 def _successful_replay_count(payload: Any) -> int:

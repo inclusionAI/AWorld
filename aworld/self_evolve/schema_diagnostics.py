@@ -21,33 +21,74 @@ _SUPPORTED_RULES = frozenset(
 _SUPPORTED_VALUE_TYPES = frozenset(
     {"array", "boolean", "null", "number", "object", "string"}
 )
-_SCHEMA_TOKEN = re.compile(r"^[A-Za-z0-9_.\[\]*-]{1,240}$")
+_SUPPORTED_VALUE_DOMAINS = frozenset({"schema_value", "source_behavior"})
+_SCHEMA_LAYER_TOKEN = re.compile(r"^[A-Za-z0-9_.\[\]*-]{1,240}$")
+_FIELD_PATH_TOKEN = re.compile(r"^[A-Za-z0-9_.\[\]*@:-]{1,240}$")
 _EXPECTED_TOKEN = re.compile(r"^[A-Za-z0-9_.:/-]{1,240}$")
 
 
 @dataclass(frozen=True)
 class SchemaFieldRepairConstraint:
-    """A payload-free, executable rule for one schema field path."""
+    """A payload-free, executable rule for one typed validation subject."""
 
     schema_layer: str
     field_path: str
     rule: str
     expected: tuple[str, ...] = ()
+    value_domain: str = "schema_value"
+    required_operations: tuple[str, ...] = ()
+    forbidden_operations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if _SCHEMA_TOKEN.fullmatch(self.schema_layer) is None:
+        if _SCHEMA_LAYER_TOKEN.fullmatch(self.schema_layer) is None:
             raise ValueError("schema constraint layer is invalid")
-        if _SCHEMA_TOKEN.fullmatch(self.field_path) is None:
+        if _FIELD_PATH_TOKEN.fullmatch(self.field_path) is None:
             raise ValueError("schema constraint field path is invalid")
         if self.rule not in _SUPPORTED_RULES:
             raise ValueError("schema constraint rule is unsupported")
+        if self.value_domain not in _SUPPORTED_VALUE_DOMAINS:
+            raise ValueError("schema constraint value domain is unsupported")
         normalized_expected = tuple(str(item) for item in self.expected)
+        normalized_required_operations = tuple(
+            str(item) for item in self.required_operations
+        )
+        normalized_forbidden_operations = tuple(
+            str(item) for item in self.forbidden_operations
+        )
         if any(
             _EXPECTED_TOKEN.fullmatch(item) is None
             for item in normalized_expected
         ):
             raise ValueError("schema constraint expected values are invalid")
+        if any(
+            _EXPECTED_TOKEN.fullmatch(item) is None
+            for item in (
+                *normalized_required_operations,
+                *normalized_forbidden_operations,
+            )
+        ):
+            raise ValueError("schema constraint operations are invalid")
         object.__setattr__(self, "expected", normalized_expected)
+        object.__setattr__(
+            self,
+            "required_operations",
+            tuple(dict.fromkeys(normalized_required_operations)),
+        )
+        object.__setattr__(
+            self,
+            "forbidden_operations",
+            tuple(dict.fromkeys(normalized_forbidden_operations)),
+        )
+        if (
+            normalized_required_operations or normalized_forbidden_operations
+        ) and self.value_domain != "source_behavior":
+            raise ValueError(
+                "schema constraint operations require source_behavior domain"
+            )
+        if len(normalized_required_operations) > 32 or len(
+            normalized_forbidden_operations
+        ) > 32:
+            raise ValueError("schema constraint declares too many operations")
         if self.rule in {"enum", "type"} and not normalized_expected:
             raise ValueError("schema constraint rule requires expected values")
         if self.rule == "type" and not set(normalized_expected).issubset(
@@ -73,12 +114,21 @@ class SchemaFieldRepairConstraint:
         ).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema_layer": self.schema_layer,
             "field_path": self.field_path,
             "rule": self.rule,
             "expected": list(self.expected),
         }
+        # Preserve the v1 projection for ordinary schema fields while making
+        # analyzer-owned source predicates explicit to repair consumers.
+        if self.value_domain != "schema_value":
+            payload["value_domain"] = self.value_domain
+        if self.required_operations:
+            payload["required_operations"] = list(self.required_operations)
+        if self.forbidden_operations:
+            payload["forbidden_operations"] = list(self.forbidden_operations)
+        return payload
 
     @classmethod
     def from_dict(
@@ -88,11 +138,28 @@ class SchemaFieldRepairConstraint:
         raw_expected = value.get("expected", ())
         if not isinstance(raw_expected, (list, tuple)):
             raise ValueError("schema constraint expected values must be an array")
+        raw_required_operations = value.get("required_operations", ())
+        raw_forbidden_operations = value.get("forbidden_operations", ())
+        if not isinstance(raw_required_operations, (list, tuple)):
+            raise ValueError(
+                "schema constraint required operations must be an array"
+            )
+        if not isinstance(raw_forbidden_operations, (list, tuple)):
+            raise ValueError(
+                "schema constraint forbidden operations must be an array"
+            )
         return cls(
             schema_layer=str(value.get("schema_layer") or ""),
             field_path=str(value.get("field_path") or ""),
             rule=str(value.get("rule") or ""),
             expected=tuple(str(item) for item in raw_expected),
+            value_domain=str(value.get("value_domain") or "schema_value"),
+            required_operations=tuple(
+                str(item) for item in raw_required_operations
+            ),
+            forbidden_operations=tuple(
+                str(item) for item in raw_forbidden_operations
+            ),
         )
 
     def accepts(self, value: Any, *, present: bool = True) -> bool:

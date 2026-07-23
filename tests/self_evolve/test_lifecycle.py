@@ -169,6 +169,41 @@ def test_cleanup_skips_running_interrupted_apply_and_lineage_referenced_runs(
     assert skipped["run-source"] == "referenced_by_lineage"
 
 
+def test_cleanup_protects_runs_referenced_by_active_campaign(tmp_path: Path) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_dir = artifact_root / "campaign-generic-cycle-001"
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(
+        run_dir / "report.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(run_dir / "replay" / "candidate" / "result.json", {})
+    _write_json(
+        artifact_root / "campaigns" / "campaign-generic" / "campaign.json",
+        {
+            "schema_version": "aworld.self_evolve.campaign.v1",
+            "status": "active",
+            "run_ids": [run_dir.name],
+        },
+    )
+    _touch_tree(run_dir, 1_000.0)
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(keep_latest_runs=0),
+        now=10_000.0,
+    )
+
+    assert (run_dir / "replay").exists()
+    assert run_dir.name in cleanup["protected_run_ids"]
+    assert cleanup["skipped_runs"] == [
+        {"run_id": run_dir.name, "reason": "referenced_by_lineage"}
+    ]
+
+
 def test_cleanup_prunes_only_unselected_candidate_materializations(tmp_path: Path) -> None:
     artifact_root = tmp_path / ".aworld" / "self_evolve"
     run_dir = artifact_root / "run-old"

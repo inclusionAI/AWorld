@@ -75,7 +75,20 @@ class OptimizeTopLevelCommand:
         )
         parser.add_argument("--batch-config", type=str, dest="batch_config")
         parser.add_argument("--iterations", type=int)
-        parser.add_argument("--apply", type=str, default="proposal")
+        parser.add_argument("--apply", type=str)
+        parser.add_argument(
+            "--max-improvement-cycles",
+            type=int,
+            default=3,
+            dest="max_improvement_cycles",
+            help="Maximum bounded cross-run self-improvement cycles for auto_verified.",
+        )
+        parser.add_argument(
+            "--resume-campaign",
+            type=str,
+            dest="resume_campaign",
+            help="Resume a paused or active self-improvement campaign.",
+        )
         parser.add_argument(
             "--new-skill-policy",
             type=str,
@@ -137,7 +150,16 @@ class OptimizeTopLevelCommand:
             print(f"Drained pending self-evolve jobs: {drained}")
             return 0
 
-        apply_policy = getattr(args, "apply", "proposal") or "proposal"
+        resume_campaign = getattr(args, "resume_campaign", None)
+        if (
+            resume_campaign
+            and getattr(args, "apply", None) not in {None, "auto_verified"}
+        ):
+            print("Optimize error: --resume-campaign requires --apply auto_verified")
+            return 1
+        apply_policy = getattr(args, "apply", None) or (
+            "auto_verified" if resume_campaign else "proposal"
+        )
         if apply_policy not in SUPPORTED_APPLY_POLICIES:
             print("Optimize error: --apply must be one of proposal, auto_verified")
             return 0
@@ -165,6 +187,10 @@ class OptimizeTopLevelCommand:
                 rerun_evaluator=getattr(args, "rerun_evaluator", False),
                 batch_config=getattr(args, "batch_config", None),
                 iterations=getattr(args, "iterations", None),
+                max_improvement_cycles=getattr(
+                    args, "max_improvement_cycles", 3
+                ),
+                resume_campaign=resume_campaign,
                 apply=apply_policy,
                 new_skill_policy=getattr(args, "new_skill_policy", "auto_verified"),
                 infer_target=target is None,
@@ -202,10 +228,31 @@ def render_optimize_summary(report: Any) -> str:
     grouping_summary = _target_grouping_summary(report)
     replay_failure_summary = _replay_failure_summary(report)
     promotion = _read_report_value(report, "promotion")
+    campaign_id = _read_report_value(report, "campaign_id")
+    campaign_status = _read_report_value(report, "campaign_status")
+    campaign_cycle = _read_report_value(report, "campaign_cycle")
+    campaign_max_cycles = _read_report_value(report, "campaign_max_cycles")
+    disposition = _read_report_value(report, "self_improvement_disposition")
+    goal_handoff_path = _read_report_value(report, "goal_handoff_path")
 
     lines = ["Optimize run submitted."]
     if status:
         lines.append(f"Status: {status}")
+    if campaign_id:
+        lines.append(f"Campaign: {campaign_id}")
+    if campaign_status:
+        lines.append(f"Campaign status: {campaign_status}")
+    if campaign_cycle is not None and campaign_max_cycles is not None:
+        lines.append(f"Campaign cycle: {campaign_cycle}/{campaign_max_cycles}")
+    if isinstance(disposition, Mapping) and disposition.get("reason_code"):
+        lines.append(
+            "Self-improvement: "
+            f"{disposition.get('kind')} ({disposition['reason_code']})"
+        )
+    if goal_handoff_path:
+        lines.append(f"Goal handoff: {goal_handoff_path}")
+        if campaign_id:
+            lines.append(f"Continue goal: /goal --from-campaign {campaign_id}")
     if report_path:
         lines.append(f"Report: {report_path}")
     if target_selection_path:
@@ -262,6 +309,8 @@ def run_optimize_cli(
     from_trajectory: str | None,
     batch_config: str | None,
     iterations: int | None,
+    max_improvement_cycles: int = 1,
+    resume_campaign: str | None = None,
     apply: str,
     infer_target: bool,
     workspace_root: str,
@@ -286,23 +335,24 @@ def run_optimize_cli(
 ) -> Mapping[str, Any]:
     import aworld.self_evolve as self_evolve
 
+    runtime_apply = "auto_verified" if resume_campaign else apply
     judge_repetitions = _auto_verified_default(
-        apply,
+        runtime_apply,
         judge_repetitions,
         AUTO_VERIFIED_JUDGE_REPETITIONS,
     )
     judge_timeout_seconds = _auto_verified_default(
-        apply,
+        runtime_apply,
         judge_timeout_seconds,
         AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS,
     )
     baseline_replay_repetitions = _auto_verified_default(
-        apply,
+        runtime_apply,
         baseline_replay_repetitions,
         AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS,
     )
     candidate_replay_repetitions = _auto_verified_default(
-        apply,
+        runtime_apply,
         candidate_replay_repetitions,
         AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS,
     )
@@ -317,42 +367,53 @@ def run_optimize_cli(
     )
     if progress_callback is not None:
         progress_callback("prepare", "Preparing self-evolve optimize request")
-    return self_evolve.optimize_from_cli_request(
-        agent=agent,
-        task=task,
-        target=target,
-        dataset=dataset,
-        from_session=from_session,
-        from_trajectory=from_trajectory,
-        from_trajectory_set=from_trajectory_set,
-        include_prior_runs=include_prior_runs,
-        from_run=from_run,
-        rerun_evaluator=rerun_evaluator,
-        batch_config=batch_config,
-        iterations=iterations,
-        apply_policy=apply,
-        inferred_new_skill_policy=new_skill_policy,
-        infer_target=infer_target,
-        workspace_root=workspace_root,
-        judge_config=judge_config,
-        mutation_model_config=mutation_model_config,
-        concurrency_policy=self_evolve.SelfEvolveConcurrencyPolicy(),
+    request = {
+        "agent": agent,
+        "task": task,
+        "target": target,
+        "dataset": dataset,
+        "from_session": from_session,
+        "from_trajectory": from_trajectory,
+        "from_trajectory_set": from_trajectory_set,
+        "include_prior_runs": include_prior_runs,
+        "from_run": from_run,
+        "rerun_evaluator": rerun_evaluator,
+        "batch_config": batch_config,
+        "iterations": iterations,
+        "apply_policy": runtime_apply,
+        "inferred_new_skill_policy": new_skill_policy,
+        "infer_target": infer_target,
+        "workspace_root": workspace_root,
+        "judge_config": judge_config,
+        "mutation_model_config": mutation_model_config,
+        "concurrency_policy": self_evolve.SelfEvolveConcurrencyPolicy(),
         **_judge_options(
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         ),
-        replay_enabled=apply == "auto_verified",
-        runtime_registry_refresher=runtime_registry_refresher,
-        runtime_skill_activator=runtime_skill_activator
+        "replay_enabled": runtime_apply == "auto_verified",
+        "runtime_registry_refresher": runtime_registry_refresher,
+        "runtime_skill_activator": runtime_skill_activator
         or _default_runtime_skill_activator(),
-        progress_callback=progress_callback,
+        "progress_callback": progress_callback,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
             replay_max_steps=replay_max_steps,
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
         ),
-    )
+    }
+    if not rerun_evaluator and (
+        resume_campaign
+        or (runtime_apply == "auto_verified" and max_improvement_cycles > 1)
+    ):
+        return self_evolve.run_self_improvement_campaign(
+            workspace_root=workspace_root,
+            request=request,
+            max_improvement_cycles=max_improvement_cycles,
+            resume_campaign=resume_campaign,
+        )
+    return self_evolve.optimize_from_cli_request(**request)
 
 
 def _default_mutation_model_config():

@@ -14,6 +14,11 @@ from aworld.self_evolve.lessons import aggregate_lesson_records
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.repair_conformance import (
     compile_repair_conformance_contract,
+    merge_repair_conformance_constraint_context,
+)
+from aworld.self_evolve.recovery_trace import (
+    validate_public_constraint_recovery_trace,
+    validate_public_recovery_trace,
 )
 from aworld.self_evolve.sanitization import (
     public_diagnostic_projection,
@@ -87,6 +92,17 @@ class EvolutionContext:
             )
             else None
         )
+        focused_capability_contracts = bool(
+            focused_repair
+            and repair_conformance is not None
+            and (
+                repair_conformance.schema_field_constraints
+                or any(
+                    "capability" in code or "compile" in code
+                    for code in repair_conformance.failure_codes
+                )
+            )
+        )
         prompt_repair_focus = (
             _bounded_repair_focus_for_prompt(
                 repair_focus,
@@ -129,7 +145,9 @@ class EvolutionContext:
                 [] if focused_repair else list(self.capability_requirements)
             ),
             "capability_contracts": (
-                [] if focused_repair else list(self.capability_contracts)
+                list(self.capability_contracts)
+                if not focused_repair or focused_capability_contracts
+                else []
             ),
             "acceptance_constraints": list(self.acceptance_constraints),
             "expected_output": dict(self.expected_output),
@@ -146,8 +164,10 @@ class EvolutionContext:
                 "omitted_capability_requirements": len(
                     self.capability_requirements
                 ),
-                "omitted_capability_contracts": len(
-                    self.capability_contracts
+                "omitted_capability_contracts": (
+                    0
+                    if focused_capability_contracts
+                    else len(self.capability_contracts)
                 ),
             }
             if repair_conformance is not None:
@@ -266,6 +286,14 @@ def _compact_prompt_feedback_item(
             for diagnostic in diagnostics[:4]
             if isinstance(diagnostic, Mapping)
         ]
+    recovery_trace = validate_public_recovery_trace(item.get("recovery_trace"))
+    if recovery_trace is not None:
+        compact["recovery_trace"] = recovery_trace
+    constraint_recovery_trace = validate_public_constraint_recovery_trace(
+        item.get("constraint_recovery_trace")
+    )
+    if constraint_recovery_trace is not None:
+        compact["constraint_recovery_trace"] = constraint_recovery_trace
     repair_plan = item.get("repair_plan")
     if isinstance(repair_plan, Mapping):
         compact["repair_plan"] = {
@@ -581,6 +609,46 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
             and isinstance(raw_progress, (int, float))
         ):
             interaction_progress = min(999, max(0, int(raw_progress)))
+    recovery_trace = validate_public_recovery_trace(
+        feedback.get("recovery_trace")
+    )
+    recovery_frontier = 0
+    if recovery_trace is not None:
+        recovered_count = recovery_trace.get("recovered_member_count")
+        candidate_success_rate = recovery_trace.get("candidate_success_rate")
+        if isinstance(recovered_count, (int, float)) and not isinstance(
+            recovered_count, bool
+        ):
+            recovery_frontier += min(64, max(0, int(recovered_count))) * 10
+        if isinstance(candidate_success_rate, (int, float)) and not isinstance(
+            candidate_success_rate, bool
+        ):
+            recovery_frontier += min(
+                99,
+                max(0, int(float(candidate_success_rate) * 99)),
+            )
+    constraint_recovery_trace = validate_public_constraint_recovery_trace(
+        feedback.get("constraint_recovery_trace")
+    )
+    if constraint_recovery_trace is not None:
+        recovered_constraints = constraint_recovery_trace.get(
+            "recovered_constraint_count"
+        )
+        regressed_constraints = constraint_recovery_trace.get(
+            "regressed_constraint_count"
+        )
+        repeated_constraints = constraint_recovery_trace.get(
+            "repeated_violation_count"
+        )
+        if isinstance(recovered_constraints, int):
+            recovery_frontier += min(64, recovered_constraints) * 10
+        if isinstance(regressed_constraints, int):
+            recovery_frontier -= min(64, regressed_constraints) * 10
+        if isinstance(repeated_constraints, int):
+            # Repeated failures contain the strongest strategy-switch signal
+            # and should remain visible to the focused repair prompt.
+            recovery_frontier += min(16, repeated_constraints)
+    frontier_progress = recovery_frontier + interaction_progress
     diagnostic_text = json.dumps(
         feedback.get("candidate_validation_diagnostics", ()),
         ensure_ascii=False,
@@ -600,14 +668,14 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
         # branches. Held-out feedback wins ties with validation from the same
         # evaluated package, while recency still breaks ties within each split.
         split_offset = 5_000 if feedback.get("dataset_split") == "held_out" else 0
-        return 200_000 + split_offset + interaction_progress
+        return 200_000 + split_offset + frontier_progress
     if (
         isinstance(metrics, Mapping)
         and metrics.get("authoritative_replay_failure") is True
     ):
-        return 150_000 + interaction_progress
+        return 150_000 + frontier_progress
     if "finalize_after_successful_endpoint_interaction" in diagnostic_text:
-        return 145_000 + interaction_progress
+        return 145_000 + frontier_progress
     if "repair_conformance" in diagnostic_text:
         # Keep repair search on the deepest verified frontier. A candidate that
         # inherited a real task-plane failure remains ahead of transport-only
@@ -617,32 +685,32 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
         # newer in accumulated feedback.
         frontier_offset = 40_000 if inherited_task_plane_frontier else 0
         if "repair_probe_execution_failed" in diagnostic_text:
-            return 89_000 + frontier_offset + interaction_progress
+            return 89_000 + frontier_offset + frontier_progress
         if (
             "late_fixture_probe_not_recorded" in diagnostic_text
             or "late_fixture_probe_outside_recorded_payload" in diagnostic_text
             or "exact_repair_probe_not_recorded" in diagnostic_text
         ):
-            return 88_000 + frontier_offset + interaction_progress
+            return 88_000 + frontier_offset + frontier_progress
         if (
             "late_fixture_probe_missing" in diagnostic_text
             or "exact_repair_probe_missing" in diagnostic_text
         ):
-            return 87_000 + frontier_offset + interaction_progress
+            return 87_000 + frontier_offset + frontier_progress
         if (
             "repair_capability_compile_failed" in diagnostic_text
             or "repair_capability_missing" in diagnostic_text
         ):
-            return 86_000 + frontier_offset + interaction_progress
+            return 86_000 + frontier_offset + frontier_progress
         if "repair_branch_unchanged" in diagnostic_text:
-            return 81_000 + frontier_offset + interaction_progress
-        return 84_000 + frontier_offset + interaction_progress
+            return 81_000 + frontier_offset + frontier_progress
+        return 84_000 + frontier_offset + frontier_progress
     if "preserve_protocol_routing_continuity" in diagnostic_text:
-        return 38_000 + interaction_progress
+        return 38_000 + frontier_progress
     if "implement_async_endpoint_completion" in diagnostic_text:
-        return 35_000 + interaction_progress
+        return 35_000 + frontier_progress
     if "diagnose_protocol_handler_abort" in diagnostic_text:
-        return 32_000 + interaction_progress
+        return 32_000 + frontier_progress
     if (
         "implement_observed_endpoint_interactions" in diagnostic_text
         or "failed to deserialize" in diagnostic_text
@@ -651,15 +719,15 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
         # A real task rollout that reached the data plane is a deeper verified
         # frontier than any transport-only conformance preflight. Do not let a
         # newer shallow branch discard its late-operation contract.
-        return 140_000 + interaction_progress
+        return 140_000 + frontier_progress
     if "verify_declared_protocol_probe_branch" in diagnostic_text:
-        return 34_000 + interaction_progress
+        return 34_000 + frontier_progress
     if (
         "invalid_replay_capability_compile" in diagnostic_text
         or "capability_compile" in diagnostic_text
     ):
-        return 10_000 + interaction_progress
-    return interaction_progress
+        return 10_000 + frontier_progress
+    return frontier_progress
 
 
 def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
@@ -680,6 +748,7 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
     feedback = _deduplicate_feedback_payloads(
         (*current_feedback, *prior_feedback)
     )
+    feedback = _merge_typed_repair_constraints_across_feedback(feedback)
     contracts = discover_applicable_capability_contracts(
         request.replay_requirements
     )
@@ -733,6 +802,45 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
         ),
         expected_output=CANDIDATE_OUTPUT_CONTRACT,
     )
+
+
+def _merge_typed_repair_constraints_across_feedback(
+    feedback: tuple[Mapping[str, object], ...],
+) -> tuple[Mapping[str, object], ...]:
+    """Make every focused lineage honor the cumulative typed repair contract."""
+
+    merged = merge_repair_conformance_constraint_context(None, *feedback)
+    if merged is None:
+        return feedback
+    constraint_context = {
+        key: value
+        for key, value in merged.items()
+        if key in {"fixture_probe_constraints", "schema_field_constraints"}
+    }
+    if not constraint_context:
+        return feedback
+    result: list[Mapping[str, object]] = []
+    for item in feedback:
+        if not isinstance(item.get("repair_candidate_package"), Mapping):
+            result.append(item)
+            continue
+        updated = dict(item)
+        raw_diagnostics = updated.get("candidate_validation_diagnostics")
+        diagnostics = (
+            [dict(value) for value in raw_diagnostics if isinstance(value, Mapping)]
+            if isinstance(raw_diagnostics, (list, tuple))
+            else []
+        )
+        diagnostics.append(
+            {
+                "code": "inherited_typed_repair_constraints",
+                "stage": "typed_causal_feedback",
+                **constraint_context,
+            }
+        )
+        updated["candidate_validation_diagnostics"] = diagnostics
+        result.append(updated)
+    return tuple(result)
 
 
 def _deduplicate_feedback(

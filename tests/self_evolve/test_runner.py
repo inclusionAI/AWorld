@@ -80,6 +80,7 @@ from aworld.self_evolve.runner import (
     _candidate_generation_actual_usage,
     _configured_budget_usage,
     _feedback_from_report,
+    _failed_probe_typed_feedback,
     _include_prior_run_cases,
     _iteration_validation_feedback,
     _judge_actual_token_usage,
@@ -130,6 +131,7 @@ from aworld.self_evolve.repair_conformance import (
     RepairConformanceResult,
     compile_repair_conformance_contract,
 )
+from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
@@ -3387,6 +3389,220 @@ def test_typed_gate_feedback_preserves_exact_aggregate_scalars_without_raw_paylo
     assert events[0]["capability_identity_digest"] is not None
 
 
+def test_typed_causal_feedback_preserves_public_recovery_trace_before_return() -> None:
+    aggregate = aggregate_replay_failure_observations(
+        (
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    code="task_rollout_timeout",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.MEMBER,
+                    repairable=True,
+                    summary="candidate timed out",
+                ),
+                case_id="private-case",
+                candidate_id="candidate",
+            ),
+        )
+    )[0]
+    gate = GateResult(
+        "candidate_replay",
+        False,
+        "typed replay failure",
+        {
+            "causal_failure_events": [aggregate.to_dict()],
+            "recovery_trace": {
+                "schema_version": "aworld.self_evolve.recovery_trace.public.v1",
+                "member_count": 2,
+                "candidate_success_rate": 0.5,
+                "recovered_member_count": 1,
+                "partial_recovery_member_count": 1,
+                "raw_response": "SECRET",
+                "members": [
+                    {
+                        "member_identity": "sha256:" + "a" * 64,
+                        "classification": "partial_recovery",
+                        "candidate_success_rate": 0.5,
+                        "failed_progress_exceeded_success": True,
+                    }
+                ],
+            },
+        },
+    )
+
+    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+
+    assert metrics["causal_failure_events"]
+    assert metrics["recovery_trace"]["recovered_member_count"] == 1
+    assert metrics["recovery_trace"]["members"][0]["classification"] == (
+        "partial_recovery"
+    )
+    assert "SECRET" not in json.dumps(metrics["recovery_trace"])
+
+
+def test_replay_gate_adds_candidate_recovery_cause_without_rewriting_task_timeout(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="recovery")
+    request = CandidateReplayRequest(
+        run_id="run-recovery",
+        task_id="case-recovery",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-recovery",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="recover this task",
+    )
+    timeout_failure = {
+        "type": "TimeoutExpired",
+        "reason": "replay timed out",
+    }
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="failed",
+            trajectory=[],
+            failure=timeout_failure,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-recovery",
+            status="failed",
+            trajectory=[],
+            failure=timeout_failure,
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-recovery", input="recover this task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="recovery",
+            splits={"train": ["case-recovery"]},
+            trainable_case_ids=("case-recovery",),
+        ),
+    )
+
+    details = _replay_gate_details(replay_result, dataset=dataset)
+
+    events = details["causal_failure_events"]
+    assert any(event["owner"] == "task" for event in events)
+    recovery_event = next(
+        event for event in events if event["code"] == "candidate_recovery_incomplete"
+    )
+    assert recovery_event["owner"] == "candidate"
+    assert recovery_event["repairable"] is True
+    assert details["failure_class"] == "candidate"
+    assert details["repairable"] is True
+    assert details["recovery_trace"]["candidate_success_rate"] == 0.0
+
+
+def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="recovery")
+    request = CandidateReplayRequest(
+        run_id="run-unobserved",
+        task_id="case-unobserved",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-unobserved",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="recover task",
+    )
+    timeout = {"type": "TimeoutExpired", "reason": "replay timed out"}
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="failed",
+            trajectory=[],
+            failure=timeout,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-unobserved",
+            status="failed",
+            trajectory=[],
+            failure=timeout,
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-unobserved", input="recover task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="unobserved",
+            splits={"train": ["case-unobserved"]},
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+    )
+
+    events = details["causal_failure_events"]
+    assert any(event["code"] == "candidate_intervention_unobserved" for event in events)
+    assert not any(event["code"] == "candidate_recovery_incomplete" for event in events)
+    assert details["failure_class"] == "framework"
+    assert details["repairable"] is False
+    assert details["recovery_trace"]["candidate_intervention_required"] is True
+    assert details["recovery_trace"]["candidate_intervention_observed"] is False
+
+
+def test_replay_gate_repairs_candidate_only_after_intervention_is_observed(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="recovery")
+    request = CandidateReplayRequest(
+        run_id="run-observed",
+        task_id="case-observed",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-observed",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="recover task",
+    )
+    timeout = {"type": "TimeoutExpired", "reason": "replay timed out"}
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="failed",
+            trajectory=[],
+            failure=timeout,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-observed",
+            status="failed",
+            trajectory=[],
+            failure=timeout,
+            metrics={"replay_service_protocol_trace_count": 1},
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-observed", input="recover task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="observed",
+            splits={"train": ["case-observed"]},
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+    )
+
+    events = details["causal_failure_events"]
+    assert any(event["code"] == "candidate_recovery_incomplete" for event in events)
+    assert not any(event["code"] == "candidate_intervention_unobserved" for event in events)
+    assert details["failure_class"] == "candidate"
+    assert details["repairable"] is True
+    assert details["recovery_trace"]["candidate_intervention_observed"] is True
+
+
 def test_typed_causal_feedback_merges_post_failure_constraints_before_return() -> None:
     inherited_contract = RepairConformanceContract(
         focus_candidate_id="candidate-parent",
@@ -3504,6 +3720,14 @@ def test_typed_causal_feedback_merges_post_failure_constraints_before_return() -
     diagnostics = feedback.metrics["candidate_validation_diagnostics"]
     projected_contract = diagnostics[0]["repair_conformance"]
 
+    expected_constraint_ids = {
+        "sha256:"
+        + SchemaFieldRepairConstraint.from_dict(item).identity_digest
+        for item in schema_constraints
+    }
+    assert set(feedback.metrics["violated_schema_constraint_ids"]) == (
+        expected_constraint_ids
+    )
     assert len(diagnostics) == 2
     assert all(
         len(item["repair_conformance"]["schema_field_constraints"]) == 2
@@ -3619,6 +3843,181 @@ def test_merge_validation_feedback_keeps_deepest_interaction_frontier() -> None:
     merged = _merge_validation_feedback((deeper,), (newer_but_shallow,))
 
     assert merged == (deeper,)
+
+
+def test_merge_validation_feedback_preserves_best_structural_recovery_frontier() -> None:
+    def recovery_failure(
+        candidate_id: str,
+        *,
+        tool_calls: int,
+        distinct_tools: int,
+        strategy_switches: int,
+        repeated_rate: float,
+    ) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "failure_class": "candidate",
+                "repairable": True,
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": "candidate_recovery_incomplete",
+                        "stage": "task_rollout",
+                        "reason": "candidate recovery remains incomplete",
+                    }
+                ],
+                "recovery_trace": {
+                    "schema_version": "aworld.self_evolve.recovery_trace.public.v1",
+                    "member_count": 1,
+                    "candidate_repetition_count": 1,
+                    "candidate_success_rate": 0.0,
+                    "recovered_member_count": 0,
+                    "stable_recovery_member_count": 0,
+                    "regressed_member_count": 0,
+                    "members": [
+                        {
+                            "member_identity": "sha256:" + "a" * 64,
+                            "classification": "unrecovered",
+                            "candidate_repetition_count": 1,
+                            "candidate_success_rate": 0.0,
+                            "failed_progress_max": tool_calls,
+                            "failure_loop_detected": True,
+                            "failed_path": {
+                                "sample_count": 1,
+                                "tool_call_count_max": tool_calls,
+                                "distinct_tool_count_max": distinct_tools,
+                                "strategy_switch_count_max": strategy_switches,
+                                "repeated_action_rate_max": repeated_rate,
+                            },
+                        }
+                    ],
+                },
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "content": f"# {candidate_id}\n",
+                        }
+                    ],
+                },
+            },
+            dataset_split="validation",
+        )
+
+    best = recovery_failure(
+        "candidate-best",
+        tool_calls=33,
+        distinct_tools=3,
+        strategy_switches=4,
+        repeated_rate=0.909,
+    )
+    newer_regression = recovery_failure(
+        "candidate-regressed",
+        tool_calls=40,
+        distinct_tools=1,
+        strategy_switches=0,
+        repeated_rate=0.975,
+    )
+
+    merged = _merge_validation_feedback((best,), (newer_regression,))
+
+    assert merged == (best,)
+
+
+def test_merge_validation_feedback_tracks_constraint_recovery_frontier() -> None:
+    first_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="deterministic",
+        rule="type",
+        expected=("boolean",),
+    )
+    second_constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+        required_operations=(
+            "read_environment_binding_as_path",
+            "iterate_records_array",
+            "project_record_value",
+        ),
+    )
+
+    def failure(
+        candidate_id: str,
+        *,
+        violated: SchemaFieldRepairConstraint,
+        contract: tuple[SchemaFieldRepairConstraint, ...],
+    ) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            metrics={
+                "failed_gates": ["candidate_repair_conformance"],
+                "failure_class": "candidate",
+                "repairable": True,
+                "violated_schema_constraint_ids": [
+                    "sha256:" + violated.identity_digest
+                ],
+                "candidate_validation_diagnostics": [
+                    {
+                        "code": "schema_field_validation_failed",
+                        "stage": "capability_compile",
+                        "repair_conformance": {
+                            "schema_field_constraints": [
+                                item.to_dict() for item in contract
+                            ]
+                        },
+                    }
+                ],
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "content": f"# {candidate_id}\n",
+                        }
+                    ],
+                },
+            },
+            dataset_split="validation",
+        )
+
+    first = failure(
+        "candidate-first",
+        violated=first_constraint,
+        contract=(first_constraint,),
+    )
+    repeated = failure(
+        "candidate-repeated",
+        violated=first_constraint,
+        contract=(first_constraint,),
+    )
+    merged = _merge_validation_feedback((), (first, repeated))
+    assert len(merged) == 1
+    repeated_trace = merged[0].metrics["constraint_recovery_trace"]
+    assert repeated_trace["repeated_violation_count"] == 1
+    assert repeated_trace["attempt_count"] == 2
+
+    recovered = failure(
+        "candidate-recovered",
+        violated=second_constraint,
+        contract=(first_constraint, second_constraint),
+    )
+    merged = _merge_validation_feedback(merged, (recovered,))
+    assert len(merged) == 1
+    assert merged[0].variant_id == "candidate-recovered"
+    recovered_trace = merged[0].metrics["constraint_recovery_trace"]
+    assert recovered_trace["recovered_constraint_count"] == 1
+    first_state = next(
+        item
+        for item in recovered_trace["constraints"]
+        if item["constraint_identity"]
+        == "sha256:" + first_constraint.identity_digest
+    )
+    assert first_state["status"] == "recovered"
 
 
 def test_protocol_probe_mismatch_feedback_requires_exact_branch_verification() -> None:
@@ -3782,6 +4181,39 @@ def test_protocol_trace_contract_failure_gets_structured_repair_feedback() -> No
         diagnostics[0]["reason"]
     )
     assert "lifecycle-only directions such as system" in diagnostics[0]["reason"]
+
+
+def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
+    constraint = {
+        "schema_layer": "protocol_trace",
+        "field_path": "records[*].kind",
+        "rule": "required",
+        "expected": [],
+    }
+    feedback = _failed_probe_typed_feedback(
+        (
+            {
+                "code": "protocol_trace_schema_field_validation_failed",
+                "error_type": "ReplayServiceProtocolError",
+                "reason": "first member is missing kind",
+                "schema_field_constraints": [constraint],
+                "schema_field_violations": [{"occurrence_count": 1}],
+                "schema_field_violation_count": 1,
+            },
+            {
+                "code": "protocol_trace_schema_field_validation_failed",
+                "error_type": "ReplayServiceProtocolError",
+                "reason": "second member is missing kind",
+                "schema_field_constraints": [constraint],
+                "schema_field_violations": [{"occurrence_count": 2}],
+                "schema_field_violation_count": 2,
+            },
+        )
+    )
+
+    assert feedback["schema_field_constraints"] == [constraint]
+    assert feedback["schema_field_violation_count"] == 3
+    assert len(feedback["diagnostics"]) == 2
 
 
 def test_task_level_endpoint_mismatch_requires_real_interaction_repair() -> None:
@@ -5383,6 +5815,33 @@ def test_explicit_zero_proof_is_overridden_by_nonzero_actual_usage() -> None:
         cost_ceiling=None,
         wall_ceiling=None,
     ) is None
+
+
+def test_local_stage_can_configure_zero_tokens_with_bounded_wall_time() -> None:
+    usage = _configured_budget_usage(
+        tokens=0,
+        cost_usd=0,
+        wall_seconds=30,
+        token_ceiling=100,
+        cost_ceiling=None,
+        wall_ceiling=None,
+    )
+
+    assert usage == BudgetUsage(
+        tokens=0,
+        cost_usd=Decimal("0"),
+        wall_seconds=Decimal("30"),
+    )
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(total_tokens=100, total_cost_usd=None)
+        ),
+        cold_start_by_stage={BudgetStage.CONFORMANCE: usage},
+    )
+    decision = context.reserve(BudgetStage.CONFORMANCE, "local-probe")
+    assert decision.allowed is True
+    assert decision.estimate.tokens == 0
+    assert decision.estimate.wall_seconds == Decimal("30")
 
 
 def test_stored_replay_backend_explicitly_proves_zero_for_multi_trajectory_reuse() -> None:
@@ -12488,6 +12947,7 @@ def test_optimize_cli_request_stops_population_after_model_runtime_failure(
         "failure_class": "infrastructure",
         "stage": "candidate_generation",
         "code": "candidate_generation_infrastructure_error",
+        "retryable": False,
         "error_type": "RuntimeError",
     }
     assert 1 <= model_call_count <= 2
@@ -13927,12 +14387,16 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
     optimizer_diagnostics = report["optimizer_diagnostics"]
-    assert optimizer_diagnostics["filtered_duplicate_candidates"] == 1
+    iteration_diagnostics = optimizer_diagnostics["iterations"]
+    assert any(
+        item["diagnostics"]["filtered_duplicate_candidates"] == 1
+        for item in iteration_diagnostics
+    )
     assert report["population"]["generated_candidate_count"] == 1
-    assert report["population"]["generation_attempt_count"] == 2
-    assert len(report["population"]["scheduler_decisions"]) == 2
+    assert report["population"]["generation_attempt_count"] >= 2
+    assert len(report["population"]["scheduler_decisions"]) >= 2
     assert report["population"]["scheduler_decisions"][-1]["reason_code"] == (
-        "no_repairable_frontier"
+        "repair_frontier_stalled"
     )
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
 

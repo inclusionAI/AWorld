@@ -151,21 +151,90 @@ class SelfEvolveJobWorker:
             drained += 1
             payload["status"] = "running"
             _write_job(job_path, payload)
+            framework_result: Mapping[str, Any] | None = None
             try:
                 framework_result = self.run_job(payload)
             except Exception as exc:
                 payload["status"] = "failed"
+                payload["job_execution_status"] = "failed"
                 payload["failure"] = {
                     "type": type(exc).__name__,
                     "message": str(exc),
                 }
             else:
                 payload["status"] = "succeeded"
+                payload["job_execution_status"] = "succeeded"
                 if isinstance(framework_result, Mapping):
                     payload["framework_result"] = dict(framework_result)
                     payload["replay_diagnostics"] = _replay_diagnostics(framework_result)
+                    payload["framework_status"] = framework_result.get("status")
+                    payload["campaign_status"] = framework_result.get(
+                        "campaign_status"
+                    )
+                    payload["self_improvement_disposition"] = framework_result.get(
+                        "self_improvement_disposition"
+                    )
             _write_job(job_path, payload)
+            if isinstance(framework_result, Mapping):
+                self._enqueue_campaign_continuation(
+                    jobs_dir=jobs_dir,
+                    source_payload=payload,
+                    framework_result=framework_result,
+                )
         return drained
+
+    def _enqueue_campaign_continuation(
+        self,
+        *,
+        jobs_dir: Path,
+        source_payload: Mapping[str, Any],
+        framework_result: Mapping[str, Any],
+    ) -> None:
+        disposition = framework_result.get("self_improvement_disposition")
+        campaign_id = framework_result.get("campaign_id")
+        current_cycle = framework_result.get("campaign_cycle")
+        if (
+            framework_result.get("campaign_status") != "active"
+            or not isinstance(disposition, Mapping)
+            or disposition.get("continuable") is not True
+            or not isinstance(campaign_id, str)
+            or isinstance(current_cycle, bool)
+            or not isinstance(current_cycle, int)
+        ):
+            return
+        next_cycle = current_cycle + 1
+        if _has_pending_campaign_generation(
+            jobs_dir,
+            campaign_id=campaign_id,
+            campaign_cycle=next_cycle,
+        ):
+            return
+        source_job_id = str(source_payload.get("job_id") or "self-evolve")
+        job_id = f"{source_job_id}-campaign-{next_cycle:03d}"
+        continuation = {
+            key: value
+            for key, value in source_payload.items()
+            if key
+            not in {
+                "campaign_status",
+                "failure",
+                "framework_result",
+                "framework_status",
+                "job_execution_status",
+                "replay_diagnostics",
+                "self_improvement_disposition",
+            }
+        }
+        continuation.update(
+            {
+                "job_id": job_id,
+                "status": "pending",
+                "created_at": time.time(),
+                "campaign_id": campaign_id,
+                "campaign_cycle": next_cycle,
+            }
+        )
+        _write_job(jobs_dir / f"{job_id}.json", continuation)
 
     def recover_interrupted_applies(self) -> int:
         from aworld.self_evolve.store import FilesystemSelfEvolveStore
@@ -222,7 +291,7 @@ def _run_framework_job(
     trajectory = payload.get("trajectory")
     if not isinstance(trajectory, list):
         raise ValueError("self-evolve job payload requires trajectory list")
-    return optimize_from_cli_request(
+    request = dict(
         workspace_root=str(payload.get("workspace_root") or "."),
         agent=str(payload.get("agent_id")) if payload.get("agent_id") else None,
         task=str(payload.get("task_id") or "self-evolve-job"),
@@ -249,6 +318,31 @@ def _run_framework_job(
         replay_stability_margin=config.replay_stability_margin,
         runtime_registry_refresher=runtime_registry_refresher,
     )
+    apply_policy = _effective_background_apply_policy(config)
+    if apply_policy == "auto_verified" and config.max_improvement_cycles > 1:
+        from aworld.self_evolve.campaign import run_self_improvement_campaign
+
+        campaign_id = payload.get("campaign_id")
+        if campaign_id is not None:
+            request = {
+                key: value
+                for key, value in request.items()
+                if key
+                not in {
+                    "current_trajectory",
+                }
+            }
+        return run_self_improvement_campaign(
+            workspace_root=str(payload.get("workspace_root") or "."),
+            request=request,
+            max_improvement_cycles=config.max_improvement_cycles,
+            resume_campaign=(
+                str(campaign_id) if isinstance(campaign_id, str) else None
+            ),
+            advance_once_only=True,
+            run_once=optimize_from_cli_request,
+        )
+    return optimize_from_cli_request(**request)
 
 
 def _framework_job_budget_kwargs(config: SelfEvolveConfig) -> dict[str, object]:
@@ -345,6 +439,26 @@ def _has_pending_job(jobs_dir: Path) -> bool:
         except Exception:
             continue
         if payload.get("status") == "pending":
+            return True
+    return False
+
+
+def _has_pending_campaign_generation(
+    jobs_dir: Path,
+    *,
+    campaign_id: str,
+    campaign_cycle: int,
+) -> bool:
+    for job_path in jobs_dir.glob("*.json"):
+        try:
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if (
+            payload.get("status") == "pending"
+            and payload.get("campaign_id") == campaign_id
+            and payload.get("campaign_cycle") == campaign_cycle
+        ):
             return True
     return False
 

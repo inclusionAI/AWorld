@@ -61,6 +61,7 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert calls["dataset"] == "eval.jsonl"
     assert calls["apply"] == "proposal"
     assert calls["new_skill_policy"] == "draft_only"
+    assert calls["max_improvement_cycles"] == 3
     assert callable(calls["progress_callback"])
     assert calls["from_trajectory"] is None
     assert calls["task"] is None
@@ -116,6 +117,56 @@ def test_optimize_command_rejects_phase1_external_apply_modes(
     output = capsys.readouterr().out
     assert handled is True
     assert "Optimize error: --apply must be one of proposal, auto_verified" in output
+
+
+def test_optimize_command_forwards_campaign_cycle_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "rejected"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory",
+            "trajectory.log",
+            "--apply",
+            "auto_verified",
+            "--max-improvement-cycles",
+            "5",
+        ]
+    )
+
+    assert handled is True
+    assert calls["max_improvement_cycles"] == 5
+
+
+def test_optimize_command_rejects_proposal_campaign_resume(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module._maybe_dispatch_top_level_command(
+            [
+                "aworld-cli",
+                "optimize",
+                "--resume-campaign",
+                "campaign-generic",
+                "--apply",
+                "proposal",
+            ]
+        )
+
+    assert exc_info.value.code == 1
+    assert "--resume-campaign requires --apply auto_verified" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("target", ["skill:demo", "prompt:system", "tool:browser"])
@@ -1117,6 +1168,27 @@ def test_render_optimize_summary_lists_failed_gates_for_rejected_runs() -> None:
         "Rejected gates: held_out_verification, global_regression_benchmark"
         in summary
     )
+
+
+def test_render_optimize_summary_reports_campaign_outcome() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "campaign_id": "campaign-generic",
+            "campaign_status": "active",
+            "campaign_cycle": 1,
+            "campaign_max_cycles": 3,
+            "self_improvement_disposition": {
+                "kind": "continue_candidate",
+                "reason_code": "candidate_repair_frontier_progressed",
+            },
+        }
+    )
+
+    assert "Campaign: campaign-generic" in summary
+    assert "Campaign status: active" in summary
+    assert "Campaign cycle: 1/3" in summary
+    assert "candidate_repair_frontier_progressed" in summary
 
 
 def test_optimize_command_module_does_not_own_framework_self_evolve_components() -> None:

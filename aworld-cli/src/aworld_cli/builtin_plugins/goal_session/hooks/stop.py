@@ -42,14 +42,69 @@ class GoalCommand(PluginBoundCommand):
         handle = self.get_state_handle(context)
         if handle is None:
             raise ValueError("/goal requires session-aware plugin state")
-        state = new_goal_contract_state(
-            objective=parsed["prompt"],
-            verification_commands=parsed["verify_commands"],
-            completion_promise=parsed["completion_promise"],
-            max_turns=parsed["max_turns"],
-            source="goal",
-        )
+        if parsed["from_campaign"]:
+            state = self._campaign_goal_state(
+                context,
+                parsed["from_campaign"],
+                max_turns=parsed["max_turns"],
+            )
+        else:
+            state = new_goal_contract_state(
+                objective=parsed["prompt"],
+                verification_commands=parsed["verify_commands"],
+                completion_promise=parsed["completion_promise"],
+                max_turns=parsed["max_turns"],
+                source="goal",
+            )
         handle.write(state)
+        return state
+
+    def _campaign_goal_state(
+        self,
+        context: CommandContext,
+        campaign_id: str,
+        *,
+        max_turns: int | None,
+    ) -> dict:
+        from aworld.self_evolve.campaign import (
+            SelfImprovementCampaignStatus,
+            SelfImprovementDispositionKind,
+        )
+        from aworld.self_evolve.store import FilesystemSelfEvolveStore
+
+        store = FilesystemSelfEvolveStore(context.cwd)
+        campaign = store.read_campaign(campaign_id)
+        if campaign.status is not SelfImprovementCampaignStatus.PAUSED:
+            raise ValueError("campaign must be paused at a Goal handoff")
+        disposition = campaign.latest_disposition
+        if (
+            disposition is None
+            or disposition.kind is not SelfImprovementDispositionKind.HANDOFF_GOAL
+        ):
+            raise ValueError("campaign does not contain a framework/shared Goal handoff")
+        handoff = store.read_campaign_goal_handoff(campaign_id)
+        if handoff.get("schema_version") != "aworld.self_evolve.goal_handoff.v1":
+            raise ValueError("unsupported campaign Goal handoff schema")
+        if handoff.get("latest_run_id") != campaign.run_ids[-1]:
+            raise ValueError("campaign Goal handoff does not match latest run")
+        resume_action = f"aworld-cli optimize --resume-campaign {campaign_id}"
+        if handoff.get("next_action") != resume_action:
+            raise ValueError("campaign Goal handoff has an invalid resume action")
+        state = new_goal_contract_state(
+            objective=str(handoff.get("objective") or ""),
+            max_turns=max_turns,
+            source="self_evolve",
+        )
+        state.update(
+            {
+                "campaign_id": campaign_id,
+                "campaign_handoff_path": str(
+                    store.campaign_path(campaign_id) / "goal_handoff.json"
+                ),
+                "latest_run_id": campaign.run_ids[-1],
+                "campaign_resume_action": resume_action,
+            }
+        )
         return state
 
     async def execute(self, context: CommandContext) -> str:

@@ -690,7 +690,11 @@ def _split_case_ids(case_ids: tuple[str, ...], *, split_seed: str) -> Mapping[st
     if count == 1:
         return {"train": ordered, "validation": [], "held_out": []}
     if count == 2:
-        return {"train": ordered[:1], "validation": ordered[1:], "held_out": []}
+        # Two independent members are the smallest trajectory set that can
+        # preserve a genuinely unseen verification member.  Validation falls
+        # back to the train split when it is empty, while the second member is
+        # kept out of the optimizer request and used only for release gates.
+        return {"train": ordered[:1], "validation": [], "held_out": ordered[1:]}
 
     held_out_count = max(1, count // 5)
     validation_count = max(1, count // 5)

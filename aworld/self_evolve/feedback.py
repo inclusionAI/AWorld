@@ -7,6 +7,10 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
     sanitize_text,
 )
+from aworld.self_evolve.recovery_trace import (
+    validate_public_constraint_recovery_trace,
+    validate_public_recovery_trace,
+)
 from aworld.self_evolve.types import EvaluationSummary
 
 _MAX_TEXT_CHARS = 240
@@ -139,6 +143,14 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
             for item in diagnostics[:16]
             if isinstance(item, Mapping)
         ]
+    recovery_trace = validate_public_recovery_trace(metrics.get("recovery_trace"))
+    if recovery_trace is not None:
+        result["recovery_trace"] = recovery_trace
+    constraint_recovery_trace = validate_public_constraint_recovery_trace(
+        metrics.get("constraint_recovery_trace")
+    )
+    if constraint_recovery_trace is not None:
+        result["constraint_recovery_trace"] = constraint_recovery_trace
     repair_candidate_package = _repair_candidate_package_summary(
         metrics.get("repair_candidate_package")
     )

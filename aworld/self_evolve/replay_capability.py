@@ -64,6 +64,7 @@ _MAX_READINESS_TIMEOUT_SECONDS = 30.0
 REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES = 16
 REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS = 4_096
 REPLAY_RESPONSE_INDEX_ENV = "AWORLD_REPLAY_RESPONSE_INDEX"
+REPLAY_RESPONSE_INDEX_CONSUMER = "json_sidecar_record_value_projector"
 
 REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS = tuple(
     sorted(_SUPPORTED_READINESS_KINDS)
@@ -177,6 +178,9 @@ def _schema_field_violation(
     expected: Sequence[str],
     value: Any,
     occurrence_count: int = 1,
+    value_domain: str = "schema_value",
+    required_operations: Sequence[str] = (),
+    forbidden_operations: Sequence[str] = (),
 ) -> SchemaFieldViolation:
     return SchemaFieldViolation.create(
         SchemaFieldRepairConstraint(
@@ -184,6 +188,9 @@ def _schema_field_violation(
             field_path=field_path,
             rule=rule,
             expected=tuple(expected),
+            value_domain=value_domain,
+            required_operations=tuple(required_operations),
+            forbidden_operations=tuple(forbidden_operations),
         ),
         value,
         occurrence_count=occurrence_count,
@@ -970,31 +977,63 @@ def _verify_recorded_response_indexes_and_runtime_bindings(
                 "skill runtime entrypoint must be readable UTF-8 source"
             ) from exc
         if not _runtime_consumes_recorded_response_index(source):
-            raise ReplayCapabilityError(
+            _raise_schema_field_error(
                 "skill runtime with recorded responses must consume "
                 f"{REPLAY_RESPONSE_INDEX_ENV} as a JSON sidecar file path, "
-                "not a numeric index: open the path, iterate "
-                "index_object['records'], and project record['value']; do not "
-                "substitute a recursive scan of the raw fixture"
+                "not a numeric index: in one provable lexical data-flow scope, "
+                "bind the environment value directly to a JSON file reader (or "
+                "pass it as that reader's path parameter), iterate "
+                "index_object['records'], and directly project record['value']; "
+                "do not hide the environment read behind a zero-argument return "
+                "helper or substitute a recursive scan of the raw fixture",
+                (
+                    _schema_field_violation(
+                        schema_layer="runtime",
+                        field_path=(
+                            "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+                        ),
+                        rule="enum",
+                        expected=(REPLAY_RESPONSE_INDEX_CONSUMER,),
+                        value="source_behavior_not_detected",
+                        value_domain="source_behavior",
+                        required_operations=(
+                            "read_environment_binding_as_path",
+                            "bind_environment_path_to_json_file_reader",
+                            "access_records_array",
+                            "project_record_value_field_directly",
+                        ),
+                        forbidden_operations=(
+                            "coerce_environment_binding_to_numeric_index",
+                            "hide_environment_read_behind_zero_arg_return_helper",
+                            "substitute_raw_fixture_recursive_scan",
+                        ),
+                    ),
+                ),
             )
 
 
 def _runtime_consumes_recorded_response_index(source: str) -> bool:
-    """Recognize the minimal language-level sidecar consumption contract."""
+    """Recognize the minimal language-level sidecar consumption contract.
+
+    The analyzer intentionally proves a small data-flow property rather than
+    accepting disconnected token mentions: within one lexical scope, a value
+    read from the response-index environment binding must flow into a file
+    reader.  The runtime must also project the framework-owned ``records`` and
+    ``value`` keys.  Precise payload correctness remains the responsibility of
+    the protocol probe.
+    """
 
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return False
-    reads_environment_binding = False
+
     accessed_keys: set[object] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript):
             key_node = node.slice
             if isinstance(key_node, ast.Constant):
                 accessed_keys.add(key_node.value)
-                if key_node.value == REPLAY_RESPONSE_INDEX_ENV:
-                    reads_environment_binding = True
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -1004,18 +1043,318 @@ def _runtime_consumes_recorded_response_index(source: str) -> bool:
             key = node.args[0].value
             if node.func.attr == "get":
                 accessed_keys.add(key)
-            if (
-                key == REPLAY_RESPONSE_INDEX_ENV
-                and node.func.attr in {"get", "getenv"}
-            ):
-                reads_environment_binding = True
     # The framework index builder only emits records whose projected values
     # are non-empty. Runtimes may still inspect the ``non_empty`` metadata, but
     # requiring that exact spelling would reject an equivalent bounded
     # records/value projection before the precise protocol probe can verify it.
-    return reads_environment_binding and {"records", "value"}.issubset(
-        accessed_keys
+    if not {"records", "value"}.issubset(accessed_keys):
+        return False
+
+    function_scopes = _runtime_function_scopes(tree)
+    reader_parameters = _runtime_file_reader_parameter_summaries(function_scopes)
+    return any(
+        _scope_reads_response_index_file(
+            scope_nodes,
+            reader_parameters=reader_parameters,
+            function_scopes=function_scopes,
+        )
+        for scope_nodes in _runtime_lexical_scopes(tree)
     )
+
+
+def _runtime_lexical_scopes(tree: ast.Module) -> tuple[tuple[ast.AST, ...], ...]:
+    """Return bounded lexical scopes without merging unrelated functions."""
+
+    scopes: list[tuple[ast.AST, ...]] = []
+    module_nodes = _collect_runtime_scope_nodes(tree.body)
+    if module_nodes:
+        scopes.append(module_nodes)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_nodes = _collect_runtime_scope_nodes(node.body)
+            if function_nodes:
+                scopes.append(function_nodes)
+    return tuple(scopes)
+
+
+def _collect_runtime_scope_nodes(
+    statements: Sequence[ast.stmt],
+) -> tuple[ast.AST, ...]:
+    class ScopeCollector(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.nodes: list[ast.AST] = []
+
+        def generic_visit(self, node: ast.AST) -> None:
+            self.nodes.append(node)
+            super().generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return None
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return None
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return None
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return None
+
+    collector = ScopeCollector()
+    for statement in statements:
+        collector.visit(statement)
+    return tuple(collector.nodes)
+
+
+def _runtime_function_scopes(
+    tree: ast.Module,
+) -> dict[str, tuple[tuple[str, ...], tuple[ast.AST, ...]]]:
+    functions: dict[str, tuple[tuple[str, ...], tuple[ast.AST, ...]]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        parameters = tuple(
+            argument.arg
+            for argument in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+        )
+        functions[node.name] = (
+            parameters,
+            _collect_runtime_scope_nodes(node.body),
+        )
+    return functions
+
+
+def _runtime_file_reader_parameter_summaries(
+    function_scopes: Mapping[
+        str,
+        tuple[tuple[str, ...], tuple[ast.AST, ...]],
+    ],
+) -> dict[str, frozenset[int]]:
+    """Summarize parameters that reach readers through bounded call chains."""
+
+    summaries: dict[str, set[int]] = {
+        function_name: set() for function_name in function_scopes
+    }
+    # Each fixed-point pass adds at least one parameter or terminates. The
+    # aggregate parameter count is therefore a strict upper bound.
+    pass_limit = 1 + sum(len(value[0]) for value in function_scopes.values())
+    for _ in range(pass_limit):
+        changed = False
+        frozen = {
+            name: frozenset(parameter_indexes)
+            for name, parameter_indexes in summaries.items()
+        }
+        for function_name, (parameters, nodes) in function_scopes.items():
+            for parameter_index, parameter_name in enumerate(parameters):
+                if parameter_index in summaries[function_name]:
+                    continue
+                if _scope_taint_reaches_file_reader(
+                    nodes,
+                    initial_bound_names={parameter_name},
+                    include_environment_binding=False,
+                    reader_parameters=frozen,
+                    function_scopes=function_scopes,
+                ):
+                    summaries[function_name].add(parameter_index)
+                    changed = True
+        if not changed:
+            break
+    return {
+        name: frozenset(parameter_indexes)
+        for name, parameter_indexes in summaries.items()
+    }
+
+
+def _scope_reads_response_index_file(
+    nodes: Sequence[ast.AST],
+    *,
+    reader_parameters: Mapping[str, frozenset[int]],
+    function_scopes: Mapping[
+        str,
+        tuple[tuple[str, ...], tuple[ast.AST, ...]],
+    ],
+) -> bool:
+    """Prove environment-binding flow into a file-reader in one scope."""
+
+    return _scope_taint_reaches_file_reader(
+        nodes,
+        initial_bound_names=set(),
+        include_environment_binding=True,
+        reader_parameters=reader_parameters,
+        function_scopes=function_scopes,
+    )
+
+
+def _scope_taint_reaches_file_reader(
+    nodes: Sequence[ast.AST],
+    *,
+    initial_bound_names: set[str],
+    include_environment_binding: bool,
+    reader_parameters: Mapping[str, frozenset[int]],
+    function_scopes: Mapping[
+        str,
+        tuple[tuple[str, ...], tuple[ast.AST, ...]],
+    ],
+) -> bool:
+    """Propagate one bounded source through assignments and local calls."""
+
+    bound_names = set(initial_bound_names)
+    assignments: list[tuple[tuple[str, ...], ast.AST]] = []
+    for node in nodes:
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            value = node.value
+            raw_targets: Sequence[ast.AST]
+            if isinstance(node, ast.Assign):
+                raw_targets = node.targets
+            else:
+                raw_targets = (node.target,)
+            target_names = tuple(
+                name
+                for target in raw_targets
+                for name in _assigned_runtime_names(target)
+            )
+            if target_names:
+                assignments.append((target_names, value))
+
+    changed = True
+    while changed:
+        changed = False
+        for target_names, value in assignments:
+            if not _expression_depends_on_response_index(
+                value,
+                bound_names,
+                include_environment_binding=include_environment_binding,
+            ):
+                continue
+            for name in target_names:
+                if name not in bound_names:
+                    bound_names.add(name)
+                    changed = True
+
+    for node in nodes:
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "open":
+            if node.args and _expression_depends_on_response_index(
+                node.args[0],
+                bound_names,
+                include_environment_binding=include_environment_binding,
+            ):
+                return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "open",
+            "read_bytes",
+            "read_text",
+        }:
+            if _expression_depends_on_response_index(
+                node.func.value,
+                bound_names,
+                include_environment_binding=include_environment_binding,
+            ):
+                return True
+        called_name = _runtime_called_function_name(node.func)
+        if called_name is None or called_name not in reader_parameters:
+            continue
+        parameters = function_scopes[called_name][0]
+        for parameter_index in reader_parameters[called_name]:
+            argument = _runtime_call_argument(node, parameter_index, parameters)
+            if argument is not None and _expression_depends_on_response_index(
+                argument,
+                bound_names,
+                include_environment_binding=include_environment_binding,
+            ):
+                return True
+    return False
+
+
+def _runtime_called_function_name(function: ast.AST) -> str | None:
+    if isinstance(function, ast.Name):
+        return function.id
+    if isinstance(function, ast.Attribute):
+        return function.attr
+    return None
+
+
+def _runtime_call_argument(
+    call: ast.Call,
+    parameter_index: int,
+    parameters: Sequence[str],
+) -> ast.AST | None:
+    if parameter_index < len(call.args):
+        return call.args[parameter_index]
+    if parameter_index >= len(parameters):
+        return None
+    parameter_name = parameters[parameter_index]
+    for keyword in call.keywords:
+        if keyword.arg == parameter_name:
+            return keyword.value
+    return None
+
+
+def _assigned_runtime_names(target: ast.AST) -> tuple[str, ...]:
+    if isinstance(target, ast.Name):
+        return (target.id,)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return tuple(
+            name
+            for item in target.elts
+            for name in _assigned_runtime_names(item)
+        )
+    return ()
+
+
+def _expression_depends_on_response_index(
+    expression: ast.AST,
+    bound_names: set[str],
+    *,
+    include_environment_binding: bool = True,
+) -> bool:
+    for node in ast.walk(expression):
+        if isinstance(node, ast.Name) and node.id in bound_names:
+            return True
+        if not include_environment_binding:
+            continue
+        if isinstance(node, ast.Subscript):
+            key = node.slice
+            if (
+                isinstance(key, ast.Constant)
+                and key.value == REPLAY_RESPONSE_INDEX_ENV
+                and _is_os_environ_expression(node.value)
+            ):
+                return True
+        if not isinstance(node, ast.Call):
+            continue
+        if not node.args or not isinstance(node.args[0], ast.Constant):
+            continue
+        if node.args[0].value != REPLAY_RESPONSE_INDEX_ENV:
+            continue
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == "get" and _is_os_environ_expression(
+                node.func.value
+            ):
+                return True
+            if (
+                node.func.attr == "getenv"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "os"
+            ):
+                return True
+        if isinstance(node.func, ast.Name) and node.func.id == "getenv":
+            return True
+    return False
+
+
+def _is_os_environ_expression(expression: ast.AST) -> bool:
+    return (
+        isinstance(expression, ast.Attribute)
+        and isinstance(expression.value, ast.Name)
+        and expression.value.id == "os"
+        and expression.attr == "environ"
+    ) or (isinstance(expression, ast.Name) and expression.id == "environ")
 
 
 def _parse_manifest(raw: Mapping[str, Any]) -> ReplayCapabilityManifest:
@@ -1246,9 +1585,30 @@ def _parse_compile_result(
             service.transport == "skill_runtime"
             for service in requirement_services
         ):
-            raise ReplayCapabilityError(
+            observed_transport = next(
+                (
+                    service.transport
+                    for service in requirement_services
+                    if service.transport
+                ),
+                None,
+            )
+            _raise_schema_field_error(
                 "runtime_required requirement must use skill_runtime: "
-                f"{requirement_id}"
+                f"{requirement_id}",
+                (
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path=(
+                            "services[*@request.requirement.status:"
+                            "runtime_required].transport"
+                        ),
+                        rule="enum",
+                        expected=("skill_runtime",),
+                        value=observed_transport,
+                        occurrence_count=max(1, len(requirement_services)),
+                    ),
+                ),
             )
     service_ids = {item.service_id for item in services}
     replacements_raw = raw.get("endpoint_replacements", {})
@@ -1362,10 +1722,31 @@ def _validate_fixture_provenance(
     output_root: Path,
 ) -> dict[str, tuple[str, ...]]:
     if not isinstance(raw, dict):
-        raise ReplayCapabilityError("result fixture_evidence_refs must be an object")
+        _raise_schema_field_error(
+            "result fixture_evidence_refs must be an object",
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="fixture_evidence_refs",
+                    rule="type",
+                    expected=("object",),
+                    value=raw,
+                ),
+            ),
+        )
     if set(raw) != set(fixtures):
-        raise ReplayCapabilityError(
-            "result must provide evidence provenance for every fixture exactly once"
+        _raise_schema_field_error(
+            "result must provide evidence provenance for every fixture exactly once",
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="fixtures[*].evidence_refs",
+                    rule="required",
+                    expected=(),
+                    value=raw,
+                    occurrence_count=max(1, len(set(fixtures) ^ set(raw))),
+                ),
+            ),
         )
     allowed_refs = {
         ref
@@ -2861,13 +3242,25 @@ def _validate_declared_output_files(
             observed.add(path.relative_to(output_root).as_posix())
     undeclared = observed - allowed
     if undeclared:
-        raise ReplayCapabilityError(
-            "replay capability produced undeclared output files: "
-            f"{sorted(undeclared)}. Remove them: the compiler may write only "
-            "result.json and its declared evidence fixtures. The framework "
-            "derives the recorded-response sidecar after compile and supplies "
-            "its path through AWORLD_REPLAY_RESPONSE_INDEX automatically; do "
-            "not write, declare, relocate, or pass a compiler-owned response index"
+        _raise_schema_field_error(
+            (
+                "replay capability produced undeclared output files: "
+                f"{sorted(undeclared)}. Remove them: the compiler may write only "
+                "result.json and its declared evidence fixtures. The framework "
+                "derives the recorded-response sidecar after compile and supplies "
+                "its path through AWORLD_REPLAY_RESPONSE_INDEX automatically; do "
+                "not write, declare, relocate, or pass a compiler-owned response index"
+            ),
+            (
+                _schema_field_violation(
+                    schema_layer="compiler_output",
+                    field_path="files[*]",
+                    rule="enum",
+                    expected=("result.json", "declared_fixture"),
+                    value=sorted(undeclared),
+                    occurrence_count=len(undeclared),
+                ),
+            ),
         )
 
 

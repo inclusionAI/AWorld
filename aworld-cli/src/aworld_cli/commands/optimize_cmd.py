@@ -23,6 +23,7 @@ def _usage() -> str:
   /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory-set <trajectory-set.json> --include-prior-runs --apply proposal
   /optimize --from-run <run-id-or-path> --rerun-evaluator --apply auto_verified --judge-agent <agent.md>
+  /optimize --resume-campaign <campaign-id>
   /optimize --target skill:<name> --dataset <eval.jsonl> --apply proposal
   /optimize --drain-pending
 
@@ -49,7 +50,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rerun-evaluator", action="store_true", dest="rerun_evaluator")
     parser.add_argument("--batch-config", dest="batch_config")
     parser.add_argument("--iterations", type=int)
-    parser.add_argument("--apply", default="proposal")
+    parser.add_argument("--apply")
+    parser.add_argument("--max-improvement-cycles", type=int, default=3, dest="max_improvement_cycles")
+    parser.add_argument("--resume-campaign", dest="resume_campaign")
     parser.add_argument(
         "--new-skill-policy",
         choices=("disabled", "draft_only", "auto_verified"),
@@ -127,6 +130,9 @@ class OptimizeCommand(Command):
             )
             return f"Drained pending self-evolve jobs: {drained}"
 
+        if args.resume_campaign and args.apply not in {None, "auto_verified"}:
+            return "Optimize error: --resume-campaign requires --apply auto_verified"
+
         try:
             runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
             report = await asyncio.to_thread(
@@ -143,7 +149,9 @@ class OptimizeCommand(Command):
                 rerun_evaluator=args.rerun_evaluator,
                 batch_config=args.batch_config,
                 iterations=args.iterations,
-                apply=args.apply,
+                max_improvement_cycles=args.max_improvement_cycles,
+                resume_campaign=args.resume_campaign,
+                apply=args.apply or ("auto_verified" if args.resume_campaign else "proposal"),
                 new_skill_policy=args.new_skill_policy,
                 infer_target=args.target is None,
                 workspace_root=context.cwd,

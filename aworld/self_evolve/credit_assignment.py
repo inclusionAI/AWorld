@@ -243,19 +243,34 @@ LLMTargetDiagnoser = Callable[[TracePack, TargetInventory], LLMTargetDiagnosis |
 
 _WEAK_SKILL_ALIAS_TOKENS = {
     "agent",
+    "analyze",
+    "analysis",
     "assistant",
     "audio",
+    "browse",
+    "browser",
     "content",
+    "create",
     "document",
     "documents",
+    "edit",
     "extension",
+    "fetch",
     "files",
+    "find",
+    "generate",
     "image",
     "images",
     "media",
+    "navigate",
+    "open",
+    "read",
+    "search",
     "skill",
     "specialized",
+    "summarize",
     "video",
+    "write",
 }
 
 
@@ -734,7 +749,11 @@ def _entry(
 
 
 def _deterministic_signal(serialized: str) -> _Signal:
-    if "result validation mismatch" in serialized or "anchors" in serialized:
+    # Target evidence must describe the failure contract, not merely reuse a
+    # common implementation noun. Source code, research prompts, and shell
+    # commands frequently contain words such as "anchors" without implicating
+    # the result-validation policy.
+    if "result validation mismatch" in serialized:
         return _Signal(
             target_type="prompt-section",
             target_id="result-validation-anchor-policy",

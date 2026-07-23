@@ -532,6 +532,12 @@ async def test_llm_mutator_carries_candidate_specific_repair_conformance() -> No
     assert "shape-complete compiler contract" in prompts[0]
     assert "Do not serialize a metadata wrapper" in prompts[0]
     assert "executable, shape-complete contract" in prompts[0]
+    assert "required_operations is a conjunctive structural" in prompts[0]
+    assert "forbidden_operations names structural substitutions" in prompts[0]
+    assert "absolute path from the root of schema_layer" in prompts[0]
+    assert "[*@predicate.path:value]" in prompts[0]
+    assert "mixed and multi-member inputs" in prompts[0]
+    assert "similarly named field to a nested service or probe" in prompts[0]
     assert "Keep schema_layer boundaries intact" in prompts[0]
     assert strategy["repair_conformance"]["fixture_probe_constraints"] == [
         {
@@ -632,6 +638,7 @@ async def test_llm_mutator_judge_stage_repair_freezes_verified_replay_files() ->
     assert len(result.candidates) == 1
     assert "Preserve every candidate-owned replay file byte-for-byte" in prompts[0]
     assert "repair_conformance" not in _prompt_payload(prompts[0])
+    assert result.private_context == {}
     assert [item.path for item in result.candidates[0].files] == [
         "replay/compiler.py",
         "replay/runtime.py",
@@ -1524,6 +1531,68 @@ def test_feedback_normalization_requires_stronger_evidence_repair_for_veto_and_m
     assert "pre_final_veto_check" in summary["required_behaviors"]
     assert "support_every_claim_with_artifact_reference" in summary["required_behaviors"]
     assert "raise_groundedness_before_breadth" in summary["required_behaviors"]
+
+
+def test_feedback_normalization_preserves_typed_recovery_trace() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-recovery",
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_replay"],
+                "recovery_trace": {
+                    "schema_version": "aworld.self_evolve.recovery_trace.public.v1",
+                    "member_count": 2,
+                    "candidate_success_rate": 0.5,
+                    "recovered_member_count": 1,
+                    "guidance": ["preserve_positive_recovery_delta"],
+                    "raw_response": "SECRET",
+                },
+            },
+        )
+    )
+
+    assert summary["recovery_trace"]["recovered_member_count"] == 1
+    assert summary["recovery_trace"]["guidance"] == [
+        "preserve_positive_recovery_delta"
+    ]
+    assert "SECRET" not in json.dumps(summary["recovery_trace"])
+
+
+def test_feedback_normalization_preserves_constraint_recovery_trace() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-constraint-recovery",
+            dataset_split="validation",
+            metrics={
+                "failed_gates": ["candidate_repair_conformance"],
+                "constraint_recovery_trace": {
+                    "schema_version": (
+                        "aworld.self_evolve.constraint_recovery_trace.public.v1"
+                    ),
+                    "attempt_count": 3,
+                    "repeated_violation_count": 1,
+                    "guidance": [
+                        "switch_implementation_for_repeated_constraint_failure"
+                    ],
+                    "constraints": [
+                        {
+                            "constraint_identity": "sha256:" + "d" * 64,
+                            "status": "active",
+                            "violation_attempt_count": 3,
+                            "raw_value": "SECRET",
+                        }
+                    ],
+                },
+            },
+        )
+    )
+
+    trace = summary["constraint_recovery_trace"]
+    assert trace["attempt_count"] == 3
+    assert trace["repeated_violation_count"] == 1
+    assert trace["constraints"][0]["violation_attempt_count"] == 3
+    assert "SECRET" not in json.dumps(trace)
 
 
 def test_feedback_normalization_turns_held_out_failure_into_generalization_constraints() -> None:

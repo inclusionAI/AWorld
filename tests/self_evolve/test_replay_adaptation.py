@@ -143,6 +143,24 @@ def test_compiler_marks_continuation_without_prior_context_incomplete(tmp_path: 
     assert bundle.ready is False
 
 
+def test_compiler_marks_natural_follow_up_without_prior_context_incomplete(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("把论文里的这些细节补全"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+
+    case = bundle.case("task-1")
+    assert case.readiness == "context_incomplete"
+    assert any(item.kind == "conversation_context" for item in case.dependencies)
+    assert bundle.ready is False
+
+
 def test_compiler_marks_unbound_local_endpoint_runtime_required(tmp_path: Path) -> None:
     workspace = tmp_path / "demo"
     workspace.mkdir()

@@ -391,9 +391,20 @@ def test_online_job_worker_rejects_auto_verified_skill_candidate_on_replay_failu
     assert drained == 1
     saved = json.loads(result.job_path.read_text(encoding="utf-8"))
     assert saved["status"] == "succeeded"
+    assert saved["job_execution_status"] == "succeeded"
+    assert saved["framework_status"] == "rejected"
+    assert saved["campaign_status"] == "active"
+    assert saved["self_improvement_disposition"]["kind"] == "continue_candidate"
+    follow_up_jobs = sorted(result.job_path.parent.glob("*-campaign-002.json"))
+    assert len(follow_up_jobs) == 1
+    assert json.loads(follow_up_jobs[0].read_text(encoding="utf-8"))["status"] == (
+        "pending"
+    )
     assert skill_path.read_text(encoding="utf-8") == original
 
-    reports = sorted((tmp_path / ".aworld" / "self_evolve").glob("cli-*/report.json"))
+    reports = sorted(
+        (tmp_path / ".aworld" / "self_evolve").glob("campaign-*/report.json")
+    )
     assert reports
     report = json.loads(reports[0].read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
@@ -565,9 +576,53 @@ def test_job_worker_persists_framework_result_and_replay_diagnostics(tmp_path) -
     assert drained == 1
     saved = json.loads(result.job_path.read_text(encoding="utf-8"))
     assert saved["status"] == "succeeded"
+    assert saved["job_execution_status"] == "succeeded"
+    assert saved["framework_status"] == "rejected"
     assert saved["framework_result"]["status"] == "rejected"
     assert saved["replay_diagnostics"]["replay_path"] == ".aworld/self_evolve/run-1/replay/cand-1"
     assert saved["replay_diagnostics"]["failed_gates"][0]["gate_name"] == "candidate_replay"
+
+
+def test_job_worker_requeues_exactly_one_continuable_campaign_generation(tmp_path) -> None:
+    scheduler = SelfEvolveScheduler(workspace_root=tmp_path)
+    result = scheduler.enqueue(
+        SelfEvolveRunContext(
+            agent_id="agent",
+            task_id="campaign-job",
+            workspace_root=str(tmp_path),
+            trajectory=_trajectory(),
+            self_evolve_config=SelfEvolveConfig(
+                mode="online",
+                apply_policy="auto_verified",
+                replay_enabled=False,
+            ),
+        )
+    )
+    assert result.job_path is not None
+
+    def run_job(payload):
+        return {
+            "status": "rejected",
+            "campaign_id": "campaign-generic",
+            "campaign_status": "active",
+            "campaign_cycle": 1,
+            "self_improvement_disposition": {
+                "kind": "continue_candidate",
+                "continuable": True,
+                "reason_code": "candidate_repair_frontier_progressed",
+            },
+        }
+
+    worker = SelfEvolveJobWorker(workspace_root=tmp_path, run_job=run_job)
+    assert worker.drain_pending_jobs(max_jobs=1) == 1
+    pending = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (tmp_path / ".aworld" / "self_evolve" / "jobs").glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8")).get("status") == "pending"
+    ]
+    assert len(pending) == 1
+    assert pending[0]["campaign_id"] == "campaign-generic"
+    assert pending[0]["campaign_cycle"] == 2
 
 
 def test_job_worker_forwards_runtime_registry_refresher_to_framework_job(

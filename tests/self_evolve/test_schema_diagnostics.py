@@ -44,6 +44,18 @@ from aworld.self_evolve.schema_diagnostics import (
             [1, 2],
             [1, 2, 3],
         ),
+        (
+            SchemaFieldRepairConstraint(
+                schema_layer="compile_result",
+                field_path=(
+                    "services[*@request.requirement.status:runtime_required].transport"
+                ),
+                rule="enum",
+                expected=("skill_runtime",),
+            ),
+            "skill_runtime",
+            "http_fixture",
+        ),
     ],
 )
 def test_schema_field_constraint_is_executable_and_round_trips(
@@ -81,6 +93,54 @@ def test_schema_field_violation_projection_is_payload_free_and_exact() -> None:
     assert details["schema_field_violation_count"] == 4
     assert details["schema_field_constraints"] == [constraint.to_dict()]
     assert len(details["schema_field_violations"]) == 2
+
+
+def test_source_behavior_constraint_is_explicit_and_round_trips() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+        required_operations=(
+            "read_environment_binding_as_path",
+            "parse_json_object",
+            "iterate_records_array",
+            "project_record_value",
+        ),
+        forbidden_operations=("substitute_raw_fixture_recursive_scan",),
+    )
+
+    assert constraint.to_dict()["value_domain"] == "source_behavior"
+    assert constraint.to_dict()["required_operations"] == [
+        "read_environment_binding_as_path",
+        "parse_json_object",
+        "iterate_records_array",
+        "project_record_value",
+    ]
+    assert SchemaFieldRepairConstraint.from_dict(constraint.to_dict()) == constraint
+    assert constraint.accepts("json_sidecar_record_value_projector") is True
+
+
+def test_schema_field_constraint_rejects_unknown_value_domain() -> None:
+    with pytest.raises(ValueError, match="value domain is unsupported"):
+        SchemaFieldRepairConstraint(
+            schema_layer="runtime",
+            field_path="source.consumer",
+            rule="required",
+            value_domain="runtime_assignment",
+        )
+
+
+def test_schema_field_constraint_operations_require_source_behavior() -> None:
+    with pytest.raises(ValueError, match="require source_behavior"):
+        SchemaFieldRepairConstraint(
+            schema_layer="compile_result",
+            field_path="services[*].transport",
+            rule="enum",
+            expected=("skill_runtime",),
+            required_operations=("project_record_value",),
+        )
 
 
 def test_schema_field_constraint_rejects_payload_like_expected_values() -> None:

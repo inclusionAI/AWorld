@@ -1254,6 +1254,101 @@ def test_prompt_payload_does_not_regress_task_plane_frontier_to_transport_confor
     assert payload["repair_support"]["repair_candidate_source_omitted"] is True
 
 
+def test_prompt_payload_merges_typed_constraints_across_repair_lineages() -> None:
+    package_files = [
+        {
+            "path": "replay/capability.json",
+            "content": json.dumps(
+                {
+                    "schema_version": "aworld.skill.replay_capability.v1",
+                    "capability_id": "generic.replay",
+                    "protocol": "aworld.replay.subprocess.v1",
+                    "entrypoint": "replay/compiler.py",
+                    "handles": ["local_endpoint"],
+                    "runtime_files": ["replay/runtime.py"],
+                }
+            ),
+        },
+        {"path": "replay/compiler.py", "content": "def compile():\n    pass\n"},
+        {"path": "replay/runtime.py", "content": "def run():\n    pass\n"},
+    ]
+    runtime_feedback = EvaluationSummary(
+        variant_id="candidate-runtime",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "interaction_progress": 138,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "implement_observed_endpoint_interactions",
+                    "stage": "replay_capability",
+                    "schema_field_constraints": [
+                        {
+                            "schema_layer": "runtime",
+                            "field_path": "protocol_trace",
+                            "rule": "required",
+                            "expected": [],
+                        }
+                    ],
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-runtime",
+                "files": package_files,
+            },
+        },
+    )
+    compiler_feedback = EvaluationSummary(
+        variant_id="candidate-compiler",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "interaction_progress": 10,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_capability_compile_failed",
+                    "stage": "capability_compile",
+                    "schema_field_constraints": [
+                        {
+                            "schema_layer": "compiler_output",
+                            "field_path": "files[*]",
+                            "rule": "enum",
+                            "expected": ["result.json", "declared_fixture"],
+                        }
+                    ],
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-compiler",
+                "files": package_files,
+            },
+        },
+    )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(runtime_feedback, compiler_feedback),
+            prior_feedback=(),
+        )
+    )
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-runtime"
+    contract = payload["repair_conformance"]
+    assert payload["capability_contracts"]
+    assert payload["repair_prompt_budget"]["omitted_capability_contracts"] == 0
+    assert {
+        item["schema_layer"] for item in contract["schema_field_constraints"]
+    } == {"compiler_output", "runtime"}
+    assert set(contract["required_branch_paths"]) == {
+        "replay/compiler.py",
+        "replay/runtime.py",
+    }
+
+
 def test_prompt_payload_prioritizes_conformance_that_inherits_task_plane_frontier() -> None:
     def feedback(
         candidate_id: str,

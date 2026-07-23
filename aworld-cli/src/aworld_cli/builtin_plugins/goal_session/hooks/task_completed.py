@@ -121,6 +121,15 @@ def build_goal_context_prompt(state: dict) -> str:
 
     if last_task_status:
         lines.append(f"Last task status: {last_task_status}")
+    campaign_id = str(state.get("campaign_id") or "").strip()
+    if campaign_id:
+        lines.append(f"Self-improvement campaign: {campaign_id}")
+        latest_run_id = str(state.get("latest_run_id") or "").strip()
+        if latest_run_id:
+            lines.append(f"Latest self-evolve run: {latest_run_id}")
+        resume_action = str(state.get("campaign_resume_action") or "").strip()
+        if resume_action:
+            lines.append(f"Resume action after verification: {resume_action}")
     excerpt = state.get("last_final_answer_excerpt") or state.get("last_error_excerpt") or state.get(
         "last_partial_answer_excerpt"
     )

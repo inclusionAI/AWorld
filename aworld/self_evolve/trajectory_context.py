@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
@@ -10,10 +11,30 @@ from aworld.self_evolve.trace_pack import TrajectoryLogRecord
 
 
 TRAJECTORY_CONTEXT_SCHEMA_VERSION = "aworld.self_evolve.trajectory_context.v1"
-_CONTINUATION_MARKERS = (
+_EXPLICIT_CONTINUATION_MARKERS = (
     "continue the current task",
     "additional operator steering",
     "interrupt requested by operator",
+)
+_NATURAL_CONTINUATION_MARKERS = (
+    "continue",
+    "earlier",
+    "follow up",
+    "follow-up",
+    "previous",
+    "the above",
+    "前面",
+    "之前",
+    "上述",
+    "继续",
+    "补全",
+    "补充",
+    "完善",
+    "结合这个",
+    "这些细节",
+    "又有什么不同",
+    "他们",
+    "那他们",
 )
 _PARENT_KEYS = ("parent_task_id", "previous_task_id", "parent_id")
 
@@ -54,6 +75,7 @@ def build_trajectory_context_snapshots(
         raise ValueError("max_steps must be positive")
     records_by_task = {record.task_id: record for record in records}
     latest_by_session: dict[str, TrajectoryLogRecord] = {}
+    snapshots_by_task: dict[str, TrajectoryContextSnapshot] = {}
     snapshots: list[TrajectoryContextSnapshot] = []
     for position, record in enumerate(records):
         task_input = _record_task_input(record)
@@ -71,17 +93,26 @@ def build_trajectory_context_snapshots(
         if parent_id is not None and parent_id in records_by_task:
             predecessor = records_by_task[parent_id]
             link_strategy = "explicit_parent"
-        elif not prior_turns and _is_continuation(task_input):
-            if session_id and session_id in latest_by_session:
-                predecessor = latest_by_session[session_id]
-                link_strategy = "same_session_predecessor"
-            elif position > 0:
+        elif not prior_turns and session_id and session_id in latest_by_session:
+            # Session identity is the strongest recorded conversation boundary.
+            # Some log writers persist only the current user message even though
+            # the live agent retained the preceding turn.
+            predecessor = latest_by_session[session_id]
+            link_strategy = "same_session_predecessor"
+        elif not prior_turns and _is_explicit_continuation(task_input):
+            if position > 0:
                 predecessor = records[position - 1]
                 link_strategy = "adjacent_record_fallback"
         if predecessor is not None:
+            predecessor_snapshot = snapshots_by_task.get(predecessor.task_id)
             prior_turns = _predecessor_turns(
                 predecessor,
                 max_text_chars=max_text_chars,
+                inherited_turns=(
+                    predecessor_snapshot.prior_turns
+                    if predecessor_snapshot is not None
+                    else ()
+                ),
             )
 
         selected_steps = record.trajectory[:max_steps]
@@ -107,23 +138,23 @@ def build_trajectory_context_snapshots(
             "link_strategy": link_strategy,
         }
         fingerprint = _fingerprint(payload)
-        snapshots.append(
-            TrajectoryContextSnapshot(
-                schema_version=TRAJECTORY_CONTEXT_SCHEMA_VERSION,
-                case_id=record.task_id,
-                source_kind=source_kind,
-                source_record_index=record.record_index,
-                source_fingerprint=record.source_fingerprint,
-                session_id=session_id,
-                task_input=payload["task_input"],
-                prior_turns=prior_turns,
-                steps=steps,
-                step_count=len(record.trajectory),
-                omitted_step_count=max(0, len(record.trajectory) - len(steps)),
-                link_strategy=link_strategy,
-                fingerprint=fingerprint,
-            )
+        snapshot = TrajectoryContextSnapshot(
+            schema_version=TRAJECTORY_CONTEXT_SCHEMA_VERSION,
+            case_id=record.task_id,
+            source_kind=source_kind,
+            source_record_index=record.record_index,
+            source_fingerprint=record.source_fingerprint,
+            session_id=session_id,
+            task_input=payload["task_input"],
+            prior_turns=prior_turns,
+            steps=steps,
+            step_count=len(record.trajectory),
+            omitted_step_count=max(0, len(record.trajectory) - len(steps)),
+            link_strategy=link_strategy,
+            fingerprint=fingerprint,
         )
+        snapshots.append(snapshot)
+        snapshots_by_task[record.task_id] = snapshot
         if session_id:
             latest_by_session[session_id] = record
     return tuple(snapshots)
@@ -263,6 +294,7 @@ def _predecessor_turns(
     record: TrajectoryLogRecord,
     *,
     max_text_chars: int,
+    inherited_turns: Sequence[TrajectoryContextTurn] = (),
 ) -> tuple[TrajectoryContextTurn, ...]:
     task = sanitize_text(
         _text_content(_record_task_input(record)),
@@ -278,7 +310,7 @@ def _predecessor_turns(
                 max_chars=max_text_chars,
             )
             answer_index = index
-    turns: list[TrajectoryContextTurn] = []
+    turns: list[TrajectoryContextTurn] = list(inherited_turns)
     if task:
         turns.append(
             TrajectoryContextTurn(
@@ -297,12 +329,91 @@ def _predecessor_turns(
                 evidence_ref=f"{record.task_id}:step-{answer_index + 1}",
             )
         )
-    return tuple(turns)
+    return _bounded_context_turns(turns, max_text_chars=max_text_chars)
 
 
-def _is_continuation(value: Any) -> bool:
+def _bounded_context_turns(
+    turns: Sequence[TrajectoryContextTurn],
+    *,
+    max_text_chars: int,
+) -> tuple[TrajectoryContextTurn, ...]:
+    selected: dict[int, TrajectoryContextTurn] = {}
+    remaining_chars = max_text_chars
+    user_indexes = [
+        index for index, turn in enumerate(turns) if turn.role == "user"
+    ]
+    # User turns carry task identity, source references, and deictic anchors.
+    # Reserve bounded space across the whole session before filling the rest
+    # with the most recent assistant context. This prevents one long recent
+    # answer from evicting the original URLs or artifacts needed by a follow-up.
+    remaining_user_budget = min(
+        max_text_chars // 2,
+        len(user_indexes) * 512,
+    )
+    for position, index in enumerate(user_indexes):
+        if remaining_user_budget <= 0:
+            break
+        allowance = max(
+            1,
+            remaining_user_budget // (len(user_indexes) - position),
+        )
+        turn = turns[index]
+        content = sanitize_text(turn.content, max_chars=allowance)
+        if content:
+            selected[index] = TrajectoryContextTurn(
+                role=turn.role,
+                content=content,
+                source_task_id=turn.source_task_id,
+                evidence_ref=turn.evidence_ref,
+            )
+            used = len(content)
+            remaining_user_budget -= used
+            remaining_chars -= used
+    for index in range(len(turns) - 1, -1, -1):
+        if remaining_chars <= 0:
+            break
+        if index in selected:
+            continue
+        turn = turns[index]
+        content = sanitize_text(turn.content, max_chars=remaining_chars)
+        if not content:
+            continue
+        selected[index] = TrajectoryContextTurn(
+            role=turn.role,
+            content=content,
+            source_task_id=turn.source_task_id,
+            evidence_ref=turn.evidence_ref,
+        )
+        remaining_chars -= len(content)
+    return tuple(selected[index] for index in sorted(selected))
+
+
+def task_input_requires_prior_context(value: Any) -> bool:
+    """Recognize an input that cannot be replayed without omitted context."""
+
     text = _text_content(value).lower()
-    return any(marker in text for marker in _CONTINUATION_MARKERS)
+    return _contains_continuation_marker(
+        text,
+        (*_EXPLICIT_CONTINUATION_MARKERS, *_NATURAL_CONTINUATION_MARKERS),
+    )
+
+
+def _is_explicit_continuation(value: Any) -> bool:
+    text = _text_content(value).lower()
+    return _contains_continuation_marker(text, _EXPLICIT_CONTINUATION_MARKERS)
+
+
+def _contains_continuation_marker(
+    text: str,
+    markers: Sequence[str],
+) -> bool:
+    for marker in markers:
+        if marker.isascii():
+            if re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", text):
+                return True
+        elif marker in text:
+            return True
+    return False
 
 
 def _text_content(value: Any) -> str:
