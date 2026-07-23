@@ -17,6 +17,10 @@ from typing import Any, Literal, Sequence
 import pytest
 
 from aworld.self_evolve.budget import BudgetStage, StageWorkload
+from aworld.self_evolve.campaign import (
+    SelfImprovementDispositionKind,
+    derive_self_improvement_disposition,
+)
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.credit_assignment import (
     TargetInventory,
@@ -231,6 +235,50 @@ CONTRACT_CARDINALITIES = (
     THREE_SAME_SHAPE_CASES,
     THREE_DISTINCT_SHAPE_CASES,
 )
+
+
+@pytest.mark.parametrize("member_count", (1, 3), ids=("one-case", "three-cases"))
+def test_campaign_disposition_preserves_distinct_constraints_at_any_cardinality(
+    member_count: int,
+) -> None:
+    events = [
+        {
+            "code": "typed_contract_failure",
+            "owner": "candidate",
+            "stage": "capability_compile",
+            "scope": "member",
+            "repairable": True,
+            "schema_field_constraints": [
+                {
+                    "schema_layer": "compile_result",
+                    "field_path": f"payload.members[*].field_{index}",
+                    "rule": "required",
+                }
+            ],
+        }
+        for index in range(member_count)
+    ]
+    report = {
+        "status": "rejected",
+        "gate_results": [
+            {
+                "gate_name": "candidate_repair_conformance",
+                "passed": False,
+                "details": {"causal_failure_events": events},
+            }
+        ],
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert len(
+        [
+            identity
+            for identity in disposition.progress_delta_ids
+            if identity.startswith("constraint-")
+        ]
+    ) == member_count
 
 
 def _generic_conformance_plan(contract: FrameworkContractDataset):

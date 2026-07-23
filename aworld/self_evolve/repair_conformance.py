@@ -881,7 +881,10 @@ def compile_repair_conformance_contract(
     }
     if "manifest" in schema_layers and manifest_path is not None:
         schema_constraint_paths.append(manifest_path)
-    if "compile_result" in schema_layers and compiler_path is not None:
+    if (
+        schema_layers & {"compile_result", "compiler_output"}
+        and compiler_path is not None
+    ):
         schema_constraint_paths.append(compiler_path)
     if "runtime" in schema_layers:
         schema_constraint_paths.extend(branch_paths)
@@ -1028,7 +1031,10 @@ def _compile_failure_branch_paths(
     typed_paths: list[str] = []
     if "manifest" in schema_layers and manifest_path is not None:
         typed_paths.append(manifest_path)
-    if "compile_result" in schema_layers and compiler_path is not None:
+    if (
+        schema_layers & {"compile_result", "compiler_output"}
+        and compiler_path is not None
+    ):
         typed_paths.append(compiler_path)
     if "runtime" in schema_layers:
         typed_paths.extend(runtime_paths)

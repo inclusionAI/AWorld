@@ -1769,6 +1769,106 @@ def test_compile_contract_preserves_schema_field_constraints_across_repairs() ->
     assert inherited.required_branch_paths == ("replay/compiler.py",)
 
 
+def test_public_projection_preserves_nested_typed_repair_contract() -> None:
+    schema_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].response_contains",
+        rule="max_chars",
+        expected=("4096",),
+    )
+    fixture_constraint = FixtureDerivedProbeConstraint(
+        requirement_id="member-a-requirement",
+        kind="http",
+        path="/member-a",
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=2,
+        base_file_fingerprints={"replay/compiler.py": "sha256:base"},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={"replay/compiler.py": "sha256:branch"},
+        exact_probe=ExactRepairProbe(
+            kind="http",
+            path="/member-a",
+            expected_response="private recorded response",
+        ),
+        fixture_probe_constraints=(fixture_constraint,),
+        schema_field_constraints=(schema_constraint,),
+    )
+    public = contract.to_public_dict()
+    diagnostic = {
+        "optimizer_diagnostics": {
+            "iterations": [
+                {
+                    "diagnostics": {
+                        "candidate_strategies": [
+                            {"repair_conformance": public}
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+
+    projected = public_diagnostic_projection(diagnostic)
+    inherited_public = projected["optimizer_diagnostics"]["iterations"][0][
+        "diagnostics"
+    ]["candidate_strategies"][0]["repair_conformance"]
+
+    assert inherited_public == public
+    assert inherited_public["schema_field_constraints"] == [
+        schema_constraint.to_dict()
+    ]
+    assert inherited_public["fixture_probe_constraints"] == [
+        fixture_constraint.to_public_dict()
+    ]
+    assert "private recorded response" not in json.dumps(projected)
+
+
+def test_public_repair_contract_projection_rejects_private_probe_payload() -> None:
+    public_contract = {
+        "projection_schema_version": (
+            "aworld.self_evolve.repair_conformance.public.v1"
+        ),
+        "focus_candidate_id": "candidate-parent",
+        "exact_probe": {
+            "kind": "http",
+            "path": "/member-a",
+            "expected_response": "must not cross the public boundary",
+        },
+    }
+
+    with pytest.raises(ValueError, match="must not contain an exact response"):
+        public_diagnostic_projection({"repair_conformance": public_contract})
+
+
+def test_runtime_schema_constraint_recomputes_runtime_required_branch() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "schema_field_constraints": [constraint.to_dict()],
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.schema_field_constraints == (constraint,)
+    assert contract.required_branch_paths == ("replay/runtime.py",)
+
+
 def test_constraint_context_merges_multi_member_schema_and_fixture_rules() -> None:
     inherited_fixture = FixtureDerivedProbeConstraint(
         requirement_id="member-a-requirement",

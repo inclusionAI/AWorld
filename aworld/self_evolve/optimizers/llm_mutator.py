@@ -211,7 +211,14 @@ class TraceReflectiveLLMMutator:
             repair_focus = context.repair_focus_for_candidate(
                 candidate_index=index
             )
-            private_contract = compile_repair_conformance_contract(repair_focus)
+            private_contract = (
+                None
+                if (
+                    isinstance(repair_focus, Mapping)
+                    and _repair_feedback_reached_judged_task_output(repair_focus)
+                )
+                else compile_repair_conformance_contract(repair_focus)
+            )
             if private_contract is not None:
                 private_repair_contracts[candidate_id] = private_contract
             candidate_strategy_records.append(
@@ -299,6 +306,12 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "The framework creates only the compiler output root. The compiler owns every "
         "declared subdirectory and must create parents such as output/fixtures before "
         "copying or writing files; it must not assume those directories already exist. "
+        "The compiler is a deterministic artifact transform and runs without network or "
+        "loopback access: never bind/connect sockets, select a live port, launch the runtime, "
+        "or probe readiness during compile. Declare the runtime in result.json; the framework "
+        "starts it later with an allocated port. Each request requirement's evidence_refs is "
+        "an array of string keys; resolve each key through request.evidence_derivations, whose "
+        "values are arrays of source objects. Never call mapping methods on an evidence_ref. "
         "For a skill_runtime, AWORLD_REPLAY_RESPONSE_INDEX is a filesystem path supplied "
         "by the framework to a JSON sidecar with schema "
         "{schema_version, operations, records}; it is not an integer, inline response, "
@@ -331,6 +344,15 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "expected_preview as diagnostic evidence rather than a value to hard-code. "
         "When validation_feedback contains repair_candidate_package, edit that bounded "
         "source as a delta and preserve its verified behavior. "
+        "When validation_feedback contains a typed recovery_trace, preserve members and "
+        "repetitions with positive recovery_delta while repairing unrecovered members. "
+        "Treat failed_progress_exceeded_success as evidence of post-checkpoint overrun: "
+        "bound further attempts or switch to one materially different strategy instead "
+        "of repeating the failed path. Treat failure_loop_detected or the corresponding "
+        "typed guidance as a requirement for an explicit attempt bound and a materially "
+        "different fallback, not another equivalent retry. Never key behavior to member "
+        "identities or copy "
+        "tool names as case-specific rules. "
         "When validation_feedback reports duplicate_semantic_lesson, produce a materially "
         "different complete candidate package by changing reusable target behavior or "
         "candidate-owned files. Renaming, reformatting, changing rationale, or copying the "
@@ -417,6 +439,38 @@ def _focused_repair_prompt_instructions(
         "materially different bounded artifact-backed source or report the insufficiency. "
         "Never add a blanket first-response-means-complete rule or case-specific behavior. "
     )
+    recovery_trace = (
+        focused_feedback.get("recovery_trace")
+        if isinstance(focused_feedback, Mapping)
+        else None
+    )
+    if isinstance(recovery_trace, Mapping):
+        instructions += (
+            "This repair has a typed recovery_trace. Keep the focused candidate's "
+            "positive recovery deltas and successful structural checkpoint, then make "
+            "the unrecovered or unstable branches converge within a bounded attempt "
+            "budget. A timeout path that progresses beyond a successful checkpoint is "
+            "an overrun signal, not evidence that more identical exploration is needed. "
+            "A detected repeated-failure loop must gain an explicit attempt bound and "
+            "one structurally different fallback before finalizing or reporting bounded "
+            "insufficiency. "
+        )
+    constraint_recovery_trace = (
+        focused_feedback.get("constraint_recovery_trace")
+        if isinstance(focused_feedback, Mapping)
+        else None
+    )
+    if isinstance(constraint_recovery_trace, Mapping):
+        instructions += (
+            "This repair also has a typed constraint_recovery_trace. Preserve every "
+            "constraint whose status is recovered as a last-good checkpoint. Restore "
+            "any regressed constraint before adding new behavior. When an active "
+            "constraint has violation_attempt_count greater than one, do not repeat "
+            "the same source shape with renamed helpers or a rationale-only change; "
+            "switch to a materially different implementation of the declared typed "
+            "operations and verify the actual source data flow before finalizing. "
+            "Constraint identities are hashes and must never become runtime branches. "
+        )
     if (
         '"evidence_incomplete": true' in feedback_text
         or '"a1_groundedness": 2' in feedback_text
@@ -463,6 +517,12 @@ def _focused_repair_prompt_instructions(
             "the declared result schema to output/result.json. The framework creates "
             "only the output root; create every declared subdirectory and its parents "
             "before copying or writing fixtures or runtime artifacts. "
+            "The compiler runs as a deterministic, network-disabled artifact transform: "
+            "do not bind or connect sockets, allocate a live port, launch runtime code, or "
+            "probe readiness. Declare runtime_entrypoint in result.json and let the framework "
+            "start it later with an allocated port. request requirements contain evidence_refs "
+            "as string keys; resolve them through request.evidence_derivations before reading "
+            "source-object fields. Do not call .get on an evidence_ref string. "
         )
     if fixture_probe_constraints:
         instructions += (
@@ -480,10 +540,34 @@ def _focused_repair_prompt_instructions(
         )
     if schema_field_constraints:
         instructions += (
-            "The schema_field_constraints list is an executable, shape-complete "
-            "contract over the generated schema document. Apply every rule to "
-            "every instance selected by its field_path, including services or "
-            "probes produced for different trajectory members. enum rules permit "
+            "The schema_field_constraints list is an executable, shape-complete contract "
+            "with typed value domains. A constraint whose value_domain is source_behavior "
+            "describes behavior detected by static analysis in the required source "
+            "branch. Its field_path is an analyzer-owned predicate name, not a JSON "
+            "or environment path: implement the expected behavior in source code and "
+            "never assign, overwrite, or synthesize that path at runtime. For the "
+            "source_behavior domain, required_operations is a conjunctive structural "
+            "data-flow contract: implement every listed operation in the same bounded "
+            "execution path. An operation that binds one value to another requires "
+            "syntactically provable value flow (direct use or an explicit parameter), "
+            "not disconnected helpers or matching names. An operation that projects "
+            "a field directly requires explicit access to that field rather than a "
+            "generic recursive fallback. forbidden_operations names structural substitutions that "
+            "must be absent. These operation tokens describe behavior, not identifiers "
+            "to copy into comments, strings, or metadata; source must actually realize "
+            "the data flow and the analyzer will verify it. For the "
+            "default schema_value domain, treat field_path as an absolute path from "
+            "the root of schema_layer: a path with no dot or "
+            "[*] names exactly one top-level field, while [*] selects every array "
+            "member. A selector [*@predicate.path:value] applies only to members "
+            "correlated with an input or related-schema record whose predicate "
+            "matches value; preserve that condition for mixed and multi-member "
+            "inputs rather than forcing the value on unrelated members. Do not "
+            "satisfy a root-field constraint by adding a similarly "
+            "named field to a nested service or probe. Apply every rule to every "
+            "instance selected by its field_path, including services or probes "
+            "produced for different trajectory members. Consult the retained "
+            "capability_contracts schema shape for field placement. enum rules permit "
             "only their expected values; type rules permit only their expected "
             "JSON types; required, non_empty, unique, max_chars, and max_items "
             "rules retain their literal schema meanings. Keep schema_layer "

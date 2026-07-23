@@ -520,6 +520,76 @@ def test_credit_assigner_selects_installed_skill_by_generic_trajectory_evidence(
     assert "skill_alias_match:web-navigator" in report.signals
 
 
+def test_generic_tool_action_token_does_not_select_unrelated_skill_alias(
+    tmp_path: Path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "catalog_search",
+        description="Search a private product catalog by structured filters.",
+    )
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {"input": {"content": "Analyze the supplied paper."}},
+                "action": {
+                    "content": "The generic search attempt failed.",
+                    "tool_calls": [
+                        {"function": {"name": "CAST_SEARCH", "arguments": "{}"}}
+                    ],
+                    "is_agent_finished": False,
+                },
+                "reward": {"status": "failed"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="paper-analysis",
+    )
+
+    report = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    ).assign(pack)
+
+    assert "skill_alias_match:catalog_search" not in report.signals
+    assert report.selected_target is None or report.selected_target.target_id != (
+        "catalog_search"
+    )
+
+
+def test_generic_anchor_noun_does_not_select_validation_policy(tmp_path: Path) -> None:
+    pack = build_trace_pack(
+        [
+            {
+                "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+                "state": {"input": {"content": "Analyze a research paper."}},
+                "action": {
+                    "content": "I will inspect method section anchors in the PDF.",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "mcp",
+                                "arguments": '{"command":"find section anchors"}',
+                            }
+                        }
+                    ],
+                    "is_agent_finished": True,
+                },
+                "reward": {"status": "ok"},
+            }
+        ],
+        source_kind="current_trajectory",
+        task_id="paper-analysis",
+    )
+
+    report = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    ).assign(pack)
+
+    assert report.selected_target is None
+    assert "result_validation_mismatch" not in report.signals
+
+
 def test_credit_assigner_creates_generic_draft_instead_of_matching_description_tokens(
     tmp_path,
 ) -> None:

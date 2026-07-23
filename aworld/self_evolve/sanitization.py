@@ -60,6 +60,9 @@ _PUBLIC_IDENTITY_DIGEST_FIELDS = {
     "requirement_id": "requirement_identity_digest",
     "contract_fingerprint": "contract_identity_digest",
 }
+_REPAIR_CONFORMANCE_PUBLIC_SCHEMA_VERSION = (
+    "aworld.self_evolve.repair_conformance.public.v1"
+)
 
 
 def sanitize_text(value: Any, *, max_chars: int | None = None) -> str:
@@ -154,12 +157,22 @@ def _project_public_diagnostic(
     max_chars: int,
     max_depth: int,
 ) -> Any:
+    typed_recovery = _typed_recovery_public_projection(value)
+    if typed_recovery is not None:
+        return typed_recovery
     typed_failure = _typed_replay_failure_public_projection(value)
     if typed_failure is not None:
         # Typed failure transports are already raw-free, integrity checked,
         # and cardinality exact.  Re-projecting their complete identity sets
         # through generic sequence budgets would invalidate aggregate digests.
         return typed_failure
+    typed_contract = _typed_repair_conformance_public_projection(value)
+    if typed_contract is not None:
+        # Public repair contracts are executable feedback, not display-only
+        # diagnostics.  Rebuilding their allowlisted typed representation here
+        # preserves constraint identities across nested report and Campaign
+        # boundaries without relaxing the generic depth budget.
+        return typed_contract
     public_contract = _repair_conformance_public_projection(value)
     if public_contract is not None:
         value = public_contract
@@ -197,6 +210,13 @@ def _project_public_diagnostic(
                 projected[key + "_fingerprint"] = summary["fingerprint"]
                 projected[key + "_shape"] = summary["shape"]
                 continue
+            if key == "schema_field_constraints":
+                schema_constraints = _schema_field_constraints_public_projection(
+                    item
+                )
+                if schema_constraints is not None:
+                    projected[key] = schema_constraints
+                    continue
             projected[key] = _project_public_diagnostic(
                 item,
                 depth=depth + 1,
@@ -227,6 +247,48 @@ def _project_public_diagnostic(
         "type": f"{type(value).__module__}.{type(value).__qualname__}",
         "fingerprint": _stable_public_fingerprint(value),
     }
+
+
+def _typed_recovery_public_projection(
+    value: Any,
+) -> Mapping[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    schema_version = value.get("schema_version")
+    if schema_version not in {
+        "aworld.self_evolve.recovery_trace.public.v1",
+        "aworld.self_evolve.constraint_recovery_trace.public.v1",
+    }:
+        return None
+    from aworld.self_evolve.recovery_trace import (
+        validate_public_constraint_recovery_trace,
+        validate_public_recovery_trace,
+    )
+
+    if schema_version == "aworld.self_evolve.recovery_trace.public.v1":
+        return validate_public_recovery_trace(value)
+    return validate_public_constraint_recovery_trace(value)
+
+
+def _schema_field_constraints_public_projection(
+    value: Any,
+) -> list[dict[str, object]] | None:
+    if not isinstance(value, (list, tuple)) or len(value) > 100:
+        return None
+    from aworld.self_evolve.schema_diagnostics import (
+        SchemaFieldRepairConstraint,
+    )
+
+    projected: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            return None
+        try:
+            constraint = SchemaFieldRepairConstraint.from_dict(item)
+        except ValueError:
+            return None
+        projected.append(constraint.to_dict())
+    return projected
 
 
 def _typed_replay_failure_public_projection(
@@ -279,6 +341,217 @@ def _typed_replay_failure_public_projection(
     else:  # pragma: no cover - guarded by the exact type/schema checks above
         return None
     return aggregate.to_feedback_dict()
+
+
+def _typed_repair_conformance_public_projection(
+    value: Any,
+) -> Mapping[str, Any] | None:
+    """Return a validated, payload-free repair contract transport.
+
+    A public contract can re-enter the projector after being persisted in a
+    run report and inherited by a later Campaign cycle.  Treating that mapping
+    as an ordinary diagnostic used to replace deeply nested schema constraints
+    with ``bounded_public_summary`` placeholders.  This recognizer rebuilds
+    only the stable public schema, validating every typed constraint and
+    dropping unknown fields, so the contract may safely bypass display-depth
+    truncation.
+    """
+
+    value_type = type(value)
+    if (
+        value_type.__module__ == "aworld.self_evolve.repair_conformance"
+        and value_type.__qualname__ == "RepairConformanceContract"
+    ):
+        projector = getattr(value, "to_public_dict", None)
+        if not callable(projector):
+            raise TypeError("repair conformance contract lacks public projection")
+        raw = projector()
+    elif (
+        isinstance(value, Mapping)
+        and value.get("projection_schema_version")
+        == _REPAIR_CONFORMANCE_PUBLIC_SCHEMA_VERSION
+    ):
+        raw = value
+    else:
+        return None
+    if not isinstance(raw, Mapping):
+        raise TypeError("repair conformance public projection must be a mapping")
+
+    # Imports remain local because repair_conformance imports sanitization for
+    # its private construction path.  Projection is invoked only after module
+    # initialization, so this keeps the dependency boundary acyclic.
+    from aworld.self_evolve.repair_conformance import (
+        FixtureDerivedProbeConstraint,
+    )
+    from aworld.self_evolve.schema_diagnostics import (
+        SchemaFieldRepairConstraint,
+    )
+
+    projected: dict[str, Any] = {
+        "projection_schema_version": _REPAIR_CONFORMANCE_PUBLIC_SCHEMA_VERSION,
+    }
+
+    def add_text(key: str, *, max_chars: int) -> None:
+        if key not in raw:
+            return
+        item = raw.get(key)
+        if item is None:
+            projected[key] = None
+            return
+        if not isinstance(item, str):
+            raise ValueError(f"public repair contract {key} must be text")
+        projected[key] = sanitize_text(item, max_chars=max_chars)
+
+    def add_text_sequence(key: str, *, max_items: int, max_chars: int) -> None:
+        if key not in raw:
+            return
+        items = raw.get(key)
+        if not isinstance(items, (list, tuple)) or len(items) > max_items:
+            raise ValueError(f"public repair contract {key} must be bounded text")
+        if any(not isinstance(item, str) for item in items):
+            raise ValueError(f"public repair contract {key} must contain text")
+        projected[key] = [
+            sanitize_text(item, max_chars=max_chars) for item in items
+        ]
+
+    def add_text_mapping(key: str, *, max_items: int) -> None:
+        if key not in raw:
+            return
+        items = raw.get(key)
+        if not isinstance(items, Mapping) or len(items) > max_items:
+            raise ValueError(f"public repair contract {key} must be bounded mapping")
+        if any(
+            not isinstance(item_key, str) or not isinstance(item, str)
+            for item_key, item in items.items()
+        ):
+            raise ValueError(f"public repair contract {key} must contain text")
+        projected[key] = {
+            sanitize_text(item_key, max_chars=240): sanitize_text(item, max_chars=240)
+            for item_key, item in sorted(items.items())
+        }
+
+    add_text("focus_candidate_id", max_chars=160)
+    add_text_sequence("failure_codes", max_items=100, max_chars=160)
+    if "interaction_progress" in raw:
+        interaction_progress = raw.get("interaction_progress")
+        if (
+            not isinstance(interaction_progress, int)
+            or isinstance(interaction_progress, bool)
+            or interaction_progress < 0
+        ):
+            raise ValueError(
+                "public repair contract interaction_progress must be non-negative"
+            )
+        projected["interaction_progress"] = interaction_progress
+    add_text_mapping("base_file_fingerprints", max_items=64)
+    add_text_sequence("required_branch_paths", max_items=64, max_chars=240)
+    add_text_mapping("base_branch_fingerprints", max_items=64)
+    add_text_mapping("base_fixture_selector_fingerprints", max_items=64)
+    add_text("manifest_path", max_chars=240)
+
+    if "exact_probe" in raw:
+        exact_probe = raw.get("exact_probe")
+        if exact_probe is None:
+            projected["exact_probe"] = None
+        elif isinstance(exact_probe, Mapping):
+            if "expected_response" in exact_probe:
+                raise ValueError(
+                    "public repair contract must not contain an exact response"
+                )
+            public_probe: dict[str, Any] = {}
+            for key, limit in (("kind", 32), ("path", 2_048), ("private_contract_ref", 160)):
+                item = exact_probe.get(key)
+                if item is not None:
+                    if not isinstance(item, str):
+                        raise ValueError(f"public repair contract exact_probe {key} is invalid")
+                    public_probe[key] = sanitize_text(item, max_chars=limit)
+            fingerprint = exact_probe.get("expected_response_fingerprint")
+            if fingerprint is not None:
+                if not isinstance(fingerprint, str) or re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", fingerprint
+                ) is None:
+                    raise ValueError(
+                        "public repair contract response fingerprint is invalid"
+                    )
+                public_probe["expected_response_fingerprint"] = fingerprint
+            shape = exact_probe.get("expected_response_shape")
+            if shape is not None:
+                if not isinstance(shape, Mapping) or len(shape) > 8:
+                    raise ValueError("public repair contract response shape is invalid")
+                public_probe["expected_response_shape"] = {
+                    sanitize_text(_public_key(key), max_chars=80): (
+                        sanitize_text(item, max_chars=160)
+                        if isinstance(item, str)
+                        else item
+                    )
+                    for key, item in shape.items()
+                    if item is None or isinstance(item, (str, bool, int, float))
+                }
+                if len(public_probe["expected_response_shape"]) != len(shape):
+                    raise ValueError("public repair contract response shape is invalid")
+            public_probe_keys = {
+                "kind",
+                "path",
+                "private_contract_ref",
+                "expected_response_fingerprint",
+                "expected_response_shape",
+            }
+            if any(
+                key not in public_probe_keys and _sensitive_public_field(str(key))
+                for key in exact_probe
+            ):
+                raise ValueError("public repair contract exact_probe contains payload data")
+            # Unknown, non-sensitive extension fields are intentionally not
+            # propagated across the public trust boundary.
+            projected["exact_probe"] = public_probe
+        else:
+            raise ValueError("public repair contract exact_probe must be a mapping")
+
+    add_text_sequence("late_observed_operations", max_items=64, max_chars=240)
+    if "requires_fixture_derived_probe" in raw:
+        required = raw.get("requires_fixture_derived_probe")
+        if not isinstance(required, bool):
+            raise ValueError(
+                "public repair contract requires_fixture_derived_probe must be boolean"
+            )
+        projected["requires_fixture_derived_probe"] = required
+    add_text_sequence(
+        "required_fixture_probe_operations",
+        max_items=64,
+        max_chars=240,
+    )
+
+    if "fixture_probe_constraints" in raw:
+        constraints = raw.get("fixture_probe_constraints")
+        if not isinstance(constraints, (list, tuple)) or len(constraints) > 64:
+            raise ValueError("public fixture probe constraints must be bounded")
+        public_constraints: list[dict[str, object]] = []
+        for item in constraints:
+            if not isinstance(item, Mapping):
+                raise ValueError("public fixture probe constraint must be a mapping")
+            constraint = FixtureDerivedProbeConstraint.from_dict(item)
+            public_constraints.append(constraint.to_public_dict())
+        projected["fixture_probe_constraints"] = public_constraints
+
+    if "schema_field_constraints" in raw:
+        constraints = raw.get("schema_field_constraints")
+        if not isinstance(constraints, (list, tuple)) or len(constraints) > 100:
+            raise ValueError("public schema field constraints must be bounded")
+        public_schema_constraints: list[dict[str, object]] = []
+        for item in constraints:
+            if not isinstance(item, Mapping):
+                raise ValueError("public schema field constraint must be a mapping")
+            expected = item.get("expected", ())
+            if not isinstance(expected, (list, tuple)) or any(
+                not isinstance(expected_item, str) for expected_item in expected
+            ):
+                raise ValueError(
+                    "public schema field constraint expected values must be text"
+                )
+            constraint = SchemaFieldRepairConstraint.from_dict(item)
+            public_schema_constraints.append(constraint.to_dict())
+        projected["schema_field_constraints"] = public_schema_constraints
+    return projected
 
 
 def _repair_conformance_public_projection(value: Any) -> Mapping[str, Any] | None:

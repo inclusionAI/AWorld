@@ -81,6 +81,9 @@ def cleanup_self_evolve_artifacts(
     run_dirs = _run_dirs(root)
     run_ids = {path.name for path in run_dirs}
     referenced_run_ids = _referenced_run_ids(run_dirs, run_ids=run_ids)
+    referenced_run_ids.update(
+        _campaign_referenced_run_ids(root, run_ids=run_ids)
+    )
     recent_run_ids = {
         path.name
         for path in sorted(run_dirs, key=_path_mtime, reverse=True)[
@@ -160,6 +163,32 @@ def _run_dirs(root: Path) -> list[Path]:
         and path.name != "evaluator"
         and ((path / "run.json").exists() or (path / "report.json").exists())
     ]
+
+
+def _campaign_referenced_run_ids(root: Path, *, run_ids: set[str]) -> set[str]:
+    campaign_root = root / "campaigns"
+    if not campaign_root.is_dir() or campaign_root.is_symlink():
+        return set()
+    referenced: set[str] = set()
+    for path in campaign_root.glob("*/campaign.json"):
+        if path.is_symlink() or path.parent.is_symlink():
+            continue
+        payload = _read_json_object(path)
+        if payload is None or payload.get("schema_version") != (
+            "aworld.self_evolve.campaign.v1"
+        ):
+            continue
+        if payload.get("status") not in {"active", "paused"}:
+            continue
+        raw_run_ids = payload.get("run_ids")
+        if not isinstance(raw_run_ids, list):
+            continue
+        referenced.update(
+            str(run_id)
+            for run_id in raw_run_ids
+            if isinstance(run_id, str) and run_id in run_ids
+        )
+    return referenced
 
 
 def _cleanup_skip_reason(

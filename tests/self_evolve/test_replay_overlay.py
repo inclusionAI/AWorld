@@ -52,6 +52,7 @@ from aworld.self_evolve.replay import (
     _attach_replay_service_protocol_diagnostics,
     _classify_candidate_task_rollout_nontermination,
     _preserve_replay_service_protocol_trace,
+    _reset_replay_service_protocol_trace,
     _persist_variant_lifecycle,
     _protocol_probe_response_mismatch,
     _probe_replay_service,
@@ -2863,6 +2864,34 @@ def test_replay_service_failure_includes_bounded_sanitized_runtime_stderr(
     assert "<LOCAL_PATH>" in str(enriched)
 
 
+def test_replay_service_stderr_enrichment_preserves_typed_diagnostics(
+    tmp_path: Path,
+) -> None:
+    stderr_path = tmp_path / "stderr.txt"
+    stderr_path.write_text("runtime diagnostic\n", encoding="utf-8")
+    constraint = {
+        "schema_layer": "protocol_trace",
+        "field_path": "records[*].correlation",
+        "rule": "required",
+        "expected": [],
+    }
+    error = ReplayServiceProtocolError(
+        "protocol trace field is missing",
+        code="protocol_trace_schema_field_validation_failed",
+        details={"schema_field_constraints": [constraint]},
+    )
+
+    enriched = _replay_service_failure_with_stderr(
+        error,
+        stderr_path=stderr_path,
+    )
+
+    assert isinstance(enriched, ReplayServiceProtocolError)
+    assert enriched.code == "protocol_trace_schema_field_validation_failed"
+    assert enriched.details == {"schema_field_constraints": [constraint]}
+    assert "runtime diagnostic" in str(enriched)
+
+
 def test_replay_service_protocol_trace_is_bounded_and_sanitized(
     tmp_path: Path,
 ) -> None:
@@ -2884,6 +2913,50 @@ def test_replay_service_protocol_trace_is_bounded_and_sanitized(
     assert "<REDACTED_SECRET>" in preserved
     assert "/Users/me/private.json" not in preserved
     assert "<LOCAL_PATH>" in preserved
+
+
+def test_protocol_trace_reset_separates_preflight_from_task_interactions(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "scratch" / "protocol_trace.jsonl"
+    trace.parent.mkdir(parents=True)
+    trace.write_text(
+        '{"direction":"in","sequence":0,"kind":"preflight"}\n',
+        encoding="utf-8",
+    )
+
+    _reset_replay_service_protocol_trace(trace)
+    with trace.open("a", encoding="utf-8") as handle:
+        handle.write('{"direction":"in","sequence":1,"kind":"task"}\n')
+
+    assert "preflight" not in trace.read_text(encoding="utf-8")
+    assert '"kind":"task"' in trace.read_text(encoding="utf-8")
+
+
+def test_successful_replay_records_task_plane_intervention_metric(
+    tmp_path: Path,
+) -> None:
+    trace = (
+        tmp_path
+        / "artifacts"
+        / "replay_services"
+        / "recorded-endpoint"
+        / "protocol_trace.log"
+    )
+    trace.parent.mkdir(parents=True)
+    trace.write_text(
+        '{"direction":"in","sequence":1,"kind":"task"}\n',
+        encoding="utf-8",
+    )
+    result = ReplayExecutionResult(status="succeeded", trajectory=[])
+
+    attached = _attach_replay_service_protocol_diagnostics(
+        result,
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    assert attached.failure is None
+    assert attached.metrics["replay_service_protocol_trace_count"] == 1
 
 
 def test_failed_replay_includes_preserved_protocol_trace_diagnostics(
@@ -3096,6 +3169,44 @@ def test_replay_service_protocol_trace_contract_requires_bidirectional_records(
         match="must record both received and emitted interactions",
     ):
         _validate_replay_service_protocol_trace(trace)
+
+
+def test_protocol_trace_missing_fields_emits_typed_multi_field_constraints(
+    tmp_path: Path,
+) -> None:
+    trace = tmp_path / "protocol_trace.jsonl"
+    trace.write_text(
+        json.dumps(
+            {
+                "direction": "inbound",
+                "sequence": 1,
+                "message_kind": "request",
+                "top_level_fields": ["path"],
+                "correlation": {},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReplayServiceProtocolError) as error:
+        _validate_replay_service_protocol_trace(trace)
+
+    assert error.value.code == "protocol_trace_schema_field_validation_failed"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "protocol_trace",
+            "field_path": "records[*].fields",
+            "rule": "required",
+            "expected": [],
+        },
+        {
+            "schema_layer": "protocol_trace",
+            "field_path": "records[*].kind",
+            "rule": "required",
+            "expected": [],
+        },
+    ]
 
 
 def test_replay_service_protocol_trace_contract_accepts_sanitized_summary(

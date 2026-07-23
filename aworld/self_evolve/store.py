@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import time
@@ -50,6 +51,75 @@ class FilesystemSelfEvolveStore:
     def run_path(self, run_id: str) -> Path:
         self._validate_id(run_id, "run_id")
         return self.artifact_root / run_id
+
+    def campaign_path(self, campaign_id: str) -> Path:
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}", campaign_id):
+            raise ValueError(f"invalid campaign_id: {campaign_id!r}")
+        return self.artifact_root / "campaigns" / campaign_id
+
+    def write_campaign(self, campaign: Any) -> Path:
+        from aworld.self_evolve.campaign import SelfImprovementCampaign
+
+        if not isinstance(campaign, SelfImprovementCampaign):
+            raise TypeError("campaign must be typed")
+        path = self.campaign_path(campaign.campaign_id) / "campaign.json"
+        self._write_json_atomic(path, campaign.to_dict())
+        reloaded = self.read_campaign(campaign.campaign_id)
+        if reloaded.to_dict() != campaign.to_dict():
+            raise ValueError("persisted campaign checkpoint did not round trip")
+        return path
+
+    def read_campaign(self, campaign_id: str) -> Any:
+        from aworld.self_evolve.campaign import (
+            SelfImprovementCampaign,
+            validate_campaign_source_snapshot,
+        )
+
+        path = self.campaign_path(campaign_id) / "campaign.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"self-improvement campaign not found: {campaign_id}")
+        campaign = SelfImprovementCampaign.from_dict(self._read_json(path))
+        validate_campaign_source_snapshot(
+            campaign,
+            workspace_root=self.workspace_root,
+        )
+        for run_id in campaign.run_ids:
+            report = self.run_path(run_id) / "report.json"
+            if not report.is_file() or report.is_symlink():
+                raise ValueError(
+                    f"campaign {campaign_id} references missing run {run_id}"
+                )
+        if campaign.status.value == "complete" and campaign.run_ids:
+            latest = self.read_report(campaign.run_ids[-1])
+            if latest.get("status") != "succeeded":
+                raise ValueError("complete campaign must reference a succeeded run")
+        return campaign
+
+    def write_campaign_goal_handoff(
+        self,
+        campaign_id: str,
+        payload: Mapping[str, Any],
+    ) -> Path:
+        path = self.campaign_path(campaign_id) / "goal_handoff.json"
+        if payload.get("campaign_id") != campaign_id:
+            raise ValueError("goal handoff does not match its campaign")
+        self._write_json_atomic(path, dict(payload))
+        return path
+
+    def read_campaign_goal_handoff(self, campaign_id: str) -> dict[str, Any]:
+        path = self.campaign_path(campaign_id) / "goal_handoff.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"campaign goal handoff not found: {campaign_id}")
+        payload = self._read_json(path)
+        if payload.get("campaign_id") != campaign_id:
+            raise ValueError("goal handoff does not match its campaign")
+        return payload
+
+    def read_report(self, run_id: str) -> dict[str, Any]:
+        path = self.run_path(run_id) / "report.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"self-evolve report not found: {run_id}")
+        return self._read_json(path)
 
     def create_run(self, run: SelfEvolveRun) -> Path:
         run_dir = self.run_path(run.run_id)
@@ -579,6 +649,32 @@ class FilesystemSelfEvolveStore:
             json.dumps(to_json_dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+
+    def _write_json_atomic(self, path: Path, payload: Any) -> None:
+        self._reject_symlink_components(path.parent)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._reject_symlink_components(path.parent)
+        if path.is_symlink():
+            raise ValueError("atomic JSON destination cannot be a symlink")
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        encoded = (
+            json.dumps(to_json_dict(payload), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        )
+        try:
+            with temporary.open("x", encoding="utf-8") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _reject_symlink_components(path: Path) -> None:
+        for component in (path, *path.parents):
+            if component.is_symlink():
+                raise ValueError("atomic JSON destination cannot traverse a symlink")
 
     def _read_json(self, path: Path) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))

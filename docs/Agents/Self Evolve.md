@@ -4,6 +4,19 @@ Self-evolve is a framework-owned capability for improving agent-facing harness a
 
 The capability is disabled by default. Agents opt in through `AgentConfig.self_evolve_config`, `aworld-cli --evolve` can enable it for the current CLI runtime session, and `aworld-cli optimize` provides an explicit manual/debug entrypoint for release operators and developers.
 
+For verified optimization, three small ownership layers cooperate:
+
+| Layer | Responsibility |
+|---|---|
+| Run | Generate/evaluate one candidate population and preserve all gates, apply, rollback, and report semantics. |
+| Campaign | Compare typed causal progress across an exact bounded run lineage and account for cumulative budget. |
+| Goal session | Accept an explicit framework/shared-code handoff; it does not own candidate scheduling or Campaign state. |
+
+The Campaign is not a general workflow engine and does not retry every
+rejection. It is the self-improvement link between ordinary runs: only typed
+candidate progress or retryable infrastructure can authorize another cycle.
+Framework mutation remains behind the existing Goal authority boundary.
+
 ## What It Optimizes
 
 Self-evolve works on target references rather than arbitrary files. A target records the artifact type, id, optional path, and provenance used by the framework gates.
@@ -71,6 +84,81 @@ The loop makes three boundaries visible: target selection is limited by register
 
 This keeps the self-evolve loop outside the task response path. Post-run scheduling is best effort: a failed enqueue is logged and does not change the completed `TaskResponse`.
 
+### Cross-run Campaign loop
+
+An `auto_verified` CLI or online background optimize starts a Campaign with a
+default maximum of three cycles. Each cycle is still an ordinary self-evolve
+run with a unique `campaign-...-cycle-NNN` ID. A later cycle inherits repair
+feedback only from earlier run IDs in that Campaign, deduplicates semantic and
+schema/fixture constraint identities, and verifies that the inferred target
+type/id has not changed. One-trajectory and multi-trajectory datasets use the
+same aggregate transition function; member count never selects a retry branch.
+
+The Campaign persists atomically under
+`.aworld/self_evolve/campaigns/<campaign-id>/campaign.json`. It fingerprints
+the source contents and verification contract, protects active/paused run
+lineage from artifact cleanup, and subtracts each report's token, cost, and
+wall-time ledger from the original ceiling. An explicit budget is Campaign
+total. If the CLI caller leaves the token ceiling implicit, Campaign creation
+derives a hard total of 500,000 tokens per allowed cycle while retaining the
+500,000-token cap on each individual run. Missing usage telemetry fails closed
+before another run. `max_iterations` limits candidate work inside a run;
+`max_improvement_cycles` limits runs across the Campaign.
+
+The possible dispositions are `complete`, `continue_candidate`,
+`retry_infrastructure`, `handoff_goal`, `pause_operator`, and `exhausted`.
+Unchanged semantic frontiers, non-repairable task/candidate failures, policy or
+permission denials, and exhausted budgets do not loop. A framework/shared
+handoff writes only public typed references and the fixed resume action; it
+never lets a candidate write framework/runtime/CLI paths.
+
+Campaign status distinguishes why bounded improvement stopped: `budget_limited`
+is reserved for cycle/resource/accounting limits, while `exhausted` means a
+typed repair frontier repeated without deeper stage or new constraint progress.
+Both are terminal; neither is reported as a successful evolution.
+
+### Typed recovery trace
+
+Self-improvement progress is not limited to a new failure code. The framework
+builds `aworld.self_evolve.recovery_trace.public.v1` from historical trajectory
+steps and paired replay results. For each trajectory-set member it compares
+baseline and candidate repetition success rates, distinguishes stable recovery,
+partial recovery, regression, and unrecovered behavior, and records only
+structural path data such as step/tool counts and strategy-switch counts.
+Member ids are SHA-256 identities; task text, tool arguments, endpoints, and
+response payloads are never included.
+
+An intermediate failure followed by terminal success produces a recovery
+lesson instead of a failure lesson. During paired replay, successful member
+paths become last-good structural checkpoints. If a failed repetition proceeds
+beyond a successful checkpoint without completing, the next repair receives a
+bounded post-checkpoint-overrun signal and must preserve positive recovery
+deltas while repairing the remaining members. The same aggregation applies to
+one or many trajectory members.
+
+Campaign progress includes monotonic per-member recovery achievements. A higher
+successful-repetition count or newly stable recovery can authorize the next
+bounded cycle even when the causal failure identity is unchanged; an unchanged
+recovery frontier still exhausts normally. The recovery trace schema is also
+part of the versioned verification-contract fingerprint, so historical semantic
+deduplication cannot conflate candidates verified before and after this contract.
+
+Candidate conformance has a parallel identity-only constraint recovery trace.
+It records whether each typed constraint is active, recovered, or regressed,
+plus bounded violation/recovery counts. Repeated violations require a materially
+different implementation strategy; recovered constraints form a last-good
+checkpoint that later repairs must preserve. The trace contains constraint
+hashes only and works across arbitrary candidate populations and trajectory-set
+cardinality.
+
+Recovery attribution also has an intervention boundary. Framework startup and
+protocol probes establish that a candidate runtime is valid, but they are cleared
+from the task-plane trace before rollout. A replay-only candidate is considered a
+repair cause only when the task actually exchanges traffic with that intervention.
+Otherwise the typed cause is `candidate_intervention_unobserved`, owned by replay
+adaptation/target selection, and the framework must repair context or targeting
+instead of repeatedly mutating the candidate.
+
 ### Candidate Generation and Focused Repair
 
 Each candidate-generation slot runs as an isolated AWorld task with one model call, no tools, model-aware input/output budgeting, and a typed JSON output contract. Candidate packages are normalized before they enter the population. Malformed but repairable model output receives one bounded representation-repair attempt; provider/runtime failures remain infrastructure failures and are not misclassified as bad candidates.
@@ -78,6 +166,29 @@ Each candidate-generation slot runs as an isolated AWorld task with one model ca
 The default proposal budget is one optimizer iteration. `auto_verified` defaults to ten iterations because runtime-backed repairs often expose the next protocol boundary only after the previous one is corrected. The runner stops when it has a verified candidate or no new progress is possible. It may grant a bounded extension for a newly observed repairable failure family, up to six extension iterations, rather than looping on duplicate candidates or the same failed branch.
 
 Once a concrete candidate has failed, the next repair prompt switches to `focused_candidate_delta` mode. It includes the failed candidate package, bounded machine-readable diagnostics, the relevant source branches, and the repair acceptance contract. Broad trajectory, lesson, and current-target payloads are omitted from that repair prompt so the model edits the observed failure frontier instead of regenerating the whole skill.
+
+Compiler and replay-capability failures retain the complete capability authoring
+contract even when no schema-field constraint has been emitted yet. The compiler is
+explicitly a deterministic, network-disabled artifact transform: evidence references
+are string keys resolved through `evidence_derivations`, and runtime listeners or
+socket probes are created only later by the framework with allocated ports.
+
+Schema-field repair constraints carry a value domain. `schema_value` paths are
+absolute paths in the named generated schema layer. `source_behavior` paths are
+static-analyzer predicates over a required source branch; candidates must
+implement the expected behavior and must not manufacture or overwrite the path
+as runtime data. Constraint identity includes this domain, so inherited
+contracts cannot conflate a JSON field with a source-code behavior predicate.
+Source-behavior constraints may also declare `required_operations` and
+`forbidden_operations`. These are conjunctive structural data-flow requirements,
+not strings that can be copied into comments or metadata, and are merged by the
+same constraint identity rules as ordinary schema fields. Binding operations
+require statically provable value flow through direct use or explicit function
+parameters; direct field-projection operations cannot be satisfied by generic
+recursive fallback logic.
+Local deterministic conformance has a complete budget estimate of zero model
+tokens/cost plus bounded wall time, so a token ceiling cannot incorrectly deny
+the probe as unknown work.
 
 ### Layered Repair Conformance
 
@@ -114,6 +225,14 @@ authenticated profiles, and other stateful
 dependencies require a registered deterministic adapter; the compiler never invents
 a successful mock for an unknown dependency.
 
+For trajectory logs, recorded message history and explicit parent ids take priority.
+When log writers persist only the current message, ordered records with the same
+session id are reconstructed as a bounded conversation chain. The compactor reserves
+space for user turns across the chain before recent assistant output, preserving
+source URLs, artifact identities, and other early task anchors needed by later natural
+follow-ups. Natural continuation wording without a reconstructed same-session parent
+is marked `context_incomplete`; it is never joined to an unrelated adjacent session.
+
 Every baseline, candidate, and repetition receives a fresh copy of the same verified
 seed as its working directory. Writes from one rollout therefore cannot change the
 initial state of another rollout. A pair is comparable only when its adaptation,
@@ -140,6 +259,7 @@ agent_config = AgentConfig(
         mode="shadow",
         apply_policy="proposal",
         min_eval_cases=1,
+        max_improvement_cycles=3,
     )
 )
 ```
@@ -152,6 +272,10 @@ Modes:
 - `online`: post-run jobs may apply allowlisted targets only after verified replay, evaluator gates, and post-apply re-evaluation.
 
 `online` requires `apply_policy="auto_verified"`. `auto_verified` also requires `requires_post_apply_reevaluation=True`, which is the default. Useful verification knobs include `replay_timeout_seconds`, `replay_max_steps`, `baseline_replay_repetitions`, `candidate_replay_repetitions`, `replay_candidate_limit`, `replay_stability_margin`, `judge_repetitions`, and `judge_timeout_seconds`.
+
+`max_improvement_cycles` is the cross-run hard cap and defaults to `3`.
+`max_background_jobs` still limits how many queued generations one drain call
+executes; a continuable Campaign remains checkpointed for a later drain.
 
 Self-evolve is separate from older learning switches. `meta_learning_config` stores and extracts learning knowledge, `ContextRuleConfig.optimization_config` controls context compression/optimization behavior, and `train.evolve` is a training asset. `SelfEvolveConfig` is the opt-in for this framework proposal and verification loop.
 
@@ -413,6 +537,15 @@ Trajectory-set runs may also include framework-owned trajectory-set and populati
 - `population/patches/<candidate_id>.json`: patch intent metadata before materialization.
 
 Multi-member replay stores a versioned manifest under `replay/<candidate_id>/members/manifest.json`. Each member directory contains only that member's baseline/candidate repetitions and uses the member's own task input. Validation and held-out evaluators consume their assigned member splits; replay repetitions measure stability and do not count as additional independent held-out members.
+
+For a one-member trajectory dataset, paired replay may provide the strict sparse-data
+verification fallback. The framework requires at least two conclusive baseline controls,
+three successful candidate repetitions, and a deterministic evaluation signal. A baseline
+control may be either successful or an identical native task/candidate-owned failure in
+every repetition. Infrastructure-owned, blocked, not-run, mixed, or inconsistent failures
+never count as controls. This lets a candidate prove recovery from the failed behavior that
+triggered self-evolve without treating harness failures as evidence. Multi-member datasets
+continue to use trajectory-set validation and do not collapse members into replay counts.
 
 Each repetition directory also contains a `workspace/` copied from the adaptation
 seed. These workspaces are execution sandboxes and may contain rollout mutations;

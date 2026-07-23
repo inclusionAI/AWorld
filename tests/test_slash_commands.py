@@ -779,8 +779,24 @@ class TestOptimizeCommand:
         assert calls["replay_timeout_seconds"] == 600
         assert calls["replay_max_steps"] == 1
         assert calls["judge_timeout_seconds"] == 120
+        assert calls["max_improvement_cycles"] == 3
         assert "Status: rejected" in result
         assert "Selected candidate: cand-1" in result
+
+    @pytest.mark.asyncio
+    async def test_optimize_rejects_proposal_campaign_resume(self, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args="--resume-campaign campaign-generic --apply proposal",
+            )
+        )
+
+        assert result == (
+            "Optimize error: --resume-campaign requires --apply auto_verified"
+        )
 
     @pytest.mark.asyncio
     async def test_optimize_forwards_trajectory_set(self, monkeypatch, tmp_path):

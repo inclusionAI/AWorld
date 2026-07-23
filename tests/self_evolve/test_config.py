@@ -27,6 +27,7 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.require_deterministic_signal_for_verified is True
     assert config.self_evolve_config.max_iterations == 1
     assert config.self_evolve_config.max_background_jobs == 1
+    assert config.self_evolve_config.max_improvement_cycles == 3
     assert config.self_evolve_config.replay_enabled is True
     assert config.self_evolve_config.replay_timeout_seconds == 600
     assert config.self_evolve_config.replay_max_steps == 1
@@ -53,6 +54,11 @@ def test_self_evolve_online_requires_auto_verified_apply_policy() -> None:
     assert config.mode == "online"
     assert config.apply_policy == "auto_verified"
     assert config.requires_post_apply_reevaluation is True
+
+
+def test_self_evolve_config_rejects_non_positive_campaign_cycles() -> None:
+    with pytest.raises(ValidationError, match="max_improvement_cycles must be positive"):
+        SelfEvolveConfig(max_improvement_cycles=0)
 
 
 @pytest.mark.parametrize(

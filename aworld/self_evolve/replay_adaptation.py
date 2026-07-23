@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, Sequence
 
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.trajectory_context import task_input_requires_prior_context
 
 if TYPE_CHECKING:
     from aworld.self_evolve.replay_capability import FrozenReplayCapability
@@ -85,13 +86,6 @@ _STATEFUL_BROWSER_TOOL_TOKENS = frozenset(
 _STATEFUL_WEB_ACTION_TOKENS = frozenset(
     {"run", "search", "fetch", "open", "navigate", "click"}
 )
-_CONTINUATION_MARKERS = (
-    "continue the current task",
-    "additional operator steering",
-    "interrupt requested by operator",
-)
-
-
 class ReplayAdaptationError(RuntimeError):
     """Raised when a deterministic replay seed cannot be constructed."""
 
@@ -1057,9 +1051,8 @@ def _detected_runtime_dependencies(
 ) -> tuple[ReplayDependency, ...]:
     task_text = _text_fragments(task_input)
     dependencies: list[ReplayDependency] = []
-    lowered = task_text.lower()
     if (
-        any(marker in lowered for marker in _CONTINUATION_MARKERS)
+        task_input_requires_prior_context(task_input)
         and not _case_has_reconstructed_context(case)
     ):
         dependencies.append(

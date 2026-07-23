@@ -231,6 +231,7 @@ class SelfEvolveConfig(BaseConfig):
     judge_timeout_seconds: int = 300
     cooldown_seconds: int = 0
     max_iterations: int = 1
+    max_improvement_cycles: int = 3
     min_improvement: float = 0.0
     max_background_jobs: int = 1
     auto_apply_target_types: tuple[str, ...] = ("skill",)
@@ -278,6 +279,8 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("replay_timeout_seconds must be positive")
         if self.replay_stability_margin < 0:
             raise ValueError("replay_stability_margin must be non-negative")
+        if self.max_improvement_cycles <= 0:
+            raise ValueError("max_improvement_cycles must be positive")
         for field_name in (
             "max_run_tokens",
             "total_run_token_budget",

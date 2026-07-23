@@ -15,6 +15,18 @@ from aworld.self_evolve.candidate_generation import (
     CandidateGenerationAgent,
     CandidateGenerationInfrastructureError,
 )
+from aworld.self_evolve.campaign import (
+    DEFAULT_MAX_IMPROVEMENT_CYCLES,
+    CampaignUsage,
+    SelfImprovementCampaign,
+    SelfImprovementCampaignController,
+    SelfImprovementCampaignStatus,
+    SelfImprovementDisposition,
+    SelfImprovementDispositionKind,
+    SelfImprovementProgress,
+    derive_self_improvement_disposition,
+    run_self_improvement_campaign,
+)
 from aworld.self_evolve.concurrency import SelfEvolveConcurrencyPolicy
 from aworld.self_evolve.datasets import (
     EvalCase,

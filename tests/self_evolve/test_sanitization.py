@@ -14,6 +14,7 @@ from aworld.self_evolve.failure_events import (
     aggregate_replay_failure_observations,
 )
 from aworld.self_evolve.sanitization import public_diagnostic_projection
+from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 
 
 def _large_private_failure() -> AggregatedReplayFailure:
@@ -66,3 +67,45 @@ def test_public_projection_rejects_forged_typed_aggregate() -> None:
 
     with pytest.raises(ValueError, match="complete affected identity set"):
         public_diagnostic_projection({"failure": forged})
+
+
+def test_public_projection_preserves_deep_typed_constraint_and_recovery_trace() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+        required_operations=(
+            "read_environment_binding_as_path",
+            "iterate_records_array",
+            "project_record_value",
+        ),
+        forbidden_operations=("substitute_raw_fixture_recursive_scan",),
+    )
+    trace = {
+        "schema_version": (
+            "aworld.self_evolve.constraint_recovery_trace.public.v1"
+        ),
+        "attempt_count": 3,
+        "repeated_violation_count": 1,
+        "constraints": [
+            {
+                "constraint_identity": "sha256:" + constraint.identity_digest,
+                "status": "active",
+                "violation_attempt_count": 3,
+                "private_payload": "SECRET",
+            }
+        ],
+    }
+    nested = {"next": {"next": {"next": {"next": {"next": {
+        "schema_field_constraints": [constraint.to_dict()],
+        "constraint_recovery_trace": trace,
+    }}}}}}
+
+    projected = public_diagnostic_projection(nested, max_depth=6)
+    leaf = projected["next"]["next"]["next"]["next"]["next"]
+
+    assert leaf["schema_field_constraints"] == [constraint.to_dict()]
+    assert leaf["constraint_recovery_trace"]["attempt_count"] == 3
+    assert "SECRET" not in json.dumps(projected)
