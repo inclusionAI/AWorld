@@ -10,6 +10,9 @@ from aworld.self_evolve.trace_pack import TracePack
 
 
 RECOVERY_TRACE_SCHEMA_VERSION = "aworld.self_evolve.recovery_trace.public.v1"
+RECOVERY_OPPORTUNITY_SCHEMA_VERSION = (
+    "aworld.self_evolve.recovery_opportunity.public.v1"
+)
 CONSTRAINT_RECOVERY_TRACE_SCHEMA_VERSION = (
     "aworld.self_evolve.constraint_recovery_trace.public.v1"
 )
@@ -20,6 +23,8 @@ _FAILURE_STATUSES = frozenset(
     {"cancelled", "error", "failed", "failure", "rejected", "timeout"}
 )
 _STDOUT_TOOL_PATTERN = re.compile(r"(?m)^\s*(?:\u25b6|\u25b7)\s+([A-Za-z][A-Za-z0-9_.:-]{0,79})\s*$")
+_RECOVERY_OPPORTUNITY_MIN_TOOL_CALLS = 4
+_RECOVERY_OPPORTUNITY_MIN_REPEATED_ACTION_RATE = 0.5
 
 
 def trace_pack_recovery_summary(pack: TracePack) -> dict[str, object]:
@@ -63,6 +68,57 @@ def trace_pack_recovery_summary(pack: TracePack) -> dict[str, object]:
             else 0
         ),
         **path,
+    }
+
+
+def trace_pack_recovery_opportunity(pack: TracePack) -> dict[str, object]:
+    """Classify bounded historical evidence that justifies improvement work.
+
+    The tier is ordinal rather than a weighted task score:
+
+    - 3: an observed failure was not recovered;
+    - 2: an observed failure was recovered and can be stabilized;
+    - 1: a sufficiently long repeated-action loop can be made more efficient;
+    - 0: no structural recovery opportunity was observed.
+
+    The projection contains no task text, tool arguments, or response payloads,
+    so it can participate in target grouping and persisted diagnostics.
+    """
+
+    summary = trace_pack_recovery_summary(pack)
+    failure_count = int(summary.get("failure_count") or 0)
+    recovered = summary.get("recovered") is True
+    terminal_success = summary.get("terminal_success") is True
+    tool_call_count = int(summary.get("tool_call_count") or 0)
+    repeated_action_rate = float(summary.get("repeated_action_rate") or 0.0)
+    if failure_count > 0 and not terminal_success:
+        tier = 3
+        kind = "unrecovered_failure"
+    elif recovered:
+        tier = 2
+        kind = "recovered_path"
+    elif (
+        tool_call_count >= _RECOVERY_OPPORTUNITY_MIN_TOOL_CALLS
+        and repeated_action_rate
+        >= _RECOVERY_OPPORTUNITY_MIN_REPEATED_ACTION_RATE
+    ):
+        tier = 1
+        kind = "repeated_action_loop"
+    else:
+        tier = 0
+        kind = "none"
+    return {
+        "schema_version": RECOVERY_OPPORTUNITY_SCHEMA_VERSION,
+        "trace_identity": summary["trace_identity"],
+        "tier": tier,
+        "kind": kind,
+        "failure_count": failure_count,
+        "recovered": recovered,
+        "terminal_success": terminal_success,
+        "tool_call_count": tool_call_count,
+        "distinct_tool_count": int(summary.get("distinct_tool_count") or 0),
+        "strategy_switch_count": int(summary.get("strategy_switch_count") or 0),
+        "repeated_action_rate": repeated_action_rate,
     }
 
 

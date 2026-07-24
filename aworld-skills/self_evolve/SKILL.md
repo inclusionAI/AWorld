@@ -20,8 +20,9 @@ needed.
 ## Capability Levels
 
 - **Available**: `skill:<name>` proposal runs, explicit target invocation,
-  trajectory-backed target inference, artifact reporting, and framework gate
-  reporting when the run produces gate results.
+  trajectory-backed target inference, agentic file/directory dataset
+  ingestion, artifact reporting, and framework gate reporting when the run
+  produces gate results.
 - **Conditional**: `auto_verified` apply, asynchronous post-run jobs, and any
   flow requiring an evaluation backend, held-out cases, deterministic signals,
   candidate replay, post-apply runtime-loader verification, or a
@@ -69,7 +70,16 @@ delta, preserve the target and report a no-op candidate.
    - Otherwise use framework trajectory credit assignment.
    - Decline candidate generation when evidence is insufficient.
 3. Gather evaluation evidence: dataset, prior session, trajectory file, current
-   trajectory, batch config, or regression benchmark source.
+   trajectory, batch config, arbitrary file/directory source, or regression
+   benchmark source.
+   - For arbitrary sources, use `--from-source`; `auto` is implicit.
+   - Use `--ingestion-only` first for unfamiliar or high-risk data.
+   - Treat a manifest as constraints, not as a separate ingestor mode.
+   - Expect ambiguous text/Markdown/log framing to use the isolated mapping
+     agent; AWorld trajectory logs use deterministic compatibility parsing.
+   - Treat registry trust and explicit configuration fingerprints as
+     authoritative; never trust a snapshot's self-reported trust level.
+   - Never ask an ingestion agent to select the self-evolve target.
 4. Invoke framework self-evolve through `aworld.self_evolve` APIs or
    `aworld-cli optimize`.
 5. Default to proposal-only behavior.
@@ -144,6 +154,32 @@ aworld-cli optimize \
   --apply proposal
 ```
 
+Agentic source ingestion defaults to the `auto` ingestor:
+
+```bash
+aworld-cli optimize \
+  --from-source path/to/domain-data \
+  --ingestion-only
+
+aworld-cli optimize \
+  --from-source path/to/domain-data \
+  --source-manifest path/to/domain-data/aworld-source.yaml \
+  --target skill:example_skill \
+  --apply proposal
+```
+
+The flexible external format must be normalized into the framework's frozen,
+schema-versioned dataset. Do not generate or execute parser code. Require the
+`dataset_ingestion` gate and immutable ingestion artifacts before claiming the
+source is suitable for optimization. Baseline, candidate, rerun, and Campaign
+cycles must use the same ingestion ID and split.
+
+Report ingestion status, case count, coverage, rejected-record count, model
+call count, and artifact path. Mapping model calls consume the framework
+candidate-generation budget as the `frozen-dataset-ingestion` item.
+Evaluator-only reruns require a matching `ingestion_ref.json`; do not rescan
+raw input or regenerate a mapping.
+
 Drain pending post-run self-evolve jobs:
 
 ```bash
@@ -214,6 +250,8 @@ runner. Do not mutate the skill file directly in this workflow.
 ## Safety Rules
 
 - Do not expose held-out gate data to candidate mutators.
+- Do not re-ingest a raw source after candidate generation or during a Campaign
+  cycle; load the frozen ingestion reference.
 - Do not treat judge-only output as verified improvement.
 - Do not target framework, runtime, `aworld-cli`, package metadata, secrets, or
   protected built-in skills.

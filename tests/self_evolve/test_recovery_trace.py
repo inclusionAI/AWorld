@@ -12,8 +12,10 @@ from aworld.self_evolve.failure_events import (
 )
 from aworld.self_evolve.recovery_trace import (
     CONSTRAINT_RECOVERY_TRACE_SCHEMA_VERSION,
+    RECOVERY_OPPORTUNITY_SCHEMA_VERSION,
     RECOVERY_TRACE_SCHEMA_VERSION,
     replay_recovery_trace,
+    trace_pack_recovery_opportunity,
     trace_pack_recovery_summary,
     update_constraint_recovery_trace,
     validate_public_constraint_recovery_trace,
@@ -87,6 +89,48 @@ def test_historical_failure_to_success_is_recovery_not_failure_memory() -> None:
         "trajectory_recovery_memory"
     ]
     assert lessons[0].metrics["recovery_trace"]["recovered"] is True
+
+
+def test_historical_recovery_opportunity_has_ordinal_payload_free_tiers() -> None:
+    unrecovered = build_trace_pack(
+        [_step("failed", "fetch")],
+        source_kind="trajectory_log",
+        task_id="unrecovered-private",
+    )
+    recovered = build_trace_pack(
+        [_step("failed", "fetch"), _step("succeeded", "reader")],
+        source_kind="trajectory_log",
+        task_id="recovered-private",
+    )
+    repeated = build_trace_pack(
+        [_step("ok", "fetch") for _ in range(4)],
+        source_kind="trajectory_log",
+        task_id="repeated-private",
+    )
+    ordinary = build_trace_pack(
+        [_step("ok", "fetch")],
+        source_kind="trajectory_log",
+        task_id="ordinary-private",
+    )
+
+    opportunities = [
+        trace_pack_recovery_opportunity(pack)
+        for pack in (unrecovered, recovered, repeated, ordinary)
+    ]
+
+    assert opportunities[0]["tier"] == 3
+    assert opportunities[0]["kind"] == "unrecovered_failure"
+    assert opportunities[1]["tier"] == 2
+    assert opportunities[1]["kind"] == "recovered_path"
+    assert opportunities[2]["tier"] == 1
+    assert opportunities[2]["kind"] == "repeated_action_loop"
+    assert opportunities[3]["tier"] == 0
+    assert opportunities[3]["kind"] == "none"
+    assert all(
+        item["schema_version"] == RECOVERY_OPPORTUNITY_SCHEMA_VERSION
+        for item in opportunities
+    )
+    assert "private" not in json.dumps(opportunities)
 
 
 def test_replay_recovery_trace_handles_multiple_members_and_repetitions(

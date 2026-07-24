@@ -12,6 +12,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from aworld.self_evolve.atomic_fs import atomic_exchange_paths
+from aworld.self_evolve.ingestion.types import (
+    FrozenIngestionSnapshot,
+    fingerprint_json,
+)
+from aworld.self_evolve.ingestion.verifier import (
+    validate_frozen_snapshot_quality,
+)
 from aworld.self_evolve.budget import (
     CandidateAttemptEvent,
     CandidateAttemptKey,
@@ -37,6 +44,20 @@ from aworld.self_evolve.types import (
 from aworld.skills.release import mark_skill_content_candidate
 
 
+def _ingestion_semantic_payload(
+    snapshot: FrozenIngestionSnapshot,
+) -> dict[str, Any]:
+    payload = snapshot.to_dict(public=False)
+    payload.pop("mapping_candidates", None)
+    payload.pop("mapping_failures", None)
+    payload.pop("ingestion_model_call_count", None)
+    quality = payload.get("quality_report")
+    if isinstance(quality, dict):
+        quality.pop("mapping_candidate_count", None)
+        quality.pop("valid_mapping_candidate_count", None)
+    return payload
+
+
 class FilesystemSelfEvolveStore:
     """Filesystem artifact store under `.aworld/self_evolve/<run_id>/`."""
 
@@ -56,6 +77,217 @@ class FilesystemSelfEvolveStore:
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}", campaign_id):
             raise ValueError(f"invalid campaign_id: {campaign_id!r}")
         return self.artifact_root / "campaigns" / campaign_id
+
+    def ingestion_path(self, ingestion_id: str) -> Path:
+        if not re.fullmatch(r"ingestion-[0-9a-f]{32}", ingestion_id):
+            raise ValueError(f"invalid ingestion_id: {ingestion_id!r}")
+        return self.artifact_root / "ingestions" / ingestion_id
+
+    def write_ingestion(
+        self,
+        snapshot: FrozenIngestionSnapshot,
+        *,
+        dataset_recipe: DatasetRecipe | None = None,
+    ) -> Path:
+        if not isinstance(snapshot, FrozenIngestionSnapshot):
+            raise TypeError("ingestion snapshot must be typed")
+        validate_frozen_snapshot_quality(snapshot)
+        if any(
+            case.source.ingestion_id != snapshot.ingestion_id
+            for case in snapshot.normalized_cases
+        ):
+            raise ValueError(
+                "normalized case provenance does not match ingestion identity"
+            )
+        destination = self.ingestion_path(snapshot.ingestion_id)
+        expected = snapshot.to_dict(public=False)
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_dir():
+                raise ValueError("ingestion artifact destination is unsafe")
+            existing = self.read_ingestion(snapshot.ingestion_id)
+            if _ingestion_semantic_payload(
+                existing
+            ) != _ingestion_semantic_payload(snapshot):
+                raise ValueError(
+                    "immutable ingestion id already exists with different content"
+                )
+            return destination
+
+        root = destination.parent
+        self._reject_symlink_components(root)
+        root.mkdir(parents=True, exist_ok=True)
+        root.chmod(0o700)
+        temporary = root / f".{snapshot.ingestion_id}.{uuid.uuid4().hex}.tmp"
+        temporary.mkdir(mode=0o700)
+        try:
+            self._write_private_json(temporary / "ingestion.json", expected)
+            self._write_private_json(
+                temporary / "source_inventory.json",
+                snapshot.inventory.to_dict(public=False),
+            )
+            self._write_private_json(
+                temporary / "selected_mapping.json",
+                snapshot.selected_mapping.to_dict(),
+            )
+            self._write_private_json(
+                temporary / "structural_profile.json",
+                {
+                    asset.relative_path: dict(asset.structural_profile)
+                    for asset in snapshot.inventory.assets
+                },
+            )
+            mapping_candidates = (
+                snapshot.mapping_candidates
+                if snapshot.mapping_candidates
+                else (snapshot.selected_mapping,)
+            )
+            for index, candidate in enumerate(mapping_candidates):
+                self._write_private_json(
+                    temporary
+                    / "mapping_candidates"
+                    / f"candidate-{index:03d}.json",
+                    candidate.to_dict(),
+                )
+            if snapshot.mapping_failures:
+                self._write_private_json(
+                    temporary / "mapping_candidates" / "failures.json",
+                    list(snapshot.mapping_failures),
+                )
+            if snapshot.source_manifest is not None:
+                self._write_private_json(
+                    temporary / "source_manifest.json",
+                    snapshot.source_manifest,
+                )
+            self._write_private_json(
+                temporary / "quality_report.json",
+                snapshot.quality_report.to_dict(public=False),
+            )
+            self._write_private_jsonl(
+                temporary / "rejected_records.jsonl",
+                tuple(record.to_dict() for record in snapshot.rejected_records),
+            )
+            if dataset_recipe is None:
+                self._write_private_jsonl(
+                    temporary / "trainable_cases.jsonl",
+                    tuple(case.to_dict() for case in snapshot.normalized_cases),
+                )
+                self._write_private_jsonl(
+                    temporary / "held_out_cases.jsonl",
+                    (),
+                )
+            else:
+                trainable_ids = set(dataset_recipe.trainable_case_ids)
+                held_out_ids = set(dataset_recipe.held_out_case_ids)
+                self._write_private_jsonl(
+                    temporary / "trainable_cases.jsonl",
+                    tuple(
+                        case.to_dict()
+                        for case in snapshot.normalized_cases
+                        if case.case_id in trainable_ids
+                    ),
+                )
+                self._write_private_jsonl(
+                    temporary / "held_out_cases.jsonl",
+                    tuple(
+                        case.to_dict()
+                        for case in snapshot.normalized_cases
+                        if case.case_id in held_out_ids
+                    ),
+                )
+                self._write_private_json(
+                    temporary / "dataset_recipe.json",
+                    dataset_recipe,
+                )
+            os.replace(temporary, destination)
+        except FileExistsError:
+            existing = self.read_ingestion(snapshot.ingestion_id)
+            if existing.to_dict(public=False) != expected:
+                raise ValueError(
+                    "immutable ingestion id already exists with different content"
+                )
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+        reloaded = self.read_ingestion(snapshot.ingestion_id)
+        if reloaded.to_dict(public=False) != expected:
+            raise ValueError("persisted ingestion snapshot did not round trip")
+        return destination
+
+    def read_ingestion(self, ingestion_id: str) -> FrozenIngestionSnapshot:
+        root = self.ingestion_path(ingestion_id)
+        path = root / "ingestion.json"
+        if (
+            root.is_symlink()
+            or path.is_symlink()
+            or not root.is_dir()
+            or not path.is_file()
+        ):
+            raise FileNotFoundError(f"frozen ingestion not found: {ingestion_id}")
+        snapshot = FrozenIngestionSnapshot.from_dict(self._read_json(path))
+        validate_frozen_snapshot_quality(snapshot)
+        if snapshot.ingestion_id != ingestion_id:
+            raise ValueError("ingestion artifact identity does not match its path")
+        if any(
+            case.source.ingestion_id != snapshot.ingestion_id
+            for case in snapshot.normalized_cases
+        ):
+            raise ValueError(
+                "normalized case provenance does not match ingestion identity"
+            )
+        return snapshot
+
+    def write_ingestion_ref(
+        self,
+        run_id: str,
+        snapshot: FrozenIngestionSnapshot,
+        *,
+        dataset_recipe: DatasetRecipe | None = None,
+    ) -> Path:
+        if not isinstance(snapshot, FrozenIngestionSnapshot):
+            raise TypeError("ingestion snapshot must be typed")
+        source = dict(dataset_recipe.source) if dataset_recipe is not None else {}
+        split_fingerprint = source.get("split_fingerprint")
+        if split_fingerprint is None and dataset_recipe is not None:
+            split_fingerprint = fingerprint_json(dataset_recipe.splits)
+        payload = {
+            "schema_version": "aworld.self_evolve.ingestion_ref.v1",
+            "ingestion_id": snapshot.ingestion_id,
+            "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+            "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+            "normalized_dataset_fingerprint": (
+                snapshot.normalized_dataset_fingerprint
+            ),
+            "split_fingerprint": split_fingerprint,
+            "quality_report_ref": str(
+                self.ingestion_path(snapshot.ingestion_id) / "quality_report.json"
+            ),
+        }
+        path = self.run_path(run_id) / "ingestion_ref.json"
+        self._write_json_atomic(path, payload)
+        return path
+
+    def read_ingestion_ref(self, run_id: str) -> dict[str, Any]:
+        path = self.run_path(run_id) / "ingestion_ref.json"
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"ingestion reference not found for run: {run_id}")
+        payload = self._read_json(path)
+        if payload.get("schema_version") != "aworld.self_evolve.ingestion_ref.v1":
+            raise ValueError("unsupported ingestion reference schema")
+        ingestion_id = payload.get("ingestion_id")
+        if not isinstance(ingestion_id, str):
+            raise ValueError("ingestion reference is missing ingestion_id")
+        snapshot = self.read_ingestion(ingestion_id)
+        expected = {
+            "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+            "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+            "normalized_dataset_fingerprint": (
+                snapshot.normalized_dataset_fingerprint
+            ),
+        }
+        for key, value in expected.items():
+            if payload.get(key) != value:
+                raise ValueError(f"ingestion reference {key} does not match snapshot")
+        return payload
 
     def write_campaign(self, campaign: Any) -> Path:
         from aworld.self_evolve.campaign import SelfImprovementCampaign
@@ -120,6 +352,59 @@ class FilesystemSelfEvolveStore:
         if not path.is_file() or path.is_symlink():
             raise FileNotFoundError(f"self-evolve report not found: {run_id}")
         return self._read_json(path)
+
+    def archive_interrupted_campaign_run(
+        self,
+        *,
+        campaign_id: str,
+        run_id: str,
+        reserved_usage: Mapping[str, Any],
+    ) -> Path:
+        """Atomically preserve a dead, incomplete Campaign run before retry."""
+
+        self._validate_id(campaign_id, "campaign_id")
+        self._validate_id(run_id, "run_id")
+        run_dir = self.run_path(run_id)
+        if not run_dir.is_dir() or run_dir.is_symlink():
+            raise FileNotFoundError(f"incomplete self-evolve run not found: {run_id}")
+        if (run_dir / "report.json").exists():
+            raise ValueError("completed self-evolve run cannot be archived as interrupted")
+        lease_path = run_dir / ".active.json"
+        lease = self._read_json(lease_path) if lease_path.is_file() else {}
+        if _run_lease_is_live(lease):
+            raise RuntimeError(f"self-evolve run is still active: {run_id}")
+        for journal_path in (run_dir / "apply").glob("*.journal.json"):
+            journal = self._read_json(journal_path)
+            if journal.get("status") in {"backup_written", "applying"}:
+                raise RuntimeError(
+                    f"self-evolve run has an interrupted apply journal: {run_id}"
+                )
+
+        archive_root = (
+            self.campaign_path(campaign_id) / "interrupted_run_attempts"
+        )
+        archive_root.mkdir(parents=True, exist_ok=True)
+        attempt_index = 1
+        while True:
+            archive_path = archive_root / f"{run_id}-attempt-{attempt_index:03d}"
+            if not archive_path.exists():
+                break
+            attempt_index += 1
+        os.replace(run_dir, archive_path)
+        self._write_json(
+            archive_path / "interruption.json",
+            {
+                "schema_version": "aworld.self_evolve.interrupted_run.v1",
+                "code": "campaign_run_interrupted",
+                "campaign_id": campaign_id,
+                "run_id": run_id,
+                "attempt_index": attempt_index,
+                "archived_at": time.time(),
+                "lease": public_diagnostic_projection(lease),
+                "reserved_usage": public_diagnostic_projection(reserved_usage),
+            },
+        )
+        return archive_path
 
     def create_run(self, run: SelfEvolveRun) -> Path:
         run_dir = self.run_path(run.run_id)
@@ -196,12 +481,62 @@ class FilesystemSelfEvolveStore:
 
     def write_report(self, run_id: str, report: Mapping[str, Any]) -> Path:
         path = self.run_path(run_id) / "report.json"
-        self._write_json(path, _public_report_payload(report))
+        payload = dict(report)
+        ingestion_ref_path = self.run_path(run_id) / "ingestion_ref.json"
+        if ingestion_ref_path.is_file() and not ingestion_ref_path.is_symlink():
+            ingestion_ref = self.read_ingestion_ref(run_id)
+            snapshot = self.read_ingestion(str(ingestion_ref["ingestion_id"]))
+            payload["ingestion"] = {
+                "schema_version": snapshot.schema_version,
+                "ingestion_id": snapshot.ingestion_id,
+                "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+                "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+                "normalized_dataset_fingerprint": (
+                    snapshot.normalized_dataset_fingerprint
+                ),
+                "split_fingerprint": ingestion_ref.get("split_fingerprint"),
+                "ingestor_name": snapshot.ingestor_name,
+                "ingestor_version": snapshot.ingestor_version,
+                "ingestor_trust_level": snapshot.ingestor_trust_level.value,
+                "quality_report": snapshot.quality_report.public_projection(),
+            }
+        ingestion_gate_path = self.run_path(run_id) / "ingestion_gate.json"
+        if ingestion_gate_path.is_file() and not ingestion_gate_path.is_symlink():
+            ingestion_gate = self._read_json(ingestion_gate_path)
+            gates = [
+                item
+                for item in payload.get("gate_results", ())
+                if isinstance(item, Mapping)
+                and item.get("gate_name") != "dataset_ingestion"
+            ]
+            payload["gate_results"] = [ingestion_gate, *gates]
+        self._write_json(path, _public_report_payload(payload))
+        return path
+
+    def write_ingestion_gate(
+        self,
+        run_id: str,
+        gate: Mapping[str, Any],
+    ) -> Path:
+        if gate.get("gate_name") != "dataset_ingestion":
+            raise ValueError("ingestion gate must use dataset_ingestion")
+        path = self.run_path(run_id) / "ingestion_gate.json"
+        self._write_json_atomic(path, dict(gate))
         return path
 
     def write_dataset_recipe(self, run_id: str, recipe: DatasetRecipe) -> Path:
         path = self.run_path(run_id) / "dataset_recipe.json"
         self._write_json(path, recipe)
+        source = recipe.source
+        ingestion_id = source.get("ingestion_id")
+        if source.get("kind") == "agentic_source" and isinstance(
+            ingestion_id, str
+        ):
+            self.write_ingestion_ref(
+                run_id,
+                self.read_ingestion(ingestion_id),
+                dataset_recipe=recipe,
+            )
         return path
 
     def write_replay_requirements(
@@ -669,6 +1004,29 @@ class FilesystemSelfEvolveStore:
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _write_private_json(self, path: Path, payload: Any) -> None:
+        self._write_json(path, payload)
+        path.chmod(0o600)
+
+    def _write_private_jsonl(
+        self,
+        path: Path,
+        records: tuple[Mapping[str, Any], ...],
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = "".join(
+            json.dumps(
+                to_json_dict(record),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+            for record in records
+        )
+        path.write_text(encoded, encoding="utf-8")
+        path.chmod(0o600)
 
     @staticmethod
     def _reject_symlink_components(path: Path) -> None:

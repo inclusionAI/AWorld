@@ -69,6 +69,195 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert "cand-1" in output
 
 
+def test_optimize_command_defaults_file_or_directory_source_to_auto_ingestor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {
+            "status": "ingested",
+            "ingestion_id": "ingestion-demo",
+            "ingestion_report_path": str(tmp_path / "ingestion.json"),
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-source",
+            str(tmp_path / "domain-data"),
+            "--source-manifest",
+            str(tmp_path / "aworld-source.yaml"),
+            "--ingestion-only",
+        ]
+    )
+
+    assert handled is True
+    assert calls["from_source"] == str(tmp_path / "domain-data")
+    assert calls["source_ingestor"] == "auto"
+    assert calls["source_manifest"] == str(tmp_path / "aworld-source.yaml")
+    assert calls["ingestion_only"] is True
+
+
+def test_optimize_command_allows_registered_ingestor_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "rejected"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-source",
+            "domain-data",
+            "--source-ingestor",
+            "crm-export-v2",
+            "--target",
+            "skill:crm",
+        ]
+    )
+
+    assert handled is True
+    assert calls["source_ingestor"] == "crm-export-v2"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"dataset": "eval.jsonl", "from_source": "domain-data"},
+        {"source_manifest": "aworld-source.yaml"},
+        {"source_ingestor": "crm-export-v2"},
+        {"ingestion_model_profile": "ingestion"},
+        {"ingestion_only": True},
+    ],
+)
+def test_run_optimize_cli_rejects_invalid_agentic_source_option_combinations(
+    kwargs: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    request = {
+        "agent": None,
+        "task": None,
+        "target": None,
+        "dataset": None,
+        "from_session": None,
+        "from_trajectory": None,
+        "batch_config": None,
+        "iterations": None,
+        "apply": "proposal",
+        "infer_target": True,
+        "workspace_root": str(tmp_path),
+        **kwargs,
+    }
+
+    with pytest.raises(ValueError):
+        run_optimize_cli(**request)
+
+
+def test_run_optimize_cli_resolves_explicit_ingestion_model_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+    resolved_profiles = []
+    configs = {
+        name: ModelConfig(
+            llm_provider="openai",
+            llm_model_name=f"{name}-model",
+            llm_api_key="test-key",
+        )
+        for name in ("default", "source-mapper")
+    }
+
+    def fake_resolve_model_profile(profile_name):
+        resolved_profiles.append(profile_name)
+        return configs[profile_name]
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"status": "ingested"}
+
+    monkeypatch.setattr(
+        "aworld_cli.core.model_profiles.resolve_model_profile",
+        fake_resolve_model_profile,
+    )
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory=None,
+        from_source="domain-data",
+        ingestion_model_profile="source-mapper",
+        ingestion_only=True,
+        batch_config=None,
+        iterations=None,
+        apply="proposal",
+        infer_target=True,
+        workspace_root=str(tmp_path),
+    )
+
+    assert resolved_profiles == ["default", "source-mapper"]
+    assert calls["mutation_model_config"] is configs["default"]
+    assert calls["ingestion_model_config"] is configs["source-mapper"]
+
+
+def test_run_optimize_cli_ingestion_only_executes_default_auto_framework_path(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "cases.jsonl"
+    source.write_text(
+        '{"case_id":"case-1","input":"question","expected_output":"answer"}\n',
+        encoding="utf-8",
+    )
+
+    summary = run_optimize_cli(
+        agent=None,
+        task=None,
+        target=None,
+        dataset=None,
+        from_session=None,
+        from_trajectory=None,
+        from_source=str(source),
+        ingestion_only=True,
+        batch_config=None,
+        iterations=None,
+        apply="proposal",
+        infer_target=True,
+        workspace_root=str(tmp_path),
+    )
+
+    assert summary["status"] == "ingested"
+    assert summary["ingestion_id"].startswith("ingestion-")
+    assert Path(summary["ingestion_report_path"]).is_file()
+
+
 def test_optimize_command_drains_pending_self_evolve_jobs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -396,6 +585,25 @@ def test_render_optimize_summary_reports_new_skill_promotion_status() -> None:
     )
 
     assert "New skill: draft_retained" in summary
+
+
+def test_render_optimize_summary_reports_ingestion_quality_metrics() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "ingested",
+            "ingestion_id": "ingestion-" + "a" * 32,
+            "ingestion_status": "ingestion_passed_with_warnings",
+            "ingestion_case_count": 12,
+            "ingestion_record_coverage_rate": 0.975,
+            "ingestion_rejected_record_count": 1,
+            "ingestion_model_call_count": 2,
+        }
+    )
+
+    assert "Ingestion cases: 12" in summary
+    assert "Ingestion coverage: 0.975" in summary
+    assert "Ingestion rejected records: 1" in summary
+    assert "Ingestion model calls: 2" in summary
 
 
 def test_render_optimize_summary_warns_when_replay_success_count_is_insufficient() -> None:

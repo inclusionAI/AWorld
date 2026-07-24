@@ -15,6 +15,7 @@ class SelfEvolveArtifactRetentionPolicy:
     keep_latest_runs: int = 2
     raw_artifact_retention_days: int = 0
     stale_run_retention_hours: int = 24
+    unreferenced_ingestion_retention_days: int = 7
     prune_unselected_candidate_materializations: bool = True
 
 
@@ -69,6 +70,8 @@ def cleanup_self_evolve_artifacts(
         raise ValueError("raw_artifact_retention_days must be non-negative")
     if retention.stale_run_retention_hours < 0:
         raise ValueError("stale_run_retention_hours must be non-negative")
+    if retention.unreferenced_ingestion_retention_days < 0:
+        raise ValueError("unreferenced_ingestion_retention_days must be non-negative")
 
     root = (
         Path(artifact_root)
@@ -102,6 +105,9 @@ def cleanup_self_evolve_artifacts(
     stale_run_cutoff = (now if now is not None else time.time()) - (
         retention.stale_run_retention_hours * 60 * 60
     )
+    ingestion_cutoff = (now if now is not None else time.time()) - (
+        retention.unreferenced_ingestion_retention_days * 24 * 60 * 60
+    )
 
     for run_dir in sorted(run_dirs, key=lambda path: path.name):
         skip_reason = _cleanup_skip_reason(
@@ -132,6 +138,22 @@ def cleanup_self_evolve_artifacts(
         if run_removed:
             removed_run_ids.add(run_dir.name)
 
+    protected_ingestion_ids = _referenced_ingestion_ids(root, run_dirs=run_dirs)
+    removed_ingestion_ids: list[str] = []
+    ingestion_root = root / "ingestions"
+    if ingestion_root.is_dir() and not ingestion_root.is_symlink():
+        for ingestion_dir in sorted(ingestion_root.iterdir(), key=lambda path: path.name):
+            if (
+                not ingestion_dir.is_dir()
+                or ingestion_dir.is_symlink()
+                or ingestion_dir.name in protected_ingestion_ids
+                or _path_mtime(ingestion_dir) > ingestion_cutoff
+            ):
+                continue
+            _remove_path(ingestion_dir)
+            removed_paths.append(str(ingestion_dir))
+            removed_ingestion_ids.append(ingestion_dir.name)
+
     return {
         "policy": asdict(retention),
         "removed_run_count": len(removed_run_ids),
@@ -140,6 +162,8 @@ def cleanup_self_evolve_artifacts(
         "removed_paths": removed_paths,
         "skipped_runs": skipped_runs,
         "protected_run_ids": sorted(recent_run_ids | referenced_run_ids),
+        "removed_ingestion_ids": removed_ingestion_ids,
+        "protected_ingestion_ids": sorted(protected_ingestion_ids),
     }
 
 
@@ -152,6 +176,8 @@ def _empty_cleanup(policy: SelfEvolveArtifactRetentionPolicy) -> dict[str, Any]:
         "removed_paths": [],
         "skipped_runs": [],
         "protected_run_ids": [],
+        "removed_ingestion_ids": [],
+        "protected_ingestion_ids": [],
     }
 
 
@@ -188,6 +214,40 @@ def _campaign_referenced_run_ids(root: Path, *, run_ids: set[str]) -> set[str]:
             for run_id in raw_run_ids
             if isinstance(run_id, str) and run_id in run_ids
         )
+    return referenced
+
+
+def _referenced_ingestion_ids(
+    root: Path,
+    *,
+    run_dirs: Iterable[Path],
+) -> set[str]:
+    referenced: set[str] = set()
+    for run_dir in run_dirs:
+        payload = _read_json_object(run_dir / "ingestion_ref.json")
+        ingestion_id = payload.get("ingestion_id") if payload else None
+        if isinstance(ingestion_id, str) and ingestion_id:
+            referenced.add(ingestion_id)
+
+    campaign_root = root / "campaigns"
+    if not campaign_root.is_dir() or campaign_root.is_symlink():
+        return referenced
+    for path in campaign_root.glob("*/campaign.json"):
+        if path.is_symlink() or path.parent.is_symlink():
+            continue
+        payload = _read_json_object(path)
+        if (
+            payload is None
+            or payload.get("schema_version") != "aworld.self_evolve.campaign.v1"
+            or payload.get("status") not in {"active", "paused"}
+        ):
+            continue
+        source_snapshot = payload.get("source_snapshot")
+        if not isinstance(source_snapshot, Mapping):
+            continue
+        ingestion_id = source_snapshot.get("ingestion_id")
+        if isinstance(ingestion_id, str) and ingestion_id:
+            referenced.add(ingestion_id)
     return referenced
 
 

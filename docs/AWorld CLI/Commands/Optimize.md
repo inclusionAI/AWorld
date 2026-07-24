@@ -101,7 +101,82 @@ Exactly one evaluation source is normally provided:
 - `--from-trajectory-set <path>`: advanced explicit-control input for baseline trajectory collections. Most manual optimize workflows should use `--from-trajectory`; user-authored set files may contain `baseline` and `operator_added` members only. Framework-owned accepted, rejected, and replay members are imported from self-evolve run history rather than hand-authored by users.
 - `--from-session <id>`: session-backed dataset construction.
 - `--batch-config <path>`: batch config for a larger request.
+- `--from-source <path>`: an arbitrary readable file or directory. The
+  framework defaults to the registered `auto` ingestor, discovers supported
+  structure, compiles a declarative mapping, validates it twice, and freezes a
+  canonical dataset before target inference.
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.
+
+### Agentic file/directory ingestion
+
+`--from-source` separates the flexible external format from the stable
+self-evolve dataset protocol. It accepts a single file or a directory; users
+do not need to write `--source-ingestor auto`.
+
+```bash
+# Scan, map, validate, and freeze only
+aworld-cli optimize \
+  --from-source ~/Documents/domain-data \
+  --ingestion-only
+
+# Constrain auto discovery with a manifest
+aworld-cli optimize \
+  --from-source ~/Documents/domain-data \
+  --source-manifest ~/Documents/domain-data/aworld-source.yaml \
+  --target skill:domain_agent \
+  --apply proposal
+
+# Select a trusted SDK-registered domain ingestor
+aworld-cli optimize \
+  --from-source ~/Documents/domain-data \
+  --source-ingestor crm-export-v2 \
+  --target skill:crm_assistant \
+  --apply auto_verified
+```
+
+`--source-manifest` constrains the default flow; it is not a separate ingestion
+mode. `--ingestion-model-profile` supplies the mapping model only when
+deterministic structural mapping is insufficient. Custom names are resolved
+from `IngestionRegistry`; CLI import strings and generated parser code are not
+executed.
+
+JSON/JSONL/CSV/TSV/YAML with an unambiguous `input` field uses the deterministic
+built-in mapping. Plain text, Markdown, and generic logs do not silently assume
+one file equals one case: ambiguous framing is delegated to the isolated
+no-tool mapping agent and fails with `ingestion_model_unavailable` when no
+mapping model is configured. Existing AWorld trajectory logs are recognized
+deterministically and normalized back into trajectory-bearing cases.
+
+SDK-registered ingestors and extractors cannot grant themselves trust.
+`framework_builtin` identity is registry-owned;
+`workspace_allowlisted` entries require a stable configuration fingerprint
+explicitly included in the registry allowlist; unlisted/custom entries remain
+`external_untrusted` and cannot pass `auto_verified`. A returned snapshot's
+name, version, trust, extractor fingerprints, case counts, coverage, and other
+derivable quality metrics are checked by the framework.
+
+Every successful ingestion writes an immutable snapshot under
+`.aworld/self_evolve/ingestions/<ingestion_id>/`. Normalized private cases use
+owner-only permissions. A normal run records `ingestion_ref.json` and a
+`dataset_ingestion` gate. Baseline/candidate evaluation, evaluator reruns, and
+all cycles of one Campaign reuse that frozen snapshot and split; changes to the
+raw directory after Campaign creation do not alter the active dataset.
+Evaluator-only reruns fail closed if `ingestion_ref.json` is absent or if its
+source, mapping, normalized dataset, or split fingerprint differs from the
+recipe/snapshot.
+
+Flexible source formats do not mean an unconstrained internal protocol. The
+normalized case schema, stable case identities, source/mapping fingerprints,
+deterministic split, coverage metrics, rejected-record diagnostics, and trust
+level are mandatory. `auto_verified` additionally requires sufficient record
+coverage, trusted ingestion, zero held-out exposure, and frozen snapshot/split
+evidence.
+
+The CLI summary includes ingestion status, normalized case count, record
+coverage, rejected-record count, and mapping-model call count. Mapping-model
+calls are conservatively debited as the `frozen-dataset-ingestion` item in the
+existing candidate-generation run/Campaign budget ledger; they are not
+treated as free work.
 
 When `--target` is omitted, the CLI sets `infer_target=True` and the framework performs credit assignment. The inference inventory is filtered to target types with a registered CLI adapter before scoring. Phase 1 registers the `skill` adapter only, so automatic inference cannot select an unsupported `prompt-section`, `tool-description`, `config`, or `workspace-artifact` target. Low-confidence inference remains blocked when it would mutate an existing skill. A validated capability gap may instead create an isolated run-owned draft because draft evolution does not authorize mutation of an existing target.
 

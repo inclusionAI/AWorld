@@ -47,6 +47,37 @@ class OptimizeTopLevelCommand:
             ),
         )
         parser.add_argument(
+            "--from-source",
+            type=str,
+            dest="from_source",
+            help="File or directory to normalize through a source ingestor.",
+        )
+        parser.add_argument(
+            "--source-ingestor",
+            type=str,
+            default="auto",
+            dest="source_ingestor",
+            help="Registered source ingestor strategy (default: auto).",
+        )
+        parser.add_argument(
+            "--source-manifest",
+            type=str,
+            dest="source_manifest",
+            help="Optional manifest constraining source discovery and mapping.",
+        )
+        parser.add_argument(
+            "--ingestion-model-profile",
+            type=str,
+            dest="ingestion_model_profile",
+            help="Model profile used by the auto source ingestor.",
+        )
+        parser.add_argument(
+            "--ingestion-only",
+            action="store_true",
+            dest="ingestion_only",
+            help="Ingest and validate the source without running optimization.",
+        )
+        parser.add_argument(
             "--from-trajectory-set",
             type=str,
             dest="from_trajectory_set",
@@ -181,6 +212,13 @@ class OptimizeTopLevelCommand:
                 dataset=getattr(args, "dataset", None),
                 from_session=getattr(args, "from_session", None),
                 from_trajectory=getattr(args, "from_trajectory", None),
+                from_source=getattr(args, "from_source", None),
+                source_ingestor=getattr(args, "source_ingestor", "auto"),
+                source_manifest=getattr(args, "source_manifest", None),
+                ingestion_model_profile=getattr(
+                    args, "ingestion_model_profile", None
+                ),
+                ingestion_only=bool(getattr(args, "ingestion_only", False)),
                 from_trajectory_set=getattr(args, "from_trajectory_set", None),
                 include_prior_runs=getattr(args, "include_prior_runs", False),
                 from_run=getattr(args, "from_run", None),
@@ -234,10 +272,54 @@ def render_optimize_summary(report: Any) -> str:
     campaign_max_cycles = _read_report_value(report, "campaign_max_cycles")
     disposition = _read_report_value(report, "self_improvement_disposition")
     goal_handoff_path = _read_report_value(report, "goal_handoff_path")
+    ingestion_id = _read_report_value(report, "ingestion_id")
+    ingestion_report_path = _read_report_value(report, "ingestion_report_path")
+    ingestion_status = _read_report_value(report, "ingestion_status")
+    ingestion_case_count = _read_report_value(
+        report, "ingestion_case_count"
+    )
+    ingestion_record_coverage_rate = _read_report_value(
+        report, "ingestion_record_coverage_rate"
+    )
+    ingestion_rejected_record_count = _read_report_value(
+        report, "ingestion_rejected_record_count"
+    )
+    ingestion_model_call_count = _read_report_value(
+        report, "ingestion_model_call_count"
+    )
 
-    lines = ["Optimize run submitted."]
+    lines = [
+        (
+            "Dataset ingestion completed."
+            if status == "ingested"
+            else "Optimize run submitted."
+        )
+    ]
     if status:
         lines.append(f"Status: {status}")
+    if ingestion_id:
+        lines.append(f"Ingestion: {ingestion_id}")
+    if ingestion_status:
+        lines.append(f"Ingestion status: {ingestion_status}")
+    if ingestion_case_count is not None:
+        lines.append(f"Ingestion cases: {ingestion_case_count}")
+    if ingestion_record_coverage_rate is not None:
+        lines.append(
+            "Ingestion coverage: "
+            f"{float(ingestion_record_coverage_rate):.3f}"
+        )
+    if ingestion_rejected_record_count is not None:
+        lines.append(
+            "Ingestion rejected records: "
+            f"{ingestion_rejected_record_count}"
+        )
+    if ingestion_model_call_count:
+        lines.append(
+            "Ingestion model calls: "
+            f"{ingestion_model_call_count}"
+        )
+    if ingestion_report_path:
+        lines.append(f"Ingestion report: {ingestion_report_path}")
     if campaign_id:
         lines.append(f"Campaign: {campaign_id}")
     if campaign_status:
@@ -332,7 +414,25 @@ def run_optimize_cli(
     from_run: str | None = None,
     rerun_evaluator: bool = False,
     from_trajectory_set: str | None = None,
+    from_source: str | None = None,
+    source_ingestor: str = "auto",
+    source_manifest: str | None = None,
+    ingestion_model_profile: str | None = None,
+    ingestion_only: bool = False,
 ) -> Mapping[str, Any]:
+    _validate_ingestion_cli_options(
+        dataset=dataset,
+        from_session=from_session,
+        from_trajectory=from_trajectory,
+        from_trajectory_set=from_trajectory_set,
+        batch_config=batch_config,
+        from_run=from_run,
+        from_source=from_source,
+        source_ingestor=source_ingestor,
+        source_manifest=source_manifest,
+        ingestion_model_profile=ingestion_model_profile,
+        ingestion_only=ingestion_only,
+    )
     import aworld.self_evolve as self_evolve
 
     runtime_apply = "auto_verified" if resume_campaign else apply
@@ -365,6 +465,15 @@ def run_optimize_cli(
     mutation_model_config = (
         None if rerun_evaluator else _default_mutation_model_config()
     )
+    ingestion_model_config = (
+        None
+        if rerun_evaluator
+        else (
+            _model_config_for_profile(ingestion_model_profile)
+            if ingestion_model_profile
+            else mutation_model_config
+        )
+    )
     if progress_callback is not None:
         progress_callback("prepare", "Preparing self-evolve optimize request")
     request = {
@@ -374,6 +483,11 @@ def run_optimize_cli(
         "dataset": dataset,
         "from_session": from_session,
         "from_trajectory": from_trajectory,
+        "from_source": from_source,
+        "source_ingestor": source_ingestor if from_source is not None else None,
+        "source_manifest": source_manifest,
+        "ingestion_model_config": ingestion_model_config,
+        "ingestion_only": bool(ingestion_only),
         "from_trajectory_set": from_trajectory_set,
         "include_prior_runs": include_prior_runs,
         "from_run": from_run,
@@ -403,7 +517,7 @@ def run_optimize_cli(
             candidate_replay_repetitions=candidate_replay_repetitions,
         ),
     }
-    if not rerun_evaluator and (
+    if not rerun_evaluator and not ingestion_only and (
         resume_campaign
         or (runtime_apply == "auto_verified" and max_improvement_cycles > 1)
     ):
@@ -425,6 +539,53 @@ def _default_mutation_model_config():
         return resolve_model_profile("default")
     except KeyError:
         return None
+
+
+def _model_config_for_profile(profile_name: str):
+    from aworld_cli.core.model_profiles import resolve_model_profile
+
+    return resolve_model_profile(profile_name)
+
+
+def _validate_ingestion_cli_options(
+    *,
+    dataset: str | None,
+    from_session: str | None,
+    from_trajectory: str | None,
+    from_trajectory_set: str | None,
+    batch_config: str | None,
+    from_run: str | None,
+    from_source: str | None,
+    source_ingestor: str,
+    source_manifest: str | None,
+    ingestion_model_profile: str | None,
+    ingestion_only: bool,
+) -> None:
+    sources = {
+        "--dataset": dataset,
+        "--from-session": from_session,
+        "--from-trajectory": from_trajectory,
+        "--from-trajectory-set": from_trajectory_set,
+        "--batch-config": batch_config,
+        "--from-run": from_run,
+        "--from-source": from_source,
+    }
+    selected = [flag for flag, value in sources.items() if value is not None]
+    if len(selected) > 1:
+        raise ValueError(
+            "eval source options are mutually exclusive: " + ", ".join(selected)
+        )
+    source_only_options = (
+        source_manifest is not None
+        or ingestion_model_profile is not None
+        or bool(ingestion_only)
+        or source_ingestor != "auto"
+    )
+    if source_only_options and from_source is None:
+        raise ValueError(
+            "--source-ingestor, --source-manifest, --ingestion-model-profile, "
+            "and --ingestion-only require --from-source"
+        )
 
 
 def _default_runtime_skill_activator() -> Callable[[Any], Mapping[str, Any]]:

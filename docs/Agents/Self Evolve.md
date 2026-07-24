@@ -71,7 +71,7 @@ flowchart TD
 
 The loop makes three boundaries visible: target selection is limited by registered adapters, inexpensive candidate/protocol checks run before authoritative rollout, and only a fully verified `auto_verified` candidate can modify the target. Proposal preservation and rollback remain valid terminal outcomes rather than being treated as successful releases.
 
-1. Collect trajectory or evaluation evidence from a current run, trajectory log, session, JSONL dataset, or batch config.
+1. Collect trajectory or evaluation evidence from a current run, trajectory log, session, JSONL dataset, batch config, or an arbitrary file/directory through agentic ingestion.
 2. Build a dataset recipe with trainable and held-out cases. Candidate optimizers see trainable evidence only.
 3. Select a target explicitly from `--target` or infer one through adapter-filtered framework credit assignment.
 4. Build a typed, bounded `EvolutionContext` containing target state, trainable evidence, reusable lessons, capability requirements, prior validation feedback, and acceptance constraints.
@@ -164,6 +164,47 @@ instead of repeatedly mutating the candidate.
 Each candidate-generation slot runs as an isolated AWorld task with one model call, no tools, model-aware input/output budgeting, and a typed JSON output contract. Candidate packages are normalized before they enter the population. Malformed but repairable model output receives one bounded representation-repair attempt; provider/runtime failures remain infrastructure failures and are not misclassified as bad candidates.
 
 The default proposal budget is one optimizer iteration. `auto_verified` defaults to ten iterations because runtime-backed repairs often expose the next protocol boundary only after the previous one is corrected. The runner stops when it has a verified candidate or no new progress is possible. It may grant a bounded extension for a newly observed repairable failure family, up to six extension iterations, rather than looping on duplicate candidates or the same failed branch.
+
+### Agentic dataset ingestion
+
+Use `--from-source <file-or-directory>` when domain data is not already an
+AWorld trajectory log or canonical JSONL dataset. The default ingestor is
+`auto`; a manifest can constrain discovery and mapping, while SDK callers can
+register a trusted domain-specific `DatasetIngestor`.
+
+The ingestion swarm is adaptive only at the source interpretation boundary.
+It may discover structure and propose a bounded declarative mapping, but it
+cannot generate or execute Python, shell, templates, dynamic imports, network
+reads, or verification commands. The framework materializes the mapping twice,
+records rejected rows, computes coverage/security/trajectory/recovery metrics,
+freezes normalized cases and their split, and runs `dataset_ingestion` before
+target inference or candidate generation.
+
+Unambiguous structured sources use a deterministic mapping without a model.
+Plain text, Markdown, and generic logs are treated as framing-ambiguous and use
+the isolated, one-step, no-tool mapping agent; AWorld trajectory logs have a
+deterministic compatibility extractor that preserves task IDs and SAR steps.
+All invalid JSONL/log records remain explicit rejected records, including
+beyond the first diagnostic page.
+
+Trust is assigned by `IngestionRegistry`, never by the snapshot returned from a
+custom object. A `workspace_allowlisted` ingestor or extractor needs an
+explicitly configured fingerprint; otherwise its effective trust is
+`external_untrusted`. The framework cross-checks registered name/version/trust,
+extractor fingerprints, normalized rows, and all quality fields derivable from
+the frozen artifacts. Manifest policy is frozen with the snapshot and is
+reapplied at the final ingestion gate.
+
+The frozen ingestion identity is independent of the run identity. It is reused
+by baseline and candidate evaluation, evaluator-only reruns, and every cycle in
+one bounded Campaign. The mapping agent does not choose the self-evolve target;
+when normalized cases contain no trace and the caller omits `--target`, target
+inference fails with missing evidence rather than guessing from source fields.
+Evaluator reruns require the original `ingestion_ref.json` and cross-check it
+against the recipe and frozen snapshot. Mapping-model calls are charged to the
+run/Campaign candidate-generation ledger as `frozen-dataset-ingestion`; a
+reused Campaign snapshot is charged on its first cycle rather than once per
+cycle.
 
 Once a concrete candidate has failed, the next repair prompt switches to `focused_candidate_delta` mode. It includes the failed candidate package, bounded machine-readable diagnostics, the relevant source branches, and the repair acceptance contract. Broad trajectory, lesson, and current-target payloads are omitted from that repair prompt so the model edits the observed failure frontier instead of regenerating the whole skill.
 

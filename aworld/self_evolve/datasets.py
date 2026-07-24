@@ -12,6 +12,11 @@ from aworld.self_evolve.trace_pack import (
     build_trace_pack,
     load_trajectory_log_records,
 )
+from aworld.self_evolve.ingestion.types import (
+    FrozenIngestionSnapshot,
+    NormalizedCaseRecord,
+    fingerprint_json,
+)
 from aworld.self_evolve.trajectory_context import (
     TrajectoryContextSnapshot,
     build_trajectory_context_snapshots,
@@ -28,6 +33,7 @@ SUPPORTED_SOURCE_KINDS = {
     "session",
     "jsonl",
     "batch_config",
+    "agentic_source",
 }
 
 TRAJECTORY_SET_SCHEMA_VERSION = "aworld.self_evolve.trajectory_set.v1"
@@ -52,12 +58,19 @@ class SelfEvolveEvalSourceConfig:
     session_id: str | None = None
     task_ids: tuple[str, ...] = ()
     max_cases: int = 100
+    ingestion_snapshot: FrozenIngestionSnapshot | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in SUPPORTED_SOURCE_KINDS:
             raise ValueError(f"unsupported eval source kind: {self.kind}")
         if self.max_cases <= 0:
             raise ValueError("max_cases must be positive")
+        if self.kind == "agentic_source" and self.ingestion_snapshot is None:
+            raise ValueError("agentic_source eval source requires ingestion_snapshot")
+        if self.kind != "agentic_source" and self.ingestion_snapshot is not None:
+            raise ValueError(
+                "ingestion_snapshot is only valid for agentic_source eval sources"
+            )
         object.__setattr__(self, "task_ids", tuple(self.task_ids))
 
 
@@ -122,6 +135,26 @@ def build_dataset_from_source(
     task_id: str | None = None,
     split_seed: str = "self-evolve-default-split",
 ) -> SelfEvolveDataset:
+    if source_config.kind == "agentic_source":
+        snapshot = source_config.ingestion_snapshot
+        if snapshot is None:
+            raise ValueError("agentic_source eval source requires ingestion_snapshot")
+        cases = _filter_and_limit_cases(
+            _agentic_eval_cases(snapshot),
+            source_config=source_config,
+        )
+        recipe = build_dataset_recipe(
+            cases,
+            source_config=source_config,
+            split_seed=split_seed,
+        )
+        source = dict(recipe.source)
+        source["split_fingerprint"] = fingerprint_json(recipe.splits)
+        return SelfEvolveDataset(
+            cases=cases,
+            recipe=replace(recipe, source=source),
+        )
+
     if source_config.kind == "jsonl":
         if source_config.path is None:
             raise ValueError("jsonl eval source requires path")
@@ -599,7 +632,127 @@ def _source_recipe(
             source["content_fingerprint"] = _file_fingerprint(path)
     if source_config.session_id is not None:
         source["session_id"] = source_config.session_id
+    if source_config.kind == "agentic_source":
+        snapshot = source_config.ingestion_snapshot
+        if snapshot is None:
+            raise ValueError("agentic_source eval source requires ingestion_snapshot")
+        source.update(
+            {
+                "ingestion_id": snapshot.ingestion_id,
+                "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+                "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+                "normalized_dataset_fingerprint": (
+                    snapshot.normalized_dataset_fingerprint
+                ),
+                "ingestion_schema_version": snapshot.schema_version,
+            }
+        )
+        if snapshot.manifest_fingerprint is not None:
+            source["manifest_fingerprint"] = snapshot.manifest_fingerprint
+        if snapshot.extractor_fingerprints:
+            source["extractor_fingerprints"] = list(
+                snapshot.extractor_fingerprints
+            )
     return source
+
+
+def _agentic_eval_cases(
+    snapshot: FrozenIngestionSnapshot,
+) -> tuple[EvalCase, ...]:
+    trajectory_records: list[TrajectoryLogRecord] = []
+    trajectory_by_case: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    for record_index, normalized in enumerate(snapshot.normalized_cases):
+        steps = _normalized_trajectory_steps(normalized)
+        if steps is None:
+            continue
+        task_id = _normalized_task_id(normalized)
+        trajectory_by_case[normalized.case_id] = steps
+        trajectory_records.append(
+            TrajectoryLogRecord(
+                record_index=record_index,
+                task_id=task_id,
+                record_metadata={
+                    "task_id": task_id,
+                    **dict(normalized.metadata),
+                },
+                trajectory=steps,
+            )
+        )
+    snapshots_by_case = {
+        item.case_id: item
+        for item in build_trajectory_context_snapshots(
+            trajectory_records,
+            source_kind="agentic_source",
+        )
+    }
+
+    cases: list[EvalCase] = []
+    for normalized in snapshot.normalized_cases:
+        trajectory = trajectory_by_case.get(normalized.case_id)
+        task_id = _normalized_task_id(normalized)
+        trace_pack = (
+            build_trace_pack(
+                trajectory,
+                source_kind="agentic_source",
+                task_id=task_id,
+            )
+            if trajectory is not None
+            else None
+        )
+        context_snapshot = snapshots_by_case.get(task_id)
+        task_input = normalized.input
+        if context_snapshot is not None:
+            task_input = input_with_reconstructed_context(
+                task_input,
+                context_snapshot,
+            )
+        cases.append(
+            EvalCase(
+                case_id=normalized.case_id,
+                input=task_input,
+                expected_output=normalized.expected_output,
+                verification_command=normalized.verification_command,
+                metadata={
+                    **dict(normalized.metadata),
+                    "trace_replayability": normalized.trace_replayability,
+                },
+                trace_pack=trace_pack,
+                source={
+                    "kind": "agentic_source",
+                    **normalized.source.to_dict(),
+                    "ingestion_id": snapshot.ingestion_id,
+                },
+                context_snapshot=context_snapshot,
+            )
+        )
+    return tuple(cases)
+
+
+def _normalized_task_id(record: NormalizedCaseRecord) -> str:
+    trajectory = record.trajectory
+    if isinstance(trajectory, Mapping):
+        task_id = trajectory.get("task_id")
+        if isinstance(task_id, str) and task_id:
+            return task_id
+    return record.case_id
+
+
+def _normalized_trajectory_steps(
+    record: NormalizedCaseRecord,
+) -> tuple[Mapping[str, Any], ...] | None:
+    trajectory = record.trajectory
+    if trajectory is None:
+        return None
+    steps = trajectory.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise ValueError(
+            f"normalized trajectory for {record.case_id!r} requires non-empty steps"
+        )
+    if not all(isinstance(step, Mapping) for step in steps):
+        raise ValueError(
+            f"normalized trajectory for {record.case_id!r} contains a non-object step"
+        )
+    return tuple(steps)
 
 
 def _baseline_trajectory_set_metadata(

@@ -27,6 +27,8 @@ _RUNTIME_ONLY_REQUEST_KEYS = {
     "candidate_replay_backend",
     "concurrency_policy",
     "evaluation_backend",
+    "ingestion_model_config",
+    "ingestion_registry",
     "mutation_model_config",
     "post_apply_evaluator",
     "progress_callback",
@@ -41,6 +43,10 @@ _SOURCE_REQUEST_KEYS = {
     "from_session",
     "from_trajectory",
     "from_trajectory_set",
+    "from_source",
+    "source_ingestor",
+    "source_manifest",
+    "frozen_ingestion_id",
 }
 _RESUME_CONFLICT_KEYS = {
     *_SOURCE_REQUEST_KEYS,
@@ -664,9 +670,38 @@ def run_self_improvement_campaign(
             )
             controller.store.write_campaign(campaign)
     else:
-        runtime_request = dict(request)
+        prepared_request = dict(request)
+        if (
+            prepared_request.get("from_source") is not None
+            and prepared_request.get("frozen_ingestion_id") is None
+        ):
+            from aworld.self_evolve.runner import (
+                prepare_ingestion_from_cli_request,
+            )
+
+            snapshot = prepare_ingestion_from_cli_request(
+                workspace_root=workspace_root,
+                from_source=str(prepared_request["from_source"]),
+                source_ingestor=str(
+                    prepared_request.get("source_ingestor") or "auto"
+                ),
+                source_manifest=(
+                    str(prepared_request["source_manifest"])
+                    if prepared_request.get("source_manifest") is not None
+                    else None
+                ),
+                apply_policy=str(
+                    prepared_request.get("apply_policy") or "auto_verified"
+                ),
+                ingestion_model_config=prepared_request.get(
+                    "ingestion_model_config"
+                ),
+                ingestion_registry=prepared_request.get("ingestion_registry"),
+            )
+            prepared_request["frozen_ingestion_id"] = snapshot.ingestion_id
+        runtime_request = dict(prepared_request)
         campaign = controller.create(
-            request,
+            prepared_request,
             max_cycles=max_improvement_cycles,
         )
     if advance_once_only:
@@ -1272,7 +1307,19 @@ def _verification_request(request: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _request_has_source(request: Mapping[str, Any]) -> bool:
-    return any(request.get(key) is not None for key in _SOURCE_REQUEST_KEYS)
+    return any(
+        request.get(key) is not None
+        for key in {
+            "batch_config",
+            "current_trajectory",
+            "dataset",
+            "from_session",
+            "from_source",
+            "from_trajectory",
+            "from_trajectory_set",
+            "frozen_ingestion_id",
+        }
+    )
 
 
 def _source_snapshot(
@@ -1280,12 +1327,37 @@ def _source_snapshot(
     *,
     workspace_root: str | Path,
 ) -> dict[str, Any]:
+    frozen_ingestion_id = request.get("frozen_ingestion_id")
+    if isinstance(frozen_ingestion_id, str) and frozen_ingestion_id:
+        from aworld.self_evolve.store import FilesystemSelfEvolveStore
+
+        snapshot = FilesystemSelfEvolveStore(workspace_root).read_ingestion(
+            frozen_ingestion_id
+        )
+        return {
+            "kind": "agentic_source",
+            "ingestion_id": snapshot.ingestion_id,
+            "source_fingerprint": snapshot.inventory.source_root_fingerprint,
+            "mapping_fingerprint": snapshot.selected_mapping.fingerprint,
+            "normalized_dataset_fingerprint": (
+                snapshot.normalized_dataset_fingerprint
+            ),
+            "manifest_fingerprint": snapshot.manifest_fingerprint,
+            "extractor_fingerprints": list(snapshot.extractor_fingerprints),
+            "ingestor_name": snapshot.ingestor_name,
+            "ingestor_version": snapshot.ingestor_version,
+            "ingestor_trust_level": snapshot.ingestor_trust_level.value,
+            "ingestion_schema_version": snapshot.schema_version,
+        }
+
     root = Path(workspace_root)
     file_keys = {
         "batch_config",
         "dataset",
         "from_trajectory",
         "from_trajectory_set",
+        "from_source",
+        "source_manifest",
     }
     snapshot: dict[str, Any] = {}
     for key in sorted(_SOURCE_REQUEST_KEYS):

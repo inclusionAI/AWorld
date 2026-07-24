@@ -11,6 +11,7 @@ requirement or fixture shapes.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
@@ -21,13 +22,25 @@ from aworld.self_evolve.campaign import (
     SelfImprovementDispositionKind,
     derive_self_improvement_disposition,
 )
-from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.datasets import (
+    EvalCase,
+    SelfEvolveDataset,
+    SelfEvolveEvalSourceConfig,
+    build_dataset_from_source,
+)
 from aworld.self_evolve.credit_assignment import (
     TargetInventory,
     TargetSelectionReport,
     build_target_selection_decision,
 )
 from aworld.self_evolve.gates import TrustProvenanceGate
+from aworld.self_evolve.ingestion import (
+    IngestionMode,
+    IngestionQualityReport,
+    IngestorTrustLevel,
+    evaluate_ingestion_gate,
+)
+from aworld.self_evolve.runner import prepare_ingestion_from_cli_request
 from aworld.self_evolve.failure_events import (
     aggregate_replay_failures,
     FailureOwner,
@@ -235,6 +248,110 @@ CONTRACT_CARDINALITIES = (
     THREE_SAME_SHAPE_CASES,
     THREE_DISTINCT_SHAPE_CASES,
 )
+
+
+@pytest.mark.parametrize("case_count", (1, 3), ids=("one-case", "three-cases"))
+def test_dataset_ingestion_gate_is_cardinality_neutral(
+    case_count: int,
+) -> None:
+    fingerprint = "sha256:" + "a" * 64
+    report = IngestionQualityReport(
+        discovered_asset_count=1,
+        supported_asset_count=1,
+        ignored_asset_count=0,
+        rejected_asset_count=0,
+        total_source_bytes=case_count,
+        mapping_candidate_count=1,
+        valid_mapping_candidate_count=1,
+        selected_mapping_fingerprint=fingerprint,
+        eligible_record_count=case_count,
+        normalized_case_count=case_count,
+        rejected_record_count=0,
+        record_coverage_rate=1.0,
+        required_asset_coverage_rate=1.0,
+        input_present_rate=1.0,
+        expected_output_present_rate=1.0,
+        verification_present_rate=0.0,
+        trace_present_rate=0.0,
+        trace_replayable_rate=0.0,
+        duplicate_case_id_count=0,
+        case_id_stability=True,
+        source_fingerprint=fingerprint,
+        normalized_dataset_fingerprint=fingerprint,
+        deterministic_replay_match=True,
+        mapping_execution_count=2,
+    )
+
+    gate = evaluate_ingestion_gate(
+        report,
+        mode=IngestionMode.AUTO_VERIFIED,
+        trust_level=IngestorTrustLevel.FRAMEWORK_BUILTIN,
+        snapshot_frozen=True,
+        split_frozen=True,
+    )
+
+    assert gate.passed is True
+    assert gate.details["normalized_case_count"] == case_count
+    assert gate.details["snapshot_frozen"] is True
+    assert gate.details["split_frozen"] is True
+
+
+@pytest.mark.parametrize("case_count", (1, 3), ids=("one-case", "three-cases"))
+def test_agentic_directory_matches_canonical_jsonl_dataset_semantics(
+    tmp_path: Path,
+    case_count: int,
+) -> None:
+    records = [
+        {
+            "case_id": f"member-{index}",
+            "input": {"task": f"request-{index}"},
+            "expected_output": {"answer": f"answer-{index}"},
+        }
+        for index in range(case_count)
+    ]
+    canonical_path = tmp_path / "canonical.jsonl"
+    canonical_path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+    source_root = tmp_path / "domain-source"
+    source_root.mkdir()
+    (source_root / "records.jsonl").write_text(
+        canonical_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    canonical = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(
+            kind="jsonl",
+            path=str(canonical_path),
+        )
+    )
+    snapshot = prepare_ingestion_from_cli_request(
+        workspace_root=tmp_path,
+        from_source=str(source_root),
+    )
+    agentic = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(
+            kind="agentic_source",
+            ingestion_snapshot=snapshot,
+        )
+    )
+
+    assert [
+        (case.case_id, case.input, case.expected_output)
+        for case in agentic.cases
+    ] == [
+        (case.case_id, case.input, case.expected_output)
+        for case in canonical.cases
+    ]
+    assert agentic.recipe.splits == canonical.recipe.splits
+    assert replay_dataset_fingerprint(agentic).startswith("sha256:")
+    assert replay_dataset_fingerprint(canonical).startswith("sha256:")
+    # Source provenance intentionally differs, but replay-visible member
+    # identity, task input, expected output, order, and frozen split agree.
+    assert all(case.trace_pack is None for case in agentic.cases)
+    assert all(case.trace_pack is None for case in canonical.cases)
 
 
 @pytest.mark.parametrize("member_count", (1, 3), ids=("one-case", "three-cases"))
