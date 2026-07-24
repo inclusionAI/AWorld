@@ -8,6 +8,47 @@ from pydantic import BaseModel, Field
 from aworld.evaluations.substrate import JudgeSchemaDef
 
 
+class EvidenceRepairConstraintOutput(BaseModel):
+    """Payload-free evidence diagnosis emitted once per distinct issue type."""
+
+    subject_kind: Literal[
+        "artifact",
+        "bibliographic_claim",
+        "configuration_claim",
+        "evidence_manifest",
+        "general_claim",
+        "quantitative_claim",
+        "quote",
+        "symbolic_claim",
+    ]
+    failure_mode: Literal[
+        "invalid_manifest",
+        "missing_source",
+        "projection_compacted",
+        "source_mismatch",
+        "support_incomplete",
+        "unreadable_artifact",
+        "unsupported_claim",
+    ]
+    source_layer: Literal[
+        "artifact_capture",
+        "artifact_projection",
+        "candidate_output",
+        "evidence_manifest",
+        "judge_runtime",
+    ]
+    required_action: Literal[
+        "capture_artifact",
+        "expand_bounded_projection",
+        "reconcile_source",
+        "repair_artifact_reference",
+        "support_or_omit",
+        "validate_manifest",
+    ]
+    owner: Literal["candidate", "framework", "infrastructure", "task"]
+    occurrence_count: int = Field(default=1, ge=1)
+
+
 class TrajectoryEvalJudgeOutput(BaseModel):
     score: float
     verdict: Literal["Excellent", "Pass", "Marginal", "Fail"]
@@ -25,6 +66,9 @@ class TrajectoryEvalJudgeOutput(BaseModel):
     evidence_compacted: bool = False
     evidence_incomplete: bool = False
     evidence_quality: dict[str, Any] = Field(default_factory=dict)
+    evidence_repair_constraints: list[EvidenceRepairConstraintOutput] = Field(
+        default_factory=list
+    )
 
 
 def normalize_trajectory_judge_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -56,6 +100,7 @@ def normalize_trajectory_judge_payload(payload: Mapping[str, Any]) -> dict[str, 
             "evidence_block_count",
             "evidence_compacted",
             "evidence_incomplete",
+            "evidence_repair_constraints",
         ):
             if metric_name not in flattened and metric_name in evidence_quality:
                 flattened[metric_name] = evidence_quality[metric_name]

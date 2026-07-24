@@ -285,6 +285,16 @@ async def test_aworld_trajectory_evaluator_backend_extracts_evidence_quality_met
                             "evidence_block_count": 2,
                             "evidence_compacted": False,
                             "evidence_incomplete": False,
+                            "evidence_repair_constraints": [
+                                {
+                                    "subject_kind": "quantitative_claim",
+                                    "failure_mode": "unsupported_claim",
+                                    "source_layer": "candidate_output",
+                                    "required_action": "support_or_omit",
+                                    "owner": "candidate",
+                                    "occurrence_count": 2,
+                                }
+                            ],
                         },
                     },
                 }
@@ -306,6 +316,9 @@ async def test_aworld_trajectory_evaluator_backend_extracts_evidence_quality_met
     assert summary.metrics["evidence_block_count"] == 2
     assert summary.metrics["evidence_compacted"] is False
     assert summary.metrics["evidence_incomplete"] is False
+    constraint = summary.metrics["evidence_repair_constraints"][0]
+    assert constraint["occurrence_count"] == 2
+    assert constraint["constraint_identity_digest"]
 
 
 @pytest.mark.asyncio
@@ -569,6 +582,9 @@ async def test_aworld_trajectory_evaluator_backend_summarizes_judge_call_diagnos
                             "artifact_request_count": 0,
                             "artifact_read_count": 1,
                             "artifact_read_chars": 700,
+                            "artifact_read_continuation_count": 1,
+                            "artifact_read_budget_exhausted": True,
+                            "artifact_read_projection_incomplete": True,
                             "latency_ms": 40.0,
                         },
                     ],
@@ -592,6 +608,12 @@ async def test_aworld_trajectory_evaluator_backend_summarizes_judge_call_diagnos
     assert summary.metrics["judge_artifact_request_count"] == 1
     assert summary.metrics["judge_artifact_read_count"] == 1
     assert summary.metrics["judge_artifact_read_chars"] == 700
+    assert summary.metrics["judge_artifact_read_continuation_count"] == 1
+    assert summary.metrics["judge_artifact_read_budget_exhausted"] is True
+    assert summary.metrics["judge_artifact_read_budget_exhausted_count"] == 1
+    assert summary.metrics["judge_artifact_projection_incomplete"] is True
+    assert summary.metrics["judge_artifact_projection_incomplete_count"] == 1
+    assert summary.metrics["judge_artifact_finalize_count"] == 0
     assert summary.metrics["judge_prompt_chars_total"] == 3400
     assert summary.metrics["judge_estimated_input_tokens_total"] == 1050
     assert summary.metrics["judge_model_latency_ms_total"] == pytest.approx(65.0)

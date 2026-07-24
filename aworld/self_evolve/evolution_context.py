@@ -10,6 +10,10 @@ from aworld.self_evolve.capability_contracts import (
     discover_applicable_capability_contracts,
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
+from aworld.self_evolve.evidence_diagnostics import (
+    EvidenceRepairConstraint,
+    merge_evidence_repair_constraints,
+)
 from aworld.self_evolve.lessons import aggregate_lesson_records
 from aworld.self_evolve.optimizers.base import OptimizerRequest
 from aworld.self_evolve.repair_conformance import (
@@ -810,21 +814,34 @@ def _merge_typed_repair_constraints_across_feedback(
     """Make every focused lineage honor the cumulative typed repair contract."""
 
     merged = merge_repair_conformance_constraint_context(None, *feedback)
-    if merged is None:
+    evidence_constraints = _feedback_evidence_repair_constraints(feedback)
+    if merged is None and not evidence_constraints:
         return feedback
     constraint_context = {
         key: value
-        for key, value in merged.items()
+        for key, value in (merged or {}).items()
         if key in {"fixture_probe_constraints", "schema_field_constraints"}
     }
-    if not constraint_context:
+    evidence_context = [
+        constraint.to_dict() for constraint in evidence_constraints
+    ]
+    if not constraint_context and not evidence_context:
         return feedback
     result: list[Mapping[str, object]] = []
     for item in feedback:
-        if not isinstance(item.get("repair_candidate_package"), Mapping):
-            result.append(item)
-            continue
         updated = dict(item)
+        if evidence_context:
+            updated["evidence_repair_constraints"] = evidence_context
+        if not isinstance(item.get("repair_candidate_package"), Mapping):
+            result.append(updated)
+            continue
+        if _repair_feedback_reached_judged_task_output(item):
+            # A judge-scored package has already crossed the replay/data-plane
+            # boundary. Constraints learned from rejected sibling runtimes remain
+            # useful lessons, but they cannot expand this deeper frontier's
+            # mutation surface back into replay implementation files.
+            result.append(updated)
+            continue
         raw_diagnostics = updated.get("candidate_validation_diagnostics")
         diagnostics = (
             [dict(value) for value in raw_diagnostics if isinstance(value, Mapping)]
@@ -841,6 +858,28 @@ def _merge_typed_repair_constraints_across_feedback(
         updated["candidate_validation_diagnostics"] = diagnostics
         result.append(updated)
     return tuple(result)
+
+
+def _feedback_evidence_repair_constraints(
+    feedback: Sequence[Mapping[str, object]],
+) -> tuple[EvidenceRepairConstraint, ...]:
+    groups: list[tuple[EvidenceRepairConstraint, ...]] = []
+    for item in feedback:
+        raw_constraints = item.get("evidence_repair_constraints")
+        if not isinstance(raw_constraints, (list, tuple)):
+            continue
+        constraints: list[EvidenceRepairConstraint] = []
+        for raw_constraint in raw_constraints[:128]:
+            if not isinstance(raw_constraint, Mapping):
+                continue
+            try:
+                constraints.append(
+                    EvidenceRepairConstraint.from_dict(raw_constraint)
+                )
+            except (TypeError, ValueError):
+                continue
+        groups.append(tuple(constraints))
+    return merge_evidence_repair_constraints(*groups)
 
 
 def _deduplicate_feedback(

@@ -107,6 +107,8 @@ def test_context_links_natural_same_session_follow_up() -> None:
     snapshot = build_trajectory_context_snapshots(records)[1]
 
     assert snapshot.link_strategy == "same_session_predecessor"
+    assert snapshot.context_status == "complete"
+    assert snapshot.context_reason is None
     assert snapshot.prior_turns[-1].content == "论文 A 和论文 B 的来源与结论。"
     assert snapshot.prior_turns[-1].source_task_id == "paper"
 
@@ -146,6 +148,43 @@ def test_natural_follow_up_does_not_cross_session_without_explicit_parent() -> N
 
     assert snapshot.prior_turns == ()
     assert snapshot.link_strategy is None
+    assert snapshot.context_status == "incomplete"
+    assert snapshot.context_reason == "missing_required_prior_context"
+
+
+def test_required_context_incompleteness_propagates_but_independent_task_recovers() -> None:
+    records = (
+        _record(
+            "missing-root",
+            "session-a",
+            "Continue with the previous analysis",
+            "Partial answer",
+            record_index=0,
+        ),
+        _record(
+            "dependent",
+            "session-a",
+            "继续补全这些细节",
+            "Still partial",
+            record_index=1,
+        ),
+        _record(
+            "independent",
+            "session-a",
+            "Start a new independent calculation",
+            "Complete",
+            record_index=2,
+        ),
+    )
+
+    snapshots = build_trajectory_context_snapshots(records)
+
+    assert snapshots[0].context_status == "incomplete"
+    assert snapshots[0].context_reason == "missing_required_prior_context"
+    assert snapshots[1].context_status == "incomplete"
+    assert snapshots[1].context_reason == "inherited_incomplete_context"
+    assert snapshots[2].context_status == "complete"
+    assert snapshots[2].context_reason is None
 
 
 def test_prior_context_marker_detection_uses_semantic_word_boundaries() -> None:

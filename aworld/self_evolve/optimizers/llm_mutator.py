@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from aworld.self_evolve.candidate_package import (
     candidate_content_semantic_fingerprint,
     candidate_package_fingerprint,
+    candidate_semantic_package_fingerprint,
     validate_candidate_files,
 )
 from aworld.self_evolve.candidate_generation import (
@@ -30,6 +31,7 @@ from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
     compile_repair_conformance_contract,
 )
+from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, OptimizerLineage
 
 
@@ -82,6 +84,7 @@ class TraceReflectiveLLMMutator:
         private_repair_contracts: dict[str, RepairConformanceContract] = {}
         candidate_generation_failure: dict[str, str] | None = None
         candidate_protocol_invalid_count = 0
+        candidate_materialization_failures: list[dict[str, object]] = []
         candidate_outputs: list[tuple[int, Any]] = []
         population_diagnostics: dict[str, Any]
         population_started_at = time.monotonic()
@@ -155,8 +158,24 @@ class TraceReflectiveLLMMutator:
                 )
                 if inherited_file_count:
                     materialization = f"{materialization}+repair_focus_overlay"
-            except ValueError:
+            except ValueError as exc:
                 filtered_invalid_patch_count += 1
+                candidate_materialization_failures.append(
+                    {
+                        "code": "candidate_materialization_invalid",
+                        "stage": "candidate_generation",
+                        "failure_class": "candidate",
+                        "repairable": True,
+                        "candidate_index": index,
+                        "representation": (
+                            "patch_intent"
+                            if isinstance(output, Mapping)
+                            and isinstance(output.get("patch_intent"), Mapping)
+                            else "candidate_package"
+                        ),
+                        "reason": sanitize_text(str(exc), max_chars=240),
+                    }
+                )
                 continue
             if _violates_transport_completion_invariant(content):
                 content = _append_transport_completion_invariant(content)
@@ -173,7 +192,10 @@ class TraceReflectiveLLMMutator:
                 files=files,
             )
             content_fingerprint = candidate_package_fingerprint(candidate)
-            if content_fingerprint in seen_content_fingerprints:
+            semantic_package_fingerprint = (
+                candidate_semantic_package_fingerprint(candidate)
+            )
+            if semantic_package_fingerprint in seen_content_fingerprints:
                 filtered_duplicate_count += 1
                 continue
             regression_base_content = (
@@ -190,7 +212,7 @@ class TraceReflectiveLLMMutator:
             ):
                 filtered_high_baseline_regression_count += 1
                 continue
-            seen_content_fingerprints.add(content_fingerprint)
+            seen_content_fingerprints.add(semantic_package_fingerprint)
 
             candidate_id = _candidate_id(
                 request,
@@ -257,6 +279,9 @@ class TraceReflectiveLLMMutator:
             "candidate_strategies": candidate_strategy_records,
             "candidate_population_execution": population_diagnostics,
             "candidate_protocol_invalid_count": candidate_protocol_invalid_count,
+            "candidate_materialization_failures": (
+                candidate_materialization_failures
+            ),
         }
         if candidate_generation_failure is not None:
             diagnostics["candidate_generation_failure"] = candidate_generation_failure
@@ -359,6 +384,15 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "same files does not satisfy that typed repair frontier. Apply the distinction "
         "generically across every trajectory member represented by the active capability "
         "and verification contracts. "
+        "Treat evidence_repair_constraints as the authoritative evidence frontier: "
+        "deduplicate by constraint_identity_digest, honor owner and source_layer, and "
+        "implement the declared required_action. Do not mutate candidate behavior for a "
+        "framework- or infrastructure-owned constraint, and do not infer policy from "
+        "free-form evidence issue wording. "
+        "Keep reusable examples schema-neutral: use role placeholders such as "
+        "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET> instead of copying proper nouns, "
+        "resource names, claim text, filenames, URLs, or identifiers from trajectory "
+        "evidence. "
         "Replay files must accompany a reusable target behavior delta, not replace it. "
         "Return the value of expected_output as exactly one JSON object, without a wrapper; "
         "use at most one of content or patch_intent, and omit both only when candidate-owned "
@@ -438,6 +472,10 @@ def _focused_repair_prompt_instructions(
         "record, or tool-execution summary alone is insufficient; otherwise try one "
         "materially different bounded artifact-backed source or report the insufficiency. "
         "Never add a blanket first-response-means-complete rule or case-specific behavior. "
+        "Keep reusable examples schema-neutral: use role placeholders such as "
+        "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET> instead of copying proper nouns, "
+        "resource names, claim text, filenames, URLs, or identifiers from trajectory "
+        "evidence. "
     )
     recovery_trace = (
         focused_feedback.get("recovery_trace")
@@ -470,6 +508,30 @@ def _focused_repair_prompt_instructions(
             "switch to a materially different implementation of the declared typed "
             "operations and verify the actual source data flow before finalizing. "
             "Constraint identities are hashes and must never become runtime branches. "
+        )
+    raw_evidence_constraints = (
+        focused_feedback.get("evidence_repair_constraints")
+        if isinstance(focused_feedback, Mapping)
+        else None
+    )
+    candidate_evidence_constraints = (
+        [
+            item
+            for item in raw_evidence_constraints
+            if isinstance(item, Mapping)
+            and item.get("owner") == "candidate"
+        ]
+        if isinstance(raw_evidence_constraints, list)
+        else []
+    )
+    if candidate_evidence_constraints:
+        instructions += (
+            "This repair has candidate-owned typed evidence_repair_constraints. "
+            "Apply every distinct required_action at its declared source_layer and "
+            "subject_kind, preserving occurrence counts only as prioritization evidence. "
+            "Do not copy claim text into reusable instructions, do not branch on constraint "
+            "identity hashes, and do not reinterpret evaluator prose as an additional "
+            "constraint. "
         )
     if (
         '"evidence_incomplete": true' in feedback_text
@@ -666,15 +728,22 @@ def _overlay_repair_focus_files(
     """Apply a repair response as a delta over its focused candidate package."""
 
     context = request.evolution_context or compile_evolution_context(request)
+    files_authorized_by_requirements = bool(request.replay_requirements)
     repair_focus = context.repair_focus_for_candidate(
         candidate_index=candidate_index
     )
     if not isinstance(repair_focus, Mapping):
-        return candidate_files, 0
+        return (
+            candidate_files if files_authorized_by_requirements else (),
+            0,
+        )
     package = repair_focus.get("repair_candidate_package")
     raw_files = package.get("files") if isinstance(package, Mapping) else None
     if not isinstance(raw_files, list):
-        return candidate_files, 0
+        return (
+            candidate_files if files_authorized_by_requirements else (),
+            0,
+        )
 
     base_files = validate_candidate_files(
         CandidateFileDelta(
@@ -690,13 +759,17 @@ def _overlay_repair_focus_files(
         for item in raw_files
         if isinstance(item, Mapping)
     )
-    if not base_files:
-        return candidate_files, 0
     if _repair_feedback_reached_judged_task_output(repair_focus):
         # Judge-stage repair is a target-behavior delta over a runtime that has
         # already passed authoritative replay. Ignore model-proposed harness
-        # changes and carry the verified candidate-owned files byte-for-byte.
+        # changes and carry the verified candidate-owned files byte-for-byte,
+        # including when the verified package intentionally owns no replay files.
         return base_files, len(base_files)
+    if not base_files:
+        return (
+            candidate_files if files_authorized_by_requirements else (),
+            0,
+        )
     replacements = {item.path: item for item in candidate_files}
     inherited = sum(1 for item in base_files if item.path not in replacements)
     merged = {

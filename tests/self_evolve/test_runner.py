@@ -80,6 +80,8 @@ from aworld.self_evolve.runner import (
     _candidate_generation_actual_usage,
     _configured_budget_usage,
     _feedback_from_report,
+    _trajectory_group_rank_key,
+    _with_typed_gate_failure_event,
     _failed_probe_typed_feedback,
     _include_prior_run_cases,
     _iteration_validation_feedback,
@@ -501,6 +503,76 @@ def test_feedback_from_report_joins_selected_candidate_held_out_judge_metrics(
     )
 
 
+def test_framework_evidence_projection_failure_does_not_create_candidate_repair_package() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+    gate = _with_typed_gate_failure_event(
+        GateResult(
+            gate_name="evidence_quality",
+            passed=False,
+            reason="typed evidence constraints remain",
+            details={
+                "failure_class": "framework",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": True,
+                "evidence_repair_constraints": [
+                    {
+                        "schema_version": (
+                            "aworld.self_evolve.evidence_repair_constraint.v1"
+                        ),
+                        "subject_kind": "artifact",
+                        "failure_mode": "projection_compacted",
+                        "source_layer": "artifact_projection",
+                        "required_action": "expand_bounded_projection",
+                        "owner": "framework",
+                        "occurrence_count": 1,
+                    }
+                ],
+            },
+        )
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[gate],
+    )
+
+    assert feedback[0].metrics["failure_class"] == "framework"
+    assert "repair_candidate_package" not in feedback[0].metrics
+
+
+def test_environment_fingerprint_drift_is_shared_infrastructure_failure() -> None:
+    assert (
+        runner_module._environment_fingerprint_drift_gate(
+            "sha256:stable",
+            "sha256:stable",
+        )
+        is None
+    )
+
+    gate = runner_module._environment_fingerprint_drift_gate(
+        "sha256:before",
+        "sha256:after",
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details is not None
+    assert gate.details["failure_owner"] == "infrastructure"
+    assert gate.details["failure_scope"] == "shared_run"
+    events = gate.details["causal_failure_events"]
+    assert isinstance(events, list)
+    assert events[0]["code"] == "environment_fingerprint_drift"
+
+
 def test_iteration_selection_prefers_fewer_failed_gates_without_scores() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     first = CandidateVariant(
@@ -580,6 +652,167 @@ def test_iteration_selection_prefers_candidate_that_reached_runtime_replay() -> 
 
     assert selected is not None
     assert selected["candidate"] is runtime_failed
+
+
+def test_iteration_selection_does_not_treat_failed_replay_gate_as_deeper() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    unstable = CandidateVariant(
+        candidate_id="unstable",
+        target=target,
+        content="# Unstable\n",
+        rationale="replay confidence failed",
+    )
+    judged = CandidateVariant(
+        candidate_id="judged",
+        target=target,
+        content="# Judged\n",
+        rationale="replay passed and judge scored",
+    )
+
+    selected = _select_iteration_state(
+        [
+            {
+                "candidate": unstable,
+                "candidate_summary": EvaluationSummary(
+                    variant_id="unstable",
+                    metrics={"score": 76.0},
+                    dataset_split="validation",
+                ),
+                "status": "rejected",
+                "gate_results": (
+                    GateResult(
+                        "candidate_replay",
+                        True,
+                        "paired replay completed",
+                    ),
+                    GateResult(
+                        "replay_confidence",
+                        False,
+                        "successful repetitions were insufficient",
+                    ),
+                ),
+            },
+            {
+                "candidate": judged,
+                "candidate_summary": EvaluationSummary(
+                    variant_id="judged",
+                    metrics={"score": 78.0},
+                    dataset_split="validation",
+                ),
+                "status": "rejected",
+                "gate_results": (
+                    GateResult(
+                        "candidate_replay",
+                        True,
+                        "paired replay completed",
+                    ),
+                    GateResult(
+                        "replay_confidence",
+                        True,
+                        "replay confidence passed",
+                    ),
+                    GateResult(
+                        "evidence_quality",
+                        False,
+                        "judge evidence was incomplete",
+                    ),
+                ),
+            },
+        ]
+    )
+
+    assert selected is not None
+    assert selected["candidate"] is judged
+
+
+@pytest.mark.parametrize(
+    ("gate_name", "details", "owner", "scope", "stage"),
+    [
+        (
+            "evidence_quality",
+            {"evidence_incomplete": True},
+            "candidate",
+            "candidate",
+            "evaluation",
+        ),
+        (
+            "replay_confidence",
+            {"candidate_successful_repetition_count": 2},
+            "candidate",
+            "candidate",
+            "task_rollout",
+        ),
+        (
+            "required_verification",
+            {"command_case_count": 3, "command_pass_count": 0},
+            "candidate",
+            "candidate",
+            "evaluation",
+        ),
+        (
+            "required_verification",
+            {},
+            "framework",
+            "shared_run",
+            "evaluation",
+        ),
+        (
+            "held_out_verification",
+            {"held_out_case_count": 0},
+            "framework",
+            "shared_run",
+            "evaluation",
+        ),
+        (
+            "global_regression_benchmark",
+            {},
+            "framework",
+            "shared_run",
+            "evaluation",
+        ),
+    ],
+)
+def test_failed_verification_gate_publishes_typed_causal_event(
+    gate_name,
+    details,
+    owner,
+    scope,
+    stage,
+) -> None:
+    gate = _with_typed_gate_failure_event(
+        GateResult(
+            gate_name=gate_name,
+            passed=False,
+            reason="verification failed",
+            details=details,
+        )
+    )
+
+    assert gate.details is not None
+    event = gate.details["failure_event"]
+    assert gate.details["causal_failure_events"] == [event]
+    assert event["owner"] == owner
+    assert event["scope"] == scope
+    assert event["stage"] == stage
+    assert event["repairable"] is True
+
+
+def test_typed_gate_failure_preserves_existing_causal_event() -> None:
+    existing = ReplayFailureEvent(
+        code="existing_failure",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+    ).to_dict()
+    gate = GateResult(
+        gate_name="replay_confidence",
+        passed=False,
+        reason="replay failed",
+        details={"causal_failure_events": [existing]},
+    )
+
+    assert _with_typed_gate_failure_event(gate) is gate
 
 
 def test_iteration_selection_does_not_prefer_duplicate_only_retry() -> None:
@@ -1647,6 +1880,232 @@ def test_auto_group_prefers_larger_group_when_confidence_ties_by_bucket(tmp_path
         "task-cluster-1",
         "task-cluster-2",
     ]
+
+
+def test_auto_group_ranks_recovery_opportunity_and_context_before_confidence(
+    tmp_path: Path,
+) -> None:
+    def trajectory(
+        task: str,
+        *,
+        session_id: str,
+        tool_calls: int,
+    ) -> list[dict]:
+        return [
+            {
+                "meta": {
+                    "step": index + 1,
+                    "session_id": session_id,
+                    "agent_id": "agent",
+                    "pre_agent": "runner" if index == 0 else "mcp",
+                },
+                "state": {"input": {"content": task}},
+                "action": {
+                    "content": "step",
+                    "tool_calls": (
+                        [{"function": {"name": "mcp", "arguments": "{}"}}]
+                        if index < tool_calls
+                        else []
+                    ),
+                    "is_agent_finished": index + 1 == max(1, tool_calls),
+                },
+                "reward": {"status": "ok"},
+            }
+            for index in range(max(1, tool_calls))
+        ]
+
+    log_path = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        log_path,
+        [
+            {
+                "task_id": "alpha-missing-root",
+                "trajectory": trajectory(
+                    "Continue with the previous analysis",
+                    session_id="session-alpha",
+                    tool_calls=4,
+                ),
+            },
+            {
+                "task_id": "alpha-independent",
+                "trajectory": trajectory(
+                    "Start a fresh independent task",
+                    session_id="session-alpha",
+                    tool_calls=1,
+                ),
+            },
+            {
+                "task_id": "beta-recovery",
+                "trajectory": trajectory(
+                    "Process the recorded fixture efficiently",
+                    session_id="session-beta",
+                    tool_calls=4,
+                ),
+            },
+        ],
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path))
+    )
+    trace_packs = tuple(case.trace_pack for case in dataset.cases if case.trace_pack)
+    alpha = SelfEvolveTargetRef("skill", "alpha", str(tmp_path / "alpha.md"))
+    beta = SelfEvolveTargetRef("skill", "beta", str(tmp_path / "beta.md"))
+
+    def fake_infer(pack_group, *, workspace_root):
+        pack = pack_group[0]
+        is_beta = pack.task_id == "beta-recovery"
+        target = beta if is_beta else alpha
+        return build_target_selection_decision(
+            TargetSelectionReport(
+                selected_target=target,
+                confidence=0.85 if is_beta else 0.95,
+                evidence_step_ids=(pack.steps[0].evidence_id,),
+                failure_category="skill",
+                signals=("test_signal",),
+                diagnostics={"pack_id": pack.pack_id},
+            ),
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
+        )
+
+    grouped_dataset, _, grouping = _auto_group_trajectory_log_dataset(
+        dataset,
+        trace_packs,
+        source_config=SelfEvolveEvalSourceConfig(
+            kind="trajectory_log",
+            path=str(log_path),
+        ),
+        workspace_root=tmp_path,
+        infer_target=fake_infer,
+    )
+
+    assert [case.case_id for case in grouped_dataset.cases] == ["beta-recovery"]
+    assert grouping["selected_group_id"].startswith("skill:beta:")
+    assert grouping["ranking_strategy"] == (
+        "recovery_opportunity_then_context_completeness"
+    )
+    alpha_group = next(
+        item
+        for item in grouping["groups"]
+        if str(item["group_id"]).startswith("skill:alpha:")
+    )
+    beta_group = next(item for item in grouping["groups"] if item["selected"])
+    assert alpha_group["context_completeness_rate"] == 0.5
+    assert alpha_group["max_recovery_opportunity_tier"] == 0
+    assert beta_group["context_completeness_rate"] == 1.0
+    assert beta_group["max_recovery_opportunity_tier"] == 1
+
+
+def test_auto_group_rank_does_not_hide_opportunity_behind_existing_target() -> None:
+    existing_target_without_opportunity = {
+        "group_id": "existing",
+        "context_complete_case_ids": ["existing-case"],
+        "context_incomplete_case_ids": [],
+        "max_recovery_opportunity_tier": 0,
+        "recovery_opportunity_case_count": 0,
+        "has_target": True,
+        "confidence_sum": 1.0,
+        "case_ids": ["existing-case"],
+        "target_priority": 30,
+    }
+    new_capability_with_opportunity = {
+        "group_id": "new-capability",
+        "context_complete_case_ids": ["new-case"],
+        "context_incomplete_case_ids": [],
+        "max_recovery_opportunity_tier": 3,
+        "recovery_opportunity_case_count": 1,
+        "has_target": False,
+        "confidence_sum": 0.5,
+        "case_ids": ["new-case"],
+        "target_priority": 0,
+    }
+
+    ranked = sorted(
+        (
+            existing_target_without_opportunity,
+            new_capability_with_opportunity,
+        ),
+        key=_trajectory_group_rank_key,
+        reverse=True,
+    )
+
+    assert ranked[0]["group_id"] == "new-capability"
+
+
+def test_auto_group_excludes_incomplete_members_from_selected_replay_set(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "trajectory.log"
+    _write_trajectory_log(
+        log_path,
+        [
+            {
+                "task_id": "missing-root",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "session_id": "session-a"},
+                        "state": {
+                            "input": {
+                                "content": "Continue with the previous analysis"
+                            }
+                        },
+                        "action": {"content": "partial", "tool_calls": []},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+            {
+                "task_id": "independent",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "session_id": "session-a"},
+                        "state": {
+                            "input": {"content": "Start an independent task"}
+                        },
+                        "action": {"content": "complete", "tool_calls": []},
+                        "reward": {"status": "failed"},
+                    }
+                ],
+            },
+        ],
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="trajectory_log", path=str(log_path))
+    )
+    trace_packs = tuple(case.trace_pack for case in dataset.cases if case.trace_pack)
+    target = SelfEvolveTargetRef("skill", "alpha", str(tmp_path / "alpha.md"))
+
+    def fake_infer(pack_group, *, workspace_root):
+        pack = pack_group[0]
+        return build_target_selection_decision(
+            TargetSelectionReport(
+                selected_target=target,
+                confidence=0.9,
+                evidence_step_ids=(pack.steps[0].evidence_id,),
+                failure_category="skill",
+                signals=("test_signal",),
+                diagnostics={"pack_id": pack.pack_id},
+            ),
+            inventory=TargetInventory(entries=()),
+            selection_origin="inferred",
+        )
+
+    grouped_dataset, grouped_packs, grouping = _auto_group_trajectory_log_dataset(
+        dataset,
+        trace_packs,
+        source_config=SelfEvolveEvalSourceConfig(
+            kind="trajectory_log",
+            path=str(log_path),
+        ),
+        workspace_root=tmp_path,
+        infer_target=fake_infer,
+    )
+
+    assert [case.case_id for case in grouped_dataset.cases] == ["independent"]
+    assert [pack.task_id for pack in grouped_packs] == ["independent"]
+    assert grouping["context_filtered"] is True
+    assert grouping["selected_group_case_ids"] == ["missing-root", "independent"]
+    assert grouping["excluded_context_incomplete_case_ids"] == ["missing-root"]
 
 
 @pytest.mark.parametrize("trajectory_count", [1, 3])
@@ -2750,6 +3209,187 @@ async def test_auto_verified_no_candidate_is_rejected(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_candidate_materialization_failure_retries_as_typed_feedback(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    target = SkillTextTarget(skill_path)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve reusable behavior."}},
+            "action": {"content": "The first candidate shape was invalid."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="typed-materialization",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="typed-materialization",
+    )
+
+    class MaterializationRetryOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return OptimizerResult(
+                    candidates=(),
+                    diagnostics={
+                        "filtered_invalid_patch_candidates": 1,
+                        "candidate_materialization_failures": [
+                            {
+                                "code": "candidate_materialization_invalid",
+                                "stage": "candidate_generation",
+                                "failure_class": "candidate",
+                                "repairable": True,
+                                "candidate_index": 0,
+                                "representation": "patch_intent",
+                                "reason": "section not found",
+                            }
+                        ],
+                    },
+                )
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-repaired-shape",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            "Use a schema-valid reusable behavior delta.\n"
+                        ),
+                        rationale="repair candidate representation",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                ),
+            )
+
+    optimizer = MaterializationRetryOptimizer()
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        max_iterations=2,
+    ).run_explicit_target(
+        run_id="run-materialization-retry",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.SUCCEEDED
+    assert len(optimizer.requests) == 2
+    assert optimizer.requests[1].validation_feedback[0].metrics[
+        "candidate_materialization_invalid_count"
+    ] == 1
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-materialization-retry"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["iterations"][0]["status"] == "materialization_invalid"
+    assert report["iterations"][1]["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_candidate_materialization_has_typed_failure_event(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve reusable behavior."}},
+            "action": {"content": "Candidate shape failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="typed-materialization-terminal",
+    )
+
+    class InvalidMaterializationOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(),
+                diagnostics={
+                    "filtered_invalid_patch_candidates": 1,
+                    "candidate_materialization_failures": [
+                        {
+                            "code": "candidate_materialization_invalid",
+                            "stage": "candidate_generation",
+                            "failure_class": "candidate",
+                            "repairable": True,
+                            "candidate_index": 0,
+                            "representation": "patch_intent",
+                            "reason": "section not found",
+                        }
+                    ],
+                },
+            )
+
+    result = await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=InvalidMaterializationOptimizer(),
+        max_iterations=1,
+    ).run_explicit_target(
+        run_id="run-materialization-terminal",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(
+            build_trace_pack(
+                trajectory,
+                source_kind="current_trajectory",
+                task_id="typed-materialization-terminal",
+            ),
+        ),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-materialization-terminal"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    details = report["gate_results"][-1]["details"]
+    assert details["code"] == "candidate_materialization_invalid"
+    assert details["causal_failure_events"][0] == details["failure_event"]
+    assert details["failure_event"]["owner"] == "candidate"
+    assert details["failure_event"]["stage"] == "candidate_generation"
+    assert details["failure_event"]["repairable"] is True
+
+
+@pytest.mark.asyncio
 async def test_proposal_no_candidate_is_rejected_not_succeeded(tmp_path) -> None:
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -3115,6 +3755,13 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
     assert metrics["baseline_latency_ms"] == 202_372
     assert metrics["candidate_latency_ms"] == 333_973
     assert metrics["latency_ms_delta"] == 131_601
+    assert metrics["repair_candidate_package"] == {
+        "candidate_id": "cand-1",
+        "rationale": "test",
+        "content": "# Demo",
+        "files": [],
+    }
+    assert metrics["authoritative_replay_failure"] is True
     assert metrics["failed_gates"] == ["score_improvement"]
     assert metrics["candidate_validation_diagnostics"] == [
         {
@@ -5189,12 +5836,22 @@ async def test_runner_writes_lesson_artifacts_from_validation_feedback(tmp_path)
     ]
 
     assert report["lessons"]["count"] == len(lesson_lines)
-    assert report["lessons"]["types"]["failure_memory"] == 1
+    assert report["lessons"]["types"]["causal_failure_memory"] == 1
     assert report["lessons"]["types"]["required_runtime_behavior"] == 1
     assert report["lessons"]["types"]["trajectory_failure_memory"] == 1
-    assert lesson_lines[0]["source_task_ids"] == ["lesson-task"]
-    assert "score_improvement" in lesson_lines[0]["metrics"]["failed_gates"]
-    assert "artifact_first" in lesson_lines[1]["metrics"]["required_behaviors"]
+    trajectory_lesson = next(
+        line
+        for line in lesson_lines
+        if line["lesson_type"] == "trajectory_failure_memory"
+    )
+    assert trajectory_lesson["source_task_ids"] == ["lesson-task"]
+    runtime_lesson = next(
+        line
+        for line in lesson_lines
+        if line["lesson_type"] == "required_runtime_behavior"
+    )
+    assert "score_improvement" in runtime_lesson["metrics"]["failed_gates"]
+    assert "artifact_first" in runtime_lesson["metrics"]["required_behaviors"]
     assert any(
         "lesson-task:step-1" in line["evidence_refs"]
         for line in lesson_lines
@@ -6587,6 +7244,126 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
     assert report["iterations"][1]["candidate_id"] == "candidate-strong"
     assert report["iterations"][1]["status"] == "accepted"
     assert "Small verified delta." in skill_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_runner_filters_current_run_terminal_whitespace_semantic_duplicate(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve generic evidence handling."}},
+            "action": {"content": "Evidence handling needs a reusable repair."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="semantic-package-task",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="semantic-package-task",
+    )
+    primary = CandidateVariant(
+        candidate_id="candidate-material",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content="---\nname: demo\n---\n# Demo\n\nUse bounded evidence.\n",
+        rationale="material repair",
+        target_fingerprint="fingerprint",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('stable')\n",
+            ),
+        ),
+    )
+    whitespace_only = replace(
+        primary,
+        candidate_id="candidate-whitespace-only",
+        rationale="format-only retry",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('stable')\n\n",
+            ),
+        ),
+    )
+
+    class PopulationOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(primary, whitespace_only))
+
+    class PassingBackend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str] = []
+
+        async def evaluate_variant(self, request):
+            if request.candidate is not None:
+                self.candidate_ids.append(request.candidate.candidate_id)
+            return EvaluationSummary(
+                variant_id=(
+                    request.candidate.candidate_id
+                    if request.candidate is not None
+                    else "baseline"
+                ),
+                metrics={
+                    "score": 95.0 if request.candidate is not None else 70.0,
+                    "A1_groundedness": 5.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_bundle_valid": True,
+                    "evidence_manifest_entry_count": 1,
+                    "evidence_manifest_invalid_entry_count": 0,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    backend = PassingBackend()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=PopulationOptimizer(),
+        evaluation_backend=backend,
+        min_eval_cases=0,
+        replay_candidate_limit=2,
+    ).run_explicit_target(
+        run_id="run-current-semantic-dedup",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="proposal",
+    )
+
+    assert result.run.status.value == "succeeded"
+    assert set(backend.candidate_ids) == {"candidate-material"}
+    report = json.loads(
+        (store.run_path("run-current-semantic-dedup") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["population"]["generated_candidate_count"] == 1
+    assert report["population"]["lifecycle"]["terminal_reason_counts"][
+        "duplicate_candidate_semantics"
+    ] == 1
 
 
 @pytest.mark.asyncio
@@ -10695,10 +11472,10 @@ async def test_runner_reports_screening_root_cause_before_later_duplicate(
         "code": "repair_capability_compile_failed",
         "duplicate_only": False,
         "capability_error_code": "schema_field_validation_failed",
-        "scheduler_reason_code": "focused_repair_with_diversity",
+        "scheduler_reason_code": "focused_repair",
         "scheduler_stop": False,
     }
-    assert report["population"]["duplicate_attempt_count"] == 1
+    assert report["population"]["duplicate_attempt_count"] == 2
 
 
 @pytest.mark.asyncio

@@ -3440,7 +3440,10 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
         observed_ports.append(port)
         with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
             connection.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
-            response = connection.recv(4096)
+            chunks: list[bytes] = []
+            while chunk := connection.recv(4096):
+                chunks.append(chunk)
+            response = b"".join(chunks)
             assert b"recorded" in response
             assert str(execution_request.artifact_dir).encode() not in response
             assert b"baseline" not in response

@@ -81,6 +81,117 @@ def test_store_tracks_active_run_lease_until_terminal_status(tmp_path) -> None:
     assert not (run_dir / ".active.json").exists()
 
 
+def test_store_archives_dead_interrupted_campaign_run(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    run_dir = store.create_run(
+        SelfEvolveRun(
+            run_id="campaign-demo-cycle-001",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+    (run_dir / "partial.txt").write_text("durable partial artifact", encoding="utf-8")
+    (run_dir / ".active.json").write_text(
+        json.dumps(
+            {
+                "hostname": socket.gethostname(),
+                "pid": 2_147_483_647,
+                "started_at": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    archived = store.archive_interrupted_campaign_run(
+        campaign_id="campaign-demo",
+        run_id="campaign-demo-cycle-001",
+        reserved_usage={
+            "tokens": 500_000,
+            "cost_usd": "0",
+            "wall_seconds": "0",
+        },
+    )
+
+    assert not run_dir.exists()
+    assert (archived / "partial.txt").read_text(encoding="utf-8") == (
+        "durable partial artifact"
+    )
+    interruption = _read_json(archived / "interruption.json")
+    assert interruption["code"] == "campaign_run_interrupted"
+    assert interruption["reserved_usage"]["tokens"] == 500_000
+
+
+def test_store_refuses_to_archive_live_campaign_run(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    store.create_run(
+        SelfEvolveRun(
+            run_id="campaign-demo-cycle-001",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="still active"):
+        store.archive_interrupted_campaign_run(
+            campaign_id="campaign-demo",
+            run_id="campaign-demo-cycle-001",
+            reserved_usage={
+                "tokens": 500_000,
+                "cost_usd": "0",
+                "wall_seconds": "0",
+            },
+        )
+
+
+def test_store_refuses_to_archive_run_without_valid_lease(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    run_dir = store.create_run(
+        SelfEvolveRun(
+            run_id="campaign-demo-cycle-001",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+    (run_dir / ".active.json").unlink()
+
+    with pytest.raises(RuntimeError, match="still active"):
+        store.archive_interrupted_campaign_run(
+            campaign_id="campaign-demo",
+            run_id="campaign-demo-cycle-001",
+            reserved_usage={
+                "tokens": 500_000,
+                "cost_usd": "0",
+                "wall_seconds": "0",
+            },
+        )
+
+
+def test_store_refuses_to_archive_run_from_another_campaign(tmp_path) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    store = FilesystemSelfEvolveStore(workspace_root=tmp_path)
+    store.create_run(
+        SelfEvolveRun(
+            run_id="campaign-other-cycle-001",
+            target=target,
+            status=SelfEvolveRunStatus.RUNNING,
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not belong"):
+        store.archive_interrupted_campaign_run(
+            campaign_id="campaign-demo",
+            run_id="campaign-other-cycle-001",
+            reserved_usage={
+                "tokens": 500_000,
+                "cost_usd": "0",
+                "wall_seconds": "0",
+            },
+        )
+
+
 def test_store_persists_candidate_report_recipe_and_lineage(tmp_path) -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     run = SelfEvolveRun(run_id="run-002", target=target)

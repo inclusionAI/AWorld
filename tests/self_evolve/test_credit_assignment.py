@@ -590,6 +590,58 @@ def test_generic_anchor_noun_does_not_select_validation_policy(tmp_path: Path) -
     assert "result_validation_mismatch" not in report.signals
 
 
+def test_repeated_success_path_can_create_recovery_opportunity_draft(
+    tmp_path: Path,
+) -> None:
+    trajectory = []
+    for index in range(4):
+        trajectory.append(
+            {
+                "meta": {
+                    "step": index + 1,
+                    "agent_id": "agent",
+                    "pre_agent": "runner" if index == 0 else "mcp",
+                },
+                "state": {
+                    "input": {
+                        "content": (
+                            "Inspect https://api.example.test/resources/demo."
+                            if index == 0
+                            else "Continue processing the retrieved records."
+                        )
+                    }
+                },
+                "action": {
+                    "content": "Process the next bounded result.",
+                    "tool_calls": [
+                        {"function": {"name": "mcp", "arguments": "{}"}}
+                    ],
+                    "is_agent_finished": index == 3,
+                },
+                "reward": {"status": "ok"},
+            }
+        )
+    pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="repeated-success",
+    )
+
+    report = TrajectoryCreditAssigner(
+        inventory=build_default_target_inventory(workspace_root=tmp_path)
+    ).assign(pack)
+
+    assert report.selected_target is not None
+    assert report.selected_target.target_type == "skill"
+    assert report.selected_target.path is None
+    assert report.selected_target.target_id.startswith("http-recovery-")
+    assert report.target_intent == "inferred_draft_creation"
+    assert "new_skill_candidate" in report.signals
+    assert report.diagnostics["failure_codes"] == (
+        "recovery_opportunity.repeated_action_loop",
+    )
+
+
 def test_credit_assigner_creates_generic_draft_instead_of_matching_description_tokens(
     tmp_path,
 ) -> None:

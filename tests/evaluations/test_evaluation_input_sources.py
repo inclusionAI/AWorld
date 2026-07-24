@@ -387,6 +387,16 @@ def test_trajectory_judge_schema_normalizes_dimensions_report() -> None:
                 "evidence_block_count": 2,
                 "evidence_compacted": False,
                 "evidence_incomplete": False,
+                "evidence_repair_constraints": [
+                    {
+                        "subject_kind": "quantitative_claim",
+                        "failure_mode": "unsupported_claim",
+                        "source_layer": "candidate_output",
+                        "required_action": "support_or_omit",
+                        "owner": "candidate",
+                        "occurrence_count": 2,
+                    }
+                ],
             },
         }
     )
@@ -398,3 +408,4 @@ def test_trajectory_judge_schema_normalizes_dimensions_report() -> None:
     assert payload["evidence_block_count"] == 2
     assert payload["evidence_compacted"] is False
     assert payload["evidence_quality"]["evidence_block_count"] == 2
+    assert payload["evidence_repair_constraints"][0]["occurrence_count"] == 2

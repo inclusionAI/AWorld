@@ -878,6 +878,27 @@ def test_scheduler_shared_blocking_event_stops_but_candidate_event_does_not() ->
     assert len(candidate.slots) == 1
 
 
+def test_scheduler_repairs_candidate_before_handing_off_shared_blocker() -> None:
+    scheduler = StageAwareCandidateScheduler(exploration_population=2)
+    state = SchedulerState(initial_exploration_scheduled=True)
+
+    decision = scheduler.schedule(
+        state=state,
+        frontiers=(
+            _frontier(
+                "framework-coverage",
+                owner=FailureOwner.FRAMEWORK,
+                scope=FailureScope.SHARED_RUN,
+            ),
+            _frontier("candidate-evidence"),
+        ),
+    )
+
+    assert decision.stop is False
+    assert len(decision.slots) == 1
+    assert decision.slots[0].semantic_key == "candidate-evidence"
+
+
 def test_scheduler_fails_closed_on_untyped_frontier_and_budget_denial() -> None:
     scheduler = StageAwareCandidateScheduler(exploration_population=2)
     state = SchedulerState(initial_exploration_scheduled=True)

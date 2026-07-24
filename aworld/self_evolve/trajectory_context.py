@@ -10,7 +10,7 @@ from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.trace_pack import TrajectoryLogRecord
 
 
-TRAJECTORY_CONTEXT_SCHEMA_VERSION = "aworld.self_evolve.trajectory_context.v1"
+TRAJECTORY_CONTEXT_SCHEMA_VERSION = "aworld.self_evolve.trajectory_context.v2"
 _EXPLICIT_CONTINUATION_MARKERS = (
     "continue the current task",
     "additional operator steering",
@@ -61,6 +61,8 @@ class TrajectoryContextSnapshot:
     omitted_step_count: int
     prior_turns: tuple[TrajectoryContextTurn, ...]
     link_strategy: str | None
+    context_status: str
+    context_reason: str | None
     fingerprint: str
 
 
@@ -103,6 +105,7 @@ def build_trajectory_context_snapshots(
             if position > 0:
                 predecessor = records[position - 1]
                 link_strategy = "adjacent_record_fallback"
+        predecessor_snapshot: TrajectoryContextSnapshot | None = None
         if predecessor is not None:
             predecessor_snapshot = snapshots_by_task.get(predecessor.task_id)
             prior_turns = _predecessor_turns(
@@ -114,6 +117,19 @@ def build_trajectory_context_snapshots(
                     else ()
                 ),
             )
+        requires_prior_context = task_input_requires_prior_context(task_input)
+        context_status = "complete"
+        context_reason: str | None = None
+        if requires_prior_context and predecessor is None and not prior_turns:
+            context_status = "incomplete"
+            context_reason = "missing_required_prior_context"
+        elif (
+            requires_prior_context
+            and predecessor_snapshot is not None
+            and predecessor_snapshot.context_status == "incomplete"
+        ):
+            context_status = "incomplete"
+            context_reason = "inherited_incomplete_context"
 
         selected_steps = record.trajectory[:max_steps]
         steps = tuple(
@@ -136,6 +152,8 @@ def build_trajectory_context_snapshots(
             "omitted_step_count": max(0, len(record.trajectory) - len(steps)),
             "prior_turns": [asdict(turn) for turn in prior_turns],
             "link_strategy": link_strategy,
+            "context_status": context_status,
+            "context_reason": context_reason,
         }
         fingerprint = _fingerprint(payload)
         snapshot = TrajectoryContextSnapshot(
@@ -151,6 +169,8 @@ def build_trajectory_context_snapshots(
             step_count=len(record.trajectory),
             omitted_step_count=max(0, len(record.trajectory) - len(steps)),
             link_strategy=link_strategy,
+            context_status=context_status,
+            context_reason=context_reason,
             fingerprint=fingerprint,
         )
         snapshots.append(snapshot)

@@ -29,6 +29,18 @@ def _target() -> SelfEvolveTargetRef:
     return SelfEvolveTargetRef(target_type="skill", target_id="demo-skill", path="SKILL.md")
 
 
+def _replay_requirement() -> ReplayCapabilityRequirement:
+    return ReplayCapabilityRequirement(
+        requirement_id="requirement-generic",
+        kind="http_resource",
+        identifier="recorded-resource",
+        case_ids=("train-1",),
+        evidence_refs=("event:1",),
+        status="unbound",
+        detail="requires deterministic replay",
+    )
+
+
 def _prompt_payload(prompt: str) -> dict:
     return json.loads(prompt.split("\n", 1)[1])
 
@@ -272,6 +284,7 @@ async def test_trace_reflective_llm_mutator_materializes_candidate_files() -> No
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(_replay_requirement(),),
         max_candidates=1,
     )
 
@@ -311,6 +324,7 @@ async def test_llm_mutator_unwraps_structured_expected_output_envelope() -> None
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(_replay_requirement(),),
         max_candidates=1,
     )
 
@@ -341,6 +355,7 @@ async def test_llm_mutator_inherits_primary_content_for_files_only_delta() -> No
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         trainable_cases=(EvalCase(case_id="train-1", input="login task"),),
+        replay_requirements=(_replay_requirement(),),
         max_candidates=1,
     )
 
@@ -1144,6 +1159,17 @@ async def test_trace_reflective_llm_mutator_rejects_invalid_patch_intent_before_
 
     assert result.candidates == ()
     assert result.diagnostics["filtered_invalid_patch_candidates"] == 1
+    assert result.diagnostics["candidate_materialization_failures"] == [
+        {
+            "code": "candidate_materialization_invalid",
+            "stage": "candidate_generation",
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_index": 0,
+            "representation": "patch_intent",
+            "reason": "patch intent contains a protected reference",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1427,6 +1453,85 @@ async def test_llm_mutator_compacts_feedback_before_prompting() -> None:
 
 
 @pytest.mark.asyncio
+async def test_judged_target_repair_freezes_empty_replay_file_set() -> None:
+    async def mutate(prompt: str) -> dict:
+        assert "<CLAIM>" in prompt
+        return {
+            "content": (
+                "# Demo\n\nVerify each generic claim against bounded artifact evidence.\n"
+            ),
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "print('unrequested harness mutation')\n",
+                }
+            ],
+            "rationale": "Repair claim coverage at the judged target frontier.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-judged",
+                metrics={
+                    "score": 66.0,
+                    "A1_groundedness": 2.0,
+                    "evidence_incomplete": True,
+                    "failed_gates": ["evidence_quality"],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-judged",
+                        "content": "# Demo\n\nPersist bounded evidence.\n",
+                        "files": [],
+                    },
+                },
+                dataset_split="validation",
+            ),
+        ),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].files == ()
+    assert "Verify each generic claim" in result.candidates[0].content
+
+
+@pytest.mark.asyncio
+async def test_candidate_files_require_replay_authority_or_existing_file_focus() -> None:
+    async def mutate(prompt: str) -> dict:
+        return {
+            "content": "# Demo\n\nUse generic bounded evidence.\n",
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "content": "print('unrequested runtime')\n",
+                }
+            ],
+            "rationale": "Improve target behavior without a replay dependency.",
+        }
+
+    request = OptimizerRequest(
+        target=_target(),
+        current_content="# Demo\n\nOld guidance.\n",
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        trainable_cases=(EvalCase(case_id="train-1", input="web task"),),
+        replay_requirements=(),
+    )
+
+    result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].files == ()
+    assert "generic bounded evidence" in result.candidates[0].content
+
+
+@pytest.mark.asyncio
 async def test_llm_mutator_turns_low_efficiency_feedback_into_generic_strategy() -> None:
     prompts = []
 
@@ -1531,6 +1636,32 @@ def test_feedback_normalization_requires_stronger_evidence_repair_for_veto_and_m
     assert "pre_final_veto_check" in summary["required_behaviors"]
     assert "support_every_claim_with_artifact_reference" in summary["required_behaviors"]
     assert "raise_groundedness_before_breadth" in summary["required_behaviors"]
+
+
+def test_feedback_normalization_preserves_target_only_repair_package() -> None:
+    summary = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-target-only",
+            dataset_split="validation",
+            metrics={
+                "score": 66.0,
+                "evidence_incomplete": True,
+                "failed_gates": ["evidence_quality"],
+                "repair_candidate_package": {
+                    "candidate_id": "candidate-target-only",
+                    "content": "# Generic evidence repair\n",
+                    "files": [],
+                },
+            },
+        )
+    )
+
+    assert summary["repair_candidate_package"] == {
+        "candidate_id": "candidate-target-only",
+        "rationale": "",
+        "content": "# Generic evidence repair",
+        "files": [],
+    }
 
 
 def test_feedback_normalization_preserves_typed_recovery_trace() -> None:

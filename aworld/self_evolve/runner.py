@@ -53,6 +53,7 @@ from aworld.self_evolve.gates import (
     CandidatePackageGate,
     CostLatencyRegressionGate,
     EvidenceQualityGate,
+    EvaluationRuntimeHealthGate,
     ExternalCodeEvolutionGate,
     GlobalRegressionBenchmarkGate,
     HeldOutVerificationGate,
@@ -98,6 +99,10 @@ from aworld.self_evolve.failure_events import (
     FailureScope,
     FailureStage,
     ReplayFailureEvent,
+)
+from aworld.self_evolve.evidence_diagnostics import (
+    EvidenceRepairConstraint,
+    merge_evidence_repair_constraints,
 )
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.candidate_package import (
@@ -188,6 +193,7 @@ from aworld.self_evolve.replay import (
 from aworld.self_evolve.recovery_trace import (
     RECOVERY_TRACE_SCHEMA_VERSION,
     replay_recovery_trace,
+    trace_pack_recovery_opportunity,
     update_constraint_recovery_trace,
     validate_public_constraint_recovery_trace,
     validate_public_recovery_trace,
@@ -1204,6 +1210,66 @@ def _status_without_selected_candidate(
     return SelfEvolveRunStatus.REJECTED
 
 
+def _candidate_materialization_failures(
+    diagnostics: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    raw_failures = diagnostics.get("candidate_materialization_failures")
+    if not isinstance(raw_failures, (list, tuple)):
+        return ()
+    failures: list[dict[str, object]] = []
+    for item in raw_failures[:16]:
+        if not isinstance(item, Mapping):
+            continue
+        failures.append(
+            {
+                "code": sanitize_text(
+                    item.get("code") or "candidate_materialization_invalid",
+                    max_chars=96,
+                ),
+                "stage": "candidate_generation",
+                "failure_class": "candidate",
+                "repairable": item.get("repairable") is not False,
+                "candidate_index": _non_negative_int(item.get("candidate_index")),
+                "representation": sanitize_text(
+                    item.get("representation") or "candidate_package",
+                    max_chars=80,
+                ),
+                "reason": sanitize_text(item.get("reason"), max_chars=240),
+            }
+        )
+    return tuple(failures)
+
+
+def _candidate_generation_failure_event(
+    optimizer_diagnostics: Iterable[Mapping[str, object]],
+) -> dict[str, object] | None:
+    failures: list[dict[str, object]] = []
+    for item in _optimizer_iteration_diagnostics(optimizer_diagnostics):
+        failures.extend(_candidate_materialization_failures(item))
+    if not failures:
+        return None
+    representations = sorted(
+        {
+            str(item.get("representation") or "candidate_package")
+            for item in failures
+        }
+    )
+    event = ReplayFailureEvent(
+        code="candidate_materialization_invalid",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CANDIDATE_GENERATION,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="candidate_generation",
+        summary="candidate package could not be materialized",
+        diagnostics={
+            "failure_count": len(failures),
+            "representations": representations,
+        },
+    )
+    return event.to_dict()
+
+
 def _retryable_candidate_generation_failure(
     failure: Mapping[str, object],
 ) -> bool:
@@ -1487,6 +1553,106 @@ def _rejection_attribution(
     return attribution
 
 
+_CANDIDATE_REPAIRABLE_GATE_STAGES = {
+    "score_improvement": FailureStage.EVALUATION,
+    "cost_latency_regression": FailureStage.EVALUATION,
+    "replay_stability_margin": FailureStage.EVALUATION,
+    "evidence_quality": FailureStage.EVALUATION,
+    "replay_confidence": FailureStage.TASK_ROLLOUT,
+}
+_FRAMEWORK_SHARED_GATE_STAGES = {
+    "evaluation_runtime_health": FailureStage.EVALUATION,
+    "held_out_verification": FailureStage.EVALUATION,
+    "judge_only_signal": FailureStage.EVALUATION,
+    "global_regression_benchmark": FailureStage.EVALUATION,
+}
+
+
+def _with_typed_gate_failure_event(gate: GateResult) -> GateResult:
+    """Connect policy gate failures to the typed Campaign causal boundary."""
+
+    if gate.passed:
+        return gate
+    details = dict(gate.details) if isinstance(gate.details, Mapping) else {}
+    existing_events = details.get("causal_failure_events")
+    if isinstance(existing_events, (list, tuple)) and any(
+        isinstance(item, Mapping) for item in existing_events
+    ):
+        return gate
+
+    owner: FailureOwner | None = None
+    scope: FailureScope | None = None
+    declared_owner = details.get("failure_owner")
+    declared_scope = details.get("failure_scope")
+    try:
+        if declared_owner is not None:
+            owner = FailureOwner(str(declared_owner))
+        if declared_scope is not None:
+            scope = FailureScope(str(declared_scope))
+    except ValueError:
+        owner = None
+        scope = None
+    candidate_stage = _CANDIDATE_REPAIRABLE_GATE_STAGES.get(
+        gate.gate_name
+    )
+    framework_stage = _FRAMEWORK_SHARED_GATE_STAGES.get(gate.gate_name)
+    stage = candidate_stage or framework_stage
+    if candidate_stage is not None and owner is None:
+        owner = FailureOwner.CANDIDATE
+        scope = FailureScope.CANDIDATE
+    elif gate.gate_name == "required_verification" and owner is None:
+        command_case_count = _non_negative_int(
+            details.get("command_case_count")
+        )
+        owner = (
+            FailureOwner.CANDIDATE
+            if command_case_count > 0
+            else FailureOwner.FRAMEWORK
+        )
+        scope = (
+            FailureScope.CANDIDATE
+            if command_case_count > 0
+            else FailureScope.SHARED_RUN
+        )
+        stage = FailureStage.EVALUATION
+    elif owner is None:
+        if framework_stage is not None:
+            owner = FailureOwner.FRAMEWORK
+            scope = FailureScope.SHARED_RUN
+    if owner is None or scope is None or stage is None:
+        return gate
+
+    repairable = details.get("repairable") is not False
+    event = ReplayFailureEvent(
+        code=str(details.get("code") or gate.gate_name),
+        owner=owner,
+        stage=stage,
+        scope=scope,
+        repairable=repairable,
+        category="verification_gate",
+        summary=gate.reason,
+        diagnostics={
+            "gate_name": gate.gate_name,
+        },
+    ).to_dict()
+    details.update(
+        {
+            "failure_class": owner.value,
+            "failure_owner": owner.value,
+            "failure_scope": scope.value,
+            "repairable": repairable,
+            "failure_event": event,
+            "causal_failure_events": [event],
+        }
+    )
+    return GateResult(
+        gate_name=gate.gate_name,
+        passed=False,
+        reason=gate.reason,
+        details=details,
+    )
+
+
 class SelfEvolveRunner:
     def __init__(
         self,
@@ -1765,6 +1931,7 @@ class SelfEvolveRunner:
             tuple[str, str, str],
             tuple[ReplayAdaptationBundle | None, GateResult],
         ] = {}
+        self._run_environment_fingerprints: dict[str, str] = {}
 
     async def run_explicit_target(
         self,
@@ -1796,6 +1963,8 @@ class SelfEvolveRunner:
         except BaseException:
             failure_cleanup.cleanup()
             raise
+        finally:
+            self._run_environment_fingerprints.pop(run_id, None)
 
     async def _run_explicit_target(
         self,
@@ -2156,6 +2325,7 @@ class SelfEvolveRunner:
         )
         current_run_candidate_id_by_package: dict[str, str] = {}
         current_run_package_fingerprint_by_candidate_id: dict[str, str] = {}
+        current_run_candidate_id_by_semantic_package: dict[str, str] = {}
         attempt_key_by_candidate_id: dict[str, CandidateAttemptKey] = {}
         rejected_semantic_lesson_fingerprints = (
             _load_prior_rejected_semantic_lesson_fingerprints(
@@ -2478,10 +2648,18 @@ class SelfEvolveRunner:
                 package_fingerprint = candidate_package_fingerprint(
                     generated_candidate
                 )
+                semantic_package_fingerprint = (
+                    candidate_semantic_package_fingerprint(generated_candidate)
+                )
                 canonical_id = (
                     current_run_candidate_id_by_package.get(package_fingerprint)
                     if bypass_historical_deduplication
                     else canonical_candidate_id_by_package.get(package_fingerprint)
+                )
+                semantic_duplicate_id = (
+                    current_run_candidate_id_by_semantic_package.get(
+                        semantic_package_fingerprint
+                    )
                 )
                 prior_candidate_duplicate = (
                     not bypass_historical_deduplication
@@ -2519,7 +2697,11 @@ class SelfEvolveRunner:
                 lifecycle_candidate_id = (
                     canonical_id
                     if canonical_id is not None
-                    else generated_candidate.candidate_id
+                    else (
+                        semantic_duplicate_id
+                        if semantic_duplicate_id is not None
+                        else generated_candidate.candidate_id
+                    )
                 )
                 key = attempt_tracker.start(
                     iteration=iteration_index,
@@ -2529,6 +2711,7 @@ class SelfEvolveRunner:
                 )
                 if (
                     canonical_id is not None
+                    or semantic_duplicate_id is not None
                     or candidate_id_collision
                     or prior_candidate_duplicate
                     or semantic_lesson_duplicate
@@ -2549,7 +2732,11 @@ class SelfEvolveRunner:
                                 else (
                                     "duplicate_semantic_lesson"
                                     if semantic_lesson_duplicate
-                                    else "duplicate_candidate_package"
+                                    else (
+                                        "duplicate_candidate_semantics"
+                                        if semantic_duplicate_id is not None
+                                        else "duplicate_candidate_package"
+                                    )
                                 )
                             )
                         ),
@@ -2617,6 +2804,9 @@ class SelfEvolveRunner:
                 current_run_candidate_id_by_package[package_fingerprint] = (
                     generated_candidate.candidate_id
                 )
+                current_run_candidate_id_by_semantic_package[
+                    semantic_package_fingerprint
+                ] = generated_candidate.candidate_id
                 current_run_package_fingerprint_by_candidate_id[
                     generated_candidate.candidate_id
                 ] = package_fingerprint
@@ -2719,17 +2909,29 @@ class SelfEvolveRunner:
                         "candidate_protocol_invalid_count"
                     )
                 ) + candidate_protocol_overflow_count
-                if protocol_invalid_count:
+                materialization_failures = _candidate_materialization_failures(
+                    optimizer_result.diagnostics
+                )
+                materialization_invalid_count = len(
+                    materialization_failures
+                )
+                if protocol_invalid_count or materialization_invalid_count:
+                    failed_gate = (
+                        "candidate_materialization"
+                        if materialization_invalid_count
+                        else "candidate_protocol"
+                    )
                     validation_feedback = _merge_validation_feedback(
                         validation_feedback,
                         (
                             EvaluationSummary(
                                 variant_id=(
-                                    f"candidate-protocol-{iteration_index + 1}"
+                                    "candidate-generation-"
+                                    f"{iteration_index + 1}"
                                 ),
                                 dataset_split="validation",
                                 metrics={
-                                    "failed_gates": ["candidate_protocol"],
+                                    "failed_gates": [failed_gate],
                                     "candidate_status": "rejected",
                                     "failure_class": "candidate",
                                     "repairable": True,
@@ -2739,6 +2941,12 @@ class SelfEvolveRunner:
                                     "candidate_protocol_overflow_count": (
                                         candidate_protocol_overflow_count
                                     ),
+                                    "candidate_materialization_invalid_count": (
+                                        materialization_invalid_count
+                                    ),
+                                    "candidate_validation_diagnostics": list(
+                                        materialization_failures
+                                    ),
                                 },
                             ),
                         ),
@@ -2747,8 +2955,12 @@ class SelfEvolveRunner:
                         {
                             "iteration": iteration_index + 1,
                             "candidate_id": None,
-                            "status": "protocol_invalid",
-                            "failed_gates": ["candidate_protocol"],
+                            "status": (
+                                "materialization_invalid"
+                                if materialization_invalid_count
+                                else "protocol_invalid"
+                            ),
+                            "failed_gates": [failed_gate],
                         }
                     )
                     continue
@@ -3225,6 +3437,24 @@ class SelfEvolveRunner:
                 == raw_generation_attempt_count
                 and not all_candidates
             )
+            candidate_generation_failure_event = (
+                _candidate_generation_failure_event(optimizer_diagnostics)
+            )
+            candidate_generation_details: dict[str, object] = {
+                "generated_candidate_count": len(all_candidates),
+                "iterations": len(optimizer_diagnostics),
+            }
+            if candidate_generation_failure_event is not None:
+                candidate_generation_details.update(
+                    {
+                        "failure_class": "candidate",
+                        "code": "candidate_materialization_invalid",
+                        "failure_event": candidate_generation_failure_event,
+                        "causal_failure_events": [
+                            candidate_generation_failure_event
+                        ],
+                    }
+                )
             gate_results.append(
                 GateResult(
                     gate_name=(
@@ -3268,10 +3498,7 @@ class SelfEvolveRunner:
                             "iterations": len(optimizer_diagnostics),
                         }
                         if semantic_dedup_exhausted
-                        else {
-                            "generated_candidate_count": len(all_candidates),
-                            "iterations": len(optimizer_diagnostics),
-                        }
+                        else candidate_generation_details
                         if apply_policy == "auto_verified"
                         else None
                     ),
@@ -5114,7 +5341,6 @@ class SelfEvolveRunner:
                         ),
                         execution_telemetry=self.execution_telemetry,
                     )
-                    fresh_evaluation_completed = True
                     if replay_result is not None:
                         baseline_summary = _summary_with_replay_evidence_metrics(
                             baseline_summary,
@@ -5124,30 +5350,43 @@ class SelfEvolveRunner:
                             candidate_summary,
                             replay_result.candidate,
                         )
-                    score_gate = ScoreImprovementGate(
-                        min_delta=self.min_score_delta
-                    ).evaluate(
-                        baseline=baseline_summary,
-                        candidate=candidate_summary,
+                    validation_health_gate = (
+                        EvaluationRuntimeHealthGate().evaluate(
+                            (baseline_summary, candidate_summary)
+                        )
                     )
-                    cost_latency_gate = CostLatencyRegressionGate(
-                        max_cost_regression_ratio=0.25,
-                        max_latency_regression_ratio=0.5,
-                    ).evaluate(
-                        baseline=baseline_summary,
-                        candidate=candidate_summary,
-                    )
-                    gate_results.extend([score_gate, cost_latency_gate])
-                    replay_stability_gate = _replay_stability_gate(
-                        baseline_summary=baseline_summary,
-                        candidate_summary=candidate_summary,
-                        min_score_delta=self.min_score_delta,
-                        replay_stability_margin=self.replay_stability_margin,
-                        replay_used=replay_dataset is not None,
-                    )
-                    if replay_stability_gate is not None:
-                        gate_results.append(replay_stability_gate)
-                    if apply_policy == "auto_verified":
+                    if not validation_health_gate.passed:
+                        fresh_evaluation_completed = False
+                        gate_results.append(validation_health_gate)
+                    else:
+                        quality_gates: list[GateResult] = [
+                            ScoreImprovementGate(
+                                min_delta=self.min_score_delta
+                            ).evaluate(
+                                baseline=baseline_summary,
+                                candidate=candidate_summary,
+                            ),
+                            CostLatencyRegressionGate(
+                                max_cost_regression_ratio=0.25,
+                                max_latency_regression_ratio=0.5,
+                            ).evaluate(
+                                baseline=baseline_summary,
+                                candidate=candidate_summary,
+                            ),
+                        ]
+                        replay_stability_gate = _replay_stability_gate(
+                            baseline_summary=baseline_summary,
+                            candidate_summary=candidate_summary,
+                            min_score_delta=self.min_score_delta,
+                            replay_stability_margin=self.replay_stability_margin,
+                            replay_used=replay_dataset is not None,
+                        )
+                        if replay_stability_gate is not None:
+                            quality_gates.append(replay_stability_gate)
+                    if (
+                        validation_health_gate.passed
+                        and apply_policy == "auto_verified"
+                    ):
                         if _can_reuse_single_case_replay_validation(evaluation_dataset):
                             logger.info(
                                 "self_evolve.evaluator.held_out.skip "
@@ -5176,33 +5415,51 @@ class SelfEvolveRunner:
                                     held_out_summary,
                                     replay_result.candidate,
                                 )
-                        confidence = determine_candidate_confidence(
-                            dataset=evaluation_dataset,
-                            validation_summary=candidate_summary,
-                            held_out_summary=held_out_summary,
-                            min_eval_cases=self.min_eval_cases,
-                        )
-                        evidence_quality_gates = [
-                            gate
-                            for gate in (
-                                _evidence_quality_gate(candidate_summary),
-                                _evidence_quality_gate(held_out_summary),
+                        final_health_gate = EvaluationRuntimeHealthGate().evaluate(
+                            (
+                                baseline_summary,
+                                candidate_summary,
+                                held_out_summary,
                             )
-                            if gate is not None
-                        ]
-                        gate_results.extend(
-                            [
-                                *evidence_quality_gates,
-                                RequiredVerificationGate().evaluate(held_out_summary),
-                                HeldOutVerificationGate(
-                                    min_eval_cases=self.min_eval_cases
-                                ).evaluate(confidence),
-                                JudgeOnlySignalGate().evaluate(confidence),
-                                GlobalRegressionBenchmarkGate().evaluate(
-                                    candidate,
-                                    held_out_summary,
-                                ),
+                        )
+                        gate_results.append(final_health_gate)
+                        fresh_evaluation_completed = final_health_gate.passed
+                        if final_health_gate.passed:
+                            confidence = determine_candidate_confidence(
+                                dataset=evaluation_dataset,
+                                validation_summary=candidate_summary,
+                                held_out_summary=held_out_summary,
+                                min_eval_cases=self.min_eval_cases,
+                            )
+                            evidence_quality_gates = [
+                                gate
+                                for gate in (
+                                    _evidence_quality_gate(candidate_summary),
+                                    _evidence_quality_gate(held_out_summary),
+                                )
+                                if gate is not None
                             ]
+                            gate_results.extend(
+                                [
+                                    *quality_gates,
+                                    *evidence_quality_gates,
+                                    RequiredVerificationGate().evaluate(
+                                        held_out_summary
+                                    ),
+                                    HeldOutVerificationGate(
+                                        min_eval_cases=self.min_eval_cases
+                                    ).evaluate(confidence),
+                                    JudgeOnlySignalGate().evaluate(confidence),
+                                    GlobalRegressionBenchmarkGate().evaluate(
+                                        candidate,
+                                        held_out_summary,
+                                    ),
+                                ]
+                            )
+                    elif validation_health_gate.passed:
+                        fresh_evaluation_completed = True
+                        gate_results.extend(
+                            [validation_health_gate, *quality_gates]
                         )
                 except Exception as exc:
                     gate_results.append(
@@ -5316,6 +5573,10 @@ class SelfEvolveRunner:
                 )
             )
 
+        gate_results = [
+            _with_typed_gate_failure_event(gate)
+            for gate in gate_results
+        ]
         failed_gates = [gate for gate in gate_results if not gate.passed]
         proposal_blocked = any(
             isinstance(gate.details, Mapping)
@@ -5637,6 +5898,28 @@ class SelfEvolveRunner:
                 additional_adapters=additional_adapters,
                 replay_capability=frozen_capability,
             )
+            expected_environment_fingerprint = (
+                self._run_environment_fingerprints.get(run_id)
+            )
+            if expected_environment_fingerprint is None:
+                self._run_environment_fingerprints[run_id] = (
+                    bundle.environment_fingerprint
+                )
+            else:
+                environment_drift_gate = _environment_fingerprint_drift_gate(
+                    expected_environment_fingerprint,
+                    bundle.environment_fingerprint,
+                )
+            if (
+                expected_environment_fingerprint is not None
+                and environment_drift_gate is not None
+            ):
+                result = (
+                    None,
+                    environment_drift_gate,
+                )
+                self._replay_adaptation_cache[cache_key] = result
+                return result
         except Exception as exc:
             failure_details = _replay_adaptation_exception_details(
                 exc,
@@ -10935,6 +11218,49 @@ def _replay_adaptation_details(
     return details
 
 
+def _environment_fingerprint_drift_gate(
+    expected_fingerprint: str,
+    observed_fingerprint: str,
+) -> GateResult | None:
+    """Return a shared-run blocker when immutable environment identity drifts."""
+
+    if expected_fingerprint == observed_fingerprint:
+        return None
+    failure_event = ReplayFailureEvent(
+        code="environment_fingerprint_drift",
+        owner=FailureOwner.INFRASTRUCTURE,
+        stage=FailureStage.ADAPTATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=False,
+        category="environment_health",
+        summary="replay environment changed during one self-evolve run",
+        diagnostics={
+            "expected_environment_fingerprint": expected_fingerprint,
+            "observed_environment_fingerprint": observed_fingerprint,
+        },
+    )
+    event_payload = failure_event.to_dict()
+    return GateResult(
+        gate_name="replay_environment_health",
+        passed=False,
+        reason=(
+            "replay environment fingerprint changed during the active run"
+        ),
+        details={
+            "failure_class": FailureOwner.INFRASTRUCTURE.value,
+            "failure_owner": FailureOwner.INFRASTRUCTURE.value,
+            "failure_scope": FailureScope.SHARED_RUN.value,
+            "failure_source": FailureEventSource.NATIVE.value,
+            "repairable": False,
+            "code": "environment_fingerprint_drift",
+            "expected_environment_fingerprint": expected_fingerprint,
+            "observed_environment_fingerprint": observed_fingerprint,
+            "failure_event": event_payload,
+            "causal_failure_events": [event_payload],
+        },
+    )
+
+
 def _shared_replay_failure_blocks_population(
     replay_result: CandidateReplayResult,
 ) -> bool:
@@ -11540,6 +11866,9 @@ def _typed_gate_feedback_metrics(
     candidate_causal_contexts: dict[str, Mapping[str, object]] = {}
     recovery_traces: list[dict[str, object]] = []
     violated_schema_constraint_ids: set[str] = set()
+    evidence_constraint_groups: list[
+        tuple[EvidenceRepairConstraint, ...]
+    ] = []
     for gate in failed_gate_items:
         details = gate.details
         gate_diagnostic: dict[str, object] = {
@@ -11564,6 +11893,21 @@ def _typed_gate_feedback_metrics(
                 violated_schema_constraint_ids.add(
                     f"sha256:{constraint.identity_digest}"
                 )
+        raw_evidence_constraints = details.get(
+            "evidence_repair_constraints"
+        )
+        evidence_constraints: list[EvidenceRepairConstraint] = []
+        if isinstance(raw_evidence_constraints, (list, tuple)):
+            for raw_constraint in raw_evidence_constraints[:128]:
+                if not isinstance(raw_constraint, Mapping):
+                    continue
+                try:
+                    evidence_constraints.append(
+                        EvidenceRepairConstraint.from_dict(raw_constraint)
+                    )
+                except (TypeError, ValueError):
+                    continue
+        evidence_constraint_groups.append(tuple(evidence_constraints))
         classification_view = _candidate_repair_diagnostic_view(details)
         classification_views.append(classification_view)
         recovery_trace = validate_public_recovery_trace(
@@ -11641,6 +11985,13 @@ def _typed_gate_feedback_metrics(
                 if isinstance(item, Mapping)
             )
     result: dict[str, object] = {}
+    evidence_constraints = merge_evidence_repair_constraints(
+        *evidence_constraint_groups
+    )
+    if evidence_constraints:
+        result["evidence_repair_constraints"] = [
+            constraint.to_dict() for constraint in evidence_constraints
+        ]
     if recovery_traces:
         result["recovery_trace"] = max(
             recovery_traces,
@@ -11695,6 +12046,17 @@ def _typed_gate_feedback_metrics(
                 result["violated_schema_constraint_ids"] = sorted(
                     violated_schema_constraint_ids
                 )
+        else:
+            typed_owners = {
+                str(event.get("owner") or "")
+                for event in ordered_events
+                if event.get("owner")
+            }
+            if len(typed_owners) == 1:
+                result["failure_class"] = next(iter(typed_owners))
+            result["repairable"] = all(
+                event.get("repairable") is True for event in ordered_events
+            )
         # Typed ownership is authoritative.  Do not add generic confidence or
         # free-form classification noise when a concrete causal event exists.
         return result
@@ -12373,7 +12735,11 @@ def _repair_candidate_package_feedback(
     *,
     failed_gates: Iterable[GateResult],
 ) -> dict[str, object] | None:
-    if not candidate.files or not any(not gate.passed for gate in failed_gates):
+    failed_gate_items = tuple(gate for gate in failed_gates if not gate.passed)
+    if not any(
+        _gate_has_candidate_owned_repair(gate)
+        for gate in failed_gate_items
+    ):
         return None
     remaining_chars = _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS
     files: list[dict[str, object]] = []
@@ -12397,6 +12763,33 @@ def _repair_candidate_package_feedback(
         "rationale": sanitize_text(candidate.rationale, max_chars=1_000),
         "content": sanitize_source_text(candidate.content, max_chars=8_000),
         "files": files,
+    }
+
+
+def _gate_has_candidate_owned_repair(gate: GateResult) -> bool:
+    details = gate.details if isinstance(gate.details, Mapping) else {}
+    causal_events = details.get("causal_failure_events")
+    if isinstance(causal_events, (list, tuple)):
+        typed_events = [
+            item for item in causal_events if isinstance(item, Mapping)
+        ]
+        if typed_events:
+            return any(
+                item.get("owner") == FailureOwner.CANDIDATE.value
+                and item.get("repairable") is True
+                for item in typed_events
+            )
+    failure_owner = details.get("failure_owner") or details.get("failure_class")
+    if isinstance(failure_owner, str) and failure_owner:
+        return (
+            failure_owner == FailureOwner.CANDIDATE.value
+            and details.get("repairable") is not False
+        )
+    return gate.gate_name in {
+        *_CANDIDATE_REPAIRABLE_GATE_STAGES,
+        "candidate_repair_conformance",
+        "candidate_replay",
+        "required_verification",
     }
 
 
@@ -13098,14 +13491,36 @@ def _iteration_candidate_score(
         for gate in gates
         if isinstance(gate, GateResult) and not gate.passed
     }
+    gate_names = {
+        gate.gate_name for gate in gates if isinstance(gate, GateResult)
+    }
     substantive_evaluation = failed_gate_names != {
         "duplicate_rejected_candidate"
     }
-    reached_replay = bool(
-        failed_gate_names & {"candidate_replay", "replay_confidence"}
+    reached_evaluation = isinstance(summary, EvaluationSummary)
+    reached_replay = (
+        state.get("replay_result") is not None
+        or bool(gate_names & {"candidate_replay", "replay_confidence"})
+        or reached_evaluation
     )
-    adaptation_compiled = "replay_adaptation" not in failed_gate_names
-    progress_rank = 2 if reached_replay else 1 if adaptation_compiled else 0
+    adaptation_compiled = (
+        reached_replay
+        or any(
+            isinstance(gate, GateResult)
+            and gate.gate_name == "replay_adaptation"
+            and gate.passed
+            for gate in gates
+        )
+    )
+    progress_rank = (
+        3
+        if reached_evaluation
+        else 2
+        if reached_replay
+        else 1
+        if adaptation_compiled
+        else 0
+    )
     return (
         int(substantive_evaluation),
         progress_rank,
@@ -14105,9 +14520,15 @@ def _auto_group_trajectory_log_dataset(
             workspace_root=workspace_root,
         )
     )
+    cases_by_id = {case.case_id: case for case in dataset.cases}
     groups: dict[str, dict[str, object]] = {}
     for trace_pack in trace_packs:
         report = infer((trace_pack,), workspace_root=workspace_root).report
+        case = cases_by_id.get(trace_pack.task_id)
+        context_status = _trajectory_case_context_status(case)
+        recovery_opportunity = trace_pack_recovery_opportunity(trace_pack)
+        opportunity_tier = int(recovery_opportunity["tier"])
+        opportunity_kind = str(recovery_opportunity["kind"])
         group_id = _target_group_id(report, fallback=trace_pack.task_id)
         group = groups.setdefault(
             group_id,
@@ -14125,6 +14546,11 @@ def _auto_group_trajectory_log_dataset(
                 "trace_packs": [],
                 "has_target": report.selected_target is not None,
                 "target_priority": _target_selection_priority(report),
+                "context_complete_case_ids": [],
+                "context_incomplete_case_ids": [],
+                "recovery_opportunity_case_count": 0,
+                "max_recovery_opportunity_tier": 0,
+                "recovery_opportunity_kinds": {},
             },
         )
         group["confidence_sum"] = float(group["confidence_sum"]) + report.confidence
@@ -14140,22 +14566,46 @@ def _auto_group_trajectory_log_dataset(
         packs = group["trace_packs"]
         if isinstance(packs, list):
             packs.append(trace_pack)
+        context_key = (
+            "context_complete_case_ids"
+            if context_status == "complete"
+            else "context_incomplete_case_ids"
+        )
+        context_case_ids = group[context_key]
+        if isinstance(context_case_ids, list):
+            context_case_ids.append(trace_pack.task_id)
+        # Only replayable members contribute recovery opportunity to ranking.
+        # An unreplayable failure is an adaptation problem, not candidate work.
+        if context_status == "complete" and opportunity_tier > 0:
+            group["recovery_opportunity_case_count"] = (
+                int(group["recovery_opportunity_case_count"]) + 1
+            )
+            group["max_recovery_opportunity_tier"] = max(
+                int(group["max_recovery_opportunity_tier"]),
+                opportunity_tier,
+            )
+            kinds = group["recovery_opportunity_kinds"]
+            if isinstance(kinds, dict):
+                kinds[opportunity_kind] = int(kinds.get(opportunity_kind, 0)) + 1
 
     ranked_groups = sorted(
         groups.values(),
-        key=lambda item: (
-            bool(item.get("has_target")),
-            _group_confidence_bucket(item),
-            len(item.get("case_ids") or ()),
-            int(item.get("target_priority") or 0),
-            _group_average_confidence(item),
-            str(item.get("group_id") or ""),
-        ),
+        key=_trajectory_group_rank_key,
         reverse=True,
     )
     selected_group = ranked_groups[0]
-    selected_case_ids = tuple(
+    selected_group_case_ids = tuple(
         str(case_id) for case_id in selected_group.get("case_ids", ()) if case_id
+    )
+    context_complete_case_ids = tuple(
+        str(case_id)
+        for case_id in selected_group.get("context_complete_case_ids", ())
+        if case_id
+    )
+    selected_case_ids = (
+        context_complete_case_ids
+        if context_complete_case_ids
+        else selected_group_case_ids
     )
     selected_case_id_set = set(selected_case_ids)
     selected_cases = tuple(
@@ -14167,6 +14617,7 @@ def _auto_group_trajectory_log_dataset(
     grouping_report = _trajectory_log_grouping_report(
         ranked_groups,
         selected_group_id=str(selected_group["group_id"]),
+        selected_case_ids=selected_case_ids,
     )
     recipe = build_dataset_recipe(
         selected_cases,
@@ -14206,10 +14657,53 @@ def _group_confidence_bucket(group: Mapping[str, object]) -> float:
     return round(_group_average_confidence(group), 2)
 
 
+def _trajectory_case_context_status(case: EvalCase | None) -> str:
+    snapshot = case.context_snapshot if case is not None else None
+    status = getattr(snapshot, "context_status", None)
+    return "incomplete" if status == "incomplete" else "complete"
+
+
+def _group_context_completeness_rate(group: Mapping[str, object]) -> float:
+    complete = group.get("context_complete_case_ids")
+    incomplete = group.get("context_incomplete_case_ids")
+    complete_count = len(complete) if isinstance(complete, list) else 0
+    incomplete_count = len(incomplete) if isinstance(incomplete, list) else 0
+    total = complete_count + incomplete_count
+    return round(complete_count / total, 6) if total else 0.0
+
+
+def _group_context_completeness_bucket(group: Mapping[str, object]) -> float:
+    return round(_group_context_completeness_rate(group), 2)
+
+
+def _trajectory_group_rank_key(
+    group: Mapping[str, object],
+) -> tuple[object, ...]:
+    """Rank replayable improvement value before target lookup convenience."""
+
+    # Context completeness is an eligibility boundary. Within that frontier,
+    # opportunity precedes target availability and diagnosis confidence so a
+    # high-value new capability is not hidden by a shallow existing-target
+    # match.
+    return (
+        bool(group.get("context_complete_case_ids")),
+        int(group.get("max_recovery_opportunity_tier") or 0),
+        int(group.get("recovery_opportunity_case_count") or 0),
+        _group_context_completeness_bucket(group),
+        bool(group.get("has_target")),
+        _group_confidence_bucket(group),
+        len(group.get("context_complete_case_ids") or ()),
+        int(group.get("target_priority") or 0),
+        _group_average_confidence(group),
+        str(group.get("group_id") or ""),
+    )
+
+
 def _trajectory_log_grouping_report(
     ranked_groups: list[dict[str, object]],
     *,
     selected_group_id: str,
+    selected_case_ids: tuple[str, ...],
 ) -> dict[str, object]:
     group_summaries: list[dict[str, object]] = []
     for group in ranked_groups:
@@ -14220,6 +14714,24 @@ def _trajectory_log_grouping_report(
                 "case_ids": list(group.get("case_ids") or ()),
                 "pack_ids": list(group.get("pack_ids") or ()),
                 "confidence": _group_average_confidence(group),
+                "context_complete_case_ids": list(
+                    group.get("context_complete_case_ids") or ()
+                ),
+                "context_incomplete_case_ids": list(
+                    group.get("context_incomplete_case_ids") or ()
+                ),
+                "context_completeness_rate": _group_context_completeness_rate(
+                    group
+                ),
+                "recovery_opportunity_case_count": int(
+                    group.get("recovery_opportunity_case_count") or 0
+                ),
+                "max_recovery_opportunity_tier": int(
+                    group.get("max_recovery_opportunity_tier") or 0
+                ),
+                "recovery_opportunity_kinds": dict(
+                    group.get("recovery_opportunity_kinds") or {}
+                ),
                 "selected": group.get("group_id") == selected_group_id,
             }
         )
@@ -14230,17 +14742,30 @@ def _trajectory_log_grouping_report(
         (len(group.get("case_ids") or ()) for group in group_summaries),
         default=0,
     )
-    selected_case_count = len(selected_group.get("case_ids") or ())
+    selected_group_case_ids = list(selected_group.get("case_ids") or ())
+    selected_case_count = len(selected_case_ids)
+    excluded_context_incomplete_case_ids = [
+        case_id
+        for case_id in selected_group.get("context_incomplete_case_ids") or ()
+        if case_id not in selected_case_ids
+    ]
     low_dataset_support = selected_case_count <= 1 and largest_group_size > selected_case_count
     return {
         "auto_grouped": True,
         "strategy": "inferred_target",
+        "ranking_strategy": "recovery_opportunity_then_context_completeness",
         "group_count": len(group_summaries),
         "selected_group_id": selected_group_id,
-        "selected_case_ids": list(selected_group["case_ids"]),
+        "selected_group_case_ids": selected_group_case_ids,
+        "selected_case_ids": list(selected_case_ids),
+        "selected_group_case_count": len(selected_group_case_ids),
         "selected_case_count": selected_case_count,
         "largest_group_case_count": largest_group_size,
         "low_dataset_support": low_dataset_support,
+        "context_filtered": bool(excluded_context_incomplete_case_ids),
+        "excluded_context_incomplete_case_ids": (
+            excluded_context_incomplete_case_ids
+        ),
         "skipped_group_count": max(0, len(group_summaries) - 1),
         "groups": group_summaries,
     }

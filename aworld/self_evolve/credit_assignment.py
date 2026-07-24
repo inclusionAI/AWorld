@@ -16,6 +16,7 @@ from aworld.self_evolve.provenance import (
     canonical_local_target_path,
     resolve_target_provenance,
 )
+from aworld.self_evolve.recovery_trace import trace_pack_recovery_opportunity
 from aworld.self_evolve.trace_pack import TraceEvidenceStep, TracePack
 from aworld.self_evolve.types import SelfEvolveTargetRef
 
@@ -853,7 +854,8 @@ def _compile_new_skill_intent(
     failed_steps = tuple(
         step for step in trace_pack.steps if _reward_failed(step.reward)
     )
-    if not failed_steps:
+    recovery_opportunity = trace_pack_recovery_opportunity(trace_pack)
+    if not failed_steps and int(recovery_opportunity["tier"]) <= 0:
         return None
 
     operation_ids = _dedupe(
@@ -880,7 +882,14 @@ def _compile_new_skill_intent(
             for step in failed_steps
             for code in _structured_failure_codes(step.reward)
         )
-    ) or ("task_failed",)
+    )
+    if not failure_codes:
+        opportunity_kind = str(recovery_opportunity["kind"])
+        failure_codes = (
+            f"recovery_opportunity.{opportunity_kind}"
+            if opportunity_kind != "none"
+            else "task_failed",
+        )
     fingerprint_payload = {
         "schema_version": 1,
         "operation_ids": sorted(operation_ids),
@@ -973,7 +982,9 @@ def _capability_skill_id(
             token
             for value in (*operation_ids, *dependency_kinds)
             for token in reversed(re.findall(r"[a-z0-9]+", value))
-            if len(token) >= 3 and token not in {"execute", "mcp", "resource", "run", "tool"}
+            if len(token) >= 3
+            and token not in _WEAK_SKILL_ALIAS_TOKENS
+            and token not in {"execute", "mcp", "resource", "run", "tool"}
         ),
         "capability",
     )

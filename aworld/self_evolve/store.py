@@ -364,6 +364,8 @@ class FilesystemSelfEvolveStore:
 
         self._validate_id(campaign_id, "campaign_id")
         self._validate_id(run_id, "run_id")
+        if not run_id.startswith(f"{campaign_id}-cycle-"):
+            raise ValueError("interrupted run does not belong to its campaign")
         run_dir = self.run_path(run_id)
         if not run_dir.is_dir() or run_dir.is_symlink():
             raise FileNotFoundError(f"incomplete self-evolve run not found: {run_id}")
@@ -1068,6 +1070,26 @@ def _directory_fingerprint(root: Path) -> str:
         "utf-8"
     )
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _run_lease_is_live(lease: Mapping[str, Any]) -> bool:
+    hostname = lease.get("hostname")
+    if not isinstance(hostname, str) or not hostname:
+        # Absence of a valid ownership proof is not proof that the run died.
+        return True
+    if hostname != socket.gethostname():
+        # A foreign-host lease cannot be probed safely.
+        return True
+    pid = lease.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, PermissionError):
+        return True
+    return True
 
 
 _DYNAMIC_REPORT_FIELDS = frozenset(

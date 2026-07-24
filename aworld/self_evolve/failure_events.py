@@ -51,6 +51,7 @@ class FailureOwner(str, Enum):
 
 
 class FailureStage(str, Enum):
+    CANDIDATE_GENERATION = "candidate_generation"
     ADAPTATION = "adaptation"
     CAPABILITY_COMPILE = "capability_compile"
     CAPABILITY_PREFLIGHT = "capability_preflight"

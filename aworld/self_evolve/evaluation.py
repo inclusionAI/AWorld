@@ -31,6 +31,10 @@ from aworld.self_evolve.budget import (
 )
 from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.datasets import SelfEvolveDataset
+from aworld.self_evolve.evidence_diagnostics import (
+    EvidenceRepairConstraint,
+    merge_evidence_repair_constraints,
+)
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary
 
 
@@ -1474,6 +1478,19 @@ def _aggregate_aworld_evaluator_metrics(
                     dict(item) for item in value if isinstance(item, Mapping)
                 )
             continue
+        if key == "evidence_repair_constraints":
+            constraint_groups = [
+                _parse_evidence_repair_constraints(value)
+                for value in values
+            ]
+            constraints = merge_evidence_repair_constraints(
+                *constraint_groups
+            )
+            if constraints:
+                aggregated[key] = [
+                    constraint.to_dict() for constraint in constraints
+                ]
+            continue
         if key in {"evidence_compacted", "evidence_incomplete"}:
             aggregated[key] = any(_truthy_metric(value) for value in values)
             continue
@@ -1551,6 +1568,14 @@ def _summarize_judge_diagnostics(
         return 0.0
 
     latencies = [_number(item, "latency_ms") for item in diagnostics]
+    artifact_read_budget_exhausted_count = sum(
+        1 for item in diagnostics if item.get("artifact_read_budget_exhausted") is True
+    )
+    artifact_projection_incomplete_count = sum(
+        1
+        for item in diagnostics
+        if item.get("artifact_read_projection_incomplete") is True
+    )
     return {
         "judge_call_diagnostics": [dict(item) for item in diagnostics],
         "judge_call_count": len(diagnostics),
@@ -1565,6 +1590,27 @@ def _summarize_judge_diagnostics(
         ),
         "judge_artifact_read_chars": int(
             sum(_number(item, "artifact_read_chars") for item in diagnostics)
+        ),
+        "judge_artifact_read_continuation_count": int(
+            sum(
+                _number(item, "artifact_read_continuation_count")
+                for item in diagnostics
+            )
+        ),
+        "judge_artifact_read_budget_exhausted": bool(
+            artifact_read_budget_exhausted_count
+        ),
+        "judge_artifact_read_budget_exhausted_count": (
+            artifact_read_budget_exhausted_count
+        ),
+        "judge_artifact_projection_incomplete": bool(
+            artifact_projection_incomplete_count
+        ),
+        "judge_artifact_projection_incomplete_count": (
+            artifact_projection_incomplete_count
+        ),
+        "judge_artifact_finalize_count": sum(
+            1 for item in diagnostics if item.get("phase") == "artifact_read_finalize"
         ),
         "judge_prompt_chars_total": int(
             sum(_number(item, "prompt_chars") for item in diagnostics)
@@ -1604,6 +1650,7 @@ def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any
                 "evidence_compacted",
                 "evidence_incomplete",
                 "evidence_issues",
+                "evidence_repair_constraints",
             ):
                 if key in judge:
                     record[key] = judge[key]
@@ -1636,10 +1683,16 @@ def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any
         if record.get("evidence_incomplete") is not None
     ]
     issues: list[str] = []
+    constraint_groups: list[tuple[EvidenceRepairConstraint, ...]] = []
     for record in records:
         record_issues = record.get("evidence_issues")
         if isinstance(record_issues, list):
             issues.extend(str(issue) for issue in record_issues if issue)
+        constraint_groups.append(
+            _parse_evidence_repair_constraints(
+                record.get("evidence_repair_constraints")
+            )
+        )
 
     if has_evidence_values:
         metrics["has_evidence"] = 1.0 if all(has_evidence_values) else 0.0
@@ -1652,7 +1705,28 @@ def _aworld_evidence_quality_metrics(report: Mapping[str, Any]) -> dict[str, Any
         metrics["evidence_incomplete"] = any(incomplete_values)
     if issues:
         metrics["evidence_issues"] = issues
+    constraints = merge_evidence_repair_constraints(*constraint_groups)
+    if constraints:
+        metrics["evidence_repair_constraints"] = [
+            constraint.to_dict() for constraint in constraints
+        ]
     return metrics
+
+
+def _parse_evidence_repair_constraints(
+    value: Any,
+) -> tuple[EvidenceRepairConstraint, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    constraints: list[EvidenceRepairConstraint] = []
+    for item in value[:128]:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            constraints.append(EvidenceRepairConstraint.from_dict(item))
+        except (TypeError, ValueError):
+            continue
+    return tuple(constraints)
 
 
 def _truthy_metric(value: Any) -> bool:

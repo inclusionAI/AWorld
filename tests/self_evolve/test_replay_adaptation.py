@@ -244,6 +244,57 @@ def test_preflight_does_not_require_context_when_snapshot_reconstructed(
     assert not any(item.kind == "conversation_context" for item in report.requirements)
 
 
+def test_preflight_keeps_inherited_incomplete_context_non_replayable(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    trajectory_log = tmp_path / "trajectory.log"
+    missing_root = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "Continue with the previous analysis."}},
+            "action": {"content": "Partial result.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    dependent = [
+        {
+            "meta": {"step": 1, "session_id": "session-a"},
+            "state": {"input": {"content": "继续补全这些细节"}},
+            "action": {"content": "Still partial.", "tool_calls": []},
+            "reward": {"status": "ok"},
+        }
+    ]
+    trajectory_log.write_text(
+        repr({"task_id": "missing-root", "trajectory": json.dumps(missing_root)})
+        + "\n"
+        + repr({"task_id": "dependent", "trajectory": json.dumps(dependent)})
+        + "\n",
+        encoding="utf-8",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(
+            kind="trajectory_log",
+            path=str(trajectory_log),
+        )
+    )
+
+    report = ReplayAdaptationCompiler().preflight(
+        dataset=dataset,
+        workspace_root=workspace,
+    )
+
+    requirement = next(
+        item for item in report.requirements if item.kind == "conversation_context"
+    )
+    assert requirement.case_ids == ("missing-root", "dependent")
+    assert dataset.cases[1].context_snapshot is not None
+    assert dataset.cases[1].context_snapshot.context_reason == (
+        "inherited_incomplete_context"
+    )
+
+
 def test_dependency_analysis_ignores_paths_from_reconstructed_prior_turns(
     tmp_path: Path,
 ) -> None:

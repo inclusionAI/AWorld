@@ -58,10 +58,17 @@ from aworld.self_evolve.evaluation import (
     estimate_replay_cost,
     evaluate_baseline_and_candidate,
 )
+from aworld.self_evolve.evidence_diagnostics import (
+    EVIDENCE_REPAIR_CONSTRAINT_SCHEMA_VERSION,
+    EvidenceRepairConstraint,
+    evidence_repair_constraints_from_metrics,
+    merge_evidence_repair_constraints,
+)
 from aworld.self_evolve.gates import (
     BudgetGate,
     CandidatePackageGate,
     CostLatencyRegressionGate,
+    EvaluationRuntimeHealthGate,
     ExternalCodeEvolutionGate,
     GlobalRegressionBenchmarkGate,
     HeldOutVerificationGate,
@@ -80,6 +87,11 @@ from aworld.self_evolve.gates import (
     StoppingConditionGate,
     StoppingConditionState,
     TrustProvenanceGate,
+)
+from aworld.self_evolve.runtime_health import (
+    EvaluationRuntimeHealth,
+    EvaluationRuntimeHealthStatus,
+    assess_evaluation_runtime_health,
 )
 from aworld.self_evolve.provenance import (
     InferredNewSkillPolicy,
@@ -192,6 +204,12 @@ from aworld.self_evolve.replay_capability import (
     compile_and_freeze_capability,
     discover_replay_capability,
     verify_frozen_replay_capability,
+)
+from aworld.self_evolve.recovery_trace import (
+    RECOVERY_OPPORTUNITY_SCHEMA_VERSION,
+    RECOVERY_TRACE_SCHEMA_VERSION,
+    trace_pack_recovery_opportunity,
+    trace_pack_recovery_summary,
 )
 from aworld.self_evolve.runner import (
     SelfEvolveRunner,
@@ -384,6 +402,8 @@ __all__ = [
     "REPLAY_CAPABILITY_SCHEMA_VERSION",
     "REPLAY_ARTIFACT_PLACEHOLDER",
     "REPLAY_WORKSPACE_PLACEHOLDER",
+    "RECOVERY_OPPORTUNITY_SCHEMA_VERSION",
+    "RECOVERY_TRACE_SCHEMA_VERSION",
     "build_default_target_inventory",
     "build_dataset_from_source",
     "build_dataset_recipe",
@@ -416,6 +436,8 @@ __all__ = [
     "load_trajectory_set_eval_cases",
     "materialize_replay_workspace",
     "trace_packs_from_trajectory_log",
+    "trace_pack_recovery_opportunity",
+    "trace_pack_recovery_summary",
 ]
 
 

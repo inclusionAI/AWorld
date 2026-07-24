@@ -93,6 +93,10 @@ feedback only from earlier run IDs in that Campaign, deduplicates semantic and
 schema/fixture constraint identities, and verifies that the inferred target
 type/id has not changed. One-trajectory and multi-trajectory datasets use the
 same aggregate transition function; member count never selects a retry branch.
+Prior-run feedback is ordered by a verification-quality champion contract, so
+a recent weaker candidate cannot displace the best earlier candidate merely by
+being newer. All prior runs remain auditable; the champion is only made
+authoritative when bounded feedback loading chooses its repair base.
 
 The Campaign persists atomically under
 `.aworld/self_evolve/campaigns/<campaign-id>/campaign.json`. It fingerprints
@@ -105,12 +109,41 @@ derives a hard total of 500,000 tokens per allowed cycle while retaining the
 before another run. `max_iterations` limits candidate work inside a run;
 `max_improvement_cycles` limits runs across the Campaign.
 
+If a local worker dies after reserving a cycle but before writing its terminal
+report, Campaign resume does not discard or silently reuse that partial run.
+It first proves that the run lease belongs to the current host and its process
+is no longer live, then atomically archives the whole attempt under the
+Campaign audit directory and retries the same cycle identity. A live lease, a
+foreign-host lease, or an interrupted apply journal is never taken over.
+Because terminal usage telemetry is unavailable, the interrupted attempt is
+charged its full reserved run allowance before the retry budget is calculated.
+This makes crash recovery bounded by the same cumulative Campaign ceiling
+instead of creating a hidden retry path.
+
 The possible dispositions are `complete`, `continue_candidate`,
 `retry_infrastructure`, `handoff_goal`, `pause_operator`, and `exhausted`.
-Unchanged semantic frontiers, non-repairable task/candidate failures, policy or
-permission denials, and exhausted budgets do not loop. A framework/shared
+Progress is monotonic: recovery achievements, already-passing gates, and the
+deepest reached stage may not regress. A new typed schema/fixture constraint or
+newly passing gate can advance a cycle. Coarsely bucketed candidate quality can
+also advance when score or groundedness crosses a material bucket, a command or
+deterministic verification signal improves, or failed repetitions decrease.
+Quality progress is accepted only while groundedness, command pass rate,
+recovery achievements, and already-passing gates do not regress; sub-bucket
+judge variation and a new failure-event fingerprint by itself are not progress.
+Unchanged or regressed frontiers, non-repairable task/candidate failures, policy
+or permission denials, and exhausted budgets do not loop. A framework/shared
 handoff writes only public typed references and the fixed resume action; it
 never lets a candidate write framework/runtime/CLI paths.
+
+Candidate JSON that passes transport parsing can still fail when its declared
+patch cannot be materialized against the active repair base. These failures are
+candidate-owned `candidate_generation` events, not empty legacy reports. Their
+bounded representation diagnostics re-enter same-run validation feedback once;
+if the frontier remains empty, the typed event connects final attribution to
+Campaign continuation and then exhausts normally when its semantic identity
+stalls. Candidate selection ranks the stage actually reached from all gate
+results and evaluation presence; a failed replay gate does not outrank a
+candidate that completed replay and reached judge scoring.
 
 Campaign status distinguishes why bounded improvement stopped: `budget_limited`
 is reserved for cycle/resource/accounting limits, while `exhausted` means a
@@ -128,6 +161,15 @@ structural path data such as step/tool counts and strategy-switch counts.
 Member ids are SHA-256 identities; task text, tool arguments, endpoints, and
 response payloads are never included.
 
+Before candidate generation, historical traces also receive the payload-free
+`aworld.self_evolve.recovery_opportunity.public.v1` classification. Its ordinal
+tier distinguishes unrecovered failure, recovered paths worth stabilizing,
+bounded repeated-action loops, and traces with no structural opportunity. It is
+not a quality score and never contains task text or action arguments. A repeated
+successful path qualifies only after at least four tool calls with a repeated
+action rate of at least one half, preventing ordinary one- or two-step success
+from manufacturing a new capability gap.
+
 An intermediate failure followed by terminal success produces a recovery
 lesson instead of a failure lesson. During paired replay, successful member
 paths become last-good structural checkpoints. If a failed repetition proceeds
@@ -142,6 +184,10 @@ bounded cycle even when the causal failure identity is unchanged; an unchanged
 recovery frontier still exhausts normally. The recovery trace schema is also
 part of the versioned verification-contract fingerprint, so historical semantic
 deduplication cannot conflate candidates verified before and after this contract.
+Within a run, candidate package semantics include target behavior and every
+candidate-owned file. Internal source bytes remain significant, while line-ending
+and terminal-blank-line-only changes are normalized so formatting retries cannot
+consume a new repair frontier.
 
 Candidate conformance has a parallel identity-only constraint recovery trace.
 It records whether each typed constraint is active, recovered, or regressed,
@@ -208,6 +254,33 @@ cycle.
 
 Once a concrete candidate has failed, the next repair prompt switches to `focused_candidate_delta` mode. It includes the failed candidate package, bounded machine-readable diagnostics, the relevant source branches, and the repair acceptance contract. Broad trajectory, lesson, and current-target payloads are omitted from that repair prompt so the model edits the observed failure frontier instead of regenerating the whole skill.
 
+Evidence failures use payload-free `evidence_repair_constraints` rather than
+free-form judge wording as the repair boundary. Each constraint identifies a
+claim/artifact subject kind, failure mode, source layer, required action, owner,
+and stable identity digest. Repetitions and multiple trajectory members merge
+by that identity and add occurrence counts. Candidate-owned constraints may
+focus a candidate repair; framework-, infrastructure-, or task-owned
+constraints never attach the rejected candidate package to a focused mutation
+prompt.
+
+Canonical evidence projection is incremental and budgeted. The judge may read
+only indexed artifacts, and each continuation must use a non-overlapping
+character range; omitting the range start continues from the last returned
+offset. The runtime caps rounds, requests, per-read characters, and total
+characters, reports the next readable offset, and requires one final typed
+assessment when the read budget is exhausted. A canonical bundle receives a
+larger but still bounded projection allowance. Budget exhaustion is
+framework-owned only when the indexed artifact contains the missing support;
+support absent from the submitted evidence remains candidate-owned. This
+protocol is applied independently to every trajectory member and repetition.
+
+Evaluation runtime health is gated before score and verification policy. If
+the evaluator explicitly reports no usable judge signal, every attempted judge
+call fails, or every observed judge call times out, the run records a shared
+infrastructure failure and does not synthesize downstream candidate-quality
+failures from zero/default metrics. Partial judge failures are recorded as
+degraded health but remain usable when successful judge results exist.
+
 Compiler and replay-capability failures retain the complete capability authoring
 contract even when no schema-field constraint has been emitted yet. The compiler is
 explicitly a deterministic, network-disabled artifact transform: evidence references
@@ -243,6 +316,22 @@ For a repairable skill-owned replay failure, the framework validates a candidate
 
 Failures in the first four layers are reported through the `candidate_repair_conformance` gate. When execution preflight is reached, bounded service/probe artifacts are stored under `repair_conformance/<candidate_id>/`. The failure becomes generic repair feedback for the next iteration and does not enter the full task rollout. The contracts are derived from observed operations, package structure, fixture provenance, and protocol traces; they do not contain target-specific fixes for a particular training case.
 
+A candidate package that reached judge-scored task output is a deeper causal
+frontier than rejected sibling compiler/runtime candidates. Its replay-file set
+is frozen byte-for-byte, including an intentionally empty set, while the next
+repair changes reusable target behavior. Schema and fixture constraints from
+siblings remain lesson evidence but cannot expand that judge frontier's mutation
+surface back into replay implementation files. Target-only packages therefore
+remain first-class repair inputs rather than being dropped during feedback
+normalization.
+
+Candidate-owned replay files also require an explicit mutation authority: either
+the active replay preflight contains a capability requirement, or the focused
+repair package already owns replay files. With neither condition, generated
+replay files are discarded and only reusable target behavior may change. This
+keeps a dependency-free trajectory from manufacturing an unnecessary runtime
+and then self-improving against its own compile failures.
+
 ### Three-Trajectory Replay Model
 
 A trajectory dataset is historical evidence, not an executable copy of its source
@@ -266,6 +355,11 @@ authenticated profiles, and other stateful
 dependencies require a registered deterministic adapter; the compiler never invents
 a successful mock for an unknown dependency.
 
+The first environment fingerprint observed in a run is also a run invariant.
+If a later candidate adaptation observes a different fingerprint, paired replay
+stops with `environment_fingerprint_drift` as a native shared-infrastructure
+failure. Candidate mutation is not used to compensate for environment drift.
+
 For trajectory logs, recorded message history and explicit parent ids take priority.
 When log writers persist only the current message, ordered records with the same
 session id are reconstructed as a bounded conversation chain. The compactor reserves
@@ -273,6 +367,21 @@ space for user turns across the chain before recent assistant output, preserving
 source URLs, artifact identities, and other early task anchors needed by later natural
 follow-ups. Natural continuation wording without a reconstructed same-session parent
 is marked `context_incomplete`; it is never joined to an unrelated adjacent session.
+If another follow-up depends on that incomplete record, incompleteness propagates
+through the chain. A later independent request in the same session starts a complete
+context frontier again.
+
+Automatic trajectory grouping ranks only recovery opportunities from
+context-complete members. Context completeness is the replay-eligibility boundary;
+within that frontier the ordering is highest recovery-opportunity tier, opportunity
+support, context-completeness rate, then target availability, target confidence, and
+complete-member support. This prevents a shallow existing-target match with no
+observed improvement opportunity from hiding a higher-value new capability. Once a
+group is selected, known-incomplete members are excluded from its replay set and recorded in
+`excluded_context_incomplete_case_ids`; they cannot turn an adaptation defect into
+candidate feedback. A context-complete repeated-action opportunity can infer a
+run-owned draft skill even when the historical trajectory ended successfully, while
+ordinary low-signal success remains `no_target`.
 
 Every baseline, candidate, and repetition receives a fresh copy of the same verified
 seed as its working directory. Writes from one rollout therefore cannot change the

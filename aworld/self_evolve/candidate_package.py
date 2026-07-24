@@ -108,10 +108,11 @@ def candidate_semantic_package_fingerprint(
 ) -> str:
     """Fingerprint target semantics together with every candidate-owned file.
 
-    Target markdown keeps the historical whitespace/case normalization, while file
-    deltas remain byte-exact because formatting and casing can change executable or
-    schema behavior.  This prevents a files-only repair from being collapsed merely
-    because its target markdown is unchanged.
+    Target markdown keeps the historical whitespace/case normalization. Candidate
+    files preserve internal bytes and casing, but normalize line endings and
+    terminal blank lines because those cannot constitute a material repair branch.
+    This prevents formatting-only retries from consuming a repair frontier while
+    retaining executable and schema changes as distinct packages.
     """
 
     files = validate_candidate_files(candidate.files)
@@ -131,7 +132,11 @@ def candidate_semantic_package_fingerprint(
                 "operation": item.operation,
                 "content_fingerprint": (
                     "sha256:"
-                    + hashlib.sha256(item.content.encode("utf-8")).hexdigest()
+                    + hashlib.sha256(
+                        _semantic_candidate_file_content(item.content).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest()
                     if item.content is not None
                     else None
                 ),
@@ -147,6 +152,16 @@ def candidate_semantic_package_fingerprint(
         separators=(",", ":"),
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _semantic_candidate_file_content(content: str) -> str:
+    """Normalize transport-only text differences without rewriting source."""
+
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
 
 
 def candidate_files_total_bytes(files: Iterable[CandidateFileDelta]) -> int:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 import uuid
@@ -130,11 +131,164 @@ class CampaignUsage:
 
 
 @dataclass(frozen=True)
+class CandidateQualityProgress:
+    """Bounded, comparable candidate quality signals for cross-run progress."""
+
+    score_points: int | None = None
+    groundedness_tenths: int | None = None
+    command_pass_basis_points: int | None = None
+    evidence_incomplete: bool | None = None
+    deterministic_signal: bool | None = None
+    global_regression_passed: bool | None = None
+    failed_repetition_count: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "score_points",
+            "groundedness_tenths",
+            "command_pass_basis_points",
+            "failed_repetition_count",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if (
+            self.command_pass_basis_points is not None
+            and self.command_pass_basis_points > 10_000
+        ):
+            raise ValueError("command pass rate basis points exceed one hundred percent")
+        for field_name in (
+            "evidence_incomplete",
+            "deterministic_signal",
+            "global_regression_passed",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"{field_name} must be boolean when present")
+
+    def delta_from(
+        self,
+        previous: "CandidateQualityProgress | None",
+    ) -> tuple[str, ...] | None:
+        if previous is None:
+            return ()
+        # These signals are candidate-independent verification invariants or
+        # safety-critical quality floors. A later run may not trade them away
+        # merely to obtain a higher stochastic judge score.
+        if _optional_int_regressed(
+            self.command_pass_basis_points,
+            previous.command_pass_basis_points,
+        ):
+            return None
+        if _optional_int_regressed(
+            self.groundedness_tenths,
+            previous.groundedness_tenths,
+        ):
+            return None
+        if _optional_int_increased(
+            self.failed_repetition_count,
+            previous.failed_repetition_count,
+        ):
+            return None
+        if (
+            previous.evidence_incomplete is False
+            and self.evidence_incomplete is True
+        ):
+            return None
+        if (
+            previous.deterministic_signal is True
+            and self.deterministic_signal is False
+        ):
+            return None
+        if (
+            previous.global_regression_passed is True
+            and self.global_regression_passed is False
+        ):
+            return None
+
+        delta: set[str] = set()
+        if _optional_int_increased(self.score_points, previous.score_points):
+            delta.add(f"quality-score-points:{self.score_points}")
+        if _optional_int_increased(
+            self.groundedness_tenths,
+            previous.groundedness_tenths,
+        ):
+            delta.add(
+                f"quality-groundedness-tenths:{self.groundedness_tenths}"
+            )
+        if _optional_int_increased(
+            self.command_pass_basis_points,
+            previous.command_pass_basis_points,
+        ):
+            delta.add(
+                f"quality-command-pass-bps:{self.command_pass_basis_points}"
+            )
+        if (
+            previous.evidence_incomplete is True
+            and self.evidence_incomplete is False
+        ):
+            delta.add("quality-evidence-complete")
+        if (
+            previous.deterministic_signal is False
+            and self.deterministic_signal is True
+        ):
+            delta.add("quality-deterministic-signal")
+        if (
+            previous.global_regression_passed is False
+            and self.global_regression_passed is True
+        ):
+            delta.add("quality-global-regression-passed")
+        if (
+            self.failed_repetition_count is not None
+            and previous.failed_repetition_count is not None
+            and self.failed_repetition_count < previous.failed_repetition_count
+        ):
+            delta.add(
+                f"quality-failed-repetitions:{self.failed_repetition_count}"
+            )
+        return tuple(sorted(delta))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "score_points": self.score_points,
+            "groundedness_tenths": self.groundedness_tenths,
+            "command_pass_basis_points": self.command_pass_basis_points,
+            "evidence_incomplete": self.evidence_incomplete,
+            "deterministic_signal": self.deterministic_signal,
+            "global_regression_passed": self.global_regression_passed,
+            "failed_repetition_count": self.failed_repetition_count,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "CandidateQualityProgress":
+        return cls(
+            score_points=_optional_non_negative_int(value.get("score_points")),
+            groundedness_tenths=_optional_non_negative_int(
+                value.get("groundedness_tenths")
+            ),
+            command_pass_basis_points=_optional_non_negative_int(
+                value.get("command_pass_basis_points")
+            ),
+            evidence_incomplete=_optional_bool(value.get("evidence_incomplete")),
+            deterministic_signal=_optional_bool(value.get("deterministic_signal")),
+            global_regression_passed=_optional_bool(
+                value.get("global_regression_passed")
+            ),
+            failed_repetition_count=_optional_non_negative_int(
+                value.get("failed_repetition_count")
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class SelfImprovementProgress:
     deepest_stage_rank: int = 0
     semantic_frontier_ids: tuple[str, ...] = ()
     constraint_ids: tuple[str, ...] = ()
     passed_gate_ids: tuple[str, ...] = ()
+    candidate_quality: CandidateQualityProgress | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.deepest_stage_rank, bool) or self.deepest_stage_rank < 0:
@@ -149,9 +303,55 @@ class SelfImprovementProgress:
 
     def delta_from(self, previous: "SelfImprovementProgress | None") -> tuple[str, ...]:
         if previous is None:
-            return tuple(sorted((*self.semantic_frontier_ids, *self.constraint_ids)))
-        delta = set(self.semantic_frontier_ids) - set(previous.semantic_frontier_ids)
+            return tuple(
+                sorted(
+                    (
+                        *self.semantic_frontier_ids,
+                        *self.constraint_ids,
+                        *(f"passed-gate:{item}" for item in self.passed_gate_ids),
+                    )
+                )
+            )
+        # Campaign progress is monotonic. A new diagnostic identity is useful
+        # feedback, but it is not improvement when the run lost an already
+        # reached stage, recovery achievement, or passing verification gate.
+        # This prevents a later run from replacing a stronger champion merely
+        # because it exposed a differently worded failure frontier.
+        if self.deepest_stage_rank < previous.deepest_stage_rank:
+            return ()
+        previous_recovery = {
+            item
+            for item in previous.semantic_frontier_ids
+            if item.startswith("recovery-member-")
+        }
+        current_recovery = {
+            item
+            for item in self.semantic_frontier_ids
+            if item.startswith("recovery-member-")
+        }
+        if not previous_recovery.issubset(current_recovery):
+            return ()
+        if not set(previous.passed_gate_ids).issubset(self.passed_gate_ids):
+            return ()
+        quality_delta: tuple[str, ...] = ()
+        if self.candidate_quality is not None:
+            quality_delta_result = self.candidate_quality.delta_from(
+                previous.candidate_quality
+            )
+            if quality_delta_result is None:
+                return ()
+            quality_delta = quality_delta_result
+        # New failure-event identities are diagnostics, not achievements.
+        # They seed the first cycle so a typed repair can start, but only
+        # monotonic recovery or coarsely bucketed quality improvements may
+        # advance a later Campaign cycle.
+        delta = current_recovery - previous_recovery
         delta.update(set(self.constraint_ids) - set(previous.constraint_ids))
+        delta.update(quality_delta)
+        delta.update(
+            f"passed-gate:{item}"
+            for item in set(self.passed_gate_ids) - set(previous.passed_gate_ids)
+        )
         if self.deepest_stage_rank > previous.deepest_stage_rank:
             delta.add(f"stage-rank:{self.deepest_stage_rank}")
         return tuple(sorted(delta))
@@ -163,12 +363,18 @@ class SelfImprovementProgress:
             "semantic_frontier_ids": list(self.semantic_frontier_ids),
             "constraint_ids": list(self.constraint_ids),
             "passed_gate_ids": list(self.passed_gate_ids),
+            "candidate_quality": (
+                self.candidate_quality.to_dict()
+                if self.candidate_quality is not None
+                else None
+            ),
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "SelfImprovementProgress":
         if value.get("schema_version") != PROGRESS_SCHEMA_VERSION:
             raise ValueError("unsupported self-improvement progress schema")
+        raw_quality = value.get("candidate_quality")
         return cls(
             deepest_stage_rank=_non_negative_int(
                 value.get("deepest_stage_rank"), "deepest stage rank"
@@ -176,6 +382,11 @@ class SelfImprovementProgress:
             semantic_frontier_ids=_string_tuple(value.get("semantic_frontier_ids")),
             constraint_ids=_string_tuple(value.get("constraint_ids")),
             passed_gate_ids=_string_tuple(value.get("passed_gate_ids")),
+            candidate_quality=(
+                CandidateQualityProgress.from_dict(raw_quality)
+                if isinstance(raw_quality, Mapping)
+                else None
+            ),
         )
 
 
@@ -500,22 +711,56 @@ class SelfImprovementCampaignController:
         request.pop("_campaign_total_run_token_budget", None)
         next_cycle = campaign.cycle_index + 1
         run_id = f"{campaign.campaign_id}-cycle-{next_cycle:03d}"
+        run_path = self.store.run_path(run_id)
+        expected_report_path = run_path / "report.json"
+        interrupted_archive_path: Path | None = None
+        if (
+            run_path.exists()
+            and not expected_report_path.is_file()
+        ):
+            reservation = _interrupted_run_reservation(request)
+            interrupted_archive_path = self.store.archive_interrupted_campaign_run(
+                campaign_id=campaign.campaign_id,
+                run_id=run_id,
+                reserved_usage=reservation.to_dict(),
+            )
+            campaign = replace(
+                campaign,
+                cumulative_usage=campaign.cumulative_usage + reservation,
+            )
+            self.store.write_campaign(campaign)
+            try:
+                request.update(_remaining_budget_request(campaign))
+            except ValueError:
+                limited = _limit_campaign(
+                    campaign,
+                    reason_code="campaign_cumulative_budget_exhausted",
+                )
+                self.store.write_campaign(limited)
+                summary = _campaign_summary(limited, {})
+                summary["interrupted_run_archive_path"] = str(
+                    interrupted_archive_path
+                )
+                return limited, summary
+        prior_run_ids = _campaign_prior_run_ids_by_champion(
+            self.store,
+            campaign.run_ids,
+        )
         request.update(
             {
                 "workspace_root": str(self.workspace_root),
                 "campaign_id": campaign.campaign_id,
                 "campaign_cycle": next_cycle,
-                "campaign_prior_run_ids": campaign.run_ids,
+                "campaign_prior_run_ids": prior_run_ids,
             }
         )
         if campaign.run_ids:
-            prior_target = self.store.read_report(campaign.run_ids[-1]).get("target")
+            prior_target = self.store.read_report(prior_run_ids[-1]).get("target")
             if isinstance(prior_target, Mapping):
                 request["campaign_expected_target"] = {
                     "target_type": prior_target.get("target_type"),
                     "target_id": prior_target.get("target_id"),
                 }
-        expected_report_path = self.store.run_path(run_id) / "report.json"
         if expected_report_path.is_file() and not expected_report_path.is_symlink():
             recovered_report = self.store.read_report(run_id)
             summary = {
@@ -527,10 +772,13 @@ class SelfImprovementCampaignController:
                 ),
             }
         else:
-            run_path = self.store.run_path(run_id)
             if run_path.exists():
                 raise ValueError("campaign generation has an incomplete run checkpoint")
             summary = dict(self.run_once(**request))
+            if interrupted_archive_path is not None:
+                summary["interrupted_run_archive_path"] = str(
+                    interrupted_archive_path
+                )
         actual_run_id = str(summary.get("run_id") or run_id)
         if actual_run_id != run_id:
             raise ValueError("self-evolve run did not honor campaign run identity")
@@ -773,6 +1021,7 @@ def self_improvement_progress(report: Mapping[str, Any]) -> SelfImprovementProgr
         semantic_frontier_ids=semantic_ids,
         constraint_ids=constraint_ids,
         passed_gate_ids=tuple(passed_gates),
+        candidate_quality=_candidate_quality_progress(report),
     )
 
 
@@ -1046,6 +1295,151 @@ def _campaign_summary(
     if campaign.latest_disposition is not None:
         summary["self_improvement_disposition"] = campaign.latest_disposition.to_dict()
     return summary
+
+
+def _campaign_prior_run_ids_by_champion(
+    store: Any,
+    run_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Order prior runs so bounded feedback loading sees the champion first.
+
+    Runner history loading intentionally walks the supplied IDs in reverse
+    order and may stop at its feedback bound. Keeping the best verified
+    frontier last therefore makes it authoritative without dropping audit
+    access to newer, weaker runs.
+    """
+
+    if len(run_ids) < 2:
+        return run_ids
+    reports: dict[str, Mapping[str, Any]] = {}
+    for run_id in run_ids:
+        try:
+            reports[run_id] = store.read_report(run_id)
+        except (OSError, ValueError):
+            continue
+    if not reports:
+        return run_ids
+    positions = {run_id: index for index, run_id in enumerate(run_ids)}
+    champion = max(
+        reports,
+        key=lambda run_id: (
+            *_campaign_report_quality(reports[run_id]),
+            positions[run_id],
+        ),
+    )
+    return tuple(item for item in run_ids if item != champion) + (champion,)
+
+
+def _campaign_report_quality(report: Mapping[str, Any]) -> tuple[object, ...]:
+    metrics = (
+        report.get("candidate_metrics")
+        if isinstance(report.get("candidate_metrics"), Mapping)
+        else {}
+    )
+    confidence = (
+        report.get("acceptance_confidence")
+        if isinstance(report.get("acceptance_confidence"), Mapping)
+        else {}
+    )
+    post_apply = (
+        report.get("post_apply")
+        if isinstance(report.get("post_apply"), Mapping)
+        else {}
+    )
+    gates = report.get("gate_results")
+    failed_gate_count = sum(
+        1
+        for item in gates
+        if isinstance(item, Mapping) and item.get("passed") is False
+    ) if isinstance(gates, list) else 0
+    return (
+        str(report.get("status") or "") == "succeeded",
+        post_apply.get("release_state") == "verified",
+        isinstance(report.get("selected_candidate_id"), str),
+        confidence.get("passed") is True,
+        metrics.get("evidence_incomplete") is False,
+        metrics.get("deterministic_signal") is True,
+        metrics.get("global_regression_passed") is True,
+        _finite_metric(metrics.get("command_pass_rate")),
+        -failed_gate_count,
+        _finite_metric(metrics.get("score")),
+        self_improvement_progress(report).deepest_stage_rank,
+    )
+
+
+def _candidate_quality_progress(
+    report: Mapping[str, Any],
+) -> CandidateQualityProgress | None:
+    raw_metrics = report.get("candidate_metrics")
+    if not isinstance(raw_metrics, Mapping):
+        return None
+    score = _finite_metric(raw_metrics.get("score"))
+    groundedness = _finite_metric(raw_metrics.get("A1_groundedness"))
+    command_pass_rate = _finite_metric(raw_metrics.get("command_pass_rate"))
+    failed_repetition_count = raw_metrics.get("failed_repetition_count")
+    quality = CandidateQualityProgress(
+        score_points=(
+            max(0, math.floor(score))
+            if score != float("-inf")
+            else None
+        ),
+        groundedness_tenths=(
+            max(0, math.floor(groundedness * 10))
+            if groundedness != float("-inf")
+            else None
+        ),
+        command_pass_basis_points=(
+            min(10_000, max(0, round(command_pass_rate * 10_000)))
+            if command_pass_rate != float("-inf")
+            else None
+        ),
+        evidence_incomplete=_optional_bool(
+            raw_metrics.get("evidence_incomplete")
+        ),
+        deterministic_signal=_optional_bool(
+            raw_metrics.get("deterministic_signal")
+        ),
+        global_regression_passed=_optional_bool(
+            raw_metrics.get("global_regression_passed")
+        ),
+        failed_repetition_count=(
+            int(failed_repetition_count)
+            if isinstance(failed_repetition_count, (int, float))
+            and not isinstance(failed_repetition_count, bool)
+            and math.isfinite(float(failed_repetition_count))
+            and float(failed_repetition_count).is_integer()
+            and failed_repetition_count >= 0
+            else None
+        ),
+    )
+    return quality if any(value is not None for value in quality.to_dict().values()) else None
+
+
+def _finite_metric(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return float("-inf")
+    numeric = float(value)
+    if numeric != numeric or numeric in {float("inf"), float("-inf")}:
+        return float("-inf")
+    return numeric
+
+
+def _interrupted_run_reservation(
+    request: Mapping[str, Any],
+) -> CampaignUsage:
+    """Conservatively charge the full available run budget without telemetry."""
+
+    tokens = _positive_int(
+        request.get("total_run_token_budget", request.get("max_run_tokens", 500_000)),
+        "interrupted run token reservation",
+    )
+    cost = request.get("max_run_cost_usd")
+    wall = request.get("max_run_wall_seconds")
+    return CampaignUsage(
+        tokens=tokens,
+        cost_usd=Decimal(str(cost)) if cost is not None else Decimal("0"),
+        wall_seconds=Decimal(str(wall)) if wall is not None else Decimal("0"),
+    )
 
 
 def _remaining_budget_request(campaign: SelfImprovementCampaign) -> dict[str, Any]:
@@ -1457,6 +1851,24 @@ def _non_negative_int(value: Any, field_name: str) -> int:
     if parsed < 0:
         raise ValueError(f"{field_name} must be non-negative")
     return parsed
+
+
+def _optional_non_negative_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(value, "optional campaign quality metric")
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _optional_int_increased(current: int | None, previous: int | None) -> bool:
+    return current is not None and previous is not None and current > previous
+
+
+def _optional_int_regressed(current: int | None, previous: int | None) -> bool:
+    return current is not None and previous is not None and current < previous
 
 
 def _validate_id(value: str, field_name: str) -> None:

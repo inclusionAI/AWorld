@@ -141,3 +141,30 @@ def test_candidate_semantic_package_normalizes_target_content_not_file_code() ->
     assert candidate_semantic_package_fingerprint(
         first
     ) == candidate_semantic_package_fingerprint(equivalent_target)
+
+
+def test_candidate_semantic_package_ignores_terminal_file_whitespace_only() -> None:
+    first = _candidate(
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('stable')\n",
+            ),
+        )
+    )
+    equivalent_file = replace(
+        first,
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('stable')\r\n\r\n",
+            ),
+        ),
+    )
+
+    assert candidate_package_fingerprint(first) != candidate_package_fingerprint(
+        equivalent_file
+    )
+    assert candidate_semantic_package_fingerprint(
+        first
+    ) == candidate_semantic_package_fingerprint(equivalent_file)

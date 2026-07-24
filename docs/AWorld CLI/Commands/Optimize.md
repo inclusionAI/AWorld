@@ -62,6 +62,21 @@ retryable infrastructure failure. It stops on an unchanged frontier,
 non-retryable failure, policy/permission/evidence denial, or cumulative budget
 exhaustion. A framework-owned or shared blocker creates a validated Goal
 handoff instead of allowing a candidate to modify protected framework code.
+Cross-run progress is monotonic: losing an already-passing gate, recovery
+achievement, or reached stage is a regression, and a newly observed failure
+fingerprint alone is not improvement. Bounded prior feedback loads the
+verification-quality champion first, so a weaker recent run cannot replace a
+stronger repair base.
+Material candidate quality is also tracked in coarse buckets. A whole-point
+score improvement, a groundedness-tenth improvement, a better command or
+deterministic verification signal, or fewer failed repetitions can continue
+the bounded Campaign only when groundedness, command pass rate, recovery
+achievements, and already-passing gates do not regress. Smaller judge-score
+variation does not consume another cross-run cycle.
+An empty candidate population caused by a schema-valid but non-materializable
+patch is reported as a repairable candidate-generation event and receives one
+bounded same-run representation retry; it is not exposed as a legacy
+missing-disposition pause.
 
 Resume an active or paused Campaign without replacing its source, target, or
 verification contract:
@@ -74,6 +89,14 @@ aworld-cli optimize --resume-campaign <campaign-id>
 resume may start the next bounded improvement run, while evaluator resume only
 reuses already verified replay artifacts from one run. Complete,
 budget-limited, and exhausted Campaigns cannot be resumed.
+
+If the previous local Campaign worker died before producing `report.json`,
+resume verifies that its lease is no longer live, preserves the incomplete run
+as an interrupted-attempt audit artifact, and retries the same bounded cycle.
+It will not take over a live/foreign lease or an interrupted apply operation.
+The incomplete attempt is conservatively charged its full reserved allowance,
+so recovery cannot bypass the Campaign's cumulative token, cost, or wall-time
+ceiling.
 
 Drain pending post-run jobs:
 
@@ -97,7 +120,7 @@ full optimize command for an inferred draft; existing-target runs can use
 Exactly one evaluation source is normally provided:
 
 - `--dataset <path>`: JSONL eval dataset. Rows may include `input`, `expected_output`, and `verification_command`.
-- `--from-trajectory <path>`: trajectory log used to build trace packs and infer failure patterns. When the log contains multiple task trajectories, the framework automatically groups them by inferred target/task family before candidate generation so unrelated tasks do not pollute a single candidate.
+- `--from-trajectory <path>`: trajectory log used to build trace packs and infer failure patterns. When the log contains multiple task trajectories, the framework automatically groups them by inferred target/task family, recovery opportunity, and context completeness before candidate generation so unrelated or unreplayable tasks do not pollute a single candidate.
 - `--from-trajectory-set <path>`: advanced explicit-control input for baseline trajectory collections. Most manual optimize workflows should use `--from-trajectory`; user-authored set files may contain `baseline` and `operator_added` members only. Framework-owned accepted, rejected, and replay members are imported from self-evolve run history rather than hand-authored by users.
 - `--from-session <id>`: session-backed dataset construction.
 - `--batch-config <path>`: batch config for a larger request.
@@ -233,6 +256,15 @@ from eviction by long recent answers. A follow-up with no recoverable same-sessi
 context fails adaptation as `context_incomplete` rather than entering a misleading
 candidate replay.
 
+Context incompleteness propagates across dependent follow-ups but not across a later
+independent request in the same session. Automatic grouping reports
+`context_completeness_rate`, `max_recovery_opportunity_tier`, and opportunity-kind
+counts for each target group. Recovery opportunity is an ordinal structural class:
+unrecovered failure, recovered path, repeated-action loop, or none. Ranking considers
+only complete members; after selection, incomplete members are listed under
+`excluded_context_incomplete_case_ids` and omitted from replay. This applies to one or
+many trajectory members without a single-case branch.
+
 Stateful external resources require a deterministic registered adapter. An unbound
 live URL, local endpoint, stateful browser/tool name observed in the source trace,
 missing continuation context, secret-like file, or unknown external path fails the
@@ -250,6 +282,24 @@ as a new strict baseline.
 
 The CLI builds a typed, bounded `EvolutionContext` and runs each candidate-generation slot as an isolated AWorld task. The context contains only trainable cases, bounded trace evidence, reusable lessons, capability requirements, prior validation feedback, and acceptance constraints. Candidate output must match the framework JSON package contract; a skill candidate may contain `SKILL.md`, a bounded patch intent, and candidate-owned replay files such as `replay/capability.json`, a compiler, and a runtime.
 
+Judge evidence feedback is normalized into typed
+`evidence_repair_constraints`. Constraint identity excludes evaluator prose and
+task payloads, so the same failure can be aggregated across repetitions and
+trajectory members. The owner and source layer decide whether the next action
+is a candidate repair or a framework/infrastructure blocker. In particular, a
+valid canonical bundle that becomes incomplete only after bounded judge
+projection is attributed to the framework boundary until a complete projection
+can distinguish unsupported candidate output from missing judge context.
+
+Artifact projection is a bounded continuation protocol rather than a single
+prefix read. The evaluator can continue an indexed artifact from `next_start`
+or omit `start` for automatic continuation; overlapping reads are denied.
+Read-round, per-request, and cumulative character budgets are declared in the
+prompt and clamped by the runtime. If the round budget is consumed, the judge
+receives a finalization call and must return typed constraints instead of
+another read request. This behavior is uniform for one or many trajectory
+members; it does not encode task- or artifact-specific repair rules.
+
 The framework ranks the generated population and validates repair candidates before an expensive task rollout:
 
 1. `candidate_repair_conformance` first proves that the candidate materially changed the failed source branch and that the request operation participates in the response data flow.
@@ -260,6 +310,23 @@ The framework ranks the generated population and validates repair candidates bef
 6. Only a candidate that passes conformance proceeds to optional representative task screening and then the authoritative paired baseline/candidate rollout. Representative screening is a cost-control signal, not evidence that unselected conformance shapes work; the final paired replay remains the authoritative dataset-wide behavioral check.
 
 This sequence is generic: contracts are compiled from observed operations, protocol traces, fixture provenance, and the candidate package. There is no target-specific repair adapter for one trajectory case. A source-conformant candidate can still fail at runtime preflight; that result is intentionally reported before the longer task rollout and fed into the next focused repair iteration.
+
+Repair inheritance respects causal depth and mutation authority. Once a
+candidate has completed replay and received judge metrics, its candidate-owned
+replay files are frozen, even when it owns zero replay files; subsequent
+evidence-quality repair is restricted to reusable target behavior. Constraints
+from lower-level sibling failures remain diagnostic lessons but do not force a
+judge-scored lineage back into compiler/runtime mutation. Candidate semantic
+deduplication also normalizes line endings and terminal blank lines while
+preserving internal source changes, preventing formatting-only retries from
+consuming the bounded Campaign.
+
+Candidate-owned replay files are accepted only when replay preflight declares a
+capability requirement or the focused repair lineage already owns such files.
+When the trajectory has no replay requirement, generated compiler/runtime files
+do not expand the mutation surface; the candidate remains a target-behavior
+change. This prevents dependency-free cases from creating and then repairing an
+unnecessary harness.
 
 Candidate repair gate diagnostics are summarized in a separate population `conformance` section in `report.json`; optional task sampling remains in `screening`. Probe-group reports contain stable fingerprints, status codes, and bounded affected-case IDs, never raw recorded-response values. When execution preflight is reached, bounded service/probe artifacts are stored under `.aworld/self_evolve/<run_id>/repair_conformance/<candidate_id>/`. Increasing `--replay-timeout` affects task rollouts but does not weaken or bypass exact repair probes.
 
@@ -305,6 +372,13 @@ When `--apply auto_verified` is used and the caller does not override values, th
 Proposal runs default to one iteration. `auto_verified` uses the larger budget because each verified runtime repair can expose a new protocol frontier. The runner stops early when verification succeeds or progress stalls, and it may grant up to six bounded extension iterations only for newly observed repairable failure families. Duplicate candidates and repeated failure families do not consume unbounded retries.
 
 The CLI also enables framework replay for `auto_verified`. Skill candidates must have candidate replay evidence, evaluator evidence, deterministic or objective verification signals, passing gates, and a post-apply runtime-loader check before they can remain applied.
+
+Evaluator availability is checked before those quality gates. An evaluator run
+with no successful judge signal is reported as
+`evaluation_runtime_health`/infrastructure rather than being converted into
+score, evidence, required-verification, or held-out candidate failures. The
+environment fingerprint is fixed by the first adaptation in one run; any later
+drift stops replay as `environment_fingerprint_drift`.
 
 For a single original trajectory, the default two baseline and three candidate repetitions
 form a strict sparse-data verification path. A stable native task/candidate failure across

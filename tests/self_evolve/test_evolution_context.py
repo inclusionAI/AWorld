@@ -877,6 +877,73 @@ def test_prompt_payload_prioritizes_judged_held_out_repair_over_replay_history()
     assert "repair_conformance" not in second_payload
 
 
+def test_judged_repair_does_not_inherit_sibling_schema_mutation_surface() -> None:
+    judged = EvaluationSummary(
+        variant_id="candidate-judged",
+        dataset_split="validation",
+        metrics={
+            "score": 66.0,
+            "A1_groundedness": 2,
+            "evidence_incomplete": True,
+            "failed_gates": ["evidence_quality"],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-judged",
+                "content": "# Generic evidence behavior\n",
+                "files": [],
+            },
+        },
+    )
+    sibling_schema_failure = EvaluationSummary(
+        variant_id="candidate-schema-sibling",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "schema_field_validation_failed",
+                    "stage": "repair_conformance",
+                    "schema_field_constraints": [
+                        {
+                            "schema_layer": "manifest",
+                            "field_path": "schema_version",
+                            "rule": "enum",
+                            "expected": ["valid-schema"],
+                        }
+                    ],
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-schema-sibling",
+                "content": "# Sibling\n",
+                "files": [
+                    {
+                        "path": "replay/capability.json",
+                        "content": "{}",
+                    }
+                ],
+            },
+        },
+    )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(judged, sibling_schema_failure),
+            prior_feedback=(),
+        )
+    )
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-judged"
+    assert "repair_conformance" not in payload
+    assert "inherited_typed_repair_constraints" not in json.dumps(
+        payload["validation_feedback"][0],
+        sort_keys=True,
+    )
+
+
 def test_prompt_payload_prefers_current_run_frontier_over_historical_authoritative_repair() -> None:
     def feedback(
         candidate_id: str,

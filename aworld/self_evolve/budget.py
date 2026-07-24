@@ -2578,18 +2578,23 @@ class StageAwareCandidateScheduler:
             raise TypeError("scheduler state must be typed")
         if any(not isinstance(item, RepairFrontier) for item in frontiers):
             raise TypeError("scheduler frontiers must be typed")
-        if any(item.shared_blocking for item in frontiers):
+        repairable = tuple(
+            item
+            for item in frontiers
+            if item.repairable and item.owner is FailureOwner.CANDIDATE
+        )
+        # A shared blocker prevents a run only when no candidate-owned repair
+        # can advance first. Candidate evaluation commonly exposes both: for
+        # example, incomplete evidence plus missing global coverage. Repair the
+        # candidate frontier before handing the remaining shared blocker to a
+        # Goal.
+        if not repairable and any(item.shared_blocking for item in frontiers):
             return SchedulerDecision(
                 reason_code="shared_run_blocked",
                 slots=(),
                 stop=True,
                 state=state,
             )
-        repairable = tuple(
-            item
-            for item in frontiers
-            if item.repairable and item.owner is FailureOwner.CANDIDATE
-        )
         if not state.initial_exploration_scheduled and not repairable:
             next_state = SchedulerState(
                 initial_exploration_scheduled=True,

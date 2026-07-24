@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,147 @@ def test_recovery_trace_advances_campaign_frontier_without_new_failure_code() ->
     )
 
 
+def test_new_failure_identity_alone_does_not_advance_campaign() -> None:
+    first_event = {
+        "code": "candidate_protocol_invalid",
+        "owner": "candidate",
+        "stage": "candidate_generation",
+        "scope": "candidate",
+        "repairable": True,
+        "category": "candidate_generation",
+    }
+    second_event = {
+        **first_event,
+        "code": "candidate_materialization_invalid",
+    }
+
+    disposition = derive_self_improvement_disposition(
+        _report(second_event),
+        previous_progress=self_improvement_progress(_report(first_event)),
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.progress_delta_ids == ()
+
+
+def test_lost_passing_gate_blocks_apparent_constraint_progress() -> None:
+    first = _report(_event(constraint="payload.items[*].kind"))
+    first["gate_results"].append(
+        {"gate_name": "global_regression_benchmark", "passed": True}
+    )
+    second = _report(_event(constraint="payload.items[*].transport"))
+
+    disposition = derive_self_improvement_disposition(
+        second,
+        previous_progress=self_improvement_progress(first),
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.progress_delta_ids == ()
+
+
+def test_meaningful_quality_improvement_advances_campaign() -> None:
+    first = _report(_event())
+    first["candidate_metrics"] = {
+        "score": 76.8,
+        "A1_groundedness": 3.0,
+        "command_pass_rate": 0.0,
+        "evidence_incomplete": True,
+        "deterministic_signal": False,
+        "global_regression_passed": False,
+        "failed_repetition_count": 0,
+    }
+    second = _report(_event())
+    second["candidate_metrics"] = {
+        "score": 82.066,
+        "A1_groundedness": 3.333,
+        "command_pass_rate": 0.0,
+        "evidence_incomplete": True,
+        "deterministic_signal": False,
+        "global_regression_passed": False,
+        "failed_repetition_count": 0,
+    }
+
+    disposition = derive_self_improvement_disposition(
+        second,
+        previous_progress=self_improvement_progress(first),
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert "quality-score-points:82" in disposition.progress_delta_ids
+    assert "quality-groundedness-tenths:33" in disposition.progress_delta_ids
+
+
+def test_sub_bucket_judge_score_noise_does_not_advance_campaign() -> None:
+    first = _report(_event())
+    first["candidate_metrics"] = {
+        "score": 82.1,
+        "A1_groundedness": 3.3,
+        "command_pass_rate": 0.0,
+    }
+    second = _report(_event())
+    second["candidate_metrics"] = {
+        "score": 82.9,
+        "A1_groundedness": 3.3,
+        "command_pass_rate": 0.0,
+    }
+
+    disposition = derive_self_improvement_disposition(
+        second,
+        previous_progress=self_improvement_progress(first),
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.progress_delta_ids == ()
+
+
+def test_score_gain_does_not_mask_verification_quality_regression() -> None:
+    first = _report(_event())
+    first["candidate_metrics"] = {
+        "score": 80.0,
+        "A1_groundedness": 3.5,
+        "command_pass_rate": 0.5,
+        "failed_repetition_count": 0,
+    }
+    second = _report(_event())
+    second["candidate_metrics"] = {
+        "score": 90.0,
+        "A1_groundedness": 3.5,
+        "command_pass_rate": 0.0,
+        "failed_repetition_count": 0,
+    }
+
+    disposition = derive_self_improvement_disposition(
+        second,
+        previous_progress=self_improvement_progress(first),
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.progress_delta_ids == ()
+
+
+def test_quality_progress_round_trip_is_backward_compatible() -> None:
+    progress = self_improvement_progress(
+        {
+            **_report(_event()),
+            "candidate_metrics": {
+                "score": 82.066,
+                "A1_groundedness": 3.333,
+                "command_pass_rate": 1.0,
+                "evidence_incomplete": False,
+                "deterministic_signal": True,
+                "global_regression_passed": True,
+                "failed_repetition_count": 0,
+            },
+        }
+    )
+
+    assert type(progress).from_dict(progress.to_dict()) == progress
+    legacy = progress.to_dict()
+    legacy.pop("candidate_quality")
+    assert type(progress).from_dict(legacy).candidate_quality is None
+
+
 def test_disposition_ignores_bounded_projection_placeholders_as_progress() -> None:
     event = _event()
     event["schema_field_constraints"] = [
@@ -230,6 +372,23 @@ def test_non_repairable_candidate_failure_exhausts() -> None:
 
     assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
     assert disposition.reason_code == "candidate_failure_not_repairable"
+
+
+def test_candidate_materialization_failure_continues_typed_campaign() -> None:
+    event = {
+        "code": "candidate_materialization_invalid",
+        "owner": "candidate",
+        "stage": "candidate_generation",
+        "scope": "candidate",
+        "repairable": True,
+        "category": "candidate_generation",
+    }
+
+    disposition = derive_self_improvement_disposition(_report(event))
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.reason_code == "candidate_repair_frontier_progressed"
+    assert disposition.stage == "candidate_generation"
 
 
 def test_campaign_store_round_trip_and_rejects_invalid_cycle(tmp_path: Path) -> None:
@@ -417,6 +576,71 @@ def test_campaign_stops_when_semantic_frontier_does_not_change(tmp_path: Path) -
     assert len(calls) == 2
 
 
+def test_campaign_prioritizes_cross_run_champion_feedback(tmp_path: Path) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        cycle = request["campaign_cycle"]
+        run_id = f"{request['campaign_id']}-cycle-{cycle:03d}"
+        if cycle == 1:
+            report = _report(_event(constraint="payload.items[*].kind"))
+            report["candidate_metrics"] = {
+                "score": 90,
+                "command_pass_rate": 1.0,
+                "global_regression_passed": True,
+                "deterministic_signal": True,
+            }
+            report["selected_candidate_id"] = "candidate-strong"
+        elif cycle == 2:
+            report = _report(
+                _event(constraint="payload.items[*].kind"),
+                _event(constraint="payload.items[*].transport"),
+            )
+            report["candidate_metrics"] = {
+                "score": 70,
+                "command_pass_rate": 1.0,
+                "global_regression_passed": True,
+                "deterministic_signal": True,
+            }
+            report["selected_candidate_id"] = "candidate-weaker"
+        else:
+            report = {
+                "run_id": run_id,
+                "status": "succeeded",
+                "budget": _budget(),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+            }
+        report["run_id"] = run_id
+        report_path = (
+            tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        )
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "auto_verified",
+            "infer_target": True,
+        },
+        max_improvement_cycles=3,
+        run_once=run_once,
+    )
+
+    assert result["status"] == "succeeded"
+    assert calls[2]["campaign_prior_run_ids"] == (
+        f"{calls[0]['campaign_id']}-cycle-002",
+        f"{calls[0]['campaign_id']}-cycle-001",
+    )
+
+
 def test_campaign_missing_usage_telemetry_stops_before_second_run(tmp_path: Path) -> None:
     calls: list[dict] = []
 
@@ -484,6 +708,71 @@ def test_campaign_recovers_completed_run_after_checkpoint_interruption(
     assert calls == 1
     assert recovered.cycle_index == 1
     assert summary["run_id"].endswith("cycle-001")
+
+
+def test_campaign_archives_dead_incomplete_run_and_retries_same_cycle(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        report = {
+            "run_id": run_id,
+            "status": "succeeded",
+            "budget": _budget(10),
+            "gate_results": [{"gate_name": "post_apply", "passed": True}],
+        }
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": "succeeded",
+            "report_path": str(report_path),
+        }
+
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=run_once,
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "auto_verified",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    run_dir = tmp_path / ".aworld" / "self_evolve" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps({"run_id": run_id, "status": "running"}),
+        encoding="utf-8",
+    )
+    (run_dir / ".active.json").write_text(
+        json.dumps(
+            {
+                "hostname": socket.gethostname(),
+                "pid": 2_147_483_647,
+                "started_at": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    advanced, summary = controller.advance_once(campaign)
+
+    assert advanced.status is SelfImprovementCampaignStatus.COMPLETE
+    assert advanced.cycle_index == 1
+    assert advanced.cumulative_usage.tokens == 500_010
+    assert calls[0]["campaign_cycle"] == 1
+    assert calls[0]["total_run_token_budget"] == 500_000
+    archive = Path(summary["interrupted_run_archive_path"])
+    assert archive.name == f"{run_id}-attempt-001"
+    assert (archive / "interruption.json").is_file()
 
 
 @pytest.mark.parametrize(

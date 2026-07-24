@@ -3,9 +3,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
+from aworld.self_evolve.evidence_diagnostics import (
+    evidence_repair_constraints_from_metrics,
+)
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
+from aworld.self_evolve.failure_events import FailureOwner
 from aworld.self_evolve.provenance import (
     InferredNewSkillPolicy,
     TargetMutationIntent,
@@ -15,6 +19,10 @@ from aworld.self_evolve.provenance import (
 )
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
+from aworld.self_evolve.runtime_health import (
+    EvaluationRuntimeHealthStatus,
+    assess_evaluation_runtime_health,
+)
 from aworld.self_evolve.candidate_package import (
     candidate_files_total_bytes,
     validate_candidate_files,
@@ -415,6 +423,51 @@ class RequiredVerificationGate:
         )
 
 
+class EvaluationRuntimeHealthGate:
+    """Gate evaluator/judge availability before candidate quality policy."""
+
+    def evaluate(
+        self,
+        summaries: Iterable[EvaluationSummary],
+    ) -> GateResult:
+        health = assess_evaluation_runtime_health(summaries)
+        passed = health.status is not EvaluationRuntimeHealthStatus.UNHEALTHY
+        details: dict[str, object] = {
+            "runtime_health": health.to_dict(),
+        }
+        if not passed:
+            details.update(
+                {
+                    "failure_class": FailureOwner.INFRASTRUCTURE.value,
+                    "failure_owner": FailureOwner.INFRASTRUCTURE.value,
+                    "failure_scope": "shared_run",
+                    "failure_source": "native",
+                    "repairable": False,
+                    "code": "evaluation_runtime_unhealthy",
+                }
+            )
+        if health.status is EvaluationRuntimeHealthStatus.UNKNOWN:
+            reason = (
+                "evaluation runtime health telemetry is unavailable; "
+                "legacy evaluator result remains usable"
+            )
+        elif health.status is EvaluationRuntimeHealthStatus.DEGRADED:
+            reason = (
+                "evaluation runtime produced usable judge signals with "
+                "partial failures"
+            )
+        elif passed:
+            reason = "evaluation runtime produced usable judge signals"
+        else:
+            reason = "evaluation runtime did not produce a usable judge signal"
+        return GateResult(
+            gate_name="evaluation_runtime_health",
+            passed=passed,
+            reason=reason,
+            details=details,
+        )
+
+
 class EvidenceQualityGate:
     _COMPACTED_CONTEXT_MARKER = "tool output compacted for context reuse"
     _TRUNCATED_EVIDENCE_MARKERS = ("truncated", "tool evidence")
@@ -452,6 +505,24 @@ class EvidenceQualityGate:
         incomplete = _bool_metric(summary.metrics, "evidence_incomplete")
         if incomplete is None:
             incomplete = False
+        evidence_constraints = evidence_repair_constraints_from_metrics(
+            summary.metrics
+        )
+        has_declared_evidence_constraints = bool(
+            summary.metrics.get("evidence_repair_constraints")
+        )
+        constraint_owners = {item.owner for item in evidence_constraints}
+        if FailureOwner.INFRASTRUCTURE in constraint_owners:
+            failure_owner = FailureOwner.INFRASTRUCTURE
+        elif FailureOwner.FRAMEWORK in constraint_owners:
+            # A valid artifact bundle that becomes insufficient only at the
+            # bounded projection boundary cannot safely be blamed on the
+            # candidate until the framework exposes enough evidence to decide.
+            failure_owner = FailureOwner.FRAMEWORK
+        elif FailureOwner.TASK in constraint_owners:
+            failure_owner = FailureOwner.TASK
+        else:
+            failure_owner = FailureOwner.CANDIDATE
         details = {
             "has_evidence": has_evidence,
             "evidence_block_count": evidence_block_count,
@@ -462,6 +533,23 @@ class EvidenceQualityGate:
             "evidence_manifest_invalid_entry_count": evidence_manifest_invalid_entry_count,
             "evidence_bundle_valid": evidence_bundle_valid,
             "evidence_bundle_entry_count": evidence_bundle_entry_count,
+            "evidence_repair_constraints": [
+                item.to_dict() for item in evidence_constraints
+            ],
+            "evidence_constraint_count": len(evidence_constraints),
+            "failure_class": failure_owner.value,
+            "failure_owner": failure_owner.value,
+            "failure_scope": (
+                "shared_run"
+                if failure_owner
+                in {
+                    FailureOwner.FRAMEWORK,
+                    FailureOwner.INFRASTRUCTURE,
+                }
+                else "candidate"
+            ),
+            "failure_source": "native",
+            "repairable": True,
         }
         if not has_evidence:
             return GateResult(
@@ -475,6 +563,13 @@ class EvidenceQualityGate:
                 gate_name="evidence_quality",
                 passed=False,
                 reason="artifact-first evidence is not fully verifiable",
+                details=details,
+            )
+        if has_declared_evidence_constraints and evidence_constraints:
+            return GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="typed evidence repair constraints remain unsatisfied",
                 details=details,
             )
         if incomplete:
