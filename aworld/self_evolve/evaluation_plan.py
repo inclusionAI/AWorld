@@ -5,6 +5,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -44,8 +45,25 @@ EVIDENCE_AUTHORITY_CONTEXT_SCHEMA_VERSION = (
 SEMANTIC_QUALIFICATION_REGISTRY_SCHEMA_VERSION = (
     "aworld.self_evolve.semantic_qualification_registry.v1"
 )
+SEMANTIC_QUALIFICATION_METHOD_RECORDED_OUTCOMES_V1 = (
+    "recorded_outcomes_v1"
+)
+SEMANTIC_QUALIFICATION_METHOD_EXACT_SNAPSHOT_V1 = "exact_snapshot_v1"
+SEMANTIC_RECORDED_OUTCOME_RUNNER_PROTOCOL_FINGERPRINT_V1 = (
+    "sha256:"
+    + hashlib.sha256(
+        b"aworld.self_evolve.semantic_qualification.recorded_outcomes.v1"
+    ).hexdigest()
+)
+SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1 = (
+    "sha256:"
+    + hashlib.sha256(
+        b"aworld.self_evolve.semantic_qualification.exact_snapshot.v1"
+    ).hexdigest()
+)
 
 _FINGERPRINT_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_FRAMEWORK_DETERMINISTIC_EXTRACTOR_ATTESTATION = object()
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _MAX_ALIAS_VALUES = 10_000
@@ -117,6 +135,13 @@ class QualificationStatus(str, Enum):
     QUALIFIED = "qualified"
     FAILED = "failed"
     EXPIRED = "expired"
+
+
+class SemanticQualificationMethod(str, Enum):
+    RECORDED_OUTCOMES_V1 = (
+        SEMANTIC_QUALIFICATION_METHOD_RECORDED_OUTCOMES_V1
+    )
+    EXACT_SNAPSHOT_V1 = SEMANTIC_QUALIFICATION_METHOD_EXACT_SNAPSHOT_V1
 
 
 _HUMAN_AUTHORITY_RANK = {
@@ -299,6 +324,10 @@ class HumanEvidenceApprovalV1:
     manifest_fingerprint: str
     approval_origin: ManifestOrigin
     approved_claim_scope: tuple[str, ...] = ("whole_graph",)
+    evidence_graph_provenance_fingerprint: str | None = None
+    source_bundle_fingerprint: str | None = None
+    constitution_fingerprint: str | None = None
+    semantic_profile_fingerprint: str | None = None
     schema_version: str = HUMAN_EVIDENCE_APPROVAL_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -315,6 +344,15 @@ class HumanEvidenceApprovalV1:
             self.manifest_fingerprint,
             field_name="manifest_fingerprint",
         )
+        for field_name in (
+            "evidence_graph_provenance_fingerprint",
+            "source_bundle_fingerprint",
+            "constitution_fingerprint",
+            "semantic_profile_fingerprint",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                _fingerprint(value, field_name=field_name)
         object.__setattr__(
             self,
             "approval_origin",
@@ -344,12 +382,28 @@ class HumanEvidenceApprovalV1:
     def fingerprint(self) -> str:
         return _fingerprint_json(self.to_dict())
 
+    @property
+    def is_production_bound(self) -> bool:
+        return all(
+            getattr(self, field_name) is not None
+            for field_name in (
+                "evidence_graph_provenance_fingerprint",
+                "source_bundle_fingerprint",
+                "constitution_fingerprint",
+                "semantic_profile_fingerprint",
+            )
+        )
+
     def matches(
         self,
         *,
         graph_fingerprint: str,
         manifest_fingerprint: str,
         manifest_origin: ManifestOrigin,
+        graph_provenance_fingerprint: str | None = None,
+        source_bundle_fingerprint: str | None = None,
+        constitution_fingerprint: str | None = None,
+        semantic_profile_fingerprint: str | None = None,
     ) -> bool:
         return (
             ManifestOrigin(manifest_origin)
@@ -357,6 +411,26 @@ class HumanEvidenceApprovalV1:
             and self.evidence_graph_logical_fingerprint
             == graph_fingerprint
             and self.manifest_fingerprint == manifest_fingerprint
+            and (
+                self.evidence_graph_provenance_fingerprint is None
+                or self.evidence_graph_provenance_fingerprint
+                == graph_provenance_fingerprint
+            )
+            and (
+                self.source_bundle_fingerprint is None
+                or self.source_bundle_fingerprint
+                == source_bundle_fingerprint
+            )
+            and (
+                self.constitution_fingerprint is None
+                or self.constitution_fingerprint
+                == constitution_fingerprint
+            )
+            and (
+                self.semantic_profile_fingerprint is None
+                or self.semantic_profile_fingerprint
+                == semantic_profile_fingerprint
+            )
         )
 
     def approves_claim(self, claim_id: str) -> bool:
@@ -367,7 +441,7 @@ class HumanEvidenceApprovalV1:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "schema_version": self.schema_version,
             "evidence_graph_logical_fingerprint": (
                 self.evidence_graph_logical_fingerprint
@@ -376,6 +450,16 @@ class HumanEvidenceApprovalV1:
             "approval_origin": self.approval_origin.value,
             "approved_claim_scope": sorted(self.approved_claim_scope),
         }
+        for field_name in (
+            "evidence_graph_provenance_fingerprint",
+            "source_bundle_fingerprint",
+            "constitution_fingerprint",
+            "semantic_profile_fingerprint",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                result[field_name] = value
+        return result
 
     @classmethod
     def from_dict(
@@ -397,6 +481,27 @@ class HumanEvidenceApprovalV1:
                 payload,
                 "approved_claim_scope",
             ),
+            evidence_graph_provenance_fingerprint=(
+                str(payload["evidence_graph_provenance_fingerprint"])
+                if payload.get("evidence_graph_provenance_fingerprint")
+                is not None
+                else None
+            ),
+            source_bundle_fingerprint=(
+                str(payload["source_bundle_fingerprint"])
+                if payload.get("source_bundle_fingerprint") is not None
+                else None
+            ),
+            constitution_fingerprint=(
+                str(payload["constitution_fingerprint"])
+                if payload.get("constitution_fingerprint") is not None
+                else None
+            ),
+            semantic_profile_fingerprint=(
+                str(payload["semantic_profile_fingerprint"])
+                if payload.get("semantic_profile_fingerprint") is not None
+                else None
+            ),
         )
 
 
@@ -407,6 +512,10 @@ def issue_human_evidence_approval(
     manifest_fingerprint: str,
     manifest_origin: ManifestOrigin,
     approved_claim_scope: tuple[str, ...] = ("whole_graph",),
+    graph_provenance_fingerprint: str | None = None,
+    source_bundle_fingerprint: str | None = None,
+    constitution_fingerprint: str | None = None,
+    semantic_profile_fingerprint: str | None = None,
 ) -> HumanEvidenceApprovalV1:
     """Create approval only after the operator pins the exact graph."""
 
@@ -425,6 +534,12 @@ def issue_human_evidence_approval(
         manifest_fingerprint=manifest_fingerprint,
         approval_origin=ManifestOrigin.OPERATOR_EXPLICIT,
         approved_claim_scope=approved_claim_scope,
+        evidence_graph_provenance_fingerprint=(
+            graph_provenance_fingerprint
+        ),
+        source_bundle_fingerprint=source_bundle_fingerprint,
+        constitution_fingerprint=constitution_fingerprint,
+        semantic_profile_fingerprint=semantic_profile_fingerprint,
     )
 
 
@@ -437,6 +552,8 @@ class EvidenceAuthorityContextV1:
     deterministic_verification_ids: tuple[str, ...] = ()
     trusted_registered_verification_ids: tuple[str, ...] = ()
     human_approval: HumanEvidenceApprovalV1 | None = None
+    source_bundle_fingerprint: str | None = None
+    constitution_fingerprint: str | None = None
     schema_version: str = EVIDENCE_AUTHORITY_CONTEXT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -453,6 +570,16 @@ class EvidenceAuthorityContextV1:
             self.verification_registry_fingerprint,
             field_name="verification_registry_fingerprint",
         )
+        if self.source_bundle_fingerprint is not None:
+            _fingerprint(
+                self.source_bundle_fingerprint,
+                field_name="source_bundle_fingerprint",
+            )
+        if self.constitution_fingerprint is not None:
+            _fingerprint(
+                self.constitution_fingerprint,
+                field_name="constitution_fingerprint",
+            )
         _safe_ids(
             self.deterministic_verification_ids,
             field_name="deterministic_verification_ids",
@@ -461,6 +588,32 @@ class EvidenceAuthorityContextV1:
             self.trusted_registered_verification_ids,
             field_name="trusted_registered_verification_ids",
         )
+        object.__setattr__(
+            self,
+            "deterministic_verification_ids",
+            tuple(sorted(self.deterministic_verification_ids)),
+        )
+        object.__setattr__(
+            self,
+            "trusted_registered_verification_ids",
+            tuple(sorted(self.trusted_registered_verification_ids)),
+        )
+        if self.human_approval is not None:
+            approval = self.human_approval
+            if (
+                not approval.is_production_bound
+                or self.source_bundle_fingerprint is None
+                or self.constitution_fingerprint is None
+                or approval.source_bundle_fingerprint
+                != self.source_bundle_fingerprint
+                or approval.constitution_fingerprint
+                != self.constitution_fingerprint
+            ):
+                raise EvaluationPlanContractError(
+                    "approval_binding_incomplete",
+                    "human evidence approval requires exact source and "
+                    "constitution authority bindings",
+                )
 
     def authorizes_claim(
         self,
@@ -497,6 +650,18 @@ class EvidenceAuthorityContextV1:
             self.human_approval is not None
             and self.human_approval.matches(
                 graph_fingerprint=graph.logical_fingerprint,
+                graph_provenance_fingerprint=(
+                    graph.provenance_fingerprint
+                ),
+                source_bundle_fingerprint=(
+                    self.source_bundle_fingerprint
+                ),
+                semantic_profile_fingerprint=(
+                    graph.profile_fingerprint
+                ),
+                constitution_fingerprint=(
+                    self.constitution_fingerprint
+                ),
                 manifest_fingerprint=manifest_fingerprint,
                 manifest_origin=manifest_origin,
             )
@@ -528,8 +693,12 @@ class EvidenceAuthorityContextV1:
                 return True
         return False
 
+    @property
+    def fingerprint(self) -> str:
+        return _fingerprint_json(self.to_dict())
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "schema_version": self.schema_version,
             "evidence_graph_provenance_fingerprint": (
                 self.evidence_graph_provenance_fingerprint
@@ -549,6 +718,15 @@ class EvidenceAuthorityContextV1:
                 else None
             ),
         }
+        if self.source_bundle_fingerprint is not None:
+            result["source_bundle_fingerprint"] = (
+                self.source_bundle_fingerprint
+            )
+        if self.constitution_fingerprint is not None:
+            result["constitution_fingerprint"] = (
+                self.constitution_fingerprint
+            )
+        return result
 
     @classmethod
     def from_dict(
@@ -583,6 +761,16 @@ class EvidenceAuthorityContextV1:
                 if approval is not None
                 else None
             ),
+            source_bundle_fingerprint=(
+                str(payload["source_bundle_fingerprint"])
+                if payload.get("source_bundle_fingerprint") is not None
+                else None
+            ),
+            constitution_fingerprint=(
+                str(payload["constitution_fingerprint"])
+                if payload.get("constitution_fingerprint") is not None
+                else None
+            ),
         )
 
 
@@ -592,6 +780,8 @@ def issue_evidence_authority_context(
     deterministic_verification_ids: tuple[str, ...] = (),
     trusted_registered_verification_ids: tuple[str, ...] = (),
     human_approval: HumanEvidenceApprovalV1 | None = None,
+    source_bundle_fingerprint: str | None = None,
+    constitution_fingerprint: str | None = None,
 ) -> EvidenceAuthorityContextV1:
     """Issue a graph-bound authority context from framework-owned IDs."""
 
@@ -643,6 +833,8 @@ def issue_evidence_authority_context(
             trusted_registered_verification_ids
         ),
         human_approval=human_approval,
+        source_bundle_fingerprint=source_bundle_fingerprint,
+        constitution_fingerprint=constitution_fingerprint,
     )
 
 
@@ -703,6 +895,15 @@ class SemanticModelQualificationReportV1:
     required_thresholds: Mapping[str, float]
     false_authority_elevation_count: int
     status: QualificationStatus
+    issued_at_utc: str
+    expires_at_utc: str
+    qualification_method: SemanticQualificationMethod = (
+        SemanticQualificationMethod.RECORDED_OUTCOMES_V1
+    )
+    runner_protocol_fingerprint: str = (
+        SEMANTIC_RECORDED_OUTCOME_RUNNER_PROTOCOL_FINGERPRINT_V1
+    )
+    case_attestation_bundle_fingerprint: str | None = None
     schema_version: str = SEMANTIC_MODEL_QUALIFICATION_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -764,6 +965,57 @@ class SemanticModelQualificationReportV1:
             "status",
             QualificationStatus(self.status),
         )
+        object.__setattr__(
+            self,
+            "qualification_method",
+            SemanticQualificationMethod(self.qualification_method),
+        )
+        _fingerprint(
+            self.runner_protocol_fingerprint,
+            field_name="runner_protocol_fingerprint",
+        )
+        if self.case_attestation_bundle_fingerprint is not None:
+            _fingerprint(
+                self.case_attestation_bundle_fingerprint,
+                field_name="case_attestation_bundle_fingerprint",
+            )
+        if (
+            self.qualification_method
+            is SemanticQualificationMethod.EXACT_SNAPSHOT_V1
+        ):
+            if (
+                self.runner_protocol_fingerprint
+                != SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1
+                or self.case_attestation_bundle_fingerprint is None
+            ):
+                raise EvaluationPlanContractError(
+                    "qualification_attestation_invalid",
+                    "exact-snapshot qualification requires the framework "
+                    "runner protocol and a case attestation bundle",
+                )
+        elif (
+            self.runner_protocol_fingerprint
+            != SEMANTIC_RECORDED_OUTCOME_RUNNER_PROTOCOL_FINGERPRINT_V1
+            or self.case_attestation_bundle_fingerprint is not None
+        ):
+            raise EvaluationPlanContractError(
+                "qualification_attestation_invalid",
+                "recorded outcomes cannot carry production snapshot "
+                "attestation",
+            )
+        issued_at = _utc_timestamp(
+            self.issued_at_utc,
+            field_name="issued_at_utc",
+        )
+        expires_at = _utc_timestamp(
+            self.expires_at_utc,
+            field_name="expires_at_utc",
+        )
+        if issued_at >= expires_at:
+            raise EvaluationPlanContractError(
+                "qualification_validity_invalid",
+                "qualification expiry must be after issuance",
+            )
 
     @property
     def report_fingerprint(self) -> str:
@@ -786,9 +1038,28 @@ class SemanticModelQualificationReportV1:
         constitution_fingerprint: str,
         corpus_fingerprint: str,
         threshold_set_fingerprint: str,
+        evaluated_at_utc: str | None = None,
     ) -> bool:
+        evaluated_at = _utc_timestamp(
+            evaluated_at_utc or _now_utc(),
+            field_name="evaluated_at_utc",
+        )
+        issued_at = _utc_timestamp(
+            self.issued_at_utc,
+            field_name="issued_at_utc",
+        )
+        expires_at = _utc_timestamp(
+            self.expires_at_utc,
+            field_name="expires_at_utc",
+        )
         return (
             self.status is QualificationStatus.QUALIFIED
+            and self.qualification_method
+            is SemanticQualificationMethod.EXACT_SNAPSHOT_V1
+            and self.runner_protocol_fingerprint
+            == SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1
+            and self.case_attestation_bundle_fingerprint is not None
+            and issued_at <= evaluated_at < expires_at
             and self.false_authority_elevation_count == 0
             and self.thresholds_satisfied
             and self.model_profile_fingerprint
@@ -825,6 +1096,15 @@ class SemanticModelQualificationReportV1:
                 self.false_authority_elevation_count
             ),
             "status": self.status.value,
+            "issued_at_utc": self.issued_at_utc,
+            "expires_at_utc": self.expires_at_utc,
+            "qualification_method": self.qualification_method.value,
+            "runner_protocol_fingerprint": (
+                self.runner_protocol_fingerprint
+            ),
+            "case_attestation_bundle_fingerprint": (
+                self.case_attestation_bundle_fingerprint
+            ),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -875,6 +1155,22 @@ class SemanticModelQualificationReportV1:
             ),  # type: ignore[arg-type]
             status=QualificationStatus(
                 str(payload.get("status") or "")
+            ),
+            issued_at_utc=str(payload.get("issued_at_utc") or ""),
+            expires_at_utc=str(payload.get("expires_at_utc") or ""),
+            qualification_method=SemanticQualificationMethod(
+                str(payload.get("qualification_method") or "")
+            ),
+            runner_protocol_fingerprint=str(
+                payload.get("runner_protocol_fingerprint") or ""
+            ),
+            case_attestation_bundle_fingerprint=(
+                str(payload["case_attestation_bundle_fingerprint"])
+                if payload.get(
+                    "case_attestation_bundle_fingerprint"
+                )
+                is not None
+                else None
             ),
         )
         claimed = payload.get("report_fingerprint")
@@ -927,6 +1223,7 @@ class SemanticQualificationRegistryV1:
         constitution_fingerprint: str,
         corpus_fingerprint: str,
         threshold_set_fingerprint: str,
+        evaluated_at_utc: str | None = None,
     ) -> bool:
         return (
             report is not None
@@ -941,8 +1238,13 @@ class SemanticQualificationRegistryV1:
                 constitution_fingerprint=constitution_fingerprint,
                 corpus_fingerprint=corpus_fingerprint,
                 threshold_set_fingerprint=threshold_set_fingerprint,
+                evaluated_at_utc=evaluated_at_utc,
             )
         )
+
+    @property
+    def fingerprint(self) -> str:
+        return _fingerprint_json(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1301,6 +1603,10 @@ def effective_profile_for_origin(
     manifest_origin: ManifestOrigin,
     approval: HumanEvidenceApprovalV1 | None = None,
     graph_fingerprint: str | None = None,
+    graph_provenance_fingerprint: str | None = None,
+    source_bundle_fingerprint: str | None = None,
+    constitution_fingerprint: str | None = None,
+    semantic_profile_fingerprint: str | None = None,
     manifest_fingerprint: str | None = None,
 ) -> SemanticIngestionProfileV1:
     """Apply the deterministic authority ceiling for a manifest origin."""
@@ -1334,10 +1640,19 @@ def effective_profile_for_origin(
     ):
         approval_valid = (
             approval is not None
+            and approval.is_production_bound
             and graph_fingerprint is not None
             and manifest_fingerprint is not None
             and approval.matches(
                 graph_fingerprint=graph_fingerprint,
+                graph_provenance_fingerprint=(
+                    graph_provenance_fingerprint
+                ),
+                source_bundle_fingerprint=source_bundle_fingerprint,
+                constitution_fingerprint=constitution_fingerprint,
+                semantic_profile_fingerprint=(
+                    semantic_profile_fingerprint
+                ),
                 manifest_fingerprint=manifest_fingerprint,
                 manifest_origin=origin,
             )
@@ -1374,20 +1689,42 @@ def compile_evaluation_plan(
     constitution_fingerprint: str,
     qualification_corpus_fingerprint: str,
     qualification_threshold_set_fingerprint: str,
+    qualification_evaluated_at_utc: str | None = None,
+    _framework_extractor_attestation: object | None = None,
 ) -> SelfImprovementEvaluationPlanV1:
     """Compile policy from frozen facts; agent fields are suggestions only."""
 
+    if (
+        authority_context.constitution_fingerprint is not None
+        and authority_context.constitution_fingerprint
+        != constitution_fingerprint
+    ):
+        raise EvaluationPlanContractError(
+            "verification_authority_untrusted",
+            "authority context is bound to another constitution",
+        )
     effective = effective_profile_for_origin(
         profile,
         manifest_origin=manifest_origin,
         approval=authority_context.human_approval,
         graph_fingerprint=graph.logical_fingerprint,
+        graph_provenance_fingerprint=graph.provenance_fingerprint,
+        source_bundle_fingerprint=(
+            authority_context.source_bundle_fingerprint
+        ),
+        constitution_fingerprint=constitution_fingerprint,
+        semantic_profile_fingerprint=profile.fingerprint,
         manifest_fingerprint=manifest_fingerprint,
     )
-    if graph.profile_fingerprint != effective.fingerprint:
+    expected_graph_profile_fingerprint = (
+        profile.fingerprint
+        if manifest_origin is ManifestOrigin.OPERATOR_EXPLICIT
+        else effective.fingerprint
+    )
+    if graph.profile_fingerprint != expected_graph_profile_fingerprint:
         raise EvaluationPlanContractError(
             "profile_fingerprint_mismatch",
-            "evidence graph was not built with the effective profile",
+            "evidence graph was not built with the declared profile",
         )
     human_authority = _min_human_authority(
         proposal.human_claim_authority,
@@ -1413,16 +1750,21 @@ def compile_evaluation_plan(
             )
     if historical_authority is not proposal.historical_judge_authority:
         reasons.add("historical_judge_authority_clamped")
-    model_qualified = qualification_registry.accepts(
-        qualification_report,
-        model_profile_fingerprint=model_profile_fingerprint,
-        provider_fingerprint=provider_fingerprint,
-        semantic_protocol_fingerprint=semantic_protocol_fingerprint,
-        constitution_fingerprint=constitution_fingerprint,
-        corpus_fingerprint=qualification_corpus_fingerprint,
-        threshold_set_fingerprint=(
-            qualification_threshold_set_fingerprint
-        ),
+    model_qualified = (
+        _framework_extractor_attestation
+        is _FRAMEWORK_DETERMINISTIC_EXTRACTOR_ATTESTATION
+        or qualification_registry.accepts(
+            qualification_report,
+            model_profile_fingerprint=model_profile_fingerprint,
+            provider_fingerprint=provider_fingerprint,
+            semantic_protocol_fingerprint=semantic_protocol_fingerprint,
+            constitution_fingerprint=constitution_fingerprint,
+            corpus_fingerprint=qualification_corpus_fingerprint,
+            threshold_set_fingerprint=(
+                qualification_threshold_set_fingerprint
+            ),
+            evaluated_at_utc=qualification_evaluated_at_utc,
+        )
     )
     if not model_qualified:
         reasons.add("semantic_model_not_qualified")
@@ -1746,6 +2088,38 @@ def _finite_metrics(values: Mapping[str, float], *, field_name: str) -> None:
                 "qualification_metric_invalid",
                 f"{field_name} values must be finite numbers",
             )
+
+
+def _now_utc() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _utc_timestamp(value: str, *, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise EvaluationPlanContractError(
+            "qualification_timestamp_invalid",
+            f"{field_name} must be an RFC3339 UTC timestamp",
+        )
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise EvaluationPlanContractError(
+            "qualification_timestamp_invalid",
+            f"{field_name} must be an RFC3339 UTC timestamp",
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(
+        parsed
+    ):
+        raise EvaluationPlanContractError(
+            "qualification_timestamp_invalid",
+            f"{field_name} must be in UTC",
+        )
+    return parsed
 
 
 def _require_schema(actual: str, expected: str, label: str) -> None:

@@ -23,6 +23,10 @@ from aworld.self_evolve.ingestion.semantic_snapshot import (
 from aworld.self_evolve.ingestion.verifier import (
     validate_frozen_snapshot_quality,
 )
+from aworld.self_evolve.evaluation_plan import (
+    HumanEvidenceApprovalV1,
+    ManifestOrigin,
+)
 from aworld.self_evolve.budget import (
     CandidateAttemptEvent,
     CandidateAttemptKey,
@@ -62,6 +66,38 @@ def _ingestion_semantic_payload(
         quality.pop("mapping_candidate_count", None)
         quality.pop("valid_mapping_candidate_count", None)
     return payload
+
+
+def _semantic_evidence_approval_template(
+    snapshot: FrozenSemanticIngestionSnapshotV2,
+) -> dict[str, Any] | None:
+    if (
+        snapshot.manifest_fingerprint is None
+        or snapshot.manifest_origin.value != "operator_explicit"
+        or snapshot.resolution_evidence.extraction_origin.value
+        == "deterministic_canonical"
+    ):
+        return None
+    approval = HumanEvidenceApprovalV1(
+        evidence_graph_logical_fingerprint=(
+            snapshot.evidence_graph.logical_fingerprint
+        ),
+        evidence_graph_provenance_fingerprint=(
+            snapshot.evidence_graph.provenance_fingerprint
+        ),
+        source_bundle_fingerprint=snapshot.source_bundle.fingerprint,
+        constitution_fingerprint=snapshot.constitution.fingerprint,
+        semantic_profile_fingerprint=(
+            snapshot.semantic_profile.fingerprint
+        ),
+        manifest_fingerprint=snapshot.manifest_fingerprint,
+        approval_origin=ManifestOrigin.OPERATOR_EXPLICIT,
+        approved_claim_scope=("whole_graph",),
+    )
+    return {
+        **approval.to_dict(),
+        "approval_fingerprint": approval.fingerprint,
+    }
 
 
 class FilesystemSelfEvolveStore:
@@ -425,6 +461,14 @@ class FilesystemSelfEvolveStore:
                     temporary / "source_manifest.json",
                     snapshot.source_manifest,
                 )
+            approval_template = _semantic_evidence_approval_template(
+                snapshot
+            )
+            if approval_template is not None:
+                self._write_private_json(
+                    temporary / "evidence_approval_template.json",
+                    approval_template,
+                )
             self._write_semantic_case_splits(
                 temporary,
                 snapshot,
@@ -566,6 +610,11 @@ class FilesystemSelfEvolveStore:
         if snapshot.source_manifest is not None:
             expected["source_manifest.json"] = dict(
                 snapshot.source_manifest
+            )
+        approval_template = _semantic_evidence_approval_template(snapshot)
+        if approval_template is not None:
+            expected["evidence_approval_template.json"] = (
+                approval_template
             )
         for relative_path, value in expected.items():
             path = root / relative_path

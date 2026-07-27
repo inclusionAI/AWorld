@@ -208,8 +208,10 @@ class FrozenSemanticIngestionSnapshotV2:
     qualification_corpus_fingerprint: str
     qualification_threshold_set_fingerprint: str
     qualification_report: SemanticModelQualificationReportV1 | None = None
+    qualification_evaluated_at_utc: str | None = None
     manifest_fingerprint: str | None = None
     source_manifest: Mapping[str, Any] | None = None
+    canonical_manifest_asset_id: str | None = None
     manifest_origin: IngestionManifestOrigin = (
         IngestionManifestOrigin.ABSENT
     )
@@ -280,6 +282,23 @@ class FrozenSemanticIngestionSnapshotV2:
                 self.split_fingerprint,
                 field_name="split_fingerprint",
             )
+        if self.canonical_manifest_asset_id is not None:
+            validate_safe_id(
+                self.canonical_manifest_asset_id,
+                field_name="canonical_manifest_asset_id",
+            )
+            if (
+                self.resolution_evidence.extraction_origin.value
+                != "deterministic_canonical"
+                or self.source_manifest is None
+                or self.canonical_manifest_asset_id
+                not in {item.asset_id for item in self.inventory.assets}
+            ):
+                raise IngestionContractError(
+                    "canonical_manifest_asset_invalid",
+                    "canonical manifest asset must identify the frozen "
+                    "operator or conventional manifest",
+                )
         if (
             isinstance(self.semantic_consensus_threshold, bool)
             or not isinstance(
@@ -339,17 +358,74 @@ class FrozenSemanticIngestionSnapshotV2:
                 if self.qualification_report is not None
                 else None
             ),
+            qualification_evaluated_at_utc=(
+                self.qualification_evaluated_at_utc
+            ),
+            ingestor_name=self.ingestor_name,
+            ingestor_version=self.ingestor_version,
+            trust_level=self.ingestor_trust_level,
+            authority_context_fingerprint=(
+                self.evidence_authority_context.fingerprint
+            ),
+            qualification_registry_fingerprint=(
+                self.qualification_registry.fingerprint
+            ),
+        )
+        legacy_identity = self.identity_for(
+            inventory_fingerprint=(
+                self.inventory.source_root_fingerprint
+            ),
+            source_bundle_fingerprint=self.source_bundle.fingerprint,
+            constitution_fingerprint=self.constitution.fingerprint,
+            rollout_policy_fingerprint=self.rollout_policy.fingerprint,
+            semantic_profile_fingerprint=(
+                self.semantic_profile.fingerprint
+            ),
+            manifest_fingerprint=self.manifest_fingerprint,
+            manifest_origin=self.manifest_origin,
+            extractor_fingerprints=self.extractor_fingerprints,
+            semantic_model_profile_fingerprint=(
+                self.semantic_model_profile_fingerprint
+            ),
+            semantic_provider_fingerprint=(
+                self.semantic_provider_fingerprint
+            ),
+            semantic_protocol_fingerprint=(
+                self.semantic_protocol_fingerprint
+            ),
+            qualification_report_fingerprint=(
+                self.qualification_report.report_fingerprint
+                if self.qualification_report is not None
+                else None
+            ),
             ingestor_name=self.ingestor_name,
             ingestor_version=self.ingestor_version,
             trust_level=self.ingestor_trust_level,
         )
         if (
             self.ingestion_id.startswith("ingestion-")
-            and self.ingestion_id != expected_identity
+            and self.ingestion_id
+            not in {expected_identity, legacy_identity}
         ):
             raise IngestionContractError(
                 "fingerprint_mismatch",
                 "semantic ingestion identity does not match frozen inputs",
+            )
+        if (
+            self.ingestion_id == legacy_identity
+            and (
+                self.rollout_policy.enabled_stage
+                is SemanticRolloutStage.VERIFIED
+                or self.authoritative_verification_ids
+                or self.evidence_authority_context.human_approval
+                is not None
+                or self.qualification_registry.trusted_report_fingerprints
+            )
+        ):
+            raise IngestionContractError(
+                "legacy_semantic_identity_untrusted",
+                "legacy semantic identity cannot carry verified authority or "
+                "qualification state",
             )
 
     @property
@@ -411,6 +487,100 @@ class FrozenSemanticIngestionSnapshotV2:
                 "fingerprint_mismatch",
                 "source bundle and source inventory differ",
             )
+        if (
+            self.resolution_evidence.extraction_origin.value
+            == "deterministic_canonical"
+        ):
+            from .semantic_canonical import (
+                recognize_canonical_semantic_source,
+                decode_canonical_semantic_source,
+            )
+
+            canonical_source = recognize_canonical_semantic_source(
+                self.source_bundle,
+                manifest_asset_id=self.canonical_manifest_asset_id,
+            )
+            if canonical_source is None:
+                raise IngestionContractError(
+                    "canonical_decoder_attestation_invalid",
+                    "frozen canonical source is no longer recognizable",
+                )
+            canonical_qualification = SemanticQualificationEvidenceV1(
+                registry=self.qualification_registry,
+                report=self.qualification_report,
+                model_profile_fingerprint=(
+                    self.semantic_model_profile_fingerprint
+                ),
+                provider_fingerprint=(
+                    self.semantic_provider_fingerprint
+                ),
+                semantic_protocol_fingerprint=(
+                    self.semantic_protocol_fingerprint
+                ),
+                constitution_fingerprint=self.constitution.fingerprint,
+                corpus_fingerprint=(
+                    self.qualification_corpus_fingerprint
+                ),
+                threshold_set_fingerprint=(
+                    self.qualification_threshold_set_fingerprint
+                ),
+                evaluated_at_utc=self.qualification_evaluated_at_utc,
+                extraction_origin=(
+                    self.resolution_evidence.extraction_origin
+                ),
+                deterministic_attestation_fingerprint=(
+                    self.resolution_evidence
+                    .deterministic_attestation_fingerprint
+                ),
+            )
+            decoded = decode_canonical_semantic_source(
+                canonical_source,
+                self.source_bundle,
+                self.semantic_profile,
+                ManifestOrigin(self.manifest_origin.value),
+                self.manifest_fingerprint,
+                canonical_qualification,
+                extractor_fingerprints=self.extractor_fingerprints,
+            )
+            mismatched_artifacts = [
+                name
+                for name, matches in (
+                    (
+                        "evidence_graph",
+                        decoded.evidence_graph == self.evidence_graph,
+                    ),
+                    (
+                        "evidence_authority_context",
+                        decoded.evidence_authority_context
+                        == self.evidence_authority_context,
+                    ),
+                    (
+                        "semantic_cases",
+                        decoded.semantic_cases == self.semantic_cases,
+                    ),
+                    (
+                        "improvement_signal_set",
+                        decoded.improvement_signal_set
+                        == self.improvement_signal_set,
+                    ),
+                    (
+                        "evaluation_plans",
+                        decoded.evaluation_plans
+                        == self.evaluation_plans,
+                    ),
+                    (
+                        "resolved_traces",
+                        decoded.resolved_traces == self.resolved_traces,
+                    ),
+                )
+                if not matches
+            ]
+            if mismatched_artifacts:
+                raise IngestionContractError(
+                    "canonical_decoder_attestation_invalid",
+                    "frozen canonical artifacts differ from deterministic "
+                    f"decode: {mismatched_artifacts}",
+                )
         active_reports = validate_report_chain(
             self.constitution,
             self.stage_reports,
@@ -467,6 +637,26 @@ class FrozenSemanticIngestionSnapshotV2:
                 "profile_fingerprint_mismatch",
                 "semantic profile and evidence graph differ",
             )
+        if (
+            self.evidence_authority_context.source_bundle_fingerprint
+            is not None
+            and self.evidence_authority_context.source_bundle_fingerprint
+            != self.source_bundle.fingerprint
+        ):
+            raise IngestionContractError(
+                "verification_authority_untrusted",
+                "evidence authority context is bound to another source bundle",
+            )
+        if (
+            self.evidence_authority_context.constitution_fingerprint
+            is not None
+            and self.evidence_authority_context.constitution_fingerprint
+            != self.constitution.fingerprint
+        ):
+            raise IngestionContractError(
+                "verification_authority_untrusted",
+                "evidence authority context is bound to another constitution",
+            )
         actual_authoritative_ids = tuple(
             sorted(
                 item.verification_id
@@ -481,6 +671,87 @@ class FrozenSemanticIngestionSnapshotV2:
                 "verification_authority_untrusted",
                 "authoritative verification IDs do not match the graph",
             )
+        deterministic_ids = tuple(
+            sorted(
+                item.verification_id
+                for item in self.evidence_graph.claim_verifications
+                if item.verification_origin.value
+                == "deterministic_decoder"
+            )
+        )
+        trusted_registered_ids = tuple(
+            sorted(
+                item.verification_id
+                for item in self.evidence_graph.claim_verifications
+                if item.verification_origin.value
+                == "trusted_registered_ingestor"
+            )
+        )
+        if (
+            tuple(
+                sorted(
+                    self.evidence_authority_context
+                    .deterministic_verification_ids
+                )
+            )
+            != deterministic_ids
+            or tuple(
+                sorted(
+                    self.evidence_authority_context
+                    .trusted_registered_verification_ids
+                )
+            )
+            != trusted_registered_ids
+        ):
+            raise IngestionContractError(
+                "verification_authority_untrusted",
+                "authority context does not contain the exact authoritative IDs",
+            )
+        if (
+            self.ingestor_trust_level
+            is IngestorTrustLevel.EXTERNAL_UNTRUSTED
+            and (
+                actual_authoritative_ids
+                or self.evidence_authority_context.human_approval is not None
+                or self.qualification_registry.trusted_report_fingerprints
+            )
+        ):
+            raise IngestionContractError(
+                "verification_authority_untrusted",
+                "external semantic ingestors cannot supply trust artifacts",
+            )
+        approval = self.evidence_authority_context.human_approval
+        if approval is not None:
+            manifest_fingerprint = self.manifest_fingerprint
+            if (
+                not approval.is_production_bound
+                or manifest_fingerprint is None
+                or not approval.matches(
+                    graph_fingerprint=(
+                        self.evidence_graph.logical_fingerprint
+                    ),
+                    graph_provenance_fingerprint=(
+                        self.evidence_graph.provenance_fingerprint
+                    ),
+                    source_bundle_fingerprint=(
+                        self.source_bundle.fingerprint
+                    ),
+                    constitution_fingerprint=(
+                        self.constitution.fingerprint
+                    ),
+                    semantic_profile_fingerprint=(
+                        self.semantic_profile.fingerprint
+                    ),
+                    manifest_fingerprint=manifest_fingerprint,
+                    manifest_origin=ManifestOrigin(
+                        self.manifest_origin.value
+                    ),
+                )
+            ):
+                raise IngestionContractError(
+                    "human_evidence_approval_binding_mismatch",
+                    "frozen human approval does not match semantic artifacts",
+                )
         expected_registry_fingerprint = (
             authoritative_verification_registry_fingerprint(
                 self.evidence_graph,
@@ -703,6 +974,14 @@ class FrozenSemanticIngestionSnapshotV2:
                 threshold_set_fingerprint=(
                     self.qualification_threshold_set_fingerprint
                 ),
+                evaluated_at_utc=self.qualification_evaluated_at_utc,
+                extraction_origin=(
+                    self.resolution_evidence.extraction_origin
+                ),
+                deterministic_attestation_fingerprint=(
+                    self.resolution_evidence
+                    .deterministic_attestation_fingerprint
+                ),
             ),
         )
         if expected_quality != self.quality_report:
@@ -741,6 +1020,9 @@ class FrozenSemanticIngestionSnapshotV2:
         ingestor_name: str,
         ingestor_version: str,
         trust_level: IngestorTrustLevel,
+        qualification_evaluated_at_utc: str | None = None,
+        authority_context_fingerprint: str | None = None,
+        qualification_registry_fingerprint: str | None = None,
     ) -> str:
         payload = {
             "schema_version": (
@@ -779,6 +1061,19 @@ class FrozenSemanticIngestionSnapshotV2:
             ),
             "qualification_report_fingerprint": (
                 qualification_report_fingerprint
+            ),
+            "qualification_evaluated_at_utc": (
+                qualification_evaluated_at_utc
+            ),
+            "authority_context_fingerprint": (
+                validate_fingerprint(authority_context_fingerprint)
+                if authority_context_fingerprint is not None
+                else None
+            ),
+            "qualification_registry_fingerprint": (
+                validate_fingerprint(qualification_registry_fingerprint)
+                if qualification_registry_fingerprint is not None
+                else None
             ),
             "ingestor_name": ingestor_name,
             "ingestor_version": ingestor_version,
@@ -831,6 +1126,9 @@ class FrozenSemanticIngestionSnapshotV2:
             ),
             "manifest_fingerprint": self.manifest_fingerprint,
             "manifest_origin": self.manifest_origin.value,
+            "canonical_manifest_asset_id": (
+                self.canonical_manifest_asset_id
+            ),
             "extractor_fingerprints": list(
                 self.extractor_fingerprints
             ),
@@ -857,6 +1155,9 @@ class FrozenSemanticIngestionSnapshotV2:
                 self.qualification_report.report_fingerprint
                 if self.qualification_report is not None
                 else None
+            ),
+            "qualification_evaluated_at_utc": (
+                self.qualification_evaluated_at_utc
             ),
             "semantic_consensus_threshold": (
                 self.semantic_consensus_threshold
@@ -1107,6 +1408,9 @@ class FrozenSemanticIngestionSnapshotV2:
                 if qualification_payload is not None
                 else None
             ),
+            qualification_evaluated_at_utc=payload.get(
+                "qualification_evaluated_at_utc"
+            ),
             manifest_fingerprint=payload.get("manifest_fingerprint"),
             source_manifest=(
                 _mapping(
@@ -1115,6 +1419,9 @@ class FrozenSemanticIngestionSnapshotV2:
                 )
                 if payload.get("source_manifest") is not None
                 else None
+            ),
+            canonical_manifest_asset_id=payload.get(
+                "canonical_manifest_asset_id"
             ),
             manifest_origin=IngestionManifestOrigin(
                 str(payload.get("manifest_origin") or "absent")

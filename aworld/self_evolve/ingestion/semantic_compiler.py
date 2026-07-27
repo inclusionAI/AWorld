@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 import json
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -51,6 +52,11 @@ TRACE_CANDIDATE_ATTESTATION_SCHEMA_VERSION = (
 TRACE_EXTRACTION_ATTESTATION_SCHEMA_VERSION = (
     "aworld.self_evolve.trace_extraction_attestation.v1"
 )
+
+
+class TraceExtractionOrigin(str, Enum):
+    SEMANTIC_AGENT_CONSENSUS = "semantic_agent_consensus"
+    DETERMINISTIC_DECODER = "deterministic_decoder"
 
 
 @dataclass(frozen=True)
@@ -176,6 +182,9 @@ class TraceExtractionAttestationV1:
     source_bindings: tuple[TraceSourceBindingV1, ...]
     candidate_attestations: tuple[TraceCandidateAttestationV1, ...]
     extractor_fingerprints: tuple[str, ...] = ()
+    extraction_origin: TraceExtractionOrigin = (
+        TraceExtractionOrigin.SEMANTIC_AGENT_CONSENSUS
+    )
     schema_version: str = TRACE_EXTRACTION_ATTESTATION_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -192,6 +201,11 @@ class TraceExtractionAttestationV1:
             self.evidence_graph_logical_fingerprint,
             field_name="evidence_graph_logical_fingerprint",
         )
+        object.__setattr__(
+            self,
+            "extraction_origin",
+            TraceExtractionOrigin(self.extraction_origin),
+        )
         if not self.source_bindings:
             raise IngestionContractError(
                 "semantic_trace_source_attestation_missing",
@@ -203,10 +217,23 @@ class TraceExtractionAttestationV1:
                 "duplicate_identity",
                 "trace source binding span IDs must be unique",
             )
-        if len(self.candidate_attestations) < 2:
+        if (
+            self.extraction_origin
+            is TraceExtractionOrigin.SEMANTIC_AGENT_CONSENSUS
+            and len(self.candidate_attestations) < 2
+        ):
             raise IngestionContractError(
                 "semantic_trace_consensus_insufficient",
-                "trace attestation requires two independent candidates",
+                "agent trace attestation requires two independent candidates",
+            )
+        if (
+            self.extraction_origin
+            is TraceExtractionOrigin.DETERMINISTIC_DECODER
+            and self.candidate_attestations
+        ):
+            raise IngestionContractError(
+                "semantic_trace_origin_mismatch",
+                "deterministic trace attestation cannot claim model candidates",
             )
         candidate_ids = [
             item.candidate_fingerprint
@@ -280,6 +307,11 @@ class TraceExtractionAttestationV1:
                 self.extractor_fingerprints
             ),
         }
+        if (
+            self.extraction_origin
+            is not TraceExtractionOrigin.SEMANTIC_AGENT_CONSENSUS
+        ):
+            result["extraction_origin"] = self.extraction_origin.value
         if include_fingerprint:
             result["fingerprint"] = self.fingerprint
         return result
@@ -308,6 +340,12 @@ class TraceExtractionAttestationV1:
                 for item in _sequence_value(
                     payload.get("candidate_attestations", ()),
                     "candidate_attestations",
+                )
+            ),
+            extraction_origin=TraceExtractionOrigin(
+                str(
+                    payload.get("extraction_origin")
+                    or TraceExtractionOrigin.SEMANTIC_AGENT_CONSENSUS.value
                 )
             ),
             extractor_fingerprints=tuple(
@@ -449,10 +487,13 @@ def attest_resolved_trace(
     source_bundle: SourceBundleV1,
     candidate_attestations: Sequence[
         TraceCandidateAttestationV1
-    ],
+    ] = (),
     extractor_fingerprints: Sequence[str] = (),
+    extraction_origin: TraceExtractionOrigin = (
+        TraceExtractionOrigin.SEMANTIC_AGENT_CONSENSUS
+    ),
 ) -> ResolvedSemanticTraceV1:
-    """Bind a consensus trace to graph citations and frozen source units."""
+    """Bind a framework-attested trace to graph citations and source units."""
 
     claims = {item.claim_id: item for item in graph.claims}
     claim = claims.get(trajectory_claim_id)
@@ -501,6 +542,7 @@ def attest_resolved_trace(
             source_bindings=tuple(bindings),
             candidate_attestations=tuple(candidate_attestations),
             extractor_fingerprints=tuple(extractor_fingerprints),
+            extraction_origin=extraction_origin,
         ),
     )
 

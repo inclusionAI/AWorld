@@ -159,7 +159,7 @@ class IngestionRegistry:
             )
         if (
             ingestor.trust_level is IngestorTrustLevel.FRAMEWORK_BUILTIN
-            and not isinstance(ingestor, AgenticDatasetIngestor)
+            and type(ingestor) is not AgenticDatasetIngestor
         ):
             raise IngestionContractError(
                 "registry_entry_invalid",

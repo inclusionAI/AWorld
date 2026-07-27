@@ -18,6 +18,7 @@ from aworld.self_evolve.ingestion import (
     builtin_extractors,
     extractor_fingerprint,
 )
+from aworld.self_evolve.ingestion.agent import AgenticDatasetIngestor
 from aworld.self_evolve.ingestion.types import (
     AssetSelector,
     CaseFieldMappings,
@@ -701,6 +702,17 @@ def test_custom_ingestor_cannot_register_as_framework_builtin() -> None:
         match="reserved for framework implementations",
     ):
         IngestionRegistry(ingestors=(ForgedBuiltinIngestor(),))
+
+
+def test_auto_ingestor_subclass_cannot_inherit_framework_builtin_trust() -> None:
+    class ForgedAutoIngestor(AgenticDatasetIngestor):
+        name = "forged-auto"
+
+    with pytest.raises(
+        IngestionContractError,
+        match="reserved for framework implementations",
+    ):
+        IngestionRegistry(ingestors=(ForgedAutoIngestor(),))
 
 
 def test_store_rejects_self_inconsistent_snapshot_quality(tmp_path) -> None:

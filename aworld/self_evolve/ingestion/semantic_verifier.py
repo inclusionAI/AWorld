@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Mapping, Sequence
 
 from aworld.self_evolve.constitution import (
@@ -64,10 +66,19 @@ DEFAULT_INGESTION_STAGES = (
 )
 
 
+class SemanticExtractionOrigin(str, Enum):
+    SEMANTIC_AGENT_POPULATION = "semantic_agent_population"
+    DETERMINISTIC_CANONICAL = "deterministic_canonical"
+
+
 @dataclass(frozen=True)
 class SemanticResolutionEvidenceV1:
     candidate_graphs: tuple[SelfImprovementEvidenceGraphV1, ...]
     resolver_output_fingerprints: tuple[str, ...]
+    extraction_origin: SemanticExtractionOrigin = (
+        SemanticExtractionOrigin.SEMANTIC_AGENT_POPULATION
+    )
+    deterministic_attestation_fingerprint: str | None = None
     schema_version: str = (
         "aworld.self_evolve.semantic_resolution_evidence.v1"
     )
@@ -90,6 +101,30 @@ class SemanticResolutionEvidenceV1:
                     "invalid_fingerprint",
                     "resolver output fingerprint must be SHA-256",
                 )
+        object.__setattr__(
+            self,
+            "extraction_origin",
+            SemanticExtractionOrigin(self.extraction_origin),
+        )
+        if (
+            self.extraction_origin
+            is SemanticExtractionOrigin.DETERMINISTIC_CANONICAL
+        ):
+            if self.candidate_graphs:
+                raise IngestionContractError(
+                    "canonical_candidate_population_invalid",
+                    "canonical resolution cannot claim model candidates",
+                )
+            _validate_optional_fingerprint(
+                self.deterministic_attestation_fingerprint,
+                required=True,
+                field_name="deterministic_attestation_fingerprint",
+            )
+        elif self.deterministic_attestation_fingerprint is not None:
+            raise IngestionContractError(
+                "semantic_resolution_attestation_invalid",
+                "model resolution cannot claim canonical attestation",
+            )
 
     @property
     def fingerprint(self) -> str:
@@ -108,6 +143,10 @@ class SemanticResolutionEvidenceV1:
             ],
             "resolver_output_fingerprints": list(
                 self.resolver_output_fingerprints
+            ),
+            "extraction_origin": self.extraction_origin.value,
+            "deterministic_attestation_fingerprint": (
+                self.deterministic_attestation_fingerprint
             ),
         }
         if include_fingerprint:
@@ -142,6 +181,19 @@ class SemanticResolutionEvidenceV1:
             resolver_output_fingerprints=tuple(
                 str(item) for item in outputs
             ),
+            extraction_origin=SemanticExtractionOrigin(
+                str(
+                    payload.get("extraction_origin")
+                    or SemanticExtractionOrigin
+                    .SEMANTIC_AGENT_POPULATION.value
+                )
+            ),
+            deterministic_attestation_fingerprint=(
+                str(payload["deterministic_attestation_fingerprint"])
+                if payload.get("deterministic_attestation_fingerprint")
+                is not None
+                else None
+            ),
             schema_version=str(payload.get("schema_version") or ""),
         )
         if len(evidence.candidate_graphs) != len(graphs):
@@ -168,6 +220,11 @@ class SemanticQualificationEvidenceV1:
     constitution_fingerprint: str
     corpus_fingerprint: str
     threshold_set_fingerprint: str
+    evaluated_at_utc: str | None = None
+    extraction_origin: SemanticExtractionOrigin = (
+        SemanticExtractionOrigin.SEMANTIC_AGENT_POPULATION
+    )
+    deterministic_attestation_fingerprint: str | None = None
     schema_version: str = (
         "aworld.self_evolve.semantic_qualification_evidence.v1"
     )
@@ -198,8 +255,70 @@ class SemanticQualificationEvidenceV1:
                     "invalid_fingerprint",
                     f"{name} must be SHA-256",
                 )
+        object.__setattr__(
+            self,
+            "extraction_origin",
+            SemanticExtractionOrigin(self.extraction_origin),
+        )
+        if (
+            self.extraction_origin
+            is SemanticExtractionOrigin.DETERMINISTIC_CANONICAL
+        ):
+            _validate_optional_fingerprint(
+                self.deterministic_attestation_fingerprint,
+                required=True,
+                field_name="deterministic_attestation_fingerprint",
+            )
+            if (
+                self.report is not None
+                or self.registry.trusted_report_fingerprints
+            ):
+                raise IngestionContractError(
+                    "canonical_qualification_invalid",
+                    "canonical decoder cannot inherit model qualification",
+                )
+        elif self.deterministic_attestation_fingerprint is not None:
+            raise IngestionContractError(
+                "semantic_qualification_attestation_invalid",
+                "model qualification cannot claim canonical attestation",
+            )
+        if (
+            self.extraction_origin
+            is SemanticExtractionOrigin.DETERMINISTIC_CANONICAL
+        ):
+            if self.evaluated_at_utc is not None:
+                raise IngestionContractError(
+                    "canonical_qualification_invalid",
+                    "canonical decoder cannot carry a model qualification "
+                    "evaluation time",
+                )
+        elif (
+            self.report is not None
+            or self.registry.trusted_report_fingerprints
+        ):
+            evaluated_at = self.evaluated_at_utc or _now_utc()
+            _validate_utc_timestamp(
+                evaluated_at,
+                field_name="evaluated_at_utc",
+            )
+            object.__setattr__(
+                self,
+                "evaluated_at_utc",
+                evaluated_at,
+            )
+        elif self.evaluated_at_utc is not None:
+            _validate_utc_timestamp(
+                self.evaluated_at_utc,
+                field_name="evaluated_at_utc",
+            )
+
     @property
     def qualified(self) -> bool:
+        if (
+            self.extraction_origin
+            is SemanticExtractionOrigin.DETERMINISTIC_CANONICAL
+        ):
+            return True
         return self.registry.accepts(
             self.report,
             model_profile_fingerprint=self.model_profile_fingerprint,
@@ -210,6 +329,7 @@ class SemanticQualificationEvidenceV1:
             constitution_fingerprint=self.constitution_fingerprint,
             corpus_fingerprint=self.corpus_fingerprint,
             threshold_set_fingerprint=self.threshold_set_fingerprint,
+            evaluated_at_utc=self.evaluated_at_utc,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -234,6 +354,11 @@ class SemanticQualificationEvidenceV1:
             "corpus_fingerprint": self.corpus_fingerprint,
             "threshold_set_fingerprint": (
                 self.threshold_set_fingerprint
+            ),
+            "evaluated_at_utc": self.evaluated_at_utc,
+            "extraction_origin": self.extraction_origin.value,
+            "deterministic_attestation_fingerprint": (
+                self.deterministic_attestation_fingerprint
             ),
         }
 
@@ -281,6 +406,24 @@ class SemanticQualificationEvidenceV1:
             threshold_set_fingerprint=str(
                 payload.get("threshold_set_fingerprint") or ""
             ),
+            evaluated_at_utc=(
+                str(payload["evaluated_at_utc"])
+                if payload.get("evaluated_at_utc") is not None
+                else None
+            ),
+            extraction_origin=SemanticExtractionOrigin(
+                str(
+                    payload.get("extraction_origin")
+                    or SemanticExtractionOrigin
+                    .SEMANTIC_AGENT_POPULATION.value
+                )
+            ),
+            deterministic_attestation_fingerprint=(
+                str(payload["deterministic_attestation_fingerprint"])
+                if payload.get("deterministic_attestation_fingerprint")
+                is not None
+                else None
+            ),
             schema_version=str(payload.get("schema_version") or ""),
         )
 
@@ -323,6 +466,9 @@ class SemanticEvidenceQualityReportV1:
     source_bundle_fingerprint: str
     verified_eligible_plan_count: int = 0
     non_verified_trainable_plan_count: int = 0
+    semantic_extraction_origin: str = (
+        SemanticExtractionOrigin.SEMANTIC_AGENT_POPULATION.value
+    )
     warning_reason_codes: tuple[str, ...] = ()
     failure_reason_codes: tuple[str, ...] = ()
     schema_version: str = SEMANTIC_EVIDENCE_QUALITY_SCHEMA_VERSION
@@ -432,6 +578,20 @@ class SemanticEvidenceQualityReportV1:
             self,
             "failure_reason_codes",
             tuple(sorted(self.failure_reason_codes)),
+        )
+        try:
+            normalized_origin = SemanticExtractionOrigin(
+                self.semantic_extraction_origin
+            )
+        except ValueError as exc:
+            raise IngestionContractError(
+                "semantic_extraction_origin_invalid",
+                "semantic extraction origin is unsupported",
+            ) from exc
+        object.__setattr__(
+            self,
+            "semantic_extraction_origin",
+            normalized_origin.value,
         )
 
     @property
@@ -672,16 +832,31 @@ def build_semantic_evidence_quality_report(
         if qualification_evidence is not None
         else False
     )
+    extraction_origin = (
+        qualification_evidence.extraction_origin
+        if qualification_evidence is not None
+        else SemanticExtractionOrigin.SEMANTIC_AGENT_POPULATION
+    )
     candidate_graphs = (
         resolution_evidence.candidate_graphs
         if resolution_evidence is not None
         else ()
     )
-    semantic_valid_candidate_count = len(candidate_graphs)
+    canonical_extraction = (
+        extraction_origin
+        is SemanticExtractionOrigin.DETERMINISTIC_CANONICAL
+    )
+    semantic_valid_candidate_count = (
+        1 if canonical_extraction else len(candidate_graphs)
+    )
     semantic_parse_consensus = (
-        semantic_candidate_consensus(candidate_graphs)
-        if len(candidate_graphs) >= 2
-        else 0.0
+        1.0
+        if canonical_extraction
+        else (
+            semantic_candidate_consensus(candidate_graphs)
+            if len(candidate_graphs) >= 2
+            else 0.0
+        )
     )
     resolver_outputs = (
         resolution_evidence.resolver_output_fingerprints
@@ -856,6 +1031,22 @@ def build_semantic_evidence_quality_report(
         failures.add("semantic_resolution_nondeterministic")
     if semantic_resolution_execution_count < 2:
         failures.add("semantic_resolution_evidence_insufficient")
+    if canonical_extraction:
+        if (
+            resolution_evidence is None
+            or resolution_evidence.extraction_origin
+            is not SemanticExtractionOrigin.DETERMINISTIC_CANONICAL
+            or resolution_evidence.deterministic_attestation_fingerprint
+            != qualification_evidence.deterministic_attestation_fingerprint
+            or model_call_count != 0
+        ):
+            failures.add("canonical_decoder_attestation_invalid")
+    elif (
+        resolution_evidence is not None
+        and resolution_evidence.extraction_origin
+        is not SemanticExtractionOrigin.SEMANTIC_AGENT_POPULATION
+    ):
+        failures.add("semantic_resolution_origin_mismatch")
     if not evaluation_plan_valid:
         failures.add("semantic_evaluation_plan_invalid")
     if held_out_semantic_exposure_count:
@@ -953,6 +1144,7 @@ def build_semantic_evidence_quality_report(
         non_verified_trainable_plan_count=(
             non_verified_trainable_plan_count
         ),
+        semantic_extraction_origin=extraction_origin.value,
         warning_reason_codes=tuple(warnings),
         failure_reason_codes=tuple(failures),
     )
@@ -1005,9 +1197,19 @@ def evaluate_semantic_quality_gate(
             reasons.add("semantic_conflicts_unresolved")
         if not report.semantic_model_profile_qualified:
             reasons.add("semantic_model_not_qualified")
-        if report.semantic_valid_candidate_count < 2:
+        canonical_extraction = (
+            report.semantic_extraction_origin
+            == SemanticExtractionOrigin.DETERMINISTIC_CANONICAL.value
+        )
+        if (
+            not canonical_extraction
+            and report.semantic_valid_candidate_count < 2
+        ):
             reasons.add("semantic_candidate_count_insufficient")
-        if report.semantic_parse_consensus < consensus_threshold:
+        if (
+            not canonical_extraction
+            and report.semantic_parse_consensus < consensus_threshold
+        ):
             reasons.add("semantic_parse_consensus_below_threshold")
         if report.non_verified_trainable_plan_count:
             reasons.add("semantic_trainable_plan_not_verified")
@@ -1019,10 +1221,60 @@ def evaluate_semantic_quality_gate(
     )
 
 
+def _now_utc() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _validate_utc_timestamp(value: str, *, field_name: str) -> None:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise IngestionContractError(
+            "semantic_qualification_time_invalid",
+            f"{field_name} must be an RFC3339 UTC timestamp",
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise IngestionContractError(
+            "semantic_qualification_time_invalid",
+            f"{field_name} must be an RFC3339 UTC timestamp",
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(
+        parsed
+    ):
+        raise IngestionContractError(
+            "semantic_qualification_time_invalid",
+            f"{field_name} must be an RFC3339 UTC timestamp",
+        )
+
+
 def _rate(numerator: int, denominator: int) -> float:
     if denominator == 0:
         return 1.0
     return float(numerator) / float(denominator)
+
+
+def _validate_optional_fingerprint(
+    value: str | None,
+    *,
+    required: bool,
+    field_name: str,
+) -> None:
+    if value is None and not required:
+        return
+    if (
+        not isinstance(value, str)
+        or not value.startswith("sha256:")
+        or len(value) != 71
+    ):
+        raise IngestionContractError(
+            "invalid_fingerprint",
+            f"{field_name} must be SHA-256",
+        )
 
 
 def _judge_rubric_compatibility(claims: Sequence[Any]) -> float:

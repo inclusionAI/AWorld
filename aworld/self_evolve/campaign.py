@@ -938,6 +938,30 @@ def run_self_improvement_campaign(
                     if prepared_request.get("source_manifest") is not None
                     else None
                 ),
+                semantic_evidence_approval=(
+                    str(
+                        prepared_request[
+                            "semantic_evidence_approval"
+                        ]
+                    )
+                    if prepared_request.get(
+                        "semantic_evidence_approval"
+                    )
+                    is not None
+                    else None
+                ),
+                semantic_qualification_report=(
+                    str(
+                        prepared_request[
+                            "semantic_qualification_report"
+                        ]
+                    )
+                    if prepared_request.get(
+                        "semantic_qualification_report"
+                    )
+                    is not None
+                    else None
+                ),
                 apply_policy=str(
                     prepared_request.get("apply_policy") or "auto_verified"
                 ),
@@ -947,6 +971,62 @@ def run_self_improvement_campaign(
                 ingestion_registry=prepared_request.get("ingestion_registry"),
             )
             prepared_request["frozen_ingestion_id"] = snapshot.ingestion_id
+            prepared_request["semantic_evidence_approval"] = None
+            prepared_request["semantic_qualification_report"] = None
+        elif (
+            prepared_request.get("frozen_ingestion_id") is not None
+            and (
+                prepared_request.get("semantic_evidence_approval")
+                is not None
+                or prepared_request.get(
+                    "semantic_qualification_report"
+                )
+                is not None
+            )
+        ):
+            from aworld.self_evolve.runner import (
+                promote_ingestion_from_cli_request,
+            )
+
+            promoted = promote_ingestion_from_cli_request(
+                workspace_root=workspace_root,
+                frozen_ingestion_id=str(
+                    prepared_request["frozen_ingestion_id"]
+                ),
+                semantic_evidence_approval=(
+                    str(
+                        prepared_request[
+                            "semantic_evidence_approval"
+                        ]
+                    )
+                    if prepared_request.get(
+                        "semantic_evidence_approval"
+                    )
+                    is not None
+                    else None
+                ),
+                semantic_qualification_report=(
+                    str(
+                        prepared_request[
+                            "semantic_qualification_report"
+                        ]
+                    )
+                    if prepared_request.get(
+                        "semantic_qualification_report"
+                    )
+                    is not None
+                    else None
+                ),
+                apply_policy=str(
+                    prepared_request.get("apply_policy")
+                    or "auto_verified"
+                ),
+            )
+            prepared_request["frozen_ingestion_id"] = (
+                promoted.ingestion_id
+            )
+            prepared_request["semantic_evidence_approval"] = None
+            prepared_request["semantic_qualification_report"] = None
         runtime_request = dict(prepared_request)
         campaign = controller.create(
             prepared_request,
@@ -1797,6 +1877,12 @@ def _source_snapshot(
                         snapshot.qualification_report.report_fingerprint
                         if snapshot.qualification_report is not None
                         else None
+                    ),
+                    "qualification_registry_fingerprint": (
+                        snapshot.qualification_registry.fingerprint
+                    ),
+                    "evidence_authority_context_fingerprint": (
+                        snapshot.evidence_authority_context.fingerprint
                     ),
                 }
             )

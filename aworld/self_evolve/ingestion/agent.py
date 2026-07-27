@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from aworld.self_evolve.evaluation_plan import (
+    HumanEvidenceApprovalV1,
     SemanticModelQualificationReportV1,
     SemanticQualificationRegistryV1,
 )
@@ -23,7 +24,12 @@ from .mapping import (
     validate_mapping_spec,
 )
 from .scanner import SourceScanner
-from .semantic_ingestor import SemanticSelfImprovementIngestor
+from .chunking import build_source_bundle
+from .semantic_canonical import recognize_canonical_semantic_source
+from .semantic_ingestor import (
+    SemanticSelfImprovementIngestor,
+    prepare_canonical_semantic_ingestion,
+)
 from .semantic_snapshot import FrozenSemanticIngestionSnapshotV2
 from .semantic_workflow import SemanticProvider
 from .types import (
@@ -275,6 +281,9 @@ class AgenticDatasetIngestor:
         semantic_qualification_registry: (
             SemanticQualificationRegistryV1 | None
         ) = None,
+        semantic_human_evidence_approval: (
+            HumanEvidenceApprovalV1 | None
+        ) = None,
     ) -> None:
         self.provider = provider
         self.extractors = tuple(extractors or builtin_extractors())
@@ -294,6 +303,9 @@ class AgenticDatasetIngestor:
         )
         self.semantic_qualification_registry = (
             semantic_qualification_registry
+        )
+        self.semantic_human_evidence_approval = (
+            semantic_human_evidence_approval
         )
 
     async def prepare(
@@ -350,6 +362,57 @@ class AgenticDatasetIngestor:
                 }
             )
         )
+        source_bundle = build_source_bundle(
+            request.source_path,
+            inventory=inventory,
+            ingestion_limits=request.limits,
+        )
+        manifest_asset_id = None
+        if manifest_path is not None:
+            try:
+                manifest_relative_path = (
+                    manifest_path.resolve(strict=True)
+                    .relative_to(source_root.resolve(strict=True))
+                    .as_posix()
+                )
+            except (OSError, ValueError):
+                manifest_relative_path = None
+            if manifest_relative_path is not None:
+                manifest_asset_id = next(
+                    (
+                        asset.asset_id
+                        for asset in inventory.assets
+                        if asset.relative_path
+                        == manifest_relative_path
+                    ),
+                    None,
+                )
+        canonical_source = recognize_canonical_semantic_source(
+            source_bundle,
+            manifest_asset_id=manifest_asset_id,
+        )
+        if canonical_source is not None:
+            if (
+                self.semantic_human_evidence_approval is not None
+                or self.semantic_qualification_report is not None
+                or self.semantic_qualification_registry is not None
+            ):
+                raise IngestionContractError(
+                    "canonical_trust_artifact_not_applicable",
+                    "canonical sources use framework deterministic authority",
+                )
+            return prepare_canonical_semantic_ingestion(
+                request,
+                inventory=inventory,
+                bundle=source_bundle,
+                source_set=canonical_source,
+                manifest=manifest,
+                manifest_origin=manifest_origin,
+                extractor_fingerprints=used_extractor_fingerprints,
+                ingestor_name=self.name,
+                ingestor_version=self.version,
+                trust_level=self.trust_level,
+            )
         semantic_requested = (
             manifest is not None
             and manifest.semantic_profile is not None
@@ -395,6 +458,9 @@ class AgenticDatasetIngestor:
                 ),
                 qualification_registry=(
                     self.semantic_qualification_registry
+                ),
+                human_evidence_approval=(
+                    self.semantic_human_evidence_approval
                 ),
                 timeout_seconds=self.timeout_seconds,
                 **kwargs,

@@ -125,9 +125,13 @@ Exactly one evaluation source is normally provided:
 - `--from-session <id>`: session-backed dataset construction.
 - `--batch-config <path>`: batch config for a larger request.
 - `--from-source <path>`: an arbitrary readable file or directory. The
-  framework defaults to the registered `auto` ingestor, discovers supported
-  structure, compiles a declarative mapping, validates it twice, and freezes a
-  canonical dataset before target inference.
+  framework defaults to the registered `auto` ingestor, preserves all source
+  units, and compiles structural or semantic evidence into a frozen internal
+  schema before target inference.
+- `--frozen-ingestion-id <id>`: an immutable prior semantic ingestion. Use it
+  to promote an already reviewed graph with explicit approval and
+  qualification artifacts without rescanning source files or rerunning the
+  semantic model.
 - `--from-run <run_id>`: previous run artifacts, usually with `--rerun-evaluator`.
 
 ### Agentic file/directory ingestion
@@ -149,26 +153,98 @@ aworld-cli optimize \
   --target skill:domain_agent \
   --apply proposal
 
-# Select a trusted SDK-registered domain ingestor
+# Free-form, production-trusted two-stage flow
+aworld-cli optimize \
+  --from-source ~/Documents/domain-data \
+  --source-manifest ~/Documents/domain-data/aworld-source.yaml \
+  --ingestion-only
+
+aworld-cli optimize \
+  --frozen-ingestion-id <ingestion-id-from-first-run> \
+  --semantic-evidence-approval \
+    .aworld/self_evolve/ingestions/<ingestion-id>/evidence_approval_template.json \
+  --semantic-qualification-report ~/Documents/qualification.json \
+  --target skill:domain_agent \
+  --apply auto_verified
+
+# Select an SDK-registered structural domain ingestor
 aworld-cli optimize \
   --from-source ~/Documents/domain-data \
   --source-ingestor crm-export-v2 \
   --target skill:crm_assistant \
-  --apply auto_verified
+  --apply proposal
 ```
 
 `--source-manifest` constrains the default flow; it is not a separate ingestion
-mode. `--ingestion-model-profile` supplies the mapping model only when
-deterministic structural mapping is insufficient. Custom names are resolved
-from `IngestionRegistry`; CLI import strings and generated parser code are not
-executed.
+mode. `--ingestion-model-profile` selects the isolated semantic/mapping
+deployment when deterministic decoding is insufficient. Custom ingestor names
+are resolved from `IngestionRegistry`; CLI import strings and generated parser
+code are not executed.
 
-JSON/JSONL/CSV/TSV/YAML with an unambiguous `input` field uses the deterministic
-built-in mapping. Plain text, Markdown, and generic logs do not silently assume
-one file equals one case: ambiguous framing is delegated to the isolated
-no-tool mapping agent and fails with `ingestion_model_unavailable` when no
-mapping model is configured. Existing AWorld trajectory logs are recognized
-deterministically and normalized back into trajectory-bearing cases.
+The external format is deliberately flexible. One Markdown file or many files
+may freely combine Harness trajectories, human comparisons, historical judge
+results, and analysis. The semantic swarm extracts this into framework-owned
+entities, cited claims, source dispositions, conflicts, actionable signals,
+evaluation plans, and trace attestations. It cannot grant authority or claim
+qualification. A strict
+`aworld.self_evolve.canonical_semantic_source.v1` JSON/YAML source instead uses
+the deterministic canonical decoder with zero model calls; any canonical
+marker makes mixed/unknown/dangling/control-field input fail closed. Conflicting
+payloads in the same semantic slot must be declared as a typed conflict;
+undeclared contradictions are rejected and declared unresolved conflicts
+cannot pass `auto_verified`.
+
+Free-form input remains proposal/human-review evidence unless two independent
+trust requirements pass:
+
+1. `--semantic-evidence-approval` is an operator-selected JSON artifact bound
+   to the exact logical/provenance graph, SourceBundle, constitution, semantic
+   profile, explicit manifest, and claim scope. `--ingestion-only` writes the
+   review template; merely placing approval text in the source or a
+   conventional manifest grants nothing.
+2. `--semantic-qualification-report` is bound to the exact
+   model/provider/protocol/constitution/corpus/threshold identities and its
+   fingerprint must be listed in
+   `.aworld/self_evolve/semantic_qualifications/index.json`. Failed, expired,
+   false-authority, drifted, unlisted, malformed, duplicate-key, or symlinked
+   artifacts are rejected. Reports contain an issuance and expiry window.
+   The versioned qualification corpus carries source-only single/multi-file
+   inputs. The exact-deployment runner gives the tested deployment only a
+   random opaque token and the raw documents, validates the returned frozen
+   semantic snapshot against the exact source/model/provider/protocol, and
+   derives scored outcomes in framework code. Gold case IDs, scenario tags,
+   and labels are not exposed. Scoring compares real source locator/hash,
+   canonical entity identity, claim payload/direction/relations, conflict
+   membership, and signal case/execution relations. Required-claim recall and
+   accepted-claim/conflict precision penalize omissions and every unmatched
+   extra output; gold values are never copied from kind/count matches.
+   Production reports must declare `exact_snapshot_v1`, the framework runner
+   protocol fingerprint, and a per-case source/snapshot attestation bundle
+   fingerprint. Recorded-outcome reports remain offline-only even when all
+   metrics pass.
+
+Qualification proves the semantic deployment, not the truth of a source
+claim. Approval proves operator authority for a frozen evidence graph, not
+model quality. Supplying only one cannot pass `auto_verified`. Canonical typed
+sources use framework deterministic verification and therefore need neither.
+For free-form evidence, the recommended second stage uses
+`--frozen-ingestion-id`: the framework recompiles authority, qualification,
+plans, quality, and the ingestion identity from the reviewed snapshot without
+reading source files or invoking the semantic model again.
+The qualification check time is frozen for audit/reload, while every new
+`auto_verified` admission rechecks report expiry against current time. A
+proposal or shadow snapshot cannot be reused under a verified runtime mode
+without deterministic promotion. Campaign creation performs that promotion
+before checkpointing and stores only the promoted ingestion ID, not mutable
+approval/report paths.
+The workspace registry is a framework-owned JSON file:
+
+```json
+{
+  "schema_version": "aworld.self_evolve.semantic_qualification_registry.v1",
+  "trusted_report_fingerprints": ["sha256:<report-fingerprint>"]
+}
+```
 
 SDK-registered ingestors and extractors cannot grant themselves trust.
 `framework_builtin` identity is registry-owned;
@@ -177,6 +253,10 @@ explicitly included in the registry allowlist; unlisted/custom entries remain
 `external_untrusted` and cannot pass `auto_verified`. A returned snapshot's
 name, version, trust, extractor fingerprints, case counts, coverage, and other
 derivable quality metrics are checked by the framework.
+Registered semantic snapshots are additionally fail-closed: external
+snapshots cannot supply authority/qualification, and allowlisted registered
+semantic authority is disabled until the framework can re-derive its
+claim-level attestations.
 
 Every successful ingestion writes an immutable snapshot under
 `.aworld/self_evolve/ingestions/<ingestion_id>/`. Normalized private cases use
@@ -186,14 +266,18 @@ all cycles of one Campaign reuse that frozen snapshot and split; changes to the
 raw directory after Campaign creation do not alter the active dataset.
 Evaluator-only reruns fail closed if `ingestion_ref.json` is absent or if its
 source, mapping, normalized dataset, or split fingerprint differs from the
-recipe/snapshot.
+recipe/snapshot. They also recheck the frozen rollout mode and current
+qualification expiry, so a proposal run cannot be upgraded to
+`auto_verified` and an expired report cannot be reused through
+`--rerun-evaluator`.
 
-Flexible source formats do not mean an unconstrained internal protocol. The
-normalized case schema, stable case identities, source/mapping fingerprints,
-deterministic split, coverage metrics, rejected-record diagnostics, and trust
-level are mandatory. `auto_verified` additionally requires sufficient record
-coverage, trusted ingestion, zero held-out exposure, and frozen snapshot/split
-evidence.
+Flexible source formats do not mean an unconstrained internal protocol. Stable
+case/signal/plan IDs, logical and physical provenance fingerprints, complete
+source dispositions, citations, entailment, conflict preservation,
+deterministic splits, trace attestations, authority context, qualification
+evidence, and frozen snapshot identity remain mandatory. `auto_verified`
+requires every train/validation plan to be verified-eligible before optimizer
+projection.
 
 The CLI summary includes ingestion status, normalized case count, record
 coverage, rejected-record count, and mapping-model call count. Mapping-model

@@ -20,13 +20,80 @@
   `plans/010-add-agentic-self-evolve-dataset-ingestion.md`
 - **类别**：direction / architecture / security / tests / docs
 - **计划基线**：commit `bb2c7e56`，2026-07-24
+- **实现状态**：DONE（2026-07-27）；完整 non-live self-evolve、CLI、
+  static validation 与双重独立 trust review 均通过，工作树等待用户决定是否提交。
 - **复核修订**：2026-07-24；纳入 semantic authority、coverage、target inference、
   actionable signal 和 model qualification 审查意见
 - **阻塞修复**：2026-07-27；已关闭 verified-plan authority、source-bound
   trajectory attestation、framework-derived case/signal/plan identity、
-  rollout/gate mode binding 和 validation split persistence 阻塞。Plan 011
-  仍保持 IN PROGRESS，剩余项主要是离线 qualification corpus、文档和最终全量
-  发布验收。
+  rollout/gate mode binding 和 validation split persistence 阻塞。
+- **生产可信闭环**：2026-07-27；deterministic canonical decoder、显式
+  operator approval artifact、workspace qualification registry/offline corpus
+  已实现并接入。canonical source 可零模型进入 verified；free-form source
+  只有 approval 与 exact-deployment qualification 同时通过才可进入 verified。
+  安全复审进一步补充了 canonical 矛盾检测、qualification 有效期与 exact
+  frozen-snapshot deployment runner、冻结 snapshot 的零模型 trust promotion、
+  builtin exact-type trust 和 verified identity 加固。qualification checked-at
+  被冻结用于历史重放，而每个新的 `auto_verified` admission 仍按当前时间检查；
+  Campaign 在 checkpoint 前完成 promotion 并移除可变 trust artifact 路径。
+  evaluator-only rerun 同样重新执行 frozen rollout mode 和当前 qualification
+  expiry 准入。最终双重复审未发现可复现 P0/P1/P2。
+
+### 2026-07-27 生产可信闭环记录
+
+- canonical 输入使用严格的
+  `aworld.self_evolve.canonical_semantic_source.v1` source-draft envelope，
+  支持 JSON/YAML 单文件和多分片目录。framework 从实际 SourceBundle 派生
+  spans、IDs、`deterministic_decoder` verifications、trace attestations、
+  authority context、cases/signals/plans；source 自报 authority/control/final-ID、
+  mixed/unknown/dangling 输入 fail closed。同一 semantic slot 的不同 payload
+  必须显式声明 conflict；未声明矛盾直接拒绝，已声明 unresolved conflict 不能
+  进入 verified。snapshot 冻结实际 manifest asset identity，reload 会重新
+  deterministic decode 并比较冻结产物。
+- `HumanEvidenceApprovalV1` 生产 artifact 绑定 graph logical/provenance、
+  SourceBundle、constitution、semantic profile、operator-explicit manifest 和
+  claim scope。首轮 `--ingestion-only` 写入 review template；只有第二轮显式
+  `--semantic-evidence-approval` 才形成 operator action。declared profile 与
+  effective authority profile 已分离，消除了两阶段 graph fingerprint 循环。
+- qualification 使用 versioned human-labeled corpus、固定 thresholds、九类指标
+  （包含 required-claim recall、accepted-claim/conflict precision）与
+  false-authority hard gate。`--semantic-qualification-report` 只接受 exact
+  model/provider/protocol/constitution/corpus/threshold binding，且 report
+  fingerprint 必须存在于固定 workspace registry
+  `.aworld/self_evolve/semantic_qualifications/index.json`。report 绑定签发/到期
+  窗口；corpus 包含可执行的单/多文件 source payload。exact-deployment runner
+  只向被测 deployment 暴露随机 opaque token 和原始 source documents，
+  framework 从返回的 `FrozenSemanticIngestionSnapshotV2` 验证 source/deployment
+  binding，并以人工标注的 semantic signatures 比较真实 source locator/hash、
+  entity canonical identity、claim payload/方向/关系、conflict claim members、
+  case/execution/signal 关系；所有 unmatched claims/conflicts 都计入 false
+  positive，禁止按 kind/数量把 gold 值回填为预测。gold case ID、scenario tags
+  与 labels 不进入被测 deployment。
+- qualification report 显式记录 `qualification_method`、framework runner
+  protocol fingerprint 和 per-case source/snapshot attestation bundle
+  fingerprint。recorded-outcome runner 只用于离线协议/评分测试，即使指标满分也
+  不能被 production registry 接受；只有 `exact_snapshot_v1` report 可用于
+  `auto_verified` admission。
+- 四象限契约已建立：无 artifact、qualification-only、approval-only 均不能进入
+  verified；两者齐全且 evidence 无 unresolved blocker 时 train/validation plan
+  才为 `eligible_for_verified_pipeline`。authority/registry/report fingerprints
+  进入 ingestion identity；Campaign 首轮后只保留 frozen ingestion ID。
+- free-form 的第二阶段通过 `--frozen-ingestion-id` 对已审阅 snapshot 做
+  deterministic promotion，重新编译 authority、qualification、plans、quality
+  和新 ingestion identity，不重新读取 source 或调用 semantic model。runtime
+  不允许把 proposal/shadow snapshot 直接以 `auto_verified` 重算 gate；mode 必须
+  与 frozen rollout identity 一致。
+- qualification 的 `qualification_evaluated_at_utc` 进入 frozen snapshot 和
+  ingestion identity。历史 reload 使用该时间重算 attestation，因此 report
+  后续到期不会破坏审计；新的 `auto_verified` run/Campaign admission 会用当前
+  时间重新验证 report，过期后拒绝继续运行。
+- Campaign 收到 proposal frozen ID 与 approval/report 时，在创建 checkpoint
+  前先 deterministic promote，只持久化 promoted ingestion ID，并清空 approval/
+  report 路径；后续 cycle/resume 不重新读取可变外部 trust artifact。
+- external semantic snapshot 不能自带 deterministic/human authority 或
+  qualification allowlist。trusted registered semantic authority 在 framework
+  能重新派生 claim-level attestation 前明确 fail closed，不复用 structural
+  verifier 形成旁路。
 
 ### 2026-07-27 安全复审阻塞关闭记录
 
@@ -821,6 +888,11 @@ authority。schema 至少包含：
 - `metric_values`
 - `required_thresholds`
 - `false_authority_elevation_count`
+- `qualification_method`: `recorded_outcomes_v1 | exact_snapshot_v1`
+- `runner_protocol_fingerprint`
+- `case_attestation_bundle_fingerprint`
+- `issued_at_utc`
+- `expires_at_utc`
 - `status`: `qualified | failed | expired`
 - `report_fingerprint`
 
@@ -1141,10 +1213,14 @@ Qualification reports 存放在独立的 workspace-scoped registry：
 store 以 canonical report schema 校验并只读查询；普通 ingestion 不能写入
 qualified report。只有显式 qualification command/test harness 可以产出待审
 report，operator 安装/登记后才生效。report 不包含 API key、完整 prompts 或
-private corpus 内容。
+private corpus 内容。registry 只接受 `exact_snapshot_v1`、framework runner
+protocol 和非空 case-attestation bundle fingerprint；recorded outcomes
+即使达到全部阈值也保持 non-production。
 
 Evaluator rerun、`--from-run` 和 Campaign 后续 cycle 只读 graph/cases/plans 和
-normalized cases；semantic/mapping model call count 必须为 0。
+normalized cases；semantic/mapping model call count 必须为 0。evaluator-only
+rerun 在复用前重新校验 frozen rollout mode 与当前 qualification expiry，不能
+把 proposal run 升级成 verified，也不能继续使用已过期的 report。
 
 ## 核心验收样例
 
@@ -1669,14 +1745,19 @@ conda run -n aworld_env python -m pytest \
    - 单文件/拆分文件/重排/同义改写；
    - entity 重名、跨文件指代、缺失字段、矛盾 Judge；
    - prompt injection 和“看似 Judge 的普通文本”；
-   - expected entity/claim/relation/conflict/source-disposition gold。
+   - expected source locator/hash、entity canonical identity、claim
+     payload/direction/relation、conflict membership、case/signal execution
+     relationship gold；
+   - 相同 kind/数量但排名方向、citation 或 entity 错误必须失败；
+   - unmatched actual claim/conflict 必须计入 false positive；
+   - recorded-outcome 满分 report 不能进入 production allowlist。
 6. 定义并固定 qualification thresholds：
-   - accepted claim precision；
-   - required-claim recall；
-   - relation/entity-link accuracy；
-   - conflict recall；
-   - unsupported/ambiguous rejection accuracy；
-   - source disposition coverage；
+   - source-unit disposition accuracy；
+   - accepted-claim precision 与 required-claim recall；
+   - citation-span exact match 与 entailment accuracy；
+   - entity-link accuracy；
+   - conflict recall 与 precision；
+   - signal actionability accuracy；
    - false authority elevation count 必须为 0。
 7. `test_semantic_model_live_qualification.py` 复用同一 corpus/evaluator，仅在
    `semantic_model_live` marker 和显式 profile 环境下运行，输出不含秘密的
@@ -1796,40 +1877,40 @@ git status --short
 
 全部满足才可标记 DONE：
 
-- [ ] `--from-source <single-file>` 和 `<directory>` 使用同一 semantic pipeline。
-- [ ] Constitution 固定 stages/transitions/invariants；agents 只能在阶段内动态推理。
-- [ ] structural source 继续走零 semantic model call 的 fast path。
-- [ ] 只有 semantic-exhaustive 且 source dispositions 完整的 source 可走 fast path。
-- [ ] canonical graph、自由单文件和自由多文件均能冻结。
-- [ ] 核心 A/B 三表示产生相同 graph/dataset/plan logical fingerprints。
-- [ ] source/provenance fingerprints 能区分三种物理表示。
-- [ ] 所有 accepted claims 有可复验 source span。
-- [ ] 所有 source units 有 disposition，unexplained count 为 0。
-- [ ] accepted claims 均有 entailment verification；contradicted/insufficient 不进入
+- [x] `--from-source <single-file>` 和 `<directory>` 使用同一 semantic pipeline。
+- [x] Constitution 固定 stages/transitions/invariants；agents 只能在阶段内动态推理。
+- [x] structural source 继续走零 semantic model call 的 fast path。
+- [x] 只有 semantic-exhaustive 且 source dispositions 完整的 source 可走 fast path。
+- [x] canonical graph、自由单文件和自由多文件均能冻结。
+- [x] 核心 A/B 三表示产生相同 graph/dataset/plan logical fingerprints。
+- [x] source/provenance fingerprints 能区分三种物理表示。
+- [x] 所有 accepted claims 有可复验 source span。
+- [x] 所有 source units 有 disposition，unexplained count 为 0。
+- [x] accepted claims 均有 entailment verification；contradicted/insufficient 不进入
   authoritative graph。
-- [ ] entity ambiguity 和 human/Judge conflict 不会被静默消解。
-- [ ] conventional auto-discovered manifest 无法提升 authority。
-- [ ] 默认 profile 下核心冲突场景降为 proposal/human review。
-- [ ] historical LLM judge 不替代当前 evaluator。
-- [ ] LLM consensus 单独不能通过 auto_verified。
-- [ ] semantic-agent-only claims 不会生成 authoritative expected output 或解决冲突。
-- [ ] 每个 trainable comparison 形成包含双方行为差异的 actionable/advisory signal。
-- [ ] optimizer context/lineage 能证明消费了 signal set，而非只看到 claim IDs。
-- [ ] 无显式 target、无 replay seed 时，所有 eligible traces 仍进入现有 target
+- [x] entity ambiguity 和 human/Judge conflict 不会被静默消解。
+- [x] conventional auto-discovered manifest 无法提升 authority。
+- [x] 默认 profile 下核心冲突场景降为 proposal/human review。
+- [x] historical LLM judge 不替代当前 evaluator。
+- [x] LLM consensus 单独不能通过 auto_verified。
+- [x] semantic-agent-only claims 不会生成 authoritative expected output 或解决冲突。
+- [x] 每个 trainable comparison 形成包含双方行为差异的 actionable/advisory signal。
+- [x] optimizer context/lineage 能证明消费了 signal set，而非只看到 claim IDs。
+- [x] 无显式 target、无 replay seed 时，所有 eligible traces 仍进入现有 target
   inference；冲突继续 fail closed。
-- [ ] offline model qualification corpus 达到固定 thresholds；false authority
+- [x] offline model qualification corpus 达到固定 thresholds；false authority
   elevation 为 0。
-- [ ] constitution、stage reports、manifest origin、graph、verifications、signals、
+- [x] constitution、stage reports、manifest origin、graph、verifications、signals、
   target bundle、plan 和 profile 被版本化、冻结、指纹化。
-- [ ] v1 Plan 010 ingestion artifact 可读、可验证、可 rerun。
-- [ ] rerun/Campaign semantic model call count 为 0。
-- [ ] held-out semantic exposure count 为 0。
-- [ ] 未生成或执行 parser/evaluator code、shell command 或动态 import。
-- [ ] public report/prompt 不泄漏 raw source、绝对路径或 held-out 内容。
-- [ ] 完整 self-evolve 与 CLI 测试通过且没有新增 skip。
-- [ ] `git diff --check` 通过。
-- [ ] 没有修改 out-of-scope 文件或覆盖用户未提交修改。
-- [ ] `plans/README.md` 状态和实际 commit/test counts 已更新。
+- [x] v1 Plan 010 ingestion artifact 可读、可验证、可 rerun。
+- [x] rerun/Campaign semantic model call count 为 0。
+- [x] held-out semantic exposure count 为 0。
+- [x] 未生成或执行 parser/evaluator code、shell command 或动态 import。
+- [x] public report/prompt 不泄漏 raw source、绝对路径或 held-out 内容。
+- [x] 完整 self-evolve 与 CLI 测试通过且没有新增默认 suite skip。
+- [x] `git diff --check` 通过。
+- [x] 没有修改 out-of-scope 文件或覆盖用户未提交修改。
+- [x] `plans/README.md` 状态和实际 test counts 已更新。
 
 ## STOP conditions
 

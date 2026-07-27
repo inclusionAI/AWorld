@@ -13,12 +13,15 @@ from aworld.self_evolve.evaluation_plan import (
     EvaluationPlanContractError,
     HistoricalJudgeAuthority,
     HumanClaimAuthority,
+    HumanEvidenceApprovalV1,
     JudgeRubricPolicy,
     ManifestOrigin,
     QualificationStatus,
+    SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1,
     SelfImprovementEvaluationPlanV1,
     SemanticIngestionProfileV1,
     SemanticModelQualificationReportV1,
+    SemanticQualificationMethod,
     SemanticQualificationRegistryV1,
     compile_evaluation_plan,
     default_semantic_ingestion_profile,
@@ -38,6 +41,18 @@ from tests.self_evolve.test_improvement_signals import (
 
 def _fingerprint(character: str) -> str:
     return "sha256:" + character * 64
+
+
+def _production_qualification_fields() -> dict[str, object]:
+    return {
+        "qualification_method": (
+            SemanticQualificationMethod.EXACT_SNAPSHOT_V1
+        ),
+        "runner_protocol_fingerprint": (
+            SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1
+        ),
+        "case_attestation_bundle_fingerprint": _fingerprint("a"),
+    }
 
 
 def _elevated_profile(
@@ -181,6 +196,9 @@ def test_human_approval_is_explicit_and_content_addressed() -> None:
 def test_operator_ground_truth_requires_matching_approval() -> None:
     graph_fingerprint = _fingerprint("a")
     manifest_fingerprint = _fingerprint("b")
+    graph_provenance_fingerprint = _fingerprint("c")
+    source_bundle_fingerprint = _fingerprint("d")
+    constitution_fingerprint = _fingerprint("e")
     profile = _elevated_profile(approved_graph=graph_fingerprint)
     without_approval = effective_profile_for_origin(
         profile,
@@ -194,11 +212,36 @@ def test_operator_ground_truth_requires_matching_approval() -> None:
         manifest_fingerprint=manifest_fingerprint,
         manifest_origin=ManifestOrigin.OPERATOR_EXPLICIT,
     )
-    approved = effective_profile_for_origin(
+    weakly_approved = effective_profile_for_origin(
         profile,
         manifest_origin=ManifestOrigin.OPERATOR_EXPLICIT,
         approval=approval,
         graph_fingerprint=graph_fingerprint,
+        manifest_fingerprint=manifest_fingerprint,
+    )
+    strong_approval = issue_human_evidence_approval(
+        profile=profile,
+        graph_fingerprint=graph_fingerprint,
+        manifest_fingerprint=manifest_fingerprint,
+        manifest_origin=ManifestOrigin.OPERATOR_EXPLICIT,
+        graph_provenance_fingerprint=(
+            graph_provenance_fingerprint
+        ),
+        source_bundle_fingerprint=source_bundle_fingerprint,
+        constitution_fingerprint=constitution_fingerprint,
+        semantic_profile_fingerprint=profile.fingerprint,
+    )
+    approved = effective_profile_for_origin(
+        profile,
+        manifest_origin=ManifestOrigin.OPERATOR_EXPLICIT,
+        approval=strong_approval,
+        graph_fingerprint=graph_fingerprint,
+        graph_provenance_fingerprint=(
+            graph_provenance_fingerprint
+        ),
+        source_bundle_fingerprint=source_bundle_fingerprint,
+        constitution_fingerprint=constitution_fingerprint,
+        semantic_profile_fingerprint=profile.fingerprint,
         manifest_fingerprint=manifest_fingerprint,
     )
 
@@ -207,8 +250,60 @@ def test_operator_ground_truth_requires_matching_approval() -> None:
         is HumanClaimAuthority.SOFT_LABEL
     )
     assert (
+        weakly_approved.human_claim_authority
+        is HumanClaimAuthority.SOFT_LABEL
+    )
+    assert (
         approved.human_claim_authority
         is HumanClaimAuthority.GROUND_TRUTH
+    )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "graph_fingerprint",
+        "graph_provenance_fingerprint",
+        "source_bundle_fingerprint",
+        "constitution_fingerprint",
+        "semantic_profile_fingerprint",
+        "manifest_fingerprint",
+    ],
+)
+def test_strong_operator_approval_rejects_every_binding_drift(
+    field_name: str,
+) -> None:
+    values = {
+        "graph_fingerprint": _fingerprint("a"),
+        "graph_provenance_fingerprint": _fingerprint("b"),
+        "source_bundle_fingerprint": _fingerprint("c"),
+        "constitution_fingerprint": _fingerprint("d"),
+        "semantic_profile_fingerprint": _fingerprint("e"),
+        "manifest_fingerprint": _fingerprint("f"),
+    }
+    approval = HumanEvidenceApprovalV1(
+        evidence_graph_logical_fingerprint=values[
+            "graph_fingerprint"
+        ],
+        evidence_graph_provenance_fingerprint=values[
+            "graph_provenance_fingerprint"
+        ],
+        source_bundle_fingerprint=values[
+            "source_bundle_fingerprint"
+        ],
+        constitution_fingerprint=values["constitution_fingerprint"],
+        semantic_profile_fingerprint=values[
+            "semantic_profile_fingerprint"
+        ],
+        manifest_fingerprint=values["manifest_fingerprint"],
+        approval_origin=ManifestOrigin.OPERATOR_EXPLICIT,
+    )
+    drifted = dict(values)
+    drifted[field_name] = _fingerprint("9")
+
+    assert not approval.matches(
+        **drifted,
+        manifest_origin=ManifestOrigin.OPERATOR_EXPLICIT,
     )
 
 
@@ -243,6 +338,9 @@ def test_model_qualification_is_bound_to_protocol_and_thresholds() -> None:
         required_thresholds={"claim_precision": 0.98},
         false_authority_elevation_count=0,
         status=QualificationStatus.QUALIFIED,
+        issued_at_utc="2026-01-01T00:00:00Z",
+        expires_at_utc="2100-01-01T00:00:00Z",
+        **_production_qualification_fields(),
     )
 
     assert report.qualifies(
@@ -414,6 +512,10 @@ def test_compiler_preserves_explicit_approved_authority() -> None:
         graph_fingerprint=graph_fingerprint,
         manifest_fingerprint=manifest_fingerprint,
         manifest_origin=ManifestOrigin.OPERATOR_EXPLICIT,
+        graph_provenance_fingerprint=graph.provenance_fingerprint,
+        source_bundle_fingerprint=_fingerprint("7"),
+        constitution_fingerprint=_fingerprint("4"),
+        semantic_profile_fingerprint=profile.fingerprint,
     )
     signal_set = SelfImprovementSignalSetV1(
         signals=(_signal(),),
@@ -433,6 +535,9 @@ def test_compiler_preserves_explicit_approved_authority() -> None:
         required_thresholds={"claim_precision": 0.98},
         false_authority_elevation_count=0,
         status=QualificationStatus.QUALIFIED,
+        issued_at_utc="2026-01-01T00:00:00Z",
+        expires_at_utc="2100-01-01T00:00:00Z",
+        **_production_qualification_fields(),
     )
 
     compiled = compile_evaluation_plan(
@@ -446,6 +551,8 @@ def test_compiler_preserves_explicit_approved_authority() -> None:
         authority_context=issue_evidence_authority_context(
             graph,
             human_approval=approval,
+            source_bundle_fingerprint=_fingerprint("7"),
+            constitution_fingerprint=_fingerprint("4"),
         ),
         qualification_report=report,
         qualification_registry=SemanticQualificationRegistryV1(
@@ -488,6 +595,10 @@ def test_partial_human_approval_cannot_authorize_unscoped_claims() -> None:
         manifest_fingerprint=manifest_fingerprint,
         manifest_origin=ManifestOrigin.OPERATOR_EXPLICIT,
         approved_claim_scope=("claim-preference",),
+        graph_provenance_fingerprint=graph.provenance_fingerprint,
+        source_bundle_fingerprint=_fingerprint("7"),
+        constitution_fingerprint=_fingerprint("4"),
+        semantic_profile_fingerprint=profile.fingerprint,
     )
     signal_set = SelfImprovementSignalSetV1(
         signals=(_signal(),),
@@ -507,6 +618,9 @@ def test_partial_human_approval_cannot_authorize_unscoped_claims() -> None:
         required_thresholds={"claim_precision": 0.98},
         false_authority_elevation_count=0,
         status=QualificationStatus.QUALIFIED,
+        issued_at_utc="2026-01-01T00:00:00Z",
+        expires_at_utc="2100-01-01T00:00:00Z",
+        **_production_qualification_fields(),
     )
 
     compiled = compile_evaluation_plan(
@@ -520,6 +634,8 @@ def test_partial_human_approval_cannot_authorize_unscoped_claims() -> None:
         authority_context=issue_evidence_authority_context(
             graph,
             human_approval=approval,
+            source_bundle_fingerprint=_fingerprint("7"),
+            constitution_fingerprint=_fingerprint("4"),
         ),
         qualification_report=report,
         qualification_registry=SemanticQualificationRegistryV1(
@@ -538,3 +654,39 @@ def test_partial_human_approval_cannot_authorize_unscoped_claims() -> None:
         is EvaluationDisposition.HUMAN_REVIEW_REQUIRED
     )
     assert "expected_output_not_authoritative" in compiled.reason_codes
+
+
+def test_authority_context_rejects_missing_or_wrong_strong_bindings() -> None:
+    graph, _ = _graph_and_case()
+    profile = _elevated_profile(
+        approved_graph=graph.logical_fingerprint
+    )
+    approval = issue_human_evidence_approval(
+        profile=profile,
+        graph_fingerprint=graph.logical_fingerprint,
+        manifest_fingerprint=_fingerprint("8"),
+        manifest_origin=ManifestOrigin.OPERATOR_EXPLICIT,
+        graph_provenance_fingerprint=graph.provenance_fingerprint,
+        source_bundle_fingerprint=_fingerprint("7"),
+        constitution_fingerprint=_fingerprint("4"),
+        semantic_profile_fingerprint=profile.fingerprint,
+    )
+
+    with pytest.raises(
+        EvaluationPlanContractError,
+        match="exact source and constitution",
+    ):
+        issue_evidence_authority_context(
+            graph,
+            human_approval=approval,
+        )
+    with pytest.raises(
+        EvaluationPlanContractError,
+        match="exact source and constitution",
+    ):
+        issue_evidence_authority_context(
+            graph,
+            human_approval=approval,
+            source_bundle_fingerprint=_fingerprint("6"),
+            constitution_fingerprint=_fingerprint("4"),
+        )

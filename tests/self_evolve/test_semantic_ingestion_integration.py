@@ -14,9 +14,17 @@ from aworld.self_evolve.constitution import (
 )
 from aworld.self_evolve.campaign import (
     SelfImprovementCampaignController,
+    run_self_improvement_campaign,
 )
 from aworld.self_evolve.evaluation_plan import (
     EvaluationDisposition,
+    HumanEvidenceApprovalV1,
+    ManifestOrigin,
+    QualificationStatus,
+    SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1,
+    SemanticModelQualificationReportV1,
+    SemanticQualificationMethod,
+    SemanticQualificationRegistryV1,
     SelfImprovementEvaluationPlanV1,
     default_semantic_ingestion_profile,
 )
@@ -53,6 +61,9 @@ from aworld.self_evolve.ingestion.semantic_resolver import (
 from aworld.self_evolve.ingestion.semantic_snapshot import (
     FrozenSemanticIngestionSnapshotV2,
 )
+from aworld.self_evolve.ingestion.semantic_ingestor import (
+    promote_frozen_semantic_ingestion,
+)
 from aworld.self_evolve.ingestion.semantic_workflow import (
     SEMANTIC_AGENT_CANDIDATE_SCHEMA_VERSION,
     SemanticProviderResponseV1,
@@ -66,10 +77,19 @@ from aworld.self_evolve.ingestion.types import (
     IngestionMode,
     fingerprint_json,
 )
-from aworld.self_evolve.runner import optimize_from_cli_request
+from aworld.self_evolve.runner import (
+    _load_human_evidence_approval,
+    optimize_from_cli_request,
+    promote_ingestion_from_cli_request,
+)
+from aworld.self_evolve.semantic_qualification import (
+    FRAMEWORK_SEMANTIC_QUALIFICATION_CORPUS_FINGERPRINT_V1,
+    framework_semantic_qualification_thresholds_v1,
+)
 from tests.self_evolve.test_semantic_compiler import (
     _with_input_and_traces,
 )
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
 
 
 def _fingerprint(character: str) -> str:
@@ -540,6 +560,307 @@ def test_auto_verified_rejects_proposal_plan_before_optimizer_projection(
     )
     assert snapshot.quality_report.non_verified_trainable_plan_count == 1
     assert snapshot.normalized_cases[0].self_improvement_signals == ()
+
+
+def test_operator_approval_and_allowlisted_qualification_reach_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "domain.md"
+    source.write_text(
+        "Harness A failed. Harness B recovered. Human ranking B > A.\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "semantic-source.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "aworld.self_evolve.source_manifest.v1"
+                ),
+                "semantics": (
+                    default_semantic_ingestion_profile().to_dict()
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    first, _ = _prepare(
+        source,
+        manifest_path=manifest,
+        manifest_origin=IngestionManifestOrigin.OPERATOR_EXPLICIT,
+    )
+    assert first.manifest_fingerprint is not None
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.write_ingestion(first)
+    template_path = (
+        store.ingestion_path(first.ingestion_id)
+        / "evidence_approval_template.json"
+    )
+    assert template_path.is_file()
+    template_approval = _load_human_evidence_approval(template_path)
+    template_payload = json.loads(
+        template_path.read_text(encoding="utf-8")
+    )
+    weak_approval_path = tmp_path / "weak-approval.json"
+    weak_approval_payload = dict(template_payload)
+    weak_approval_payload.pop("constitution_fingerprint")
+    weak_approval_path.write_text(
+        json.dumps(weak_approval_payload),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="schema drifted"):
+        _load_human_evidence_approval(weak_approval_path)
+    drifted_approval_path = tmp_path / "drifted-approval.json"
+    drifted_approval_payload = dict(template_payload)
+    drifted_approval_payload["authority"] = "self-asserted"
+    drifted_approval_path.write_text(
+        json.dumps(drifted_approval_payload),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="schema drifted"):
+        _load_human_evidence_approval(drifted_approval_path)
+    with pytest.raises(ValueError, match="mode does not match"):
+        optimize_from_cli_request(
+            workspace_root=tmp_path,
+            frozen_ingestion_id=first.ingestion_id,
+            source_ingestor="auto",
+            apply_policy="auto_verified",
+            target="skill:demo",
+            infer_target=False,
+        )
+    approval = HumanEvidenceApprovalV1(
+        evidence_graph_logical_fingerprint=(
+            first.evidence_graph.logical_fingerprint
+        ),
+        evidence_graph_provenance_fingerprint=(
+            first.evidence_graph.provenance_fingerprint
+        ),
+        source_bundle_fingerprint=first.source_bundle.fingerprint,
+        constitution_fingerprint=first.constitution.fingerprint,
+        semantic_profile_fingerprint=first.semantic_profile.fingerprint,
+        manifest_fingerprint=first.manifest_fingerprint,
+        approval_origin=ManifestOrigin.OPERATOR_EXPLICIT,
+    )
+    assert template_approval == approval
+    thresholds = framework_semantic_qualification_thresholds_v1()
+    report = SemanticModelQualificationReportV1(
+        model_profile_fingerprint=_fingerprint("2"),
+        provider_fingerprint=_fingerprint("1"),
+        semantic_protocol_fingerprint=_fingerprint("3"),
+        constitution_fingerprint=first.constitution.fingerprint,
+        corpus_fingerprint=(
+            FRAMEWORK_SEMANTIC_QUALIFICATION_CORPUS_FINGERPRINT_V1
+        ),
+        threshold_set_fingerprint=(
+            thresholds.threshold_set_fingerprint
+        ),
+        metric_values=dict(thresholds.metric_thresholds),
+        required_thresholds=dict(thresholds.metric_thresholds),
+        false_authority_elevation_count=0,
+        status=QualificationStatus.QUALIFIED,
+        issued_at_utc="2026-01-01T00:00:00Z",
+        expires_at_utc="2100-01-01T00:00:00Z",
+        qualification_method=(
+            SemanticQualificationMethod.EXACT_SNAPSHOT_V1
+        ),
+        runner_protocol_fingerprint=(
+            SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1
+        ),
+        case_attestation_bundle_fingerprint=_fingerprint("a"),
+    )
+    qualification_only = asyncio.run(
+        AgenticDatasetIngestor(
+            semantic_provider=_provider_for_source(source),
+            semantic_provider_fingerprint=_fingerprint("1"),
+            semantic_model_profile_fingerprint=_fingerprint("2"),
+            semantic_protocol_fingerprint=_fingerprint("3"),
+            semantic_qualification_report=report,
+            semantic_qualification_registry=(
+                SemanticQualificationRegistryV1(
+                    trusted_report_fingerprints=(
+                        report.report_fingerprint,
+                    )
+                )
+            ),
+        ).prepare(
+            DatasetIngestionRequest(
+                source_path=source,
+                manifest_path=manifest,
+                manifest_origin=(
+                    IngestionManifestOrigin.OPERATOR_EXPLICIT
+                ),
+                mode=IngestionMode.AUTO_VERIFIED,
+            )
+        )
+    )
+    assert "supporting_evidence_not_authoritative" in (
+        qualification_only.evaluation_plans[0].reason_codes
+    )
+    approval_only = asyncio.run(
+        AgenticDatasetIngestor(
+            semantic_provider=_provider_for_source(source),
+            semantic_provider_fingerprint=_fingerprint("1"),
+            semantic_model_profile_fingerprint=_fingerprint("2"),
+            semantic_protocol_fingerprint=_fingerprint("3"),
+            semantic_human_evidence_approval=approval,
+        ).prepare(
+            DatasetIngestionRequest(
+                source_path=source,
+                manifest_path=manifest,
+                manifest_origin=(
+                    IngestionManifestOrigin.OPERATOR_EXPLICIT
+                ),
+                mode=IngestionMode.AUTO_VERIFIED,
+            )
+        )
+    )
+    assert "semantic_model_not_qualified" in (
+        approval_only.evaluation_plans[0].reason_codes
+    )
+    provider = _provider_for_source(source)
+    ingestor = AgenticDatasetIngestor(
+        semantic_provider=provider,
+        semantic_provider_fingerprint=_fingerprint("1"),
+        semantic_model_profile_fingerprint=_fingerprint("2"),
+        semantic_protocol_fingerprint=_fingerprint("3"),
+        semantic_human_evidence_approval=approval,
+        semantic_qualification_report=report,
+        semantic_qualification_registry=SemanticQualificationRegistryV1(
+            trusted_report_fingerprints=(report.report_fingerprint,)
+        ),
+    )
+
+    verified = asyncio.run(
+        ingestor.prepare(
+            DatasetIngestionRequest(
+                source_path=source,
+                manifest_path=manifest,
+                manifest_origin=(
+                    IngestionManifestOrigin.OPERATOR_EXPLICIT
+                ),
+                mode=IngestionMode.AUTO_VERIFIED,
+            )
+        )
+    )
+
+    assert verified.evidence_graph.logical_fingerprint == (
+        first.evidence_graph.logical_fingerprint
+    )
+    assert verified.ingestion_id != first.ingestion_id
+    assert verified.quality_gate.allowed is True
+    assert verified.quality_report.semantic_model_profile_qualified is True
+    assert verified.quality_report.verified_eligible_plan_count == 1
+    assert verified.evaluation_plans[0].disposition is (
+        EvaluationDisposition.ELIGIBLE_FOR_VERIFIED_PIPELINE
+    )
+    promoted = promote_frozen_semantic_ingestion(
+        first,
+        mode=IngestionMode.AUTO_VERIFIED,
+        human_approval=approval,
+        qualification_report=report,
+        qualification_registry=SemanticQualificationRegistryV1(
+            trusted_report_fingerprints=(report.report_fingerprint,)
+        ),
+    )
+    assert promoted.evidence_graph == first.evidence_graph
+    assert promoted.ingestion_id != first.ingestion_id
+    assert promoted.evidence_authority_context == (
+        verified.evidence_authority_context
+    )
+    assert promoted.qualification_report == (
+        verified.qualification_report
+    )
+    assert promoted.quality_gate.allowed is True
+    assert promoted.ingestion_model_call_count == (
+        first.ingestion_model_call_count
+    )
+    qualification_path = tmp_path / "qualification.json"
+    qualification_path.write_text(
+        json.dumps(report.to_dict()),
+        encoding="utf-8",
+    )
+    registry_path = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "semantic_qualifications"
+        / "index.json"
+    )
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(
+        json.dumps(
+            SemanticQualificationRegistryV1(
+                trusted_report_fingerprints=(
+                    report.report_fingerprint,
+                )
+            ).to_dict()
+        ),
+        encoding="utf-8",
+    )
+    promoted_from_frozen = promote_ingestion_from_cli_request(
+        workspace_root=tmp_path,
+        frozen_ingestion_id=first.ingestion_id,
+        semantic_evidence_approval=str(template_path),
+        semantic_qualification_report=str(qualification_path),
+    )
+    assert promoted_from_frozen.ingestion_id != first.ingestion_id
+    assert promoted_from_frozen.evidence_authority_context == (
+        promoted.evidence_authority_context
+    )
+    assert promoted_from_frozen.quality_gate.allowed is True
+    assert promoted_from_frozen.ingestion_model_call_count == (
+        first.ingestion_model_call_count
+    )
+
+    def fake_run_bounded(self, campaign, *, runtime_request=None):
+        return {
+            "campaign_id": campaign.campaign_id,
+            "persisted_request": dict(campaign.request),
+            "runtime_request": dict(runtime_request or {}),
+        }
+
+    monkeypatch.setattr(
+        SelfImprovementCampaignController,
+        "run_bounded",
+        fake_run_bounded,
+    )
+    campaign_summary = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "apply_policy": "auto_verified",
+            "frozen_ingestion_id": first.ingestion_id,
+            "semantic_evidence_approval": str(template_path),
+            "semantic_qualification_report": str(
+                qualification_path
+            ),
+            "source_ingestor": "auto",
+            "target": "skill:demo",
+            "infer_target": False,
+        },
+        max_improvement_cycles=2,
+    )
+    persisted_request = campaign_summary["persisted_request"]
+    runtime_request = campaign_summary["runtime_request"]
+    assert persisted_request["frozen_ingestion_id"] != (
+        first.ingestion_id
+    )
+    assert persisted_request["semantic_evidence_approval"] is None
+    assert persisted_request["semantic_qualification_report"] is None
+    assert runtime_request["frozen_ingestion_id"] == (
+        persisted_request["frozen_ingestion_id"]
+    )
+    assert runtime_request["semantic_evidence_approval"] is None
+    assert runtime_request["semantic_qualification_report"] is None
+    campaign_snapshot = store.read_ingestion(
+        persisted_request["frozen_ingestion_id"]
+    )
+    assert campaign_snapshot.quality_gate.mode is (
+        IngestionMode.AUTO_VERIFIED
+    )
+    assert campaign_snapshot.ingestion_model_call_count == (
+        first.ingestion_model_call_count
+    )
 
 
 def test_semantically_exhaustive_structural_schema_uses_zero_model_calls(

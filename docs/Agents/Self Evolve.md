@@ -218,20 +218,70 @@ AWorld trajectory log or canonical JSONL dataset. The default ingestor is
 `auto`; a manifest can constrain discovery and mapping, while SDK callers can
 register a trusted domain-specific `DatasetIngestor`.
 
-The ingestion swarm is adaptive only at the source interpretation boundary.
-It may discover structure and propose a bounded declarative mapping, but it
-cannot generate or execute Python, shell, templates, dynamic imports, network
-reads, or verification commands. The framework materializes the mapping twice,
-records rejected rows, computes coverage/security/trajectory/recovery metrics,
-freezes normalized cases and their split, and runs `dataset_ingestion` before
-target inference or candidate generation.
+The ingestion swarm is adaptive at the source interpretation boundary, while
+the framework owns the workflow and every transition. Free-form Markdown,
+logs, structured records, trajectories, human rankings, and historical judge
+results are converted into a versioned `SelfImprovementEvidenceGraph`, typed
+conflicts, improvement signals, evaluation plans, and target evidence. Every
+source unit receives a disposition, every accepted claim is cited and
+verified, and unresolved evidence remains visible. Agents cannot grant
+authority, declare model qualification, select the optimization target, or
+control rollout/apply policy.
 
-Unambiguous structured sources use a deterministic mapping without a model.
-Plain text, Markdown, and generic logs are treated as framing-ambiguous and use
-the isolated, one-step, no-tool mapping agent; AWorld trajectory logs have a
-deterministic compatibility extractor that preserves task IDs and SAR steps.
-All invalid JSONL/log records remain explicit rejected records, including
-beyond the first diagnostic page.
+Routing is canonical-first. A strict
+`aworld.self_evolve.canonical_semantic_source.v1` JSON/YAML source uses the
+framework deterministic decoder with zero model calls. It rejects mixed parts,
+dangling references, source-supplied final IDs, verification origins, authority
+fields, dispositions, and undeclared same-slot contradictions. Explicit
+unresolved canonical conflicts remain non-verified. Otherwise semantically
+exhaustive known schemas may
+use the structural fast path; incomplete or free-form sources enter the
+constitution-bounded semantic swarm. The internal schema is strong even when
+the external document format is weak.
+
+Free-form semantic evidence is proposal/human-review evidence by default.
+Production `auto_verified` additionally requires both an operator-selected,
+graph/source/profile/constitution/manifest-bound approval artifact and an
+allowlisted qualification report for the exact model/provider/protocol
+deployment. The workspace qualification trust root is
+`.aworld/self_evolve/semantic_qualifications/index.json`; a source document or
+model response cannot add itself to it. A deterministic canonical source uses
+framework decoder authority instead of model qualification or human approval.
+
+For a free-form verified flow, first run `--ingestion-only` with an explicit
+manifest and review the frozen graph, conflicts, signals, and plans. The store
+writes `evidence_approval_template.json`. Passing that file explicitly to a
+deterministic frozen-snapshot promotion is the operator approval action:
+
+```bash
+aworld-cli optimize \
+  --from-source path/to/domain-data \
+  --source-manifest path/to/domain-data/aworld-source.yaml \
+  --ingestion-only
+
+aworld-cli optimize \
+  --frozen-ingestion-id <ingestion-id-from-first-run> \
+  --semantic-evidence-approval path/to/evidence_approval_template.json \
+  --semantic-qualification-report path/to/qualification.json \
+  --apply auto_verified
+```
+
+Promotion does not rescan source or rerun the semantic swarm. It recompiles the
+reviewed graph with the approval and qualification bindings and writes a new
+content-addressed ingestion. Qualification reports have explicit issuance and
+expiry timestamps. Their corpus includes source-only single/multi-file
+payloads. The exact-deployment runner exposes only an opaque token and source
+documents, validates a returned frozen semantic snapshot against the active
+source/model/provider/protocol, and derives outcomes without exposing gold
+case IDs, scenario tags, or labels. Exact scoring compares content-derived
+source locators/hashes, canonical entity identity, claim payload and direction,
+conflict membership, and signal case/execution relationships; unmatched actual
+claims or conflicts count as false positives. Production reports carry
+`exact_snapshot_v1`, the framework runner protocol fingerprint, and a per-case
+source/snapshot attestation bundle fingerprint. Recorded-outcome reports are
+offline-only and cannot enter the production allowlist. Snapshot reload uses the frozen
+qualification check time for audit stability; each new verified admission
+rechecks expiry using current time.
 
 Trust is assigned by `IngestionRegistry`, never by the snapshot returned from a
 custom object. A `workspace_allowlisted` ingestor or extractor needs an
@@ -240,6 +290,9 @@ explicitly configured fingerprint; otherwise its effective trust is
 extractor fingerprints, normalized rows, and all quality fields derivable from
 the frozen artifacts. Manifest policy is frozen with the snapshot and is
 reapplied at the final ingestion gate.
+Custom semantic snapshots cannot self-supply deterministic/human authority or
+a qualification allowlist; trusted registered semantic authority remains
+fail-closed until the framework can re-derive claim-level attestations.
 
 The frozen ingestion identity is independent of the run identity. It is reused
 by baseline and candidate evaluation, evaluator-only reruns, and every cycle in
@@ -247,10 +300,17 @@ one bounded Campaign. The mapping agent does not choose the self-evolve target;
 when normalized cases contain no trace and the caller omits `--target`, target
 inference fails with missing evidence rather than guessing from source fields.
 Evaluator reruns require the original `ingestion_ref.json` and cross-check it
-against the recipe and frozen snapshot. Mapping-model calls are charged to the
+against the recipe and frozen snapshot. Before reuse they also enforce the
+requested frozen rollout mode and current qualification expiry; evaluator-only
+rerun cannot upgrade proposal evidence or bypass an expired report.
+Mapping-model calls are charged to the
 run/Campaign candidate-generation ledger as `frozen-dataset-ingestion`; a
 reused Campaign snapshot is charged on its first cycle rather than once per
 cycle.
+Frozen rollout mode is also part of that identity: a proposal/shadow snapshot
+cannot be reinterpreted as verified by recalculating a runtime gate. Campaign
+bootstrap promotes first, persists only the promoted ingestion ID, and removes
+approval/report paths before later cycles or resume.
 
 Once a concrete candidate has failed, the next repair prompt switches to `focused_candidate_delta` mode. It includes the failed candidate package, bounded machine-readable diagnostics, the relevant source branches, and the repair acceptance contract. Broad trajectory, lesson, and current-target payloads are omitted from that repair prompt so the model edits the observed failure frontier instead of regenerating the whole skill.
 

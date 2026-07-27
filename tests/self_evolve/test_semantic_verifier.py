@@ -18,7 +18,9 @@ from aworld.self_evolve.evaluation_plan import (
     EvaluationDisposition,
     ManifestOrigin,
     QualificationStatus,
+    SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1,
     SemanticModelQualificationReportV1,
+    SemanticQualificationMethod,
     SemanticQualificationRegistryV1,
 )
 from aworld.self_evolve.ingestion.semantic_compiler import (
@@ -127,6 +129,15 @@ def _semantic_artifacts(tmp_path: Path):
         required_thresholds={"claim_precision": 0.98},
         false_authority_elevation_count=0,
         status=QualificationStatus.QUALIFIED,
+        issued_at_utc="2026-01-01T00:00:00Z",
+        expires_at_utc="2100-01-01T00:00:00Z",
+        qualification_method=(
+            SemanticQualificationMethod.EXACT_SNAPSHOT_V1
+        ),
+        runner_protocol_fingerprint=(
+            SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1
+        ),
+        case_attestation_bundle_fingerprint=_fingerprint("a"),
     )
     qualification = SemanticQualificationEvidenceV1(
         registry=SemanticQualificationRegistryV1(

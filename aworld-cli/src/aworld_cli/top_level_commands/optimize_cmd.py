@@ -53,6 +53,15 @@ class OptimizeTopLevelCommand:
             help="File or directory to normalize through a source ingestor.",
         )
         parser.add_argument(
+            "--frozen-ingestion-id",
+            type=str,
+            dest="frozen_ingestion_id",
+            help=(
+                "Reuse or promote an immutable semantic ingestion without "
+                "rerunning source extraction."
+            ),
+        )
+        parser.add_argument(
             "--source-ingestor",
             type=str,
             default="auto",
@@ -70,6 +79,18 @@ class OptimizeTopLevelCommand:
             type=str,
             dest="ingestion_model_profile",
             help="Model profile used by the auto source ingestor.",
+        )
+        parser.add_argument(
+            "--semantic-evidence-approval",
+            type=str,
+            dest="semantic_evidence_approval",
+            help="Operator-selected graph-bound semantic evidence approval JSON.",
+        )
+        parser.add_argument(
+            "--semantic-qualification-report",
+            type=str,
+            dest="semantic_qualification_report",
+            help="Allowlisted semantic model qualification report JSON.",
         )
         parser.add_argument(
             "--ingestion-only",
@@ -213,10 +234,19 @@ class OptimizeTopLevelCommand:
                 from_session=getattr(args, "from_session", None),
                 from_trajectory=getattr(args, "from_trajectory", None),
                 from_source=getattr(args, "from_source", None),
+                frozen_ingestion_id=getattr(
+                    args, "frozen_ingestion_id", None
+                ),
                 source_ingestor=getattr(args, "source_ingestor", "auto"),
                 source_manifest=getattr(args, "source_manifest", None),
                 ingestion_model_profile=getattr(
                     args, "ingestion_model_profile", None
+                ),
+                semantic_evidence_approval=getattr(
+                    args, "semantic_evidence_approval", None
+                ),
+                semantic_qualification_report=getattr(
+                    args, "semantic_qualification_report", None
                 ),
                 ingestion_only=bool(getattr(args, "ingestion_only", False)),
                 from_trajectory_set=getattr(args, "from_trajectory_set", None),
@@ -415,9 +445,12 @@ def run_optimize_cli(
     rerun_evaluator: bool = False,
     from_trajectory_set: str | None = None,
     from_source: str | None = None,
+    frozen_ingestion_id: str | None = None,
     source_ingestor: str = "auto",
     source_manifest: str | None = None,
     ingestion_model_profile: str | None = None,
+    semantic_evidence_approval: str | None = None,
+    semantic_qualification_report: str | None = None,
     ingestion_only: bool = False,
 ) -> Mapping[str, Any]:
     _validate_ingestion_cli_options(
@@ -428,9 +461,12 @@ def run_optimize_cli(
         batch_config=batch_config,
         from_run=from_run,
         from_source=from_source,
+        frozen_ingestion_id=frozen_ingestion_id,
         source_ingestor=source_ingestor,
         source_manifest=source_manifest,
         ingestion_model_profile=ingestion_model_profile,
+        semantic_evidence_approval=semantic_evidence_approval,
+        semantic_qualification_report=semantic_qualification_report,
         ingestion_only=ingestion_only,
     )
     import aworld.self_evolve as self_evolve
@@ -484,8 +520,11 @@ def run_optimize_cli(
         "from_session": from_session,
         "from_trajectory": from_trajectory,
         "from_source": from_source,
+        "frozen_ingestion_id": frozen_ingestion_id,
         "source_ingestor": source_ingestor if from_source is not None else None,
         "source_manifest": source_manifest,
+        "semantic_evidence_approval": semantic_evidence_approval,
+        "semantic_qualification_report": semantic_qualification_report,
         "ingestion_model_config": ingestion_model_config,
         "ingestion_only": bool(ingestion_only),
         "from_trajectory_set": from_trajectory_set,
@@ -556,9 +595,12 @@ def _validate_ingestion_cli_options(
     batch_config: str | None,
     from_run: str | None,
     from_source: str | None,
+    frozen_ingestion_id: str | None,
     source_ingestor: str,
     source_manifest: str | None,
     ingestion_model_profile: str | None,
+    semantic_evidence_approval: str | None,
+    semantic_qualification_report: str | None,
     ingestion_only: bool,
 ) -> None:
     sources = {
@@ -569,6 +611,7 @@ def _validate_ingestion_cli_options(
         "--batch-config": batch_config,
         "--from-run": from_run,
         "--from-source": from_source,
+        "--frozen-ingestion-id": frozen_ingestion_id,
     }
     selected = [flag for flag, value in sources.items() if value is not None]
     if len(selected) > 1:
@@ -583,8 +626,15 @@ def _validate_ingestion_cli_options(
     )
     if source_only_options and from_source is None:
         raise ValueError(
-            "--source-ingestor, --source-manifest, --ingestion-model-profile, "
-            "and --ingestion-only require --from-source"
+            "source ingestion and semantic trust options require --from-source"
+        )
+    if (
+        semantic_evidence_approval is not None
+        or semantic_qualification_report is not None
+    ) and from_source is None and frozen_ingestion_id is None:
+        raise ValueError(
+            "semantic trust options require --from-source or "
+            "--frozen-ingestion-id"
         )
 
 

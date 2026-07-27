@@ -22,7 +22,9 @@ from aworld.self_evolve.evaluation_plan import (
     EvaluationDisposition,
     ManifestOrigin,
     QualificationStatus,
+    SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1,
     SemanticModelQualificationReportV1,
+    SemanticQualificationMethod,
     SemanticQualificationRegistryV1,
     compile_evaluation_plan,
     default_semantic_ingestion_profile,
@@ -64,6 +66,10 @@ from aworld.self_evolve.ingestion.types import (
     IngestorTrustLevel,
 )
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.runner import (
+    _validate_frozen_semantic_runtime_admission,
+    _validate_rerun_source_runtime_admission,
+)
 from tests.self_evolve.test_semantic_compiler import (
     _authoritative_graph_and_context,
     _with_input_and_traces,
@@ -158,6 +164,12 @@ def _snapshot(
     tmp_path: Path,
     *,
     split: DatasetSplit = DatasetSplit.TRAIN,
+    qualification_evaluated_at_utc: str = (
+        "2026-07-01T00:00:00Z"
+    ),
+    qualification_expires_at_utc: str = (
+        "2100-01-01T00:00:00Z"
+    ),
 ) -> FrozenSemanticIngestionSnapshotV2:
     source = tmp_path / "domain.md"
     source.write_text(
@@ -276,6 +288,15 @@ def _snapshot(
         required_thresholds={"claim_precision": 0.98},
         false_authority_elevation_count=0,
         status=QualificationStatus.QUALIFIED,
+        issued_at_utc="2026-01-01T00:00:00Z",
+        expires_at_utc=qualification_expires_at_utc,
+        qualification_method=(
+            SemanticQualificationMethod.EXACT_SNAPSHOT_V1
+        ),
+        runner_protocol_fingerprint=(
+            SEMANTIC_EXACT_SNAPSHOT_RUNNER_PROTOCOL_FINGERPRINT_V1
+        ),
+        case_attestation_bundle_fingerprint=_fingerprint("a"),
     )
     qualification_registry = SemanticQualificationRegistryV1(
         trusted_report_fingerprints=(
@@ -336,6 +357,9 @@ def _snapshot(
             qualification_threshold_set_fingerprint=(
                 _fingerprint("5")
             ),
+            qualification_evaluated_at_utc=(
+                qualification_evaluated_at_utc
+            ),
         )
         rollout_policy = SemanticRolloutPolicyV1(
             policy_id="semantic-rollout-verified",
@@ -364,6 +388,13 @@ def _snapshot(
         ingestor_name="auto",
         ingestor_version="2",
         trust_level=IngestorTrustLevel.FRAMEWORK_BUILTIN,
+        qualification_evaluated_at_utc=(
+            qualification_evaluated_at_utc
+        ),
+        authority_context_fingerprint=authority_context.fingerprint,
+        qualification_registry_fingerprint=(
+            qualification_registry.fingerprint
+        ),
     )
     compiled = compile_semantic_dataset(
         graph=graph,
@@ -417,6 +448,7 @@ def _snapshot(
         constitution_fingerprint=constitution.fingerprint,
         corpus_fingerprint=_fingerprint("4"),
         threshold_set_fingerprint=_fingerprint("5"),
+        evaluated_at_utc=qualification_evaluated_at_utc,
     )
     quality = build_semantic_evidence_quality_report(
         bundle=bundle,
@@ -471,6 +503,9 @@ def _snapshot(
         qualification_corpus_fingerprint=_fingerprint("4"),
         qualification_threshold_set_fingerprint=_fingerprint("5"),
         qualification_report=qualification_report,
+        qualification_evaluated_at_utc=(
+            qualification_evidence.evaluated_at_utc
+        ),
     )
 
 
@@ -504,6 +539,125 @@ def test_semantic_snapshot_store_round_trip_and_public_projection(
     )
     assert "Task input" not in public
     assert str(tmp_path) not in public
+
+
+def test_legacy_semantic_identity_cannot_carry_verified_trust(
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    legacy_identity = FrozenSemanticIngestionSnapshotV2.identity_for(
+        inventory_fingerprint=(
+            snapshot.inventory.source_root_fingerprint
+        ),
+        source_bundle_fingerprint=snapshot.source_bundle.fingerprint,
+        constitution_fingerprint=snapshot.constitution.fingerprint,
+        rollout_policy_fingerprint=snapshot.rollout_policy.fingerprint,
+        semantic_profile_fingerprint=(
+            snapshot.semantic_profile.fingerprint
+        ),
+        manifest_fingerprint=snapshot.manifest_fingerprint,
+        manifest_origin=snapshot.manifest_origin,
+        extractor_fingerprints=snapshot.extractor_fingerprints,
+        semantic_model_profile_fingerprint=(
+            snapshot.semantic_model_profile_fingerprint
+        ),
+        semantic_provider_fingerprint=(
+            snapshot.semantic_provider_fingerprint
+        ),
+        semantic_protocol_fingerprint=(
+            snapshot.semantic_protocol_fingerprint
+        ),
+        qualification_report_fingerprint=(
+            snapshot.qualification_report.report_fingerprint
+            if snapshot.qualification_report is not None
+            else None
+        ),
+        ingestor_name=snapshot.ingestor_name,
+        ingestor_version=snapshot.ingestor_version,
+        trust_level=snapshot.ingestor_trust_level,
+    )
+    legacy_compiled = replace(
+        snapshot.compiled_dataset,
+        normalized_cases=tuple(
+            replace(
+                item,
+                source=replace(
+                    item.source,
+                    ingestion_id=legacy_identity,
+                ),
+            )
+            for item in snapshot.normalized_cases
+        ),
+    )
+
+    with pytest.raises(
+        IngestionContractError,
+        match="legacy semantic identity cannot carry verified authority",
+    ):
+        replace(
+            snapshot,
+            ingestion_id=legacy_identity,
+            compiled_dataset=legacy_compiled,
+        )
+
+
+def test_expired_qualification_preserves_snapshot_audit_but_blocks_new_run(
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot(
+        tmp_path,
+        qualification_evaluated_at_utc=(
+            "2026-01-15T00:00:00Z"
+        ),
+        qualification_expires_at_utc=(
+            "2026-02-01T00:00:00Z"
+        ),
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    store.write_ingestion(snapshot)
+
+    restored = store.read_ingestion(snapshot.ingestion_id)
+
+    assert restored == snapshot
+    assert restored.quality_gate.allowed is True
+    assert restored.qualification_evaluated_at_utc == (
+        "2026-01-15T00:00:00Z"
+    )
+    with pytest.raises(
+        ValueError,
+        match="qualification is expired",
+    ):
+        _validate_frozen_semantic_runtime_admission(
+            restored,
+            mode=IngestionMode.AUTO_VERIFIED,
+        )
+
+
+def test_evaluator_rerun_cannot_upgrade_or_reuse_expired_semantic_input(
+    tmp_path: Path,
+) -> None:
+    proposal = _snapshot(tmp_path, split=DatasetSplit.HELD_OUT)
+    with pytest.raises(ValueError, match="mode does not match"):
+        _validate_rerun_source_runtime_admission(
+            SelfEvolveEvalSourceConfig(
+                kind="agentic_source",
+                ingestion_snapshot=proposal,
+            ),
+            apply_policy="auto_verified",
+        )
+
+    expired = _snapshot(
+        tmp_path,
+        qualification_expires_at_utc="2026-02-01T00:00:00Z",
+    )
+    with pytest.raises(ValueError, match="expired"):
+        _validate_rerun_source_runtime_admission(
+            SelfEvolveEvalSourceConfig(
+                kind="agentic_source",
+                ingestion_snapshot=expired,
+            ),
+            apply_policy="auto_verified",
+        )
 
 
 @pytest.mark.parametrize(

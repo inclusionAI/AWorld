@@ -19,6 +19,7 @@ def _usage() -> str:
     return """Usage:
   /optimize --from-source <file-or-directory> [--source-manifest <path>] [--ingestion-only]
   /optimize --from-source <file-or-directory> --source-ingestor <registered-name> --target <target>
+  /optimize --frozen-ingestion-id <id> --semantic-evidence-approval <approval.json> --semantic-qualification-report <report.json> --apply auto_verified
   /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
   /optimize --from-trajectory <trajectory.log> --apply auto_verified --new-skill-policy auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory <multi-task-trajectory.log> --include-prior-runs --apply proposal
@@ -31,6 +32,7 @@ def _usage() -> str:
 
 Examples:
   /optimize --from-source ~/Documents/domain-data --ingestion-only
+  /optimize --frozen-ingestion-id <id> --semantic-evidence-approval ./approval.json --semantic-qualification-report ./qualification.json --apply auto_verified
   /optimize --from-trajectory ~/Documents/task.log --apply proposal
   /optimize --from-trajectory ~/Documents/task.log --apply auto_verified --judge-agent ~/Documents/agent.md
   /optimize --from-trajectory-set ./trajectory-set.json --apply auto_verified --judge-agent ~/Documents/agent.md
@@ -48,11 +50,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--from-session", dest="from_session")
     parser.add_argument("--from-trajectory", dest="from_trajectory")
     parser.add_argument("--from-source", dest="from_source")
+    parser.add_argument(
+        "--frozen-ingestion-id",
+        dest="frozen_ingestion_id",
+    )
     parser.add_argument("--source-ingestor", default="auto", dest="source_ingestor")
     parser.add_argument("--source-manifest", dest="source_manifest")
     parser.add_argument(
         "--ingestion-model-profile",
         dest="ingestion_model_profile",
+    )
+    parser.add_argument(
+        "--semantic-evidence-approval",
+        dest="semantic_evidence_approval",
+    )
+    parser.add_argument(
+        "--semantic-qualification-report",
+        dest="semantic_qualification_report",
     )
     parser.add_argument("--ingestion-only", action="store_true", dest="ingestion_only")
     parser.add_argument("--from-trajectory-set", dest="from_trajectory_set")
@@ -156,9 +170,16 @@ class OptimizeCommand(Command):
                 from_session=args.from_session,
                 from_trajectory=args.from_trajectory,
                 from_source=args.from_source,
+                frozen_ingestion_id=args.frozen_ingestion_id,
                 source_ingestor=args.source_ingestor,
                 source_manifest=args.source_manifest,
                 ingestion_model_profile=args.ingestion_model_profile,
+                semantic_evidence_approval=(
+                    args.semantic_evidence_approval
+                ),
+                semantic_qualification_report=(
+                    args.semantic_qualification_report
+                ),
                 ingestion_only=args.ingestion_only,
                 from_trajectory_set=args.from_trajectory_set,
                 include_prior_runs=args.include_prior_runs,

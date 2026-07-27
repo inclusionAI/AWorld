@@ -40,6 +40,7 @@ from .semantic_compiler import (
     ResolvedSemanticTraceV1,
     TraceCandidateAttestationV1,
     TraceExtractionAttestationV1,
+    TraceExtractionOrigin,
     TraceSourceBindingV1,
     attest_resolved_trace,
     canonical_semantic_case_id,
@@ -49,10 +50,23 @@ from .semantic_compiler import (
     compile_target_evidence_bundle,
     validate_resolved_trace_attestation,
 )
-from .semantic_ingestor import SemanticSelfImprovementIngestor
+from .semantic_canonical import (
+    CANONICAL_SEMANTIC_DECODER_PROTOCOL_FINGERPRINT,
+    CANONICAL_SEMANTIC_SOURCE_SCHEMA_VERSION,
+    CanonicalSemanticDecodeResultV1,
+    CanonicalSemanticSourcePartV1,
+    CanonicalSemanticSourceSetV1,
+    decode_canonical_semantic_source,
+    recognize_canonical_semantic_source,
+)
+from .semantic_ingestor import (
+    SemanticSelfImprovementIngestor,
+    prepare_canonical_semantic_ingestion,
+)
 from .semantic_snapshot import FrozenSemanticIngestionSnapshotV2
 from .semantic_verifier import (
     SemanticEvidenceQualityReportV1,
+    SemanticExtractionOrigin,
     SemanticQualificationEvidenceV1,
     SemanticQualityGateDecisionV1,
     SemanticResolutionEvidenceV1,
@@ -156,6 +170,11 @@ __all__ = [
     "NORMALIZED_CASE_SCHEMA_VERSION",
     "NormalizedCaseRecord",
     "CompiledSemanticDatasetV1",
+    "CANONICAL_SEMANTIC_DECODER_PROTOCOL_FINGERPRINT",
+    "CANONICAL_SEMANTIC_SOURCE_SCHEMA_VERSION",
+    "CanonicalSemanticDecodeResultV1",
+    "CanonicalSemanticSourcePartV1",
+    "CanonicalSemanticSourceSetV1",
     "REJECTED_RECORD_SCHEMA_VERSION",
     "RecordFramingSpec",
     "RejectedRecord",
@@ -173,6 +192,7 @@ __all__ = [
     "SemanticChunkV1",
     "SemanticChunkingLimits",
     "SemanticEvidenceQualityReportV1",
+    "SemanticExtractionOrigin",
     "SemanticQualificationEvidenceV1",
     "SemanticQualityGateDecisionV1",
     "SemanticResolutionEvidenceV1",
@@ -180,6 +200,7 @@ __all__ = [
     "ResolvedSemanticTraceV1",
     "TraceCandidateAttestationV1",
     "TraceExtractionAttestationV1",
+    "TraceExtractionOrigin",
     "TraceSourceBindingV1",
     "TrajectoryMappingSpec",
     "TrajectoryStepMappings",
@@ -211,6 +232,9 @@ __all__ = [
     "canonical_semantic_case_id",
     "canonical_semantic_plan_id",
     "canonical_semantic_signal_id",
+    "decode_canonical_semantic_source",
+    "prepare_canonical_semantic_ingestion",
+    "recognize_canonical_semantic_source",
     "validate_fingerprint",
     "validate_resolved_trace_attestation",
     "validate_frozen_snapshot_quality",

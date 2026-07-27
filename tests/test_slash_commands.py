@@ -806,6 +806,8 @@ class TestOptimizeCommand:
                 user_args=(
                     "--from-source domain-data "
                     "--source-manifest domain-data/aworld-source.yaml "
+                    "--semantic-evidence-approval approval.json "
+                    "--semantic-qualification-report qualification.json "
                     "--ingestion-only"
                 ),
             )
@@ -814,8 +816,49 @@ class TestOptimizeCommand:
         assert calls["from_source"] == "domain-data"
         assert calls["source_ingestor"] == "auto"
         assert calls["source_manifest"] == "domain-data/aworld-source.yaml"
+        assert calls["semantic_evidence_approval"] == "approval.json"
+        assert calls["semantic_qualification_report"] == (
+            "qualification.json"
+        )
         assert calls["ingestion_only"] is True
         assert "Status: ingested" in result
+
+    @pytest.mark.asyncio
+    async def test_optimize_forwards_frozen_ingestion_promotion(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "promoted"}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    "--frozen-ingestion-id ingestion-semantic-v2 "
+                    "--semantic-evidence-approval approval.json "
+                    "--semantic-qualification-report qualification.json "
+                    "--apply auto_verified"
+                ),
+            )
+        )
+
+        assert calls["frozen_ingestion_id"] == "ingestion-semantic-v2"
+        assert calls["semantic_evidence_approval"] == "approval.json"
+        assert calls["semantic_qualification_report"] == (
+            "qualification.json"
+        )
+        assert "Status: promoted" in result
 
     @pytest.mark.asyncio
     async def test_optimize_allows_registered_ingestor_override(

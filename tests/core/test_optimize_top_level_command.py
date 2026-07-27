@@ -145,6 +145,8 @@ def test_optimize_command_allows_registered_ingestor_override(
         {"source_manifest": "aworld-source.yaml"},
         {"source_ingestor": "crm-export-v2"},
         {"ingestion_model_profile": "ingestion"},
+        {"semantic_evidence_approval": "approval.json"},
+        {"semantic_qualification_report": "qualification.json"},
         {"ingestion_only": True},
     ],
 )
@@ -226,6 +228,75 @@ def test_run_optimize_cli_resolves_explicit_ingestion_model_profile(
     assert resolved_profiles == ["default", "source-mapper"]
     assert calls["mutation_model_config"] is configs["default"]
     assert calls["ingestion_model_config"] is configs["source-mapper"]
+
+
+def test_optimize_command_forwards_semantic_trust_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "ingested"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-source",
+            "domain-data",
+            "--semantic-evidence-approval",
+            str(tmp_path / "approval.json"),
+            "--semantic-qualification-report",
+            str(tmp_path / "qualification.json"),
+            "--ingestion-only",
+        ]
+    )
+
+    assert handled is True
+    assert calls["semantic_evidence_approval"].endswith("approval.json")
+    assert calls["semantic_qualification_report"].endswith(
+        "qualification.json"
+    )
+
+
+def test_optimize_command_forwards_frozen_ingestion_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "promoted"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--frozen-ingestion-id",
+            "ingestion-semantic-v2",
+            "--semantic-evidence-approval",
+            "approval.json",
+            "--semantic-qualification-report",
+            "qualification.json",
+            "--apply",
+            "auto_verified",
+        ]
+    )
+
+    assert handled is True
+    assert calls["frozen_ingestion_id"] == "ingestion-semantic-v2"
+    assert calls["semantic_evidence_approval"] == "approval.json"
+    assert calls["semantic_qualification_report"] == "qualification.json"
 
 
 def test_run_optimize_cli_ingestion_only_executes_default_auto_framework_path(

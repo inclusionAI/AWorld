@@ -26,7 +26,7 @@ cost and aggregation counts, but must not select a different semantic path.
 | 008 | [Enable inferred new-skill evolution without weakening explicit target trust](008-enable-inferred-new-skill-evolution.md) | P1 | L | 003, 004, 007 | DONE — implementation verified locally with full self-evolve, sandbox, and CLI suites |
 | 009 | [Add bounded self-improvement campaigns with a Goal handoff](009-add-bounded-self-improvement-campaigns.md) | P1 | L | 004, 006, 007, 008 | DONE — commit `d9f5bcc3` |
 | 010 | [Add agentic self-evolve dataset ingestion](010-add-agentic-self-evolve-dataset-ingestion.md) | P1 | L | 002, 004, 007 | DONE — staged tree verified with 1,162 self-evolve and 105 CLI/slash tests (4 skipped); independent review found no functional blockers |
-| 011 | [Add constitution-driven, format-neutral self-improvement evidence ingestion](011-add-semantic-self-improvement-evidence-ingestion.md) | P1 | L | 010 | IN PROGRESS — core semantic ingestion and review blockers closed; qualification/docs remain |
+| 011 | [Add constitution-driven, format-neutral self-improvement evidence ingestion](011-add-semantic-self-improvement-evidence-ingestion.md) | P1 | L | 010 | DONE — production qualification/authority/canonical closure; 1364 non-live self-evolve + 114 CLI tests pass; dual trust review clear |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale)

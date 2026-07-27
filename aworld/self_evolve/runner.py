@@ -99,6 +99,9 @@ from aworld.self_evolve.ingestion.semantic_workflow import (
 from aworld.self_evolve.ingestion.semantic_snapshot import (
     FrozenSemanticIngestionSnapshotV2,
 )
+from aworld.self_evolve.ingestion.semantic_ingestor import (
+    promote_frozen_semantic_ingestion,
+)
 from aworld.self_evolve.ingestion.semantic_verifier import (
     evaluate_semantic_quality_gate,
 )
@@ -116,6 +119,15 @@ from aworld.self_evolve.failure_events import (
 from aworld.self_evolve.evidence_diagnostics import (
     EvidenceRepairConstraint,
     merge_evidence_repair_constraints,
+)
+from aworld.self_evolve.evaluation_plan import (
+    HumanEvidenceApprovalV1,
+    SemanticModelQualificationReportV1,
+    SemanticQualificationRegistryV1,
+)
+from aworld.self_evolve.semantic_qualification import (
+    load_semantic_model_qualification_report,
+    load_semantic_qualification_registry,
 )
 from aworld.self_evolve.lessons import LessonRecord, extract_lesson_records
 from aworld.self_evolve.candidate_package import (
@@ -6656,12 +6668,159 @@ async def optimize_explicit_target(
     )
 
 
+def _resolve_ingestion_artifact_path(
+    value: str,
+    *,
+    workspace_root: Path,
+) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else workspace_root / path
+
+
+def _reject_workspace_trust_symlink_components(
+    path: Path,
+    *,
+    workspace_root: Path,
+) -> None:
+    try:
+        relative = path.relative_to(workspace_root)
+    except ValueError as exc:
+        raise ValueError(
+            "workspace trust artifact must remain under workspace_root"
+        ) from exc
+    current = workspace_root
+    for component in relative.parts:
+        current = current / component
+        if current.is_symlink():
+            raise ValueError(
+                "workspace trust artifact cannot traverse a symlink"
+            )
+
+
+def _load_human_evidence_approval(
+    path: Path,
+) -> HumanEvidenceApprovalV1:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(
+            "semantic evidence approval must be a regular non-symlink file"
+        )
+    payload_bytes = path.read_bytes()
+    if len(payload_bytes) > 1024 * 1024:
+        raise ValueError("semantic evidence approval exceeds the byte limit")
+
+    def reject_duplicates(
+        pairs: list[tuple[str, Any]],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(
+                    "semantic evidence approval contains duplicate JSON keys"
+                )
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(
+            payload_bytes.decode("utf-8"),
+            object_pairs_hook=reject_duplicates,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "semantic evidence approval must be valid UTF-8 JSON"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("semantic evidence approval must be a JSON object")
+    required = {
+        "schema_version",
+        "evidence_graph_logical_fingerprint",
+        "evidence_graph_provenance_fingerprint",
+        "source_bundle_fingerprint",
+        "constitution_fingerprint",
+        "semantic_profile_fingerprint",
+        "manifest_fingerprint",
+        "approval_origin",
+        "approved_claim_scope",
+        "approval_fingerprint",
+    }
+    actual = set(payload)
+    if actual != required:
+        raise ValueError(
+            "semantic evidence approval schema drifted "
+            f"(unknown={sorted(actual.difference(required))}, "
+            f"missing={sorted(required.difference(actual))})"
+        )
+    approval = HumanEvidenceApprovalV1.from_dict(payload)
+    if not approval.is_production_bound:
+        raise ValueError(
+            "semantic evidence approval lacks production trust bindings"
+        )
+    claimed_fingerprint = payload.get("approval_fingerprint")
+    if (
+        claimed_fingerprint is not None
+        and claimed_fingerprint != approval.fingerprint
+    ):
+        raise ValueError(
+            "semantic evidence approval fingerprint does not match content"
+        )
+    return approval
+
+
+def _load_semantic_trust_artifacts(
+    *,
+    workspace_root: Path,
+    semantic_evidence_approval: str | None,
+    semantic_qualification_report: str | None,
+) -> tuple[
+    HumanEvidenceApprovalV1 | None,
+    SemanticModelQualificationReportV1 | None,
+    SemanticQualificationRegistryV1 | None,
+]:
+    approval = (
+        _load_human_evidence_approval(
+            _resolve_ingestion_artifact_path(
+                semantic_evidence_approval,
+                workspace_root=workspace_root,
+            )
+        )
+        if semantic_evidence_approval is not None
+        else None
+    )
+    report = (
+        load_semantic_model_qualification_report(
+            _resolve_ingestion_artifact_path(
+                semantic_qualification_report,
+                workspace_root=workspace_root,
+            )
+        )
+        if semantic_qualification_report is not None
+        else None
+    )
+    registry: SemanticQualificationRegistryV1 | None = None
+    if report is not None:
+        registry_path = (
+            workspace_root
+            / ".aworld"
+            / "self_evolve"
+            / "semantic_qualifications"
+            / "index.json"
+        )
+        _reject_workspace_trust_symlink_components(
+            registry_path,
+            workspace_root=workspace_root,
+        )
+        registry = load_semantic_qualification_registry(registry_path)
+    return approval, report, registry
+
+
 def prepare_ingestion_from_cli_request(
     *,
     workspace_root: str | Path,
     from_source: str,
     source_ingestor: str = "auto",
     source_manifest: str | None = None,
+    semantic_evidence_approval: str | None = None,
+    semantic_qualification_report: str | None = None,
     apply_policy: str = "proposal",
     ingestion_only: bool = False,
     ingestion_model_config: ModelConfig | None = None,
@@ -6677,11 +6836,23 @@ def prepare_ingestion_from_cli_request(
         if not manifest_path.is_absolute():
             source_root = source_path.parent if source_path.is_file() else source_path
             manifest_path = source_root / manifest_path
+    (
+        approval,
+        qualification_report,
+        qualification_registry,
+    ) = _load_semantic_trust_artifacts(
+        workspace_root=root,
+        semantic_evidence_approval=semantic_evidence_approval,
+        semantic_qualification_report=semantic_qualification_report,
+    )
     registry = ingestion_registry or DEFAULT_INGESTION_REGISTRY
     ingestor = _ingestor_for_request(
         source_ingestor,
         registry=registry,
         ingestion_model_config=ingestion_model_config,
+        semantic_human_evidence_approval=approval,
+        semantic_qualification_report=qualification_report,
+        semantic_qualification_registry=qualification_registry,
     )
     request = DatasetIngestionRequest(
         source_path=source_path,
@@ -6699,7 +6870,7 @@ def prepare_ingestion_from_cli_request(
     )
     async def prepare_registered():
         first = await ingestor.prepare(request)
-        if isinstance(ingestor, AgenticDatasetIngestor):
+        if type(ingestor) is AgenticDatasetIngestor:
             return first
         second = await ingestor.prepare(request)
         if first.to_dict(public=False) != second.to_dict(public=False):
@@ -6718,7 +6889,7 @@ def prepare_ingestion_from_cli_request(
         ingestor_name=source_ingestor,
     )
     if (
-        not isinstance(ingestor, AgenticDatasetIngestor)
+        type(ingestor) is not AgenticDatasetIngestor
         and effective_trust_level
         is not IngestorTrustLevel.EXTERNAL_UNTRUSTED
     ):
@@ -6765,6 +6936,94 @@ def prepare_ingestion_from_cli_request(
     return store.read_ingestion(snapshot.ingestion_id)
 
 
+def promote_ingestion_from_cli_request(
+    *,
+    workspace_root: str | Path,
+    frozen_ingestion_id: str,
+    semantic_evidence_approval: str | None,
+    semantic_qualification_report: str | None,
+    apply_policy: str = "auto_verified",
+    ingestion_only: bool = False,
+) -> FrozenSemanticIngestionSnapshotV2:
+    """Promote a frozen semantic graph without source/model re-execution."""
+
+    root = Path(workspace_root)
+    store = FilesystemSelfEvolveStore(root)
+    snapshot = store.read_ingestion(frozen_ingestion_id)
+    if not isinstance(snapshot, FrozenSemanticIngestionSnapshotV2):
+        raise ValueError(
+            "semantic trust artifacts require a frozen semantic ingestion"
+        )
+    (
+        approval,
+        qualification_report,
+        qualification_registry,
+    ) = _load_semantic_trust_artifacts(
+        workspace_root=root,
+        semantic_evidence_approval=semantic_evidence_approval,
+        semantic_qualification_report=semantic_qualification_report,
+    )
+    promoted = promote_frozen_semantic_ingestion(
+        snapshot,
+        mode=_ingestion_mode(
+            apply_policy=apply_policy,
+            ingestion_only=ingestion_only,
+        ),
+        human_approval=approval,
+        qualification_report=qualification_report,
+        qualification_registry=(
+            qualification_registry
+            or SemanticQualificationRegistryV1(
+                trusted_report_fingerprints=()
+            )
+        ),
+    )
+    store.write_ingestion(promoted)
+    return promoted
+
+
+def _validate_frozen_semantic_runtime_admission(
+    snapshot: FrozenSemanticIngestionSnapshotV2,
+    *,
+    mode: IngestionMode,
+) -> None:
+    """Keep runtime policy and qualification bound to the frozen identity."""
+
+    if snapshot.quality_gate.mode is not mode:
+        raise ValueError(
+            "frozen semantic ingestion mode does not match the requested "
+            "rollout; create a deterministic promoted ingestion first"
+        )
+    if (
+        mode is IngestionMode.AUTO_VERIFIED
+        and snapshot.resolution_evidence.extraction_origin.value
+        != "deterministic_canonical"
+        and not snapshot.qualification_registry.accepts(
+            snapshot.qualification_report,
+            model_profile_fingerprint=(
+                snapshot.semantic_model_profile_fingerprint
+            ),
+            provider_fingerprint=(
+                snapshot.semantic_provider_fingerprint
+            ),
+            semantic_protocol_fingerprint=(
+                snapshot.semantic_protocol_fingerprint
+            ),
+            constitution_fingerprint=snapshot.constitution.fingerprint,
+            corpus_fingerprint=(
+                snapshot.qualification_corpus_fingerprint
+            ),
+            threshold_set_fingerprint=(
+                snapshot.qualification_threshold_set_fingerprint
+            ),
+        )
+    ):
+        raise ValueError(
+            "frozen semantic qualification is expired or no longer "
+            "admissible for a new auto_verified run"
+        )
+
+
 def _verify_trusted_registered_snapshot(
     *,
     source_path: Path,
@@ -6774,6 +7033,11 @@ def _verify_trusted_registered_snapshot(
 ) -> FrozenIngestionSnapshot:
     """Rebuild every auto-verified fact owned by a registered extension."""
 
+    if isinstance(snapshot, FrozenSemanticIngestionSnapshotV2):
+        raise ValueError(
+            "trusted registered semantic ingestors are not eligible for "
+            "authority until framework claim-level attestation is available"
+        )
     extractors = registry.extractors()
     inventory = SourceScanner(extractors=extractors).scan(source_path)
     if inventory.to_dict(public=False) != snapshot.inventory.to_dict(
@@ -6846,6 +7110,15 @@ def _ingestor_for_request(
     *,
     registry: IngestionRegistry,
     ingestion_model_config: ModelConfig | None,
+    semantic_human_evidence_approval: (
+        HumanEvidenceApprovalV1 | None
+    ) = None,
+    semantic_qualification_report: (
+        SemanticModelQualificationReportV1 | None
+    ) = None,
+    semantic_qualification_registry: (
+        SemanticQualificationRegistryV1 | None
+    ) = None,
 ):
     if source_ingestor == "auto" and ingestion_model_config is not None:
         mapping_provider = _IngestionMappingModelProvider(
@@ -6867,6 +7140,24 @@ def _ingestor_for_request(
             semantic_protocol_fingerprint=(
                 semantic_provider.protocol_fingerprint
             ),
+            semantic_human_evidence_approval=(
+                semantic_human_evidence_approval
+            ),
+            semantic_qualification_report=(
+                semantic_qualification_report
+            ),
+            semantic_qualification_registry=(
+                semantic_qualification_registry
+            ),
+        )
+    if (
+        semantic_human_evidence_approval is not None
+        or semantic_qualification_report is not None
+        or semantic_qualification_registry is not None
+    ):
+        raise ValueError(
+            "semantic trust artifacts require the auto ingestor and a "
+            "semantic ingestion model"
         )
     return registry.get_ingestor(source_ingestor)
 
@@ -7111,6 +7402,8 @@ def _validate_eval_source_request(
     frozen_ingestion_id: str | None,
     source_ingestor: str | None,
     source_manifest: str | None,
+    semantic_evidence_approval: str | None,
+    semantic_qualification_report: str | None,
     ingestion_only: bool,
 ) -> None:
     selected = [
@@ -7139,11 +7432,20 @@ def _validate_eval_source_request(
         )
     agentic_source = from_source is not None or frozen_ingestion_id is not None
     if (
-        source_manifest is not None
-        or source_ingestor not in {None, "auto"}
+        source_ingestor not in {None, "auto"}
         or ingestion_only
     ) and not agentic_source:
         raise ValueError("ingestion options require from_source")
+    if source_manifest is not None and from_source is None:
+        raise ValueError("source_manifest requires from_source")
+    if (
+        semantic_evidence_approval is not None
+        or semantic_qualification_report is not None
+    ) and not agentic_source:
+        raise ValueError(
+            "semantic trust artifacts require from_source or "
+            "frozen_ingestion_id"
+        )
 
 
 def _write_run_ingestion_gate(
@@ -7283,6 +7585,8 @@ def optimize_from_cli_request(
     from_source: str | None = None,
     source_ingestor: str | None = None,
     source_manifest: str | None = None,
+    semantic_evidence_approval: str | None = None,
+    semantic_qualification_report: str | None = None,
     ingestion_model_config: ModelConfig | None = None,
     ingestion_only: bool = False,
     frozen_ingestion_id: str | None = None,
@@ -7339,6 +7643,8 @@ def optimize_from_cli_request(
         frozen_ingestion_id=frozen_ingestion_id,
         source_ingestor=source_ingestor,
         source_manifest=source_manifest,
+        semantic_evidence_approval=semantic_evidence_approval,
+        semantic_qualification_report=semantic_qualification_report,
         ingestion_only=ingestion_only,
     )
 
@@ -7355,7 +7661,26 @@ def optimize_from_cli_request(
         registry = ingestion_registry or DEFAULT_INGESTION_REGISTRY
         if frozen_ingestion_id is not None:
             ingestor = registry.get_ingestor(effective_ingestor_name)
-            ingestion_snapshot = store.read_ingestion(frozen_ingestion_id)
+            if (
+                semantic_evidence_approval is not None
+                or semantic_qualification_report is not None
+            ):
+                ingestion_snapshot = promote_ingestion_from_cli_request(
+                    workspace_root=workspace_root,
+                    frozen_ingestion_id=frozen_ingestion_id,
+                    semantic_evidence_approval=(
+                        semantic_evidence_approval
+                    ),
+                    semantic_qualification_report=(
+                        semantic_qualification_report
+                    ),
+                    apply_policy=apply_policy,
+                    ingestion_only=ingestion_only,
+                )
+            else:
+                ingestion_snapshot = store.read_ingestion(
+                    frozen_ingestion_id
+                )
         else:
             ingestor = _ingestor_for_request(
                 effective_ingestor_name,
@@ -7367,6 +7692,10 @@ def optimize_from_cli_request(
                 from_source=str(from_source),
                 source_ingestor=effective_ingestor_name,
                 source_manifest=source_manifest,
+                semantic_evidence_approval=semantic_evidence_approval,
+                semantic_qualification_report=(
+                    semantic_qualification_report
+                ),
                 apply_policy=apply_policy,
                 ingestion_only=ingestion_only,
                 ingestion_model_config=ingestion_model_config,
@@ -7376,6 +7705,17 @@ def optimize_from_cli_request(
             ingestion_snapshot,
             ingestor_name=effective_ingestor_name,
         )
+        if isinstance(
+            ingestion_snapshot,
+            FrozenSemanticIngestionSnapshotV2,
+        ):
+            _validate_frozen_semantic_runtime_admission(
+                ingestion_snapshot,
+                mode=_ingestion_mode(
+                    apply_policy=apply_policy,
+                    ingestion_only=ingestion_only,
+                ),
+            )
         if (
             source_manifest is not None
             and ingestion_snapshot.manifest_fingerprint is None
@@ -7519,6 +7859,20 @@ def optimize_from_cli_request(
                     ),
                     "manifest_origin": (
                         ingestion_snapshot.manifest_origin.value
+                    ),
+                    "semantic_evidence_approval_template_path": (
+                        str(
+                            store.ingestion_path(
+                                ingestion_snapshot.ingestion_id
+                            )
+                            / "evidence_approval_template.json"
+                        )
+                        if ingestion_snapshot.manifest_origin.value
+                        == "operator_explicit"
+                        and ingestion_snapshot.resolution_evidence
+                        .extraction_origin.value
+                        != "deterministic_canonical"
+                        else None
                     ),
                     "semantic_model_profile_qualified": (
                         ingestion_snapshot.quality_report
@@ -8462,6 +8816,10 @@ def _rerun_evaluator_from_stored_run(
     source_config, split_seed = _source_config_from_stored_dataset_recipe(
         source_run_path / "dataset_recipe.json"
     )
+    _validate_rerun_source_runtime_admission(
+        source_config,
+        apply_policy=apply_policy,
+    )
     built_dataset = build_dataset_from_source(
         source_config,
         current_trajectory=None,
@@ -8675,6 +9033,24 @@ def _rerun_evaluator_from_stored_run(
 
 def _content_fingerprint(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _validate_rerun_source_runtime_admission(
+    source_config: SelfEvolveEvalSourceConfig,
+    *,
+    apply_policy: str,
+) -> None:
+    """Re-apply current semantic trust policy before evaluator-only reuse."""
+
+    snapshot = source_config.ingestion_snapshot
+    if isinstance(snapshot, FrozenSemanticIngestionSnapshotV2):
+        _validate_frozen_semantic_runtime_admission(
+            snapshot,
+            mode=_ingestion_mode(
+                apply_policy=apply_policy,
+                ingestion_only=False,
+            ),
+        )
 
 
 def _resolve_stored_run_path(store: FilesystemSelfEvolveStore, from_run: str) -> Path:
@@ -15461,6 +15837,17 @@ def _dataset_ingestion_summary(
                 snapshot.ingestion_model_call_count
             ),
             "normalization_kind": "semantic_evidence",
+            "semantic_evidence_approval_template_path": (
+                str(
+                    store.ingestion_path(ingestion_id)
+                    / "evidence_approval_template.json"
+                )
+                if snapshot.manifest_origin.value
+                == "operator_explicit"
+                and snapshot.resolution_evidence.extraction_origin.value
+                != "deterministic_canonical"
+                else None
+            ),
             "semantic_verified_eligible_plan_count": (
                 quality.verified_eligible_plan_count
             ),
